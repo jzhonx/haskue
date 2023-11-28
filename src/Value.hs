@@ -18,10 +18,14 @@ buildValueStr' ident (Struct xs) = buildStructStr ident xs
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =
-  string7 "{\n"
-    <> buildFieldsStr ident xs
-    <> string7 (replicate (ident * 2) ' ')
-    <> char7 '}'
+  if null xs
+    then string7 "{}"
+    else
+      char7 '{'
+        <> char7 '\n'
+        <> buildFieldsStr ident xs
+        <> string7 (replicate (ident * 2) ' ')
+        <> char7 '}'
 
 buildFieldsStr :: Int -> [(String, Value)] -> Builder
 buildFieldsStr _ [] = string7 ""
