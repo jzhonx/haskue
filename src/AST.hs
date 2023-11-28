@@ -8,12 +8,21 @@ data Expression
 data Literal
   = StringLit StringLit
   | IntLit Integer
-  | StructLit [(StringLit, Literal)]
-  deriving (Eq, Show)
+  | StructLit [(StringLit, Expression)]
+  deriving (Show)
 
 type StringLit = String
 
-data BinaryOp = Unify
+data BinaryOp
+  = Unify
+  | Add
+  | Sub
+  | Mul
+  | Div
 
 instance Show BinaryOp where
   show Unify = "&"
+  show Add = "+"
+  show Sub = "-"
+  show Mul = "*"
+  show Div = "/"

@@ -6,9 +6,11 @@ import AST
     Literal (..),
     StringLit,
   )
+import Data.Maybe (fromJust)
 import Text.ParserCombinators.Parsec
   ( Parser,
     char,
+    choice,
     digit,
     many,
     many1,
@@ -16,7 +18,7 @@ import Text.ParserCombinators.Parsec
     optionMaybe,
     parse,
     spaces,
-    try,
+    string,
     (<|>),
   )
 
@@ -26,19 +28,38 @@ parseCUE s =
     Left err -> error $ show err
     Right val -> val
 
+operator :: Parser String
+operator =
+  choice
+    [ string "&",
+      string "+",
+      string "-",
+      string "*",
+      string "/"
+    ]
+
+operatorsTable :: [(String, BinaryOp)]
+operatorsTable =
+  [ ("&", Unify),
+    ("+", Add),
+    ("-", Sub),
+    ("*", Mul),
+    ("/", Div)
+  ]
+
 parseExpr :: Parser Expression
 parseExpr = do
   spaces
   e1 <- parseUnary
   spaces
-  op' <- optionMaybe (char '&')
+  op' <- optionMaybe operator
+  spaces
   case op' of
     Nothing -> return e1
-    Just _ -> do
-      spaces
+    Just op -> do
       e2 <- parseExpr
       spaces
-      return (BinaryOp Unify e1 e2)
+      return $ BinaryOp (fromJust $ lookup op operatorsTable) e1 e2
 
 parseUnary :: Parser Expression
 parseUnary = fmap UnaryExpr parseLiteral
@@ -59,19 +80,19 @@ parseStruct = do
   spaces
   return $ StructLit fields
 
-parseField :: Parser (StringLit, Literal)
+parseField :: Parser (StringLit, Expression)
 parseField = do
   spaces
   key <- parseString
   spaces
   _ <- char ':'
   spaces
-  val <- parseLiteral
+  e <- parseExpr
   spaces
   let x = case key of
         StringLit s -> s
         _ -> error "parseField: key is not a string"
-  return (x, val)
+  return (x, e)
 
 parseString :: Parser Literal
 parseString = do
