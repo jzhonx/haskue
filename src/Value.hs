@@ -13,6 +13,9 @@ data Value
       }
   | Bottom String
 
+instance Show Value where
+  show = show . buildValueStr
+
 buildValueStr :: Value -> Builder
 buildValueStr = buildValueStr' 0
 

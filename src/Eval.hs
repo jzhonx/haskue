@@ -4,6 +4,7 @@ module Eval where
 
 import AST
 import Control.Monad.Except (MonadError, throwError)
+import qualified Data.Map.Strict as Map
 import Unify (unify)
 import Value (Value (..))
 
@@ -17,7 +18,8 @@ evalUnary (StringLit s) = return $ String s
 evalUnary (IntLit i) = return $ Int i
 evalUnary (StructLit s) = do
   xs <- mapM (mapM eval) s
-  return $ Struct xs
+  m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
+  return $ Struct $ Map.toList m
 
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m Value
 evalBinary op e1 e2 = do
