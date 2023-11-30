@@ -1,11 +1,6 @@
 module Parser where
 
 import AST
-  ( BinaryOp (..),
-    Expression (..),
-    Literal (..),
-    StringLit,
-  )
 import Data.Maybe (fromJust)
 import Text.ParserCombinators.Parsec
   ( Parser,
@@ -32,6 +27,7 @@ operator :: Parser String
 operator =
   choice
     [ string "&",
+      string "|",
       string "+",
       string "-",
       string "*",
@@ -41,6 +37,7 @@ operator =
 operatorsTable :: [(String, BinaryOp)]
 operatorsTable =
   [ ("&", Unify),
+    ("|", Disjunction),
     ("+", Add),
     ("-", Sub),
     ("*", Mul),
@@ -62,7 +59,28 @@ parseExpr = do
       return $ BinaryOp (fromJust $ lookup op operatorsTable) e1 e2
 
 parseUnary :: Parser Expression
-parseUnary = fmap UnaryExpr parseLiteral
+parseUnary = fmap (UnaryExpr . PrimaryExpr) parsePrimary
+
+parsePrimary :: Parser PrimaryExpr
+parsePrimary = do
+  spaces
+  op <- parseOperand
+  spaces
+  return $ Operand op
+
+parseOperand :: Parser Operand
+parseOperand = do
+  spaces
+  op <-
+    fmap Literal parseLiteral
+      <|> ( do
+              _ <- char '('
+              expr <- parseExpr
+              _ <- char ')'
+              return $ OpExpression expr
+          )
+  spaces
+  return op
 
 parseLiteral :: Parser Literal
 parseLiteral = do

@@ -1,8 +1,21 @@
 module AST where
 
 data Expression
-  = UnaryExpr Literal
+  = UnaryExpr UnaryExpr
   | BinaryOp BinaryOp Expression Expression
+  deriving (Show)
+
+data UnaryExpr
+  = PrimaryExpr PrimaryExpr
+  deriving (Show)
+
+data PrimaryExpr
+  = Operand Operand
+  deriving (Show)
+
+data Operand
+  = Literal Literal
+  | OpExpression Expression
   deriving (Show)
 
 data Literal
@@ -15,6 +28,7 @@ type StringLit = String
 
 data BinaryOp
   = Unify
+  | Disjunction
   | Add
   | Sub
   | Mul
@@ -22,6 +36,7 @@ data BinaryOp
 
 instance Show BinaryOp where
   show Unify = "&"
+  show Disjunction = "|"
   show Add = "+"
   show Sub = "-"
   show Mul = "*"

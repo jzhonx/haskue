@@ -1,20 +1,30 @@
 module Value where
 
 import Data.ByteString.Builder (Builder, char7, integerDec, string7)
+import Data.Maybe (fromJust, isJust)
 
 data Value
   = String String
   | Int Integer
   | Struct [(String, Value)]
-  deriving (Eq)
+  | Disjunction
+      { getDefault :: Maybe Value,
+        getDisjuncts :: [Value]
+      }
+  | Bottom String
 
 buildValueStr :: Value -> Builder
 buildValueStr = buildValueStr' 0
 
 buildValueStr' :: Int -> Value -> Builder
-buildValueStr' _ (String s) = string7 s
+buildValueStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
 buildValueStr' _ (Int i) = integerDec i
 buildValueStr' ident (Struct xs) = buildStructStr ident xs
+buildValueStr' _ (Disjunction d disjuncts)
+  | isJust d = buildValueStr (fromJust d)
+  -- disjuncts must have at least two elements
+  | otherwise = foldl1 (\x y -> x <> string7 " | " <> y) (map buildValueStr disjuncts)
+buildValueStr' _ (Bottom _) = string7 "_|_"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =

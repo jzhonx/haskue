@@ -3,16 +3,13 @@
 module Eval where
 
 import AST
-  ( BinaryOp (..),
-    Expression (..),
-    Literal (..),
-  )
 import Control.Monad.Except (MonadError, throwError)
 import Unify (unify)
 import Value (Value (..))
 
 eval :: (MonadError String m) => Expression -> m Value
-eval (UnaryExpr lit) = evalUnary lit
+eval (UnaryExpr (PrimaryExpr (Operand (Literal lit)))) = evalUnary lit
+eval (UnaryExpr (PrimaryExpr (Operand (OpExpression expr)))) = eval expr
 eval (BinaryOp op e1 e2) = evalBinary op e1 e2
 
 evalUnary :: (MonadError String m) => Literal -> m Value
@@ -28,6 +25,11 @@ evalBinary op e1 e2 = do
   v2 <- eval e2
   case (op, v1, v2) of
     (Unify, _, _) -> unify v1 v2
+    (AST.Disjunction, _, _) -> return $ case (v1, v2) of
+      (Value.Disjunction _ xs, Value.Disjunction _ ys) -> Value.Disjunction Nothing (xs ++ ys)
+      (Value.Disjunction _ xs, _) -> Value.Disjunction Nothing (v2 : xs)
+      (_, Value.Disjunction _ ys) -> Value.Disjunction Nothing (v1 : ys)
+      (_, _) -> Value.Disjunction Nothing [v1, v2]
     (Add, Int i1, Int i2) -> return $ Int (i1 + i2)
     (Sub, Int i1, Int i2) -> return $ Int (i1 - i2)
     (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
