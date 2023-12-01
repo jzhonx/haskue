@@ -19,7 +19,7 @@ evalUnary (IntLit i) = return $ Int i
 evalUnary (StructLit s) = do
   xs <- mapM (mapM eval) s
   m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
-  return $ Struct $ Map.toList m
+  return $ Struct (Map.keys m) m
 
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m Value
 evalBinary op e1 e2 = do

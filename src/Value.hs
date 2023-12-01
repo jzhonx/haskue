@@ -1,12 +1,16 @@
 module Value where
 
 import Data.ByteString.Builder (Builder, char7, integerDec, string7)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 
 data Value
   = String String
   | Int Integer
-  | Struct [(String, Value)]
+  | Struct
+      { getOrderedLabels :: [String],
+        getEdges :: Map.Map String Value
+      }
   | Disjunction
       { getDefault :: Maybe Value,
         getDisjuncts :: [Value]
@@ -22,7 +26,8 @@ buildValueStr = buildValueStr' 0
 buildValueStr' :: Int -> Value -> Builder
 buildValueStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
 buildValueStr' _ (Int i) = integerDec i
-buildValueStr' ident (Struct xs) = buildStructStr ident xs
+buildValueStr' ident (Struct orderedLabels edges) =
+  buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
 buildValueStr' _ (Disjunction d disjuncts)
   | isJust d = buildValueStr (fromJust d)
   -- disjuncts must have at least two elements
