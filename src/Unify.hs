@@ -59,6 +59,10 @@ unifyStructs (Struct _ edges1) (Struct _ edges2) = do
     interLabels = Set.intersection labels1Set labels2Set
     disjointVertices1 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) edges1
     disjointVertices2 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) edges2
+    processUnified :: String -> Value -> Either Value (String, Value)
+    processUnified key val = case val of
+      Bottom _ -> Left val
+      _ -> Right (key, val)
     unifyIntersectionLabels =
       sequence
         ( Set.foldr
@@ -66,7 +70,7 @@ unifyStructs (Struct _ edges1) (Struct _ edges2) = do
                 let valx = edges1 Map.! key
                     valy = edges2 Map.! key
                     unified = unify' valx valy
-                 in fmap (\val -> case val of Bottom _ -> Left val; _ -> Right (key, val)) unified : acc
+                 in fmap (processUnified key) unified : acc
             )
             []
             interLabels
