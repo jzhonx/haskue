@@ -14,6 +14,7 @@ import Text.ParserCombinators.Parsec
     parse,
     spaces,
     string,
+    try,
     (<|>),
   )
 
@@ -44,18 +45,29 @@ operatorsTable =
     ("/", Div)
   ]
 
+parseComment :: Parser ()
+parseComment = do
+  spaces
+  _ <- string "//"
+  _ <- many (noneOf "\n")
+  _ <- char '\n'
+  return ()
+
+skipElements :: Parser ()
+skipElements = try (parseComment >> spaces) <|> spaces
+
 parseExpr :: Parser Expression
 parseExpr = do
-  spaces
+  skipElements
   e1 <- parseUnary
-  spaces
+  skipElements
   op' <- optionMaybe operator
-  spaces
+  skipElements
   case op' of
     Nothing -> return e1
     Just op -> do
       e2 <- parseExpr
-      spaces
+      skipElements
       return $ BinaryOp (fromJust $ lookup op operatorsTable) e1 e2
 
 parseUnary :: Parser Expression
@@ -63,14 +75,14 @@ parseUnary = fmap (UnaryExpr . PrimaryExpr) parsePrimary
 
 parsePrimary :: Parser PrimaryExpr
 parsePrimary = do
-  spaces
+  skipElements
   op <- parseOperand
-  spaces
+  skipElements
   return $ Operand op
 
 parseOperand :: Parser Operand
 parseOperand = do
-  spaces
+  skipElements
   op <-
     fmap Literal parseLiteral
       <|> ( do
@@ -79,34 +91,34 @@ parseOperand = do
               _ <- char ')'
               return $ OpExpression expr
           )
-  spaces
+  skipElements
   return op
 
 parseLiteral :: Parser Literal
 parseLiteral = do
-  spaces
+  skipElements
   lit <- parseInt <|> parseStruct <|> parseString
-  spaces
+  skipElements
   return lit
 
 parseStruct :: Parser Literal
 parseStruct = do
-  spaces
+  skipElements
   _ <- char '{'
   fields <- many parseField
   _ <- char '}'
-  spaces
+  skipElements
   return $ StructLit fields
 
 parseField :: Parser (StringLit, Expression)
 parseField = do
-  spaces
+  skipElements
   key <- parseString
-  spaces
+  skipElements
   _ <- char ':'
-  spaces
+  skipElements
   e <- parseExpr
-  spaces
+  skipElements
   let x = case key of
         StringLit s -> s
         _ -> error "parseField: key is not a string"
