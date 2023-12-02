@@ -7,6 +7,7 @@ import Data.Maybe (fromJust, isJust)
 data Value
   = String String
   | Int Integer
+  | Bool Bool
   | Struct
       { getOrderedLabels :: [String],
         getEdges :: Map.Map String Value
@@ -20,6 +21,7 @@ data Value
 instance Show Value where
   show (String s) = s
   show (Int i) = show i
+  show (Bool b) = show b
   show (Struct orderedLabels edges) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
   show (Disjunction d disjuncts) = "Disjunction: " ++ show d ++ " " ++ show disjuncts
   show (Bottom msg) = "_|_: " ++ msg
@@ -27,6 +29,7 @@ instance Show Value where
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
+  (==) (Bool b1) (Bool b2) = b1 == b2
   (==) (Struct orderedLabels1 edges1) (Struct orderedLabels2 edges2) =
     orderedLabels1 == orderedLabels2 && edges1 == edges2
   (==) (Disjunction d1 disjuncts1) (Disjunction d2 disjuncts2) =
@@ -40,6 +43,7 @@ buildCUEStr = buildCUEStr' 0
 buildCUEStr' :: Int -> Value -> Builder
 buildCUEStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
 buildCUEStr' _ (Int i) = integerDec i
+buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
 buildCUEStr' ident (Struct orderedLabels edges) =
   buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
 buildCUEStr' _ (Disjunction d disjuncts)

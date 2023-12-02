@@ -22,6 +22,7 @@ data Operand
 data Literal
   = StringLit StringLit
   | IntLit Integer
+  | BoolLit Bool
   | StructLit [(StringLit, Expression)]
   deriving (Show)
 

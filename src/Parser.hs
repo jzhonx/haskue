@@ -123,7 +123,7 @@ parseOperand = do
 parseLiteral :: Parser Literal
 parseLiteral = do
   skipElements
-  lit <- parseInt <|> parseStruct <|> parseString
+  lit <- parseInt <|> parseStruct <|> parseBool <|> parseString
   skipElements
   return lit
 
@@ -161,3 +161,8 @@ parseInt :: Parser Literal
 parseInt = do
   s <- many1 digit
   return $ IntLit (read s :: Integer)
+
+parseBool :: Parser Literal
+parseBool = do
+  b <- string "true" <|> string "false"
+  return $ BoolLit (b == "true")
