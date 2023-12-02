@@ -23,6 +23,9 @@ data Literal
   = StringLit StringLit
   | IntLit Integer
   | BoolLit Bool
+  | TopLit
+  | BottomLit
+  | NullLit
   | StructLit [(StringLit, Expression)]
   deriving (Show)
 

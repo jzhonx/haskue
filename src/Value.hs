@@ -17,11 +17,15 @@ data Value
         getDisjuncts :: [Value]
       }
   | Bottom String
+  | Top
+  | Null
 
 instance Show Value where
   show (String s) = s
   show (Int i) = show i
   show (Bool b) = show b
+  show Top = "_"
+  show Null = "null"
   show (Struct orderedLabels edges) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
   show (Disjunction d disjuncts) = "Disjunction: " ++ show d ++ " " ++ show disjuncts
   show (Bottom msg) = "_|_: " ++ msg
@@ -35,6 +39,8 @@ instance Eq Value where
   (==) (Disjunction d1 disjuncts1) (Disjunction d2 disjuncts2) =
     d1 == d2 && disjuncts1 == disjuncts2
   (==) (Bottom _) (Bottom _) = True
+  (==) Top Top = True
+  (==) Null Null = True
   (==) _ _ = False
 
 buildCUEStr :: Value -> Builder
@@ -44,6 +50,8 @@ buildCUEStr' :: Int -> Value -> Builder
 buildCUEStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
 buildCUEStr' _ (Int i) = integerDec i
 buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
+buildCUEStr' _ Top = string7 "_"
+buildCUEStr' _ Null = string7 "null"
 buildCUEStr' ident (Struct orderedLabels edges) =
   buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
 buildCUEStr' _ (Disjunction d disjuncts)

@@ -17,6 +17,9 @@ evalLiteral :: (MonadError String m) => Literal -> m Value
 evalLiteral (StringLit s) = return $ String s
 evalLiteral (IntLit i) = return $ Int i
 evalLiteral (BoolLit b) = return $ Bool b
+evalLiteral TopLit = return Top
+evalLiteral BottomLit = return $ Bottom ""
+evalLiteral NullLit = return Null
 evalLiteral (StructLit s) =
   do
     xs <- mapM (mapM eval) s

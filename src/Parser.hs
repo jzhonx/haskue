@@ -123,7 +123,14 @@ parseOperand = do
 parseLiteral :: Parser Literal
 parseLiteral = do
   skipElements
-  lit <- parseInt <|> parseStruct <|> parseBool <|> parseString
+  lit <-
+    parseInt
+      <|> parseStruct
+      <|> parseBool
+      <|> parseString
+      <|> try parseBottom
+      <|> parseTop
+      <|> parseNull
   skipElements
   return lit
 
@@ -166,3 +173,18 @@ parseBool :: Parser Literal
 parseBool = do
   b <- string "true" <|> string "false"
   return $ BoolLit (b == "true")
+
+parseTop :: Parser Literal
+parseTop = do
+  _ <- string "_"
+  return TopLit
+
+parseBottom :: Parser Literal
+parseBottom = do
+  _ <- string "_|_"
+  return BottomLit
+
+parseNull :: Parser Literal
+parseNull = do
+  _ <- string "null"
+  return NullLit

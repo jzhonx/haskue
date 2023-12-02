@@ -27,10 +27,13 @@ e2eTests =
             Right val' ->
               val'
                 @?= Struct
-                  ["x1", "x2"]
+                  ["x1", "x2", "y1", "y2", "z1"]
                   ( Map.fromList
                       [ ("x1", Bool True),
-                        ("x2", Bool False)
+                        ("x2", Bool False),
+                        ("y1", Top),
+                        ("y2", Bottom ""),
+                        ("z1", Null)
                       ]
                   ),
       testCase "unaryop" $
