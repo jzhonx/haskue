@@ -45,6 +45,7 @@ evalUnaryOp op e = do
     (Plus, Int i) -> return $ Int i
     (Minus, Int i) -> return $ Int (-i)
     (Star, _) -> return v
+    (Not, Bool b) -> return $ Bool (not b)
     _ -> throwError "evalUnaryOp: not an integer"
 
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m Value
