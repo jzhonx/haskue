@@ -6,7 +6,7 @@ import Eval (eval)
 import Parser (parseCUE)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
-import Value (Value (Int, String), buildValueStr)
+import Value (Value (Int, String), buildCUEStr)
 
 main :: IO ()
 main = do
@@ -17,4 +17,4 @@ main = do
   let val = eval expr
   case val of
     Left err -> putStrLn err
-    Right val' -> hPutBuilder stdout (buildValueStr val')
+    Right val' -> hPutBuilder stdout (buildCUEStr val')

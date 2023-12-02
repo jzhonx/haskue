@@ -18,21 +18,35 @@ data Value
   | Bottom String
 
 instance Show Value where
-  show = show . buildValueStr
+  show (String s) = s
+  show (Int i) = show i
+  show (Struct orderedLabels edges) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
+  show (Disjunction d disjuncts) = "Disjunction: " ++ show d ++ " " ++ show disjuncts
+  show (Bottom msg) = "_|_: " ++ msg
 
-buildValueStr :: Value -> Builder
-buildValueStr = buildValueStr' 0
+instance Eq Value where
+  (==) (String s1) (String s2) = s1 == s2
+  (==) (Int i1) (Int i2) = i1 == i2
+  (==) (Struct orderedLabels1 edges1) (Struct orderedLabels2 edges2) =
+    orderedLabels1 == orderedLabels2 && edges1 == edges2
+  (==) (Disjunction d1 disjuncts1) (Disjunction d2 disjuncts2) =
+    d1 == d2 && disjuncts1 == disjuncts2
+  (==) (Bottom _) (Bottom _) = True
+  (==) _ _ = False
 
-buildValueStr' :: Int -> Value -> Builder
-buildValueStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
-buildValueStr' _ (Int i) = integerDec i
-buildValueStr' ident (Struct orderedLabels edges) =
+buildCUEStr :: Value -> Builder
+buildCUEStr = buildCUEStr' 0
+
+buildCUEStr' :: Int -> Value -> Builder
+buildCUEStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
+buildCUEStr' _ (Int i) = integerDec i
+buildCUEStr' ident (Struct orderedLabels edges) =
   buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
-buildValueStr' _ (Disjunction d disjuncts)
-  | isJust d = buildValueStr (fromJust d)
+buildCUEStr' _ (Disjunction d disjuncts)
+  | isJust d = buildCUEStr (fromJust d)
   -- disjuncts must have at least two elements
-  | otherwise = foldl1 (\x y -> x <> string7 " | " <> y) (map buildValueStr disjuncts)
-buildValueStr' _ (Bottom _) = string7 "_|_"
+  | otherwise = foldl1 (\x y -> x <> string7 " | " <> y) (map buildCUEStr disjuncts)
+buildCUEStr' _ (Bottom _) = string7 "_|_"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =
@@ -54,5 +68,5 @@ buildFieldsStr ident (x : xs) =
       string7 (replicate ((ident + 1) * 2) ' ')
         <> string7 label
         <> string7 ": "
-        <> buildValueStr' (ident + 1) val
+        <> buildCUEStr' (ident + 1) val
         <> char7 '\n'

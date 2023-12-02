@@ -5,6 +5,7 @@ module Eval where
 import AST
 import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Unify (unify)
 import Value (Value (..))
 
@@ -16,10 +17,18 @@ eval (BinaryOp op e1 e2) = evalBinary op e1 e2
 evalUnary :: (MonadError String m) => Literal -> m Value
 evalUnary (StringLit s) = return $ String s
 evalUnary (IntLit i) = return $ Int i
-evalUnary (StructLit s) = do
-  xs <- mapM (mapM eval) s
-  m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
-  return $ Struct (Map.keys m) m
+evalUnary (StructLit s) =
+  do
+    xs <- mapM (mapM eval) s
+    let orderedKeys = map fst xs
+    m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
+    let (filteredKeys, _) =
+          foldr
+            (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
+            ([], Set.empty)
+            orderedKeys
+    return $
+      Struct filteredKeys m
 
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m Value
 evalBinary op e1 e2 = do
