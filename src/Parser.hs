@@ -24,8 +24,8 @@ parseCUE s =
     Left err -> error $ show err
     Right val -> val
 
-operator :: Parser String
-operator =
+binOp :: Parser String
+binOp =
   choice
     [ string "&",
       string "|",
@@ -35,14 +35,31 @@ operator =
       string "/"
     ]
 
-operatorsTable :: [(String, BinaryOp)]
-operatorsTable =
+binopTable :: [(String, BinaryOp)]
+binopTable =
   [ ("&", Unify),
     ("|", Disjunction),
     ("+", Add),
     ("-", Sub),
     ("*", Mul),
     ("/", Div)
+  ]
+
+unaryOp :: Parser String
+unaryOp =
+  choice
+    [ string "+",
+      string "-",
+      string "!",
+      string "*"
+    ]
+
+unaryOpTable :: [(String, UnaryOp)]
+unaryOpTable =
+  [ ("+", Plus),
+    ("-", Minus),
+    ("!", Not),
+    ("*", Star)
   ]
 
 parseComment :: Parser ()
@@ -61,17 +78,26 @@ parseExpr = do
   skipElements
   e1 <- parseUnary
   skipElements
-  op' <- optionMaybe operator
+  op' <- optionMaybe binOp
   skipElements
   case op' of
-    Nothing -> return e1
+    Nothing -> return $ UnaryExprCons e1
     Just op -> do
       e2 <- parseExpr
       skipElements
-      return $ BinaryOp (fromJust $ lookup op operatorsTable) e1 e2
+      return $ BinaryOpCons (fromJust $ lookup op binopTable) (UnaryExprCons e1) e2
 
-parseUnary :: Parser Expression
-parseUnary = fmap (UnaryExpr . PrimaryExpr) parsePrimary
+parseUnary :: Parser UnaryExpr
+parseUnary = do
+  skipElements
+  op' <- optionMaybe unaryOp
+  skipElements
+  case op' of
+    Nothing -> fmap PrimaryExprCons parsePrimary
+    Just op -> do
+      e <- parseUnary
+      skipElements
+      return $ UnaryOpCons (fromJust $ lookup op unaryOpTable) e
 
 parsePrimary :: Parser PrimaryExpr
 parsePrimary = do

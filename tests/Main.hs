@@ -18,7 +18,22 @@ e2eTests :: TestTree
 e2eTests =
   testGroup
     "e2e tests"
-    [ testCase "binop" $
+    [ testCase "unaryop" $
+        do
+          s <- readFile "tests/e2efiles/unaryop.cue"
+          let val = (eval . parseCUE) s
+          case val of
+            Left err -> assertFailure err
+            Right val' ->
+              val'
+                @?= Struct
+                  ["x", "y"]
+                  ( Map.fromList
+                      [ ("x", Int 1),
+                        ("y", Int (-1))
+                      ]
+                  ),
+      testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
           let val = (eval . parseCUE) s

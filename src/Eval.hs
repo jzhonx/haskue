@@ -10,14 +10,13 @@ import Unify (unify)
 import Value (Value (..))
 
 eval :: (MonadError String m) => Expression -> m Value
-eval (UnaryExpr (PrimaryExpr (Operand (Literal lit)))) = evalUnary lit
-eval (UnaryExpr (PrimaryExpr (Operand (OpExpression expr)))) = eval expr
-eval (BinaryOp op e1 e2) = evalBinary op e1 e2
+eval (UnaryExprCons e) = evalUnaryExpr e
+eval (BinaryOpCons op e1 e2) = evalBinary op e1 e2
 
-evalUnary :: (MonadError String m) => Literal -> m Value
-evalUnary (StringLit s) = return $ String s
-evalUnary (IntLit i) = return $ Int i
-evalUnary (StructLit s) =
+evalLiteral :: (MonadError String m) => Literal -> m Value
+evalLiteral (StringLit s) = return $ String s
+evalLiteral (IntLit i) = return $ Int i
+evalLiteral (StructLit s) =
   do
     xs <- mapM (mapM eval) s
     let orderedKeys = map fst xs
@@ -29,6 +28,20 @@ evalUnary (StructLit s) =
             orderedKeys
     return $
       Struct filteredKeys m
+
+evalUnaryExpr :: (MonadError String m) => UnaryExpr -> m Value
+evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
+evalUnaryExpr (PrimaryExprCons (Operand (OpExpression expr))) = eval expr
+evalUnaryExpr (UnaryOpCons op e) = evalUnaryOp op e
+
+evalUnaryOp :: (MonadError String m) => UnaryOp -> UnaryExpr -> m Value
+evalUnaryOp op e = do
+  v <- evalUnaryExpr e
+  case (op, v) of
+    (Plus, Int i) -> return $ Int i
+    (Minus, Int i) -> return $ Int (-i)
+    (Star, _) -> return v
+    _ -> throwError "evalUnaryOp: not an integer"
 
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m Value
 evalBinary op e1 e2 = do

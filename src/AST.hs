@@ -1,12 +1,13 @@
 module AST where
 
 data Expression
-  = UnaryExpr UnaryExpr
-  | BinaryOp BinaryOp Expression Expression
+  = UnaryExprCons UnaryExpr
+  | BinaryOpCons BinaryOp Expression Expression
   deriving (Show)
 
 data UnaryExpr
-  = PrimaryExpr PrimaryExpr
+  = PrimaryExprCons PrimaryExpr
+  | UnaryOpCons UnaryOp UnaryExpr
   deriving (Show)
 
 data PrimaryExpr
@@ -41,3 +42,15 @@ instance Show BinaryOp where
   show Sub = "-"
   show Mul = "*"
   show Div = "/"
+
+data UnaryOp
+  = Plus
+  | Minus
+  | Not
+  | Star
+
+instance Show UnaryOp where
+  show Plus = "+"
+  show Minus = "-"
+  show Not = "!"
+  show Star = "*"
