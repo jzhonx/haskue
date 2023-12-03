@@ -4,12 +4,13 @@ import AST
 import Data.Maybe (fromJust)
 import Text.ParserCombinators.Parsec
   ( Parser,
+    chainr1,
     char,
-    choice,
     digit,
     many,
     many1,
     noneOf,
+    oneOf,
     optionMaybe,
     parse,
     spaces,
@@ -20,20 +21,12 @@ import Text.ParserCombinators.Parsec
 
 parseCUE :: String -> Expression
 parseCUE s =
-  case parse parseExpr "" s of
+  case parse expr "" s of
     Left err -> error $ show err
     Right val -> val
 
 binOp :: Parser String
-binOp =
-  choice
-    [ string "&",
-      string "|",
-      string "+",
-      string "-",
-      string "*",
-      string "/"
-    ]
+binOp = fmap (: []) (oneOf "&|+-*/")
 
 binopTable :: [(String, BinaryOp)]
 binopTable =
@@ -46,13 +39,7 @@ binopTable =
   ]
 
 unaryOp :: Parser String
-unaryOp =
-  choice
-    [ string "+",
-      string "-",
-      string "!",
-      string "*"
-    ]
+unaryOp = fmap (: []) (oneOf "+-!*")
 
 unaryOpTable :: [(String, UnaryOp)]
 unaryOpTable =
@@ -62,8 +49,8 @@ unaryOpTable =
     ("*", Star)
   ]
 
-parseComment :: Parser ()
-parseComment = do
+comment :: Parser ()
+comment = do
   spaces
   _ <- string "//"
   _ <- many (noneOf "\n")
@@ -71,94 +58,96 @@ parseComment = do
   return ()
 
 skipElements :: Parser ()
-skipElements = try (parseComment >> spaces) <|> spaces
+skipElements = try (comment >> spaces) <|> spaces
 
-parseExpr :: Parser Expression
-parseExpr = do
+expr :: Parser Expression
+expr = do
   skipElements
-  e1 <- parseUnary
+  e <- chainr1 unaryExpr' binOp'
   skipElements
-  op' <- optionMaybe binOp
-  skipElements
-  case op' of
-    Nothing -> return $ UnaryExprCons e1
-    Just op -> do
-      e2 <- parseExpr
+  return e
+  where
+    binOp' = do
       skipElements
-      return $ BinaryOpCons (fromJust $ lookup op binopTable) (UnaryExprCons e1) e2
+      op <- binOp
+      skipElements
+      return $ BinaryOpCons (fromJust $ lookup op binopTable)
+    unaryExpr' = do
+      e <- unaryExpr
+      return $ UnaryExprCons e
 
-parseUnary :: Parser UnaryExpr
-parseUnary = do
+unaryExpr :: Parser UnaryExpr
+unaryExpr = do
   skipElements
   op' <- optionMaybe unaryOp
   skipElements
   case op' of
-    Nothing -> fmap PrimaryExprCons parsePrimary
+    Nothing -> fmap PrimaryExprCons primaryExpr
     Just op -> do
-      e <- parseUnary
+      e <- unaryExpr
       skipElements
       return $ UnaryOpCons (fromJust $ lookup op unaryOpTable) e
 
-parsePrimary :: Parser PrimaryExpr
-parsePrimary = do
+primaryExpr :: Parser PrimaryExpr
+primaryExpr = do
   skipElements
-  op <- parseOperand
+  op <- operand
   skipElements
   return $ Operand op
 
-parseOperand :: Parser Operand
-parseOperand = do
+operand :: Parser Operand
+operand = do
   skipElements
   op <-
-    fmap Literal parseLiteral
+    fmap Literal literal
       <|> ( do
               _ <- char '('
-              expr <- parseExpr
+              e <- expr
               _ <- char ')'
-              return $ OpExpression expr
+              return $ OpExpression e
           )
   skipElements
   return op
 
-parseLiteral :: Parser Literal
-parseLiteral = do
+literal :: Parser Literal
+literal = do
   skipElements
   lit <-
     parseInt
-      <|> parseStruct
-      <|> parseBool
-      <|> parseString
-      <|> try parseBottom
-      <|> parseTop
-      <|> parseNull
+      <|> struct
+      <|> bool
+      <|> cueString
+      <|> try bottom
+      <|> top
+      <|> null'
   skipElements
   return lit
 
-parseStruct :: Parser Literal
-parseStruct = do
+struct :: Parser Literal
+struct = do
   skipElements
   _ <- char '{'
-  fields <- many parseField
+  fields <- many field
   _ <- char '}'
   skipElements
   return $ StructLit fields
 
-parseField :: Parser (StringLit, Expression)
-parseField = do
+field :: Parser (StringLit, Expression)
+field = do
   skipElements
-  key <- parseString
+  key <- cueString
   skipElements
   _ <- char ':'
   skipElements
-  e <- parseExpr
+  e <- expr
   skipElements
   let x = case key of
         StringLit s -> s
         _ -> error "parseField: key is not a string"
   return (x, e)
 
-parseString :: Parser Literal
-parseString = do
+cueString :: Parser Literal
+cueString = do
   _ <- char '"'
   s <- many (noneOf "\"")
   _ <- char '"'
@@ -169,22 +158,22 @@ parseInt = do
   s <- many1 digit
   return $ IntLit (read s :: Integer)
 
-parseBool :: Parser Literal
-parseBool = do
+bool :: Parser Literal
+bool = do
   b <- string "true" <|> string "false"
   return $ BoolLit (b == "true")
 
-parseTop :: Parser Literal
-parseTop = do
+top :: Parser Literal
+top = do
   _ <- string "_"
   return TopLit
 
-parseBottom :: Parser Literal
-parseBottom = do
+bottom :: Parser Literal
+bottom = do
   _ <- string "_|_"
   return BottomLit
 
-parseNull :: Parser Literal
-parseNull = do
+null' :: Parser Literal
+null' = do
   _ <- string "null"
   return NullLit
