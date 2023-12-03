@@ -7,7 +7,7 @@ import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Unify (unify)
-import Value (Disjunct (..), Value (..))
+import Value (Value (..))
 
 eval :: (MonadError String m) => Expression -> m Value
 eval expr = do
@@ -76,8 +76,9 @@ evalBinary op e1 e2 = do
   evalRes op r1 r2
   where
     evalRes AST.Disjunction r1 r2 = case (r1, r2) of
-      (Complete (Value.Disjunction xs), PartialDefault v2) -> return $ Complete $ Value.Disjunction (Default v2 : xs)
-      (Complete v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [Default v2, Disjunct v1]
+      (Complete (Value.Disjunction defaults xs), PartialDefault v2) ->
+        return $ Complete $ Value.Disjunction (v2 : defaults) xs
+      (Complete v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [v2] [v1]
       (Complete v1, Complete v2) -> return $ Complete $ join v1 v2
       (PartialDefault _, _) -> evalRes op r2 r1
     evalRes _ r1 r2 =
@@ -92,7 +93,7 @@ evalBinary op e1 e2 = do
         (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
         (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
         _ -> throwError "evalBinary: not integers"
-    join (Value.Disjunction xs) (Value.Disjunction ys) = Value.Disjunction (xs ++ ys)
-    join (Value.Disjunction xs) y = Value.Disjunction (Disjunct y : xs)
-    join x (Value.Disjunction ys) = Value.Disjunction (Disjunct x : ys)
-    join x y = Value.Disjunction [Disjunct x, Disjunct y]
+    join (Value.Disjunction df1 xs) (Value.Disjunction df2 ys) = Value.Disjunction (df1 ++ df2) (xs ++ ys)
+    join (Value.Disjunction d xs) y = Value.Disjunction d (y : xs)
+    join x (Value.Disjunction d ys) = Value.Disjunction d (x : ys)
+    join x y = Value.Disjunction [] [x, y]
