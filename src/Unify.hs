@@ -9,7 +9,11 @@ import Control.Monad.State.Strict (MonadState, gets, modify, runState)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import Value (Value (..))
+import Value
+  ( Disjunct (..),
+    Value (..),
+    fromDisjunct,
+  )
 
 data TraverseState = TraverseState
   { getVisisted :: IntMap.IntMap Bool
@@ -36,10 +40,10 @@ unify' val1 val2 = case (val1, val2) of
   (String x, String y) -> return $ if x == y then val1 else Bottom "strings mismatch"
   (Int x, Int y) -> return $ if x == y then val1 else Bottom "ints mismatch"
   (Struct _ _, Struct _ _) -> unifyStructs val1 val2
-  (Disjunction _ _, _) -> unifyDisjunctions val1 val2
+  (Disjunction _, _) -> unifyDisjunctions val1 val2
   (_, Bottom _) -> unify' val2 val1
-  (_, Disjunction _ _) -> unify' val2 val1
-  _ -> return $ Bottom "values mismatch"
+  (_, Disjunction _) -> unify' val2 val1
+  _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
 unifyStructs (Struct _ edges1) (Struct _ edges2) = do
@@ -78,12 +82,12 @@ unifyStructs (Struct _ edges1) (Struct _ edges2) = do
 unifyStructs _ _ = throwError "unifyStructs: impossible"
 
 unifyDisjunctions :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
-unifyDisjunctions (Disjunction _ disjuncts) val2 = do
-  xs <- mapM (`unify'` val2) disjuncts
+unifyDisjunctions (Disjunction ds) val2 = do
+  xs <- mapM (\v -> fromDisjunct v `unify'` val2) ds
   let xs' = filter (\case (Bottom _) -> False; _ -> True) xs
   case xs' of
     [] -> return $ Bottom "values mismatch"
     [x'] -> return x'
     _ -> do
-      return $ Disjunction {getDefault = Nothing, getDisjuncts = xs'}
+      return $ Disjunction (map Disjunct xs')
 unifyDisjunctions _ _ = throwError "unifyDisjunctions: impossible"

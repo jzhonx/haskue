@@ -2,7 +2,6 @@ module Value where
 
 import Data.ByteString.Builder (Builder, char7, integerDec, string7)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
 
 data Value
   = String String
@@ -12,10 +11,7 @@ data Value
       { getOrderedLabels :: [String],
         getEdges :: Map.Map String Value
       }
-  | Disjunction
-      { getDefault :: Maybe Value,
-        getDisjuncts :: [Value]
-      }
+  | Disjunction [Disjunct]
   | Bottom String
   | Top
   | Null
@@ -27,7 +23,7 @@ instance Show Value where
   show Top = "_"
   show Null = "null"
   show (Struct orderedLabels edges) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
-  show (Disjunction d disjuncts) = "Disjunction: " ++ show d ++ " " ++ show disjuncts
+  show (Disjunction disjuncts) = "Disjunction: " ++ show disjuncts
   show (Bottom msg) = "_|_: " ++ msg
 
 instance Eq Value where
@@ -36,12 +32,17 @@ instance Eq Value where
   (==) (Bool b1) (Bool b2) = b1 == b2
   (==) (Struct orderedLabels1 edges1) (Struct orderedLabels2 edges2) =
     orderedLabels1 == orderedLabels2 && edges1 == edges2
-  (==) (Disjunction d1 disjuncts1) (Disjunction d2 disjuncts2) =
-    d1 == d2 && disjuncts1 == disjuncts2
+  (==) (Disjunction disjuncts1) (Disjunction disjuncts2) = disjuncts1 == disjuncts2
   (==) (Bottom _) (Bottom _) = True
   (==) Top Top = True
   (==) Null Null = True
   (==) _ _ = False
+
+data Disjunct = Default Value | Disjunct Value deriving (Show, Eq)
+
+fromDisjunct :: Disjunct -> Value
+fromDisjunct (Default val) = val
+fromDisjunct (Disjunct val) = val
 
 buildCUEStr :: Value -> Builder
 buildCUEStr = buildCUEStr' 0
@@ -54,10 +55,8 @@ buildCUEStr' _ Top = string7 "_"
 buildCUEStr' _ Null = string7 "null"
 buildCUEStr' ident (Struct orderedLabels edges) =
   buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
-buildCUEStr' _ (Disjunction d disjuncts)
-  | isJust d = buildCUEStr (fromJust d)
-  -- disjuncts must have at least two elements
-  | otherwise = foldl1 (\x y -> x <> string7 " | " <> y) (map buildCUEStr disjuncts)
+buildCUEStr' ident (Disjunction disjuncts) =
+  foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> buildCUEStr' ident (fromDisjunct d)) disjuncts)
 buildCUEStr' _ (Bottom _) = string7 "_|_"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder

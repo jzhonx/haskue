@@ -82,15 +82,16 @@ e2eTests =
             Right val' ->
               val'
                 @?= Struct
-                  (map (\i -> "x" ++ show i) [1 .. 7])
+                  (map (\i -> "x" ++ show i) [1 .. 8])
                   ( Map.fromList
-                      [ ("x1", Disjunction Nothing [Int 1, Int 2, Int 3]),
-                        ("x2", Disjunction Nothing [Int 1, Int 2]),
+                      [ ("x1", Disjunction $ map Disjunct [Int 1, Int 2, Int 3]),
+                        ("x2", Disjunction $ map Disjunct [Int 1, Int 2]),
                         ("x3", Int 1),
                         ("x4", String "a"),
                         ("x5", Int 1),
-                        ("x6", Disjunction Nothing [Int 1, Int 2]),
-                        ("x7", Int 1)
+                        ("x6", Disjunction $ map Disjunct [Int 1, Int 2]),
+                        ("x7", Int 1),
+                        ("x8", Disjunction [Default $ Int 1, Disjunct $ Int 2])
                       ]
                   ),
       testCase
