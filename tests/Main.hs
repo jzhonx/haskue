@@ -82,14 +82,15 @@ e2eTests =
             Right val' ->
               val'
                 @?= Struct
-                  (map (\i -> "x" ++ show i) [1 .. 6])
+                  (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y1"])
                   ( Map.fromList
                       [ ("x1", Disjunction [String "tcp"] [String "udp"]),
-                        ("x2", Disjunction [Int 1] [Int 2, Int 3]),
+                        ("x2", Disjunction [Int 1] [Int 1, Int 2, Int 3]),
                         ("x3", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
                         ("x4", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
                         ("x5", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
-                        ("x6", Disjunction [] [Int 1, Int 2])
+                        ("x6", Disjunction [] [Int 1, Int 2]),
+                        ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3])
                       ]
                   ),
       testCase

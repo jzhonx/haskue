@@ -65,10 +65,13 @@ evalUnaryOp op e =
       case (op, val) of
         (Plus, Int i) -> return $ Complete $ Int i
         (Minus, Int i) -> return $ Complete $ Int (-i)
+        (Star, val'@(Value.Disjunction _ _)) -> return $ Complete val'
         (Star, _) -> return $ PartialDefault val
         (Not, Bool b) -> return $ Complete $ Bool (not b)
         _ -> throwError "evalUnaryOp: not an integer"
 
+-- order of arguments is important for disjunctions.
+-- left is always before right.
 evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m EvalResult
 evalBinary op e1 e2 = do
   r1 <- eval' e1
@@ -76,11 +79,16 @@ evalBinary op e1 e2 = do
   evalRes op r1 r2
   where
     evalRes AST.Disjunction r1 r2 = case (r1, r2) of
-      (Complete (Value.Disjunction defaults xs), PartialDefault v2) ->
-        return $ Complete $ Value.Disjunction (v2 : defaults) xs
-      (Complete v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [v2] [v1]
-      (Complete v1, Complete v2) -> return $ Complete $ join v1 v2
-      (PartialDefault _, _) -> evalRes op r2 r1
+      -- This is rule M1.
+      (Complete (Value.Disjunction df ds), PartialDefault v2) ->
+        return $ Complete $ Value.Disjunction (df ++ [v2]) (ds ++ [v2])
+      -- v1 is not a disjunction.
+      (Complete v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [v2] [v1, v2]
+      (Complete v1, Complete v2) -> return $ Complete $ pipe v1 v2
+      (PartialDefault v1, Complete (Value.Disjunction df ds)) ->
+        return $ Complete $ Value.Disjunction (v1 : df) (v1 : ds)
+      (PartialDefault v1, Complete v2) -> return $ Complete $ Value.Disjunction [v1] [v1, v2]
+      (PartialDefault v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [] [v1, v2]
     evalRes _ r1 r2 =
       let v1 = fromEvalResult r1
           v2 = fromEvalResult r2
@@ -94,8 +102,15 @@ evalBinary op e1 e2 = do
         (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
         _ -> throwError "evalBinary: not integers"
     -- Rule: D1, D2
-    join (Value.Disjunction df1 ds1) (Value.Disjunction df2 ds2) = Value.Disjunction (df1 ++ df2) (ds1 ++ ds2)
-    join (Value.Disjunction d ds) y = Value.Disjunction d (y : ds)
-    join x (Value.Disjunction d ds) = Value.Disjunction d (x : ds)
+    pipe (Value.Disjunction df1 ds1) (Value.Disjunction df2 ds2) =
+      Value.Disjunction (filterPrepend df2 df1) (filterPrepend ds2 ds1)
+    pipe (Value.Disjunction d ds) y = Value.Disjunction d (filterAppend ds [y])
+    pipe x (Value.Disjunction d ds) = Value.Disjunction d (filterPrepend ds [x])
     -- Rule D0
-    join x y = Value.Disjunction [] [x, y]
+    pipe x y = Value.Disjunction [] [x, y]
+    -- filterPrepend prepends the elements of the second list to the first list, but only if they are not already in the
+    -- first list.
+    filterPrepend :: [Value] -> [Value] -> [Value]
+    filterPrepend = foldr (\x acc -> if x `elem` acc then acc else x : acc)
+    filterAppend :: [Value] -> [Value] -> [Value]
+    filterAppend = foldr (\x acc -> if x `elem` acc then acc else acc ++ [x])
