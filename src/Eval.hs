@@ -93,7 +93,9 @@ evalBinary op e1 e2 = do
         (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
         (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
         _ -> throwError "evalBinary: not integers"
-    join (Value.Disjunction df1 xs) (Value.Disjunction df2 ys) = Value.Disjunction (df1 ++ df2) (xs ++ ys)
-    join (Value.Disjunction d xs) y = Value.Disjunction d (y : xs)
-    join x (Value.Disjunction d ys) = Value.Disjunction d (x : ys)
+    -- Rule: D1, D2
+    join (Value.Disjunction df1 ds1) (Value.Disjunction df2 ds2) = Value.Disjunction (df1 ++ df2) (ds1 ++ ds2)
+    join (Value.Disjunction d ds) y = Value.Disjunction d (y : ds)
+    join x (Value.Disjunction d ds) = Value.Disjunction d (x : ds)
+    -- Rule D0
     join x y = Value.Disjunction [] [x, y]

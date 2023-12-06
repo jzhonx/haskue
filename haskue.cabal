@@ -24,7 +24,6 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:  
         AST,
-        Error,
         Eval,
         Parser,
         Unify,
