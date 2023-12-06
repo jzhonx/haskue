@@ -61,15 +61,16 @@ e2eTests =
             Right val' ->
               val'
                 @?= Struct
-                  ["x", "y", "z", "a", "b", "c", "d"]
+                  (map (\i -> "x" ++ show i) [1 .. 8])
                   ( Map.fromList
-                      [ ("x", Int 3),
-                        ("y", Int 8),
-                        ("z", Int 2),
-                        ("a", Int 5),
-                        ("b", Struct [] Map.empty),
-                        ("c", Bottom ""),
-                        ("d", Int (-3))
+                      [ ("x1", Int 3),
+                        ("x2", Int 8),
+                        ("x3", Int 2),
+                        ("x4", Int 5),
+                        ("x5", Bottom ""),
+                        ("x6", Int (-3)),
+                        ("x7", Int 7),
+                        ("x8", Int 5)
                       ]
                   ),
       testCase

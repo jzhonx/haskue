@@ -25,9 +25,6 @@ parseCUE s =
     Left err -> error $ show err
     Right val -> val
 
-binOp :: Parser String
-binOp = fmap (: []) (oneOf "&|+-*/")
-
 binopTable :: [(String, BinaryOp)]
 binopTable =
   [ ("&", Unify),
@@ -69,9 +66,15 @@ expr = do
   where
     binOp' = do
       skipElements
-      op <- binOp
+      op <-
+        char '*'
+          <|> char '/'
+          <|> char '+'
+          <|> char '-'
+          <|> char '&'
+          <|> char '|'
       skipElements
-      return $ BinaryOpCons (fromJust $ lookup op binopTable)
+      return $ BinaryOpCons (fromJust $ lookup [op] binopTable)
     unaryExpr' = do
       e <- unaryExpr
       return $ UnaryExprCons e
