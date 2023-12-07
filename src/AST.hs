@@ -26,10 +26,20 @@ data Literal
   | TopLit
   | BottomLit
   | NullLit
-  | StructLit [(StringLit, Expression)]
+  | StructLit [(Label, Expression)]
   deriving (Show)
 
-type StringLit = String
+data StringLit = SimpleStringLit SimpleStringLit deriving (Show)
+
+type SimpleStringLit = String
+
+data Label = Label LabelExpr deriving (Show)
+
+data LabelExpr = LabelName LabelName deriving (Show)
+
+data LabelName = LabelID Identifer | LabelString String deriving (Show)
+
+type Identifer = String
 
 data BinaryOp
   = Unify

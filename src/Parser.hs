@@ -66,6 +66,7 @@ expr = do
   where
     binOp' = do
       skipElements
+      -- the following order is the operator precedence order.
       op <-
         char '*'
           <|> char '/'
@@ -119,7 +120,7 @@ literal = do
     parseInt
       <|> struct
       <|> bool
-      <|> cueString
+      <|> (StringLit . SimpleStringLit <$> stringLit)
       <|> try bottom
       <|> top
       <|> null'
@@ -135,26 +136,35 @@ struct = do
   skipElements
   return $ StructLit fields
 
-field :: Parser (StringLit, Expression)
+labelName :: Parser String
+labelName = undefined
+
+letter :: Parser Char
+letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
+
+identifier :: Parser String
+identifier = do
+  firstChar <- letter
+  rest <- many (letter <|> digit)
+  return $ firstChar : rest
+
+field :: Parser (Label, Expression)
 field = do
   skipElements
-  key <- cueString
+  ln <- (LabelID <$> identifier) <|> (LabelString <$> stringLit)
   skipElements
   _ <- char ':'
   skipElements
   e <- expr
   skipElements
-  let x = case key of
-        StringLit s -> s
-        _ -> error "parseField: key is not a string"
-  return (x, e)
+  return ((Label . LabelName) ln, e)
 
-cueString :: Parser Literal
-cueString = do
+stringLit :: Parser SimpleStringLit
+stringLit = do
   _ <- char '"'
   s <- many (noneOf "\"")
   _ <- char '"'
-  return $ StringLit s
+  return s
 
 parseInt :: Parser Literal
 parseInt = do

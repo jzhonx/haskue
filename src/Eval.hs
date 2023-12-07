@@ -27,26 +27,33 @@ eval' (BinaryOpCons op e1 e2) = evalBinary op e1 e2
 evalLiteral :: (MonadError String m) => Literal -> m EvalResult
 evalLiteral lit = fmap Complete (f lit)
   where
-    f (StringLit s) = return $ String s
+    f (StringLit (SimpleStringLit s)) = return $ String s
     f (IntLit i) = return $ Int i
     f (BoolLit b) = return $ Bool b
     f TopLit = return Top
     f BottomLit = return $ Bottom ""
     f NullLit = return Null
-    f (StructLit s) =
-      let convertField (label, e) = do
-            v <- eval' e
-            return (label, fromEvalResult v)
+    f (StructLit s) = evalStructLit s
+
+evalStructLit :: (MonadError String m) => [(Label, Expression)] -> m Value
+evalStructLit s = do
+  xs <- mapM convertField s
+  let orderedKeys = map fst xs
+  m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
+  let (filteredKeys, _) =
+        foldr
+          (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
+          ([], Set.empty)
+          orderedKeys
+  return $ Struct filteredKeys m
+  where
+    convertField (label, e) =
+      let name = case label of
+            Label (LabelName (LabelID ident)) -> ident
+            Label (LabelName (LabelString s')) -> s'
        in do
-            xs <- mapM convertField s
-            let orderedKeys = map fst xs
-            m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
-            let (filteredKeys, _) =
-                  foldr
-                    (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
-                    ([], Set.empty)
-                    orderedKeys
-            return $ Struct filteredKeys m
+            v <- eval' e
+            return (name, fromEvalResult v)
 
 evalUnaryExpr :: (MonadError String m) => UnaryExpr -> m EvalResult
 evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
