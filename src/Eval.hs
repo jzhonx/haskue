@@ -65,7 +65,6 @@ evalUnaryOp op e =
       case (op, val) of
         (Plus, Int i) -> return $ Complete $ Int i
         (Minus, Int i) -> return $ Complete $ Int (-i)
-        (Star, val'@(Value.Disjunction _ _)) -> return $ Complete val'
         (Star, _) -> return $ PartialDefault val
         (Not, Bool b) -> return $ Complete $ Bool (not b)
         _ -> throwError "evalUnaryOp: not an integer"
@@ -78,21 +77,12 @@ evalBinary op e1 e2 = do
   r2 <- eval' e2
   evalRes op r1 r2
   where
-    evalRes AST.Disjunction r1 r2 = case (r1, r2) of
-      -- This is rule M1.
-      (Complete (Value.Disjunction df ds), PartialDefault v2) ->
-        return $ Complete $ Value.Disjunction (df ++ [v2]) (ds ++ [v2])
-      -- v1 is not a disjunction.
-      (Complete v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [v2] [v1, v2]
-      (Complete v1, Complete v2) -> return $ Complete $ pipe v1 v2
-      (PartialDefault v1, Complete (Value.Disjunction df ds)) ->
-        return $ Complete $ Value.Disjunction (v1 : df) (v1 : ds)
-      (PartialDefault v1, Complete v2) -> return $ Complete $ Value.Disjunction [v1] [v1, v2]
-      (PartialDefault v1, PartialDefault v2) -> return $ Complete $ Value.Disjunction [] [v1, v2]
+    evalRes AST.Disjunction r1 r2 = evalDisjunction r1 r2
     evalRes _ r1 r2 =
       let v1 = fromEvalResult r1
           v2 = fromEvalResult r2
        in fmap Complete (evalVal v1 v2)
+
     evalVal v1 v2 = do
       case (op, v1, v2) of
         (Unify, _, _) -> unify v1 v2
@@ -101,16 +91,40 @@ evalBinary op e1 e2 = do
         (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
         (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
         _ -> throwError "evalBinary: not integers"
+
+evalDisjunction :: (MonadError String m) => EvalResult -> EvalResult -> m EvalResult
+evalDisjunction = f
+  where
+    f (PartialDefault v1) r2 =
+      evalLeftPartial (\(df1, ds1, df2, ds2) -> newDisj df1 ds1 df2 ds2) v1 r2
+    -- reverse v2 r1 and also the order to the disjCons.
+    f r1@(Complete _) (PartialDefault v2) =
+      evalLeftPartial (\(df2, ds2, df1, ds1) -> newDisj df1 ds1 df2 ds2) v2 r1
+    f (Complete v1) (Complete v2) = evalFullDisj v1 v2
+
+    -- evalLeftPartial is used to evaluate a disjunction whose left side is a partial default.
+    evalLeftPartial :: (MonadError String m) => (([Value], [Value], [Value], [Value]) -> m EvalResult) -> Value -> EvalResult -> m EvalResult
+    evalLeftPartial disjCons (Value.Disjunction df1 ds1) (Complete (Value.Disjunction _ ds2)) =
+      -- This is rule M2 and M3. We eliminate the defaults from the right side.
+      disjCons (df1, ds1, [], ds2)
+    evalLeftPartial disjCons v1 (Complete (Value.Disjunction df2 ds2)) =
+      -- This is rule M1.
+      disjCons ([v1], [v1], df2, ds2)
+    evalLeftPartial disjCons v1 (Complete v2) =
+      disjCons ([v1], [v1], [], [v2])
+    evalLeftPartial disjCons v1 (PartialDefault v2) =
+      disjCons ([], [v1], [], [v2])
+
     -- Rule: D1, D2
-    pipe (Value.Disjunction df1 ds1) (Value.Disjunction df2 ds2) =
-      Value.Disjunction (filterPrepend df2 df1) (filterPrepend ds2 ds1)
-    pipe (Value.Disjunction d ds) y = Value.Disjunction d (filterAppend ds [y])
-    pipe x (Value.Disjunction d ds) = Value.Disjunction d (filterPrepend ds [x])
+    evalFullDisj (Value.Disjunction df1 ds1) (Value.Disjunction df2 ds2) = newDisj df1 ds1 df2 ds2
+    evalFullDisj (Value.Disjunction d ds) y = newDisj d ds [] [y]
+    evalFullDisj x (Value.Disjunction d ds) = newDisj [] [x] d ds
     -- Rule D0
-    pipe x y = Value.Disjunction [] [x, y]
-    -- filterPrepend prepends the elements of the second list to the first list, but only if they are not already in the
-    -- first list.
-    filterPrepend :: [Value] -> [Value] -> [Value]
-    filterPrepend = foldr (\x acc -> if x `elem` acc then acc else x : acc)
-    filterAppend :: [Value] -> [Value] -> [Value]
-    filterAppend = foldr (\x acc -> if x `elem` acc then acc else acc ++ [x])
+    evalFullDisj x y = newDisj [] [x] [] [y]
+
+    -- dedupAppend appends unique elements in ys to the xs list, but only if they are not already in xs.
+    -- xs and ys are guaranteed to be unique.
+    dedupAppend :: [Value] -> [Value] -> [Value]
+    dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
+
+    newDisj df1 ds1 df2 ds2 = return $ Complete $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)

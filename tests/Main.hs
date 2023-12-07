@@ -83,15 +83,17 @@ e2eTests =
             Right val' ->
               val'
                 @?= Struct
-                  (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y1"])
+                  (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
                   ( Map.fromList
-                      [ ("x1", Disjunction [String "tcp"] [String "udp"]),
+                      [ ("x1", Disjunction [String "tcp"] [String "tcp", String "udp"]),
                         ("x2", Disjunction [Int 1] [Int 1, Int 2, Int 3]),
                         ("x3", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
                         ("x4", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
                         ("x5", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
                         ("x6", Disjunction [] [Int 1, Int 2]),
-                        ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3])
+                        ("y0", Disjunction [] [Int 1, Int 2, Int 3]),
+                        ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
+                        ("y2", Disjunction [Int 3] [Int 1, Int 2, Int 3])
                       ]
                   ),
       testCase
@@ -106,7 +108,13 @@ e2eTests =
                 @?= Struct
                   ["x"]
                   ( Map.fromList
-                      [ ("x", Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]))
+                      [ ( "x",
+                          Disjunction
+                            []
+                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]),
+                              Struct ["y"] (Map.fromList [("y", Int 2)])
+                            ]
+                        )
                       ]
                   ),
       testCase
