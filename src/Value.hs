@@ -1,23 +1,25 @@
 module Value where
 
-import Data.ByteString.Builder (Builder, char7, integerDec, string7)
-import qualified Data.Map.Strict as Map
+import           Data.ByteString.Builder (Builder, char7, integerDec, string7)
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
 
 data Value
-  = String String
+  = Top
+  | String String
   | Int Integer
   | Bool Bool
   | Struct
       { getOrderedLabels :: [String],
-        getEdges :: Map.Map String Value
+        getEdges         :: Map.Map String Value,
+        getIdentifiers   :: Set.Set String
       }
   | Disjunction
-      { getDefaults :: [Value],
+      { getDefaults  :: [Value],
         getDisjuncts :: [Value]
       }
-  | Bottom String
-  | Top
   | Null
+  | Bottom String
 
 instance Show Value where
   show (String s) = s
@@ -25,7 +27,7 @@ instance Show Value where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Struct orderedLabels edges) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
+  show (Struct orderedLabels edges _) = "{ labels:" ++ show orderedLabels ++ ", edges: " ++ show edges ++ "}"
   show (Disjunction defaults disjuncts) = "Disjunction: " ++ show defaults ++ ", " ++ show disjuncts
   show (Bottom msg) = "_|_: " ++ msg
 
@@ -33,7 +35,7 @@ instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) (Struct orderedLabels1 edges1) (Struct orderedLabels2 edges2) =
+  (==) (Struct orderedLabels1 edges1 _) (Struct orderedLabels2 edges2 _) =
     orderedLabels1 == orderedLabels2 && edges1 == edges2
   (==) (Disjunction defaults1 disjuncts1) (Disjunction defaults2 disjuncts2) =
     disjuncts1 == disjuncts2 && defaults1 == defaults2
@@ -51,7 +53,7 @@ buildCUEStr' _ (Int i) = integerDec i
 buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
 buildCUEStr' _ Top = string7 "_"
 buildCUEStr' _ Null = string7 "null"
-buildCUEStr' ident (Struct orderedLabels edges) =
+buildCUEStr' ident (Struct orderedLabels edges _) =
   buildStructStr ident (map (\label -> (label, edges Map.! label)) orderedLabels)
 buildCUEStr' ident (Disjunction defaults disjuncts) =
   if null defaults

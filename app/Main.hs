@@ -2,7 +2,7 @@ module Main where
 
 import Control.Monad.Except (MonadError, runExceptT, throwError)
 import Data.ByteString.Builder (hPutBuilder)
-import Eval (eval)
+import Eval (eval, initEnv)
 import Parser (parseCUE)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
@@ -14,7 +14,7 @@ main = do
   f <- readFile (head args)
   let expr = parseCUE f
   print expr
-  let val = eval expr
-  case val of
+  let x = eval expr
+  case x of
     Left err -> putStrLn err
     Right val' -> hPutBuilder stdout (buildCUEStr val')

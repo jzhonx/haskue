@@ -4,27 +4,74 @@ module Eval where
 
 import AST
 import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.State (MonadState, get, runStateT)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Unify (unify)
 import Value (Value (..))
 
-eval :: (MonadError String m) => Expression -> m Value
-eval expr = do
-  r <- eval' expr
-  return $ fromEvalResult r
+data Selector = StringSelector String | IntSelector Int
 
-data EvalResult = PartialDefault Value | Complete Value
+type Path = [Selector]
+
+-- Pending means that the value can not be evaluated because of unresolved dependencies.
+-- the first argument is the value that is being evaluated.
+data PendingValue = PendingValue ValueZipper [Path] ([Value] -> Value)
+
+data EvalResult
+  = PartialDefault Value
+  | Complete Value
 
 fromEvalResult :: EvalResult -> Value
 fromEvalResult (PartialDefault _) = Bottom "marked value should be associated with a disjunction"
 fromEvalResult (Complete v) = v
 
-eval' :: (MonadError String m) => Expression -> m EvalResult
+-- | ValueCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
+type ValueCrumb = (String, Value)
+
+type ValueZipper = (Value, [ValueCrumb])
+
+data Env = Env
+  { getStruct :: ValueZipper,
+    getPendings :: [PendingValue]
+  }
+
+goUp :: ValueZipper -> Maybe ValueZipper
+goUp (_, []) = Nothing
+goUp (_, (_, v') : vs) = Just (v', vs)
+
+goTo :: String -> ValueZipper -> Maybe ValueZipper
+goTo name (val@(Struct _ edges _), vs) = do
+  val' <- Map.lookup name edges
+  return (val', (name, val) : vs)
+goTo _ (_, _) = Nothing
+
+-- modify :: (Value -> Value) -> ValueZipper -> Maybe ValueZipper
+-- modify f (v, vs) = Just (f v, vs)
+
+searchUp :: String -> ValueZipper -> Maybe Value
+searchUp name (Struct _ edges _, []) = Map.lookup name edges
+searchUp _ (_, []) = Nothing
+searchUp name z = do
+  z' <- goUp z
+  searchUp name z'
+
+initEnv :: ValueZipper
+initEnv = (Top, [])
+
+eval :: (MonadError String m) => Expression -> m Value
+eval expr = fst <$> runStateT m initEnv
+  where
+    m = do
+      r <- eval' expr
+      return $ fromEvalResult r
+
+eval' :: (MonadError String m, MonadState ValueZipper m) => Expression -> m EvalResult
 eval' (UnaryExprCons e) = evalUnaryExpr e
 eval' (BinaryOpCons op e1 e2) = evalBinary op e1 e2
 
-evalLiteral :: (MonadError String m) => Literal -> m EvalResult
+evalLiteral :: (MonadError String m, MonadState ValueZipper m) => Literal -> m EvalResult
 evalLiteral lit = fmap Complete (f lit)
   where
     f (StringLit (SimpleStringLit s)) = return $ String s
@@ -35,32 +82,42 @@ evalLiteral lit = fmap Complete (f lit)
     f NullLit = return Null
     f (StructLit s) = evalStructLit s
 
-evalStructLit :: (MonadError String m) => [(Label, Expression)] -> m Value
+evalStructLit :: (MonadError String m, MonadState ValueZipper m) => [(Label, Expression)] -> m Value
 evalStructLit s = do
-  xs <- mapM convertField s
-  let orderedKeys = map fst xs
-  m <- sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) xs)
+  fields <- mapM evalField s
+  let orderedKeys = map fst fields
   let (filteredKeys, _) =
         foldr
           (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
           ([], Set.empty)
           orderedKeys
-  return $ Struct filteredKeys m
+  unified' <- unifySameKeys fields
+  return $ Struct filteredKeys unified' (Set.fromList (getVarLabels s))
   where
-    convertField (label, e) =
-      let name = case label of
-            Label (LabelName (LabelID ident)) -> ident
-            Label (LabelName (LabelString s')) -> s'
+    evalField (Label (LabelName ln), e) =
+      let name = case ln of
+            LabelID ident -> ident
+            LabelString ls -> ls
        in do
             v <- eval' e
             return (name, fromEvalResult v)
+    unifySameKeys :: (MonadError String m, MonadState ValueZipper m) => [(String, Value)] -> m (Map.Map String Value)
+    unifySameKeys fields = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) fields)
 
-evalUnaryExpr :: (MonadError String m) => UnaryExpr -> m EvalResult
+    fetchVarLabel :: Label -> Maybe String
+    fetchVarLabel (Label (LabelName (LabelID var))) = Just var
+    fetchVarLabel _ = Nothing
+
+    getVarLabels :: [(Label, Expression)] -> [String]
+    getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
+
+evalUnaryExpr :: (MonadError String m, MonadState ValueZipper m) => UnaryExpr -> m EvalResult
 evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
 evalUnaryExpr (PrimaryExprCons (Operand (OpExpression expr))) = eval' expr
+evalUnaryExpr (PrimaryExprCons (Operand (OperandName (Identifier ident)))) = lookupVar ident
 evalUnaryExpr (UnaryOpCons op e) = evalUnaryOp op e
 
-evalUnaryOp :: (MonadError String m) => UnaryOp -> UnaryExpr -> m EvalResult
+evalUnaryOp :: (MonadError String m, MonadState ValueZipper m) => UnaryOp -> UnaryExpr -> m EvalResult
 evalUnaryOp op e =
   do
     v <- evalUnaryExpr e
@@ -74,11 +131,11 @@ evalUnaryOp op e =
         (Minus, Int i) -> return $ Complete $ Int (-i)
         (Star, _) -> return $ PartialDefault val
         (Not, Bool b) -> return $ Complete $ Bool (not b)
-        _ -> throwError "evalUnaryOp: not an integer"
+        _ -> throwError "evalUnaryOp: not correct type"
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
-evalBinary :: (MonadError String m) => BinaryOp -> Expression -> Expression -> m EvalResult
+evalBinary :: (MonadError String m, MonadState ValueZipper m) => BinaryOp -> Expression -> Expression -> m EvalResult
 evalBinary op e1 e2 = do
   r1 <- eval' e1
   r2 <- eval' e2
@@ -99,7 +156,7 @@ evalBinary op e1 e2 = do
         (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
         _ -> throwError "evalBinary: not integers"
 
-evalDisjunction :: (MonadError String m) => EvalResult -> EvalResult -> m EvalResult
+evalDisjunction :: (MonadError String m, MonadState ValueZipper m) => EvalResult -> EvalResult -> m EvalResult
 evalDisjunction = f
   where
     f (PartialDefault v1) r2 =
@@ -135,3 +192,10 @@ evalDisjunction = f
     dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
 
     newDisj df1 ds1 df2 ds2 = return $ Complete $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)
+
+lookupVar :: (MonadError String m, MonadState ValueZipper m) => String -> m EvalResult
+lookupVar name = do
+  z <- get
+  case searchUp name z of
+    Just v -> return $ Complete v
+    Nothing -> throwError $ "variable " ++ name ++ " is not defined"

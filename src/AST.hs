@@ -17,6 +17,7 @@ data PrimaryExpr
 data Operand
   = Literal Literal
   | OpExpression Expression
+  | OperandName OperandName
   deriving (Show)
 
 data Literal
@@ -28,6 +29,8 @@ data Literal
   | NullLit
   | StructLit [(Label, Expression)]
   deriving (Show)
+
+data OperandName = Identifier Identifer deriving (Show)
 
 data StringLit = SimpleStringLit SimpleStringLit deriving (Show)
 

@@ -104,6 +104,7 @@ operand = do
   skipElements
   op <-
     fmap Literal literal
+      <|> (OperandName . Identifier <$> identifier)
       <|> ( do
               _ <- char '('
               e <- expr

@@ -1,13 +1,14 @@
 module Main where
 
-import Data.ByteString.Builder
-import qualified Data.Map.Strict as Map
-import Eval (eval)
-import Parser
-import System.IO (readFile)
-import Test.Tasty
-import Test.Tasty.HUnit
-import Value
+import           Data.ByteString.Builder
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
+import           Eval                    (eval)
+import           Parser
+import           System.IO               (readFile)
+import           Test.Tasty
+import           Test.Tasty.HUnit
+import           Value
 
 main = defaultMain tests
 
@@ -35,7 +36,10 @@ e2eTests =
                         ("y2", Bottom ""),
                         ("z1", Null)
                       ]
-                  ),
+                  )
+                  Set.empty
+                  ,
+
       testCase "unaryop" $
         do
           s <- readFile "tests/e2efiles/unaryop.cue"
@@ -51,7 +55,9 @@ e2eTests =
                         ("y", Int (-1)),
                         ("z", Bool False)
                       ]
-                  ),
+                  )
+                  Set.empty
+                  ,
       testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
@@ -72,7 +78,9 @@ e2eTests =
                         ("x7", Int 7),
                         ("x8", Int 5)
                       ]
-                  ),
+                  )
+                  Set.empty
+                  ,
       testCase
         "disjunction"
         $ do
@@ -95,7 +103,9 @@ e2eTests =
                         ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
                         ("y2", Disjunction [Int 3] [Int 1, Int 2, Int 3])
                       ]
-                  ),
+                  )
+                  Set.empty
+                  ,
       testCase
         "disjunction-2"
         $ do
@@ -111,12 +121,14 @@ e2eTests =
                       [ ( "x",
                           Disjunction
                             []
-                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]),
-                              Struct ["y"] (Map.fromList [("y", Int 2)])
+                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty,
+                              Struct ["y"] (Map.fromList [("y", Int 2)]) Set.empty
                             ]
                         )
                       ]
-                  ),
+                  )
+                  Set.empty
+                  ,
       testCase
         "unify-structs"
         $ do
@@ -135,4 +147,5 @@ e2eTests =
                         ("z", Int 4321)
                       ]
                   )
+                  Set.empty
     ]

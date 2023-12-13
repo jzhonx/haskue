@@ -73,5 +73,6 @@ Test-Suite haskue-unit-test
         tasty-hunit,
         haskue,
         bytestring,
+        mtl,
         containers,
   default-language: Haskell2010
