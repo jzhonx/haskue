@@ -19,11 +19,6 @@ type Path = [Selector]
 -- the first argument is the value that is being evaluated.
 data PendingValue = PendingValue ValueZipper [Path] ([Value] -> Value)
 
--- fromEvalResult :: EvalResult -> Value
--- fromEvalResult (PartialDefault _) = Bottom "marked value should be associated with a disjunction"
--- fromEvalResult (Complete v) = v
---
-
 -- | ValueCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type ValueCrumb = (String, Value)
 
@@ -116,7 +111,6 @@ evalUnaryOp op e = do
   case (op, val) of
     (Plus, Int i) -> return $ Int i
     (Minus, Int i) -> return $ Int (-i)
-    -- (Star, _) -> return $ PartialDefault val
     (Not, Bool b) -> return $ Bool (not b)
     _ -> throwError "evalUnaryOp: not correct type"
 
@@ -127,21 +121,13 @@ evalBinary AST.Disjunction e1 e2 = evalDisjunction e1 e2
 evalBinary op e1 e2 = do
   v1 <- eval' e1
   v2 <- eval' e2
-  evalVal v1 v2
-  where
-    -- evalRes AST.Disjunction r1 r2 = evalDisjunction r1 r2
-    -- evalRes _ r1 r2 =
-    --   let v1 = fromEvalResult r1
-    --       v2 = fromEvalResult r2
-    --    in fmap Complete (evalVal v1 v2)
-    evalVal v1 v2 = do
-      case (op, v1, v2) of
-        (Unify, _, _) -> unify v1 v2
-        (Add, Int i1, Int i2) -> return $ Int (i1 + i2)
-        (Sub, Int i1, Int i2) -> return $ Int (i1 - i2)
-        (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
-        (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
-        _ -> throwError "evalBinary: not integers"
+  case (op, v1, v2) of
+    (Unify, _, _) -> unify v1 v2
+    (Add, Int i1, Int i2) -> return $ Int (i1 + i2)
+    (Sub, Int i1, Int i2) -> return $ Int (i1 - i2)
+    (Mul, Int i1, Int i2) -> return $ Int (i1 * i2)
+    (Div, Int i1, Int i2) -> return $ Int (i1 `div` i2)
+    _ -> throwError "evalBinary: not integers"
 
 data DisjunctItem = DisjunctDefault Value | DisjunctRegular Value
 
