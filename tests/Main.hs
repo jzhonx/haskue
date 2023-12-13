@@ -1,14 +1,14 @@
 module Main where
 
-import           Data.ByteString.Builder
-import qualified Data.Map.Strict         as Map
-import qualified Data.Set                as Set
-import           Eval                    (eval)
-import           Parser
-import           System.IO               (readFile)
-import           Test.Tasty
-import           Test.Tasty.HUnit
-import           Value
+import Data.ByteString.Builder
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Eval (eval)
+import Parser
+import System.IO (readFile)
+import Test.Tasty
+import Test.Tasty.HUnit
+import Value
 
 main = defaultMain tests
 
@@ -38,8 +38,7 @@ e2eTests =
                       ]
                   )
                   Set.empty
-                  ,
-
+                  [],
       testCase "unaryop" $
         do
           s <- readFile "tests/e2efiles/unaryop.cue"
@@ -57,7 +56,7 @@ e2eTests =
                       ]
                   )
                   Set.empty
-                  ,
+                  [],
       testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
@@ -80,7 +79,7 @@ e2eTests =
                       ]
                   )
                   Set.empty
-                  ,
+                  [],
       testCase
         "disjunction"
         $ do
@@ -105,7 +104,7 @@ e2eTests =
                       ]
                   )
                   Set.empty
-                  ,
+                  [],
       testCase
         "disjunction-2"
         $ do
@@ -121,14 +120,14 @@ e2eTests =
                       [ ( "x",
                           Disjunction
                             []
-                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty,
-                              Struct ["y"] (Map.fromList [("y", Int 2)]) Set.empty
+                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty [],
+                              Struct ["y"] (Map.fromList [("y", Int 2)]) Set.empty []
                             ]
                         )
                       ]
                   )
                   Set.empty
-                  ,
+                  [],
       testCase
         "unify-structs"
         $ do
@@ -148,4 +147,5 @@ e2eTests =
                       ]
                   )
                   Set.empty
+                  []
     ]

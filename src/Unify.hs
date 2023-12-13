@@ -28,7 +28,7 @@ unify val1 val2 =
         Right val -> return val
 
 edgesToValue :: Map.Map String Value -> Value
-edgesToValue edges = Struct (Map.keys edges) edges Set.empty
+edgesToValue edges = Struct (Map.keys edges) edges Set.empty []
 
 unify' :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
 unify' val1 val2 = case (val1, val2) of
@@ -42,7 +42,7 @@ unify' val1 val2 = case (val1, val2) of
   _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct _ edges1 _) (Struct _ edges2 _) = do
+unifyStructs (Struct _ edges1 _ _) (Struct _ edges2 _ _) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of

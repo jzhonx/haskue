@@ -9,50 +9,12 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Unify (unify)
-import Value (Value (..))
+import Value (Crumb, Value (..), Zipper)
 
-data Selector = StringSelector String | IntSelector Int
-
-type Path = [Selector]
-
--- Pending means that the value can not be evaluated because of unresolved dependencies.
--- the first argument is the value that is being evaluated.
-data PendingValue = PendingValue ValueZipper [Path] ([Value] -> Value)
-
-data EvalValue = Pending PendingValue | Evaluated Value
-
--- | ValueCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
-type ValueCrumb = (String, Value)
-
-type ValueZipper = (Value, [ValueCrumb])
-
-data Env = Env
-  { getStruct :: ValueZipper,
-    getPendings :: [PendingValue]
-  }
-
-goUp :: ValueZipper -> Maybe ValueZipper
-goUp (_, []) = Nothing
-goUp (_, (_, v') : vs) = Just (v', vs)
-
-goTo :: String -> ValueZipper -> Maybe ValueZipper
-goTo name (val@(Struct _ edges _), vs) = do
-  val' <- Map.lookup name edges
-  return (val', (name, val) : vs)
-goTo _ (_, _) = Nothing
-
--- modify :: (Value -> Value) -> ValueZipper -> Maybe ValueZipper
--- modify f (v, vs) = Just (f v, vs)
-
-searchUp :: String -> ValueZipper -> Maybe Value
-searchUp name (Struct _ edges _, []) = Map.lookup name edges
-searchUp _ (_, []) = Nothing
-searchUp name z = do
-  z' <- goUp z
-  searchUp name z'
+type Env = Zipper
 
 initEnv :: Env
-initEnv = Env (Top, []) []
+initEnv = (Top, [])
 
 eval :: (MonadError String m) => Expression -> m Value
 eval expr = fst <$> runStateT (eval' expr) initEnv
@@ -74,15 +36,15 @@ evalLiteral = f
 
 evalStructLit :: (MonadError String m, MonadState Env m) => [(Label, Expression)] -> m Value
 evalStructLit s = do
-  fields <- mapM evalField s
-  let orderedKeys = map fst fields
+  fields' <- mapM evalField s
+  let orderedKeys = map fst fields'
   let (filteredKeys, _) =
         foldr
           (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
           ([], Set.empty)
           orderedKeys
-  unified' <- unifySameKeys fields
-  return $ Struct filteredKeys unified' (Set.fromList (getVarLabels s))
+  unified' <- unifySameKeys fields'
+  return $ Struct filteredKeys unified' (Set.fromList (getVarLabels s)) []
   where
     evalField (Label (LabelName ln), e) =
       let name = case ln of
@@ -92,7 +54,7 @@ evalStructLit s = do
             v <- eval' e
             return (name, v)
     unifySameKeys :: (MonadError String m, MonadState Env m) => [(String, Value)] -> m (Map.Map String Value)
-    unifySameKeys fields = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) fields)
+    unifySameKeys fields' = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) fields')
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var
@@ -190,4 +152,4 @@ evalDisjunction e1 e2 = case (e1, e2) of
     newDisj df1 ds1 df2 ds2 = return $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)
 
 lookupVar :: (MonadError String m, MonadState Env m) => String -> m Value
-lookupVar _ = undefined
+lookupVar name = undefined
