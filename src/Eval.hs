@@ -19,6 +19,8 @@ type Path = [Selector]
 -- the first argument is the value that is being evaluated.
 data PendingValue = PendingValue ValueZipper [Path] ([Value] -> Value)
 
+data EvalValue = Pending PendingValue | Evaluated Value
+
 -- | ValueCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type ValueCrumb = (String, Value)
 
@@ -49,17 +51,17 @@ searchUp name z = do
   z' <- goUp z
   searchUp name z'
 
-initEnv :: ValueZipper
-initEnv = (Top, [])
+initEnv :: Env
+initEnv = Env (Top, []) []
 
 eval :: (MonadError String m) => Expression -> m Value
 eval expr = fst <$> runStateT (eval' expr) initEnv
 
-eval' :: (MonadError String m, MonadState ValueZipper m) => Expression -> m Value
+eval' :: (MonadError String m, MonadState Env m) => Expression -> m Value
 eval' (UnaryExprCons e) = evalUnaryExpr e
 eval' (BinaryOpCons op e1 e2) = evalBinary op e1 e2
 
-evalLiteral :: (MonadError String m, MonadState ValueZipper m) => Literal -> m Value
+evalLiteral :: (MonadError String m, MonadState Env m) => Literal -> m Value
 evalLiteral = f
   where
     f (StringLit (SimpleStringLit s)) = return $ String s
@@ -70,7 +72,7 @@ evalLiteral = f
     f NullLit = return Null
     f (StructLit s) = evalStructLit s
 
-evalStructLit :: (MonadError String m, MonadState ValueZipper m) => [(Label, Expression)] -> m Value
+evalStructLit :: (MonadError String m, MonadState Env m) => [(Label, Expression)] -> m Value
 evalStructLit s = do
   fields <- mapM evalField s
   let orderedKeys = map fst fields
@@ -89,7 +91,7 @@ evalStructLit s = do
        in do
             v <- eval' e
             return (name, v)
-    unifySameKeys :: (MonadError String m, MonadState ValueZipper m) => [(String, Value)] -> m (Map.Map String Value)
+    unifySameKeys :: (MonadError String m, MonadState Env m) => [(String, Value)] -> m (Map.Map String Value)
     unifySameKeys fields = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) fields)
 
     fetchVarLabel :: Label -> Maybe String
@@ -99,13 +101,13 @@ evalStructLit s = do
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
 
-evalUnaryExpr :: (MonadError String m, MonadState ValueZipper m) => UnaryExpr -> m Value
+evalUnaryExpr :: (MonadError String m, MonadState Env m) => UnaryExpr -> m Value
 evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
 evalUnaryExpr (PrimaryExprCons (Operand (OpExpression expr))) = eval' expr
 evalUnaryExpr (PrimaryExprCons (Operand (OperandName (Identifier ident)))) = lookupVar ident
 evalUnaryExpr (UnaryOpCons op e) = evalUnaryOp op e
 
-evalUnaryOp :: (MonadError String m, MonadState ValueZipper m) => UnaryOp -> UnaryExpr -> m Value
+evalUnaryOp :: (MonadError String m, MonadState Env m) => UnaryOp -> UnaryExpr -> m Value
 evalUnaryOp op e = do
   val <- evalUnaryExpr e
   case (op, val) of
@@ -116,7 +118,7 @@ evalUnaryOp op e = do
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
-evalBinary :: (MonadError String m, MonadState ValueZipper m) => BinaryOp -> Expression -> Expression -> m Value
+evalBinary :: (MonadError String m, MonadState Env m) => BinaryOp -> Expression -> Expression -> m Value
 evalBinary AST.Disjunction e1 e2 = evalDisjunction e1 e2
 evalBinary op e1 e2 = do
   v1 <- eval' e1
@@ -132,7 +134,7 @@ evalBinary op e1 e2 = do
 data DisjunctItem = DisjunctDefault Value | DisjunctRegular Value
 
 -- evalDisjunction is used to evaluate a disjunction.
-evalDisjunction :: (MonadError String m, MonadState ValueZipper m) => Expression -> Expression -> m Value
+evalDisjunction :: (MonadError String m, MonadState Env m) => Expression -> Expression -> m Value
 evalDisjunction e1 e2 = case (e1, e2) of
   (UnaryExprCons (UnaryOpCons Star e1'), UnaryExprCons (UnaryOpCons Star e2')) ->
     evalExprPair (evalUnaryExpr e1') DisjunctDefault (evalUnaryExpr e2') DisjunctDefault
@@ -143,14 +145,14 @@ evalDisjunction e1 e2 = case (e1, e2) of
   (_, _) -> evalExprPair (eval' e1) DisjunctRegular (eval' e2) DisjunctRegular
   where
     -- evalExprPair is used to evaluate a disjunction with both sides still being unevaluated.
-    evalExprPair :: (MonadError String m, MonadState ValueZipper m) => m Value -> (Value -> DisjunctItem) -> m Value -> (Value -> DisjunctItem) -> m Value
+    evalExprPair :: (MonadError String m, MonadState Env m) => m Value -> (Value -> DisjunctItem) -> m Value -> (Value -> DisjunctItem) -> m Value
     evalExprPair m1 cons1 m2 cons2 = do
       v1 <- m1
       v2 <- m2
       evalDisjPair (cons1 v1) (cons2 v2)
 
     -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
-    evalDisjPair :: (MonadError String m, MonadState ValueZipper m) => DisjunctItem -> DisjunctItem -> m Value
+    evalDisjPair :: (MonadError String m, MonadState Env m) => DisjunctItem -> DisjunctItem -> m Value
     evalDisjPair (DisjunctDefault v1) r2 =
       evalLeftPartial (\(df1, ds1, df2, ds2) -> newDisj df1 ds1 df2 ds2) v1 r2
     -- reverse v2 r1 and also the order to the disjCons.
@@ -187,9 +189,5 @@ evalDisjunction e1 e2 = case (e1, e2) of
 
     newDisj df1 ds1 df2 ds2 = return $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)
 
-lookupVar :: (MonadError String m, MonadState ValueZipper m) => String -> m Value
-lookupVar name = do
-  z <- get
-  case searchUp name z of
-    Just v -> return v
-    Nothing -> throwError $ "variable " ++ name ++ " is not defined"
+lookupVar :: (MonadError String m, MonadState Env m) => String -> m Value
+lookupVar _ = undefined
