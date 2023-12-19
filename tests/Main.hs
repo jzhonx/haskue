@@ -37,8 +37,7 @@ e2eTests =
                         ("z1", Null)
                       ]
                   )
-                  Set.empty
-                  [],
+                  Set.empty,
       testCase "unaryop" $
         do
           s <- readFile "tests/e2efiles/unaryop.cue"
@@ -55,8 +54,7 @@ e2eTests =
                         ("z", Bool False)
                       ]
                   )
-                  Set.empty
-                  [],
+                  Set.empty,
       testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
@@ -78,8 +76,7 @@ e2eTests =
                         ("x8", Int 5)
                       ]
                   )
-                  Set.empty
-                  [],
+                  Set.empty,
       testCase
         "disjunction"
         $ do
@@ -103,8 +100,7 @@ e2eTests =
                         ("y2", Disjunction [Int 3] [Int 1, Int 2, Int 3])
                       ]
                   )
-                  Set.empty
-                  [],
+                  Set.empty,
       testCase
         "disjunction-2"
         $ do
@@ -120,14 +116,13 @@ e2eTests =
                       [ ( "x",
                           Disjunction
                             []
-                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty [],
-                              Struct ["y"] (Map.fromList [("y", Int 2)]) Set.empty []
+                            [ Struct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty,
+                              Struct ["y"] (Map.fromList [("y", Int 2)]) Set.empty
                             ]
                         )
                       ]
                   )
-                  Set.empty
-                  [],
+                  Set.empty,
       testCase
         "unify-structs"
         $ do
@@ -146,6 +141,23 @@ e2eTests =
                         ("z", Int 4321)
                       ]
                   )
+                  Set.empty,
+      testCase
+        "vars"
+        $ do
+          s <- readFile "tests/e2efiles/vars.cue"
+          let val = (eval . parseCUE) s
+          case val of
+            Left err -> assertFailure err
+            Right val' ->
+              val'
+                @?= Struct
+                  ["z", "x", "y"]
+                  ( Map.fromList
+                      [ ("z", Int 1),
+                        ("x", Int 1),
+                        ("y", Int 1)
+                      ]
+                  )
                   Set.empty
-                  []
     ]

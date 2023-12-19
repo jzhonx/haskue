@@ -1,15 +1,15 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Unify (unify) where
 
-import Control.Monad.Except (MonadError, runExceptT, throwError)
-import Control.Monad.State.Strict (MonadState, runState)
-import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Value (Value (..))
+import           Control.Monad.Except       (MonadError, runExceptT, throwError)
+import           Control.Monad.State.Strict (MonadState, runState)
+import qualified Data.IntMap.Strict         as IntMap
+import qualified Data.Map.Strict            as Map
+import qualified Data.Set                   as Set
+import           Value                      (Value (..))
 
 data TraverseState = TraverseState
   { getVisisted :: IntMap.IntMap Bool
@@ -24,11 +24,11 @@ unify :: (MonadError String m) => Value -> Value -> m Value
 unify val1 val2 =
   let (res, _) = runState (runExceptT (unify' val1 val2)) (UnifyState (TraverseState IntMap.empty) (TraverseState IntMap.empty))
    in case res of
-        Left err -> throwError err
+        Left err  -> throwError err
         Right val -> return val
 
 edgesToValue :: Map.Map String Value -> Value
-edgesToValue edges = Struct (Map.keys edges) edges Set.empty []
+edgesToValue edges = Struct (Map.keys edges) edges Set.empty
 
 unify' :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
 unify' val1 val2 = case (val1, val2) of
@@ -42,7 +42,7 @@ unify' val1 val2 = case (val1, val2) of
   _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct _ edges1 _ _) (Struct _ edges2 _ _) = do
+unifyStructs (Struct _ edges1 _) (Struct _ edges2 _) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of
@@ -62,7 +62,7 @@ unifyStructs (Struct _ edges1 _ _) (Struct _ edges2 _ _) = do
     processUnified :: String -> Value -> Either Value (String, Value)
     processUnified key val = case val of
       Bottom _ -> Left val
-      _ -> Right (key, val)
+      _        -> Right (key, val)
     unifyIntersectionLabels =
       sequence
         ( Set.foldr
@@ -116,14 +116,14 @@ disjunctionFromValues df ds = f (concatFilter df) (concatFilter ds)
   where
     concatFilter :: [[Value]] -> [Value]
     concatFilter xs = case filter (\x -> case x of Bottom _ -> False; _ -> True) (concat xs) of
-      [] -> [Bottom "empty disjuncts"]
+      []  -> [Bottom "empty disjuncts"]
       xs' -> xs'
     f :: (MonadError String m) => [Value] -> [Value] -> m Value
-    f [] [] = emptyDisjunctError [] []
+    f [] []                 = emptyDisjunctError [] []
     f [Bottom _] [Bottom _] = return $ Bottom "empty disjuncts"
-    f df' [Bottom _] = return $ Disjunction [] df'
-    f [Bottom _] ds' = return $ Disjunction [] ds'
-    f df' ds' = return $ Disjunction df' ds'
+    f df' [Bottom _]        = return $ Disjunction [] df'
+    f [Bottom _] ds'        = return $ Disjunction [] ds'
+    f df' ds'               = return $ Disjunction df' ds'
     emptyDisjunctError :: (MonadError String m) => [Value] -> [Value] -> m Value
     emptyDisjunctError df' ds' =
       throwError $

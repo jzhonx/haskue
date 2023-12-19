@@ -4,6 +4,22 @@ import Data.ByteString.Builder (Builder, char7, integerDec, string7)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
+-- TODO: IntSelector
+data Selector = StringSelector String deriving (Eq, Ord, Show)
+
+type Path = [Selector]
+
+-- relPath x base returns the relative path from base to x.
+-- If base is not a prefix of x, then x is returned.
+relPath :: Path -> Path -> Path
+relPath x base =
+  let (prefix, suffix) = splitAt (length base) x
+   in if prefix == base then suffix else x
+
+-- TODO: dedeup
+mergePaths :: [Path] -> [Path] -> [Path]
+mergePaths p1 p2 = p1 ++ p2
+
 data Value
   = Top
   | String String
@@ -12,8 +28,7 @@ data Value
   | Struct
       { orderedLabels :: [String],
         fields :: Map.Map String Value,
-        identifiers :: Set.Set String,
-        updaters :: [PendingUpdater]
+        identifiers :: Set.Set String
       }
   | Disjunction
       { defaults :: [Value],
@@ -21,6 +36,14 @@ data Value
       }
   | Null
   | Bottom String
+  | Pending
+      { -- depPaths is a list of paths to the unresolved references.
+        -- path should be the full path.
+        deps :: [Path],
+        -- evaluator is a function that takes a list of values and returns a value.
+        evaluator :: [Value] -> Value
+      }
+  | Unevaluated
 
 instance Show Value where
   show (String s) = s
@@ -28,15 +51,17 @@ instance Show Value where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Struct ols fds _ _) = "{ labels:" ++ show ols ++ ", edges: " ++ show fds ++ "}"
+  show (Struct ols fds _) = "{ labels:" ++ show ols ++ ", edges: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
+  show Pending {} = "_|_"
+  show Unevaluated = "_|_"
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) (Struct orderedLabels1 edges1 _ _) (Struct orderedLabels2 edges2 _ _) =
+  (==) (Struct orderedLabels1 edges1 _) (Struct orderedLabels2 edges2 _) =
     orderedLabels1 == orderedLabels2 && edges1 == edges2
   (==) (Disjunction defaults1 disjuncts1) (Disjunction defaults2 disjuncts2) =
     disjuncts1 == disjuncts2 && defaults1 == defaults2
@@ -54,7 +79,7 @@ buildCUEStr' _ (Int i) = integerDec i
 buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
 buildCUEStr' _ Top = string7 "_"
 buildCUEStr' _ Null = string7 "null"
-buildCUEStr' ident (Struct ols fds _ _) =
+buildCUEStr' ident (Struct ols fds _) =
   buildStructStr ident (map (\label -> (label, fds Map.! label)) ols)
 buildCUEStr' ident (Disjunction dfs djs) =
   if null dfs
@@ -63,6 +88,8 @@ buildCUEStr' ident (Disjunction dfs djs) =
   where
     buildList xs = foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> buildCUEStr' ident d) xs)
 buildCUEStr' _ (Bottom _) = string7 "_|_"
+buildCUEStr' _ (Pending {}) = string7 "_|_"
+buildCUEStr' _ Unevaluated = string7 "_|_"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =
@@ -87,16 +114,6 @@ buildFieldsStr ident (x : xs) =
         <> buildCUEStr' (ident + 1) val
         <> char7 '\n'
 
--- TODO: IntSelector
-data Selector = StringSelector String
-
-type Path = [Selector]
-
--- the first argument is the pending value.
--- the second argument is a list of paths to the unresolved references.
--- the third argument is a function that takes a list of values and returns a value.
-data PendingUpdater = PendingUpdater Zipper [Path] ([Value] -> Value)
-
 -- | Crumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type Crumb = (Selector, Value)
 
@@ -107,17 +124,23 @@ goUp (_, []) = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goTo :: Selector -> Zipper -> Maybe Zipper
-goTo n@(StringSelector name) (val@(Struct _ edges _ _), vs) = do
-  val' <- Map.lookup name edges
+goTo n@(StringSelector name) (val@(Struct _ fields' _), vs) = do
+  val' <- Map.lookup name fields'
   return (val', (n, val) : vs)
 goTo _ (_, _) = Nothing
 
--- modify :: (Value -> Value) -> ValueZipper -> Maybe ValueZipper
--- modify f (v, vs) = Just (f v, vs)
+attach :: Value -> Zipper -> Zipper
+attach val (_, vs) = (val, vs)
+
+addSubZipper :: Selector -> Value -> Zipper -> Zipper
+addSubZipper sel new (old, vs) = (new, (sel, old) : vs)
 
 searchUp :: String -> Zipper -> Maybe Value
-searchUp name (Struct _ edges _ _, []) = Map.lookup name edges
-searchUp _ (_, []) = Nothing
-searchUp name z = do
-  z' <- goUp z
-  searchUp name z'
+searchUp name (Struct _ fields' _, []) = Map.lookup name fields'
+searchUp name z@(Struct _ fields' _, _) =
+  case Map.lookup name fields' of
+    Just v -> Just v
+    Nothing -> do
+      z' <- goUp z
+      searchUp name z'
+searchUp _ _ = Nothing
