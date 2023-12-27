@@ -1,8 +1,10 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module Value where
 
-import Data.ByteString.Builder (Builder, char7, integerDec, string7)
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
+import           Data.ByteString.Builder (Builder, char7, integerDec, string7)
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
 
 -- TODO: IntSelector
 data Selector = StringSelector String deriving (Eq, Ord, Show)
@@ -17,8 +19,12 @@ relPath x base =
    in if prefix == base then suffix else x
 
 -- TODO: dedeup
-mergePaths :: [Path] -> [Path] -> [Path]
+mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
 mergePaths p1 p2 = p1 ++ p2
+
+type EvalMonad = Either String
+
+type Evaluator = [Value] -> EvalMonad Value
 
 data Value
   = Top
@@ -27,21 +33,25 @@ data Value
   | Bool Bool
   | Struct
       { orderedLabels :: [String],
-        fields :: Map.Map String Value,
-        identifiers :: Set.Set String
+        -- fields should only be fulfilled after all evaluation is done.
+        fields        :: Map.Map String Value,
+        identifiers   :: Set.Set String
       }
   | Disjunction
-      { defaults :: [Value],
+      { defaults  :: [Value],
         disjuncts :: [Value]
       }
   | Null
   | Bottom String
   | Pending
-      { -- depPaths is a list of paths to the unresolved references.
+      { -- dep is a list of paths to the unresolved references.
         -- path should be the full path.
-        deps :: [Path],
+        -- the first element of the tuple is the variable path.
+        -- the second element of the tuple is the reference path.
+        deps      :: [(Path, Path)],
         -- evaluator is a function that takes a list of values and returns a value.
-        evaluator :: [Value] -> Value
+        -- The order of the values in the list is the same as the order of the paths in deps.
+        evaluator :: Evaluator
       }
   | Unevaluated
 
@@ -51,7 +61,7 @@ instance Show Value where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Struct ols fds _) = "{ labels:" ++ show ols ++ ", edges: " ++ show fds ++ "}"
+  show (Struct ols fds _) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
   show Pending {} = "_|_"
@@ -120,7 +130,7 @@ type Crumb = (Selector, Value)
 type Zipper = (Value, [Crumb])
 
 goUp :: Zipper -> Maybe Zipper
-goUp (_, []) = Nothing
+goUp (_, [])           = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goTo :: Selector -> Zipper -> Maybe Zipper

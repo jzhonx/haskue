@@ -2,48 +2,51 @@
 
 module Eval where
 
-import AST
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State (MonadState, get, modify, put, runStateT)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
-import qualified Data.Set as Set
-import Debug.Trace
-import Unify (unify)
-import Value
+import           AST
+import           Control.Monad.Except (MonadError, liftEither, throwError)
+import           Control.Monad.State  (MonadState, get, modify, put, runStateT)
+import qualified Data.Map.Strict      as Map
+import           Data.Maybe           (fromJust, isJust)
+import qualified Data.Set             as Set
+import           Debug.Trace
+import           Unify                (unify)
+import           Value
+
+type FlatValue = Map.Map Path Value
 
 data EvalState = EvalState
   { -- path is the path to the current expression.
     -- the path should be the full path.
-    path :: Path,
+    path      :: Path,
     -- curBlock is the current block that contains the variables.
     -- A new block will replace the current one when a new block is entered.
     -- A new block is entered when one of the following is encountered:
     -- - The "{" token
     -- - for and let clauses
-    curBlockZ :: Zipper
+    curBlockZ :: Zipper,
+    store     :: FlatValue
   }
 
-initEnv :: EvalState
-initEnv = EvalState [] (Top, [])
+initState :: EvalState
+initState = EvalState [StringSelector "."] (Top, []) Map.empty
 
 eval :: (MonadError String m) => Expression -> m Value
-eval expr = fst <$> runStateT (eval' expr) initEnv
+eval expr = fst <$> runStateT (eval' expr) initState
 
 eval' :: (MonadError String m, MonadState EvalState m) => Expression -> m Value
-eval' (UnaryExprCons e) = evalUnaryExpr e
+eval' (UnaryExprCons e)       = evalUnaryExpr e
 eval' (BinaryOpCons op e1 e2) = evalBinary op e1 e2
 
 evalLiteral :: (MonadError String m, MonadState EvalState m) => Literal -> m Value
 evalLiteral = f
   where
     f (StringLit (SimpleStringLit s)) = return $ String s
-    f (IntLit i) = return $ Int i
-    f (BoolLit b) = return $ Bool b
-    f TopLit = return Top
-    f BottomLit = return $ Bottom ""
-    f NullLit = return Null
-    f (StructLit s) = evalStructLit s
+    f (IntLit i)                      = return $ Int i
+    f (BoolLit b)                     = return $ Bool b
+    f TopLit                          = return Top
+    f BottomLit                       = return $ Bottom ""
+    f NullLit                         = return Null
+    f (StructLit s)                   = evalStructLit s
 
 evalStructLit :: (MonadError String m, MonadState EvalState m) => [(Label, Expression)] -> m Value
 evalStructLit s =
@@ -53,24 +56,29 @@ evalStructLit s =
           (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
           ([], Set.empty)
           orderedKeys
-      emptyStructValue = Struct [] (Map.fromList (map (\k -> (k, Unevaluated)) filteredKeys)) Set.empty
+      emptyStructValue = Struct filteredKeys Map.empty Set.empty
       identifiers' = Set.fromList (getVarLabels s)
    in do
-        estate@(EvalState path' cblock) <- get
-        let newBlock = addSubZipper (last path') emptyStructValue cblock
-        put $ estate {curBlockZ = newBlock}
+        estate@(EvalState path' cblock oldStore) <- get
+        -- create a new block since we are entering a new struct.
+        let curBlock = addSubZipper (last path') emptyStructValue cblock
+        let newStore = foldr (\k acc -> Map.insert (path' ++ [StringSelector k]) Unevaluated acc) oldStore filteredKeys
+        put $ estate {curBlockZ = curBlock, store = newStore}
 
         fields' <- mapM evalField (zipWith (\name (_, e) -> (name, e)) orderedKeys s)
-        evaled <- unifySameKeys fields' >>= evalPendings
+        unified <- buildFieldsMap fields'
 
-        let newStruct = Struct filteredKeys evaled identifiers'
+        evaled <- evalPendings unified
+
+        let newStruct = Struct filteredKeys Map.empty identifiers'
+        let newBlock' = attach newStruct curBlock
         -- restore the current block.
-        put $ estate {curBlockZ = attach newStruct cblock}
+        put $ estate {curBlockZ = trace ("put new block" ++ show newBlock' ++ show path') newBlock'}
         return newStruct
   where
     evalLabel (Label (LabelName ln), _) =
       let name = case ln of
-            LabelID ident -> ident
+            LabelID ident  -> ident
             LabelString ls -> ls
        in name
 
@@ -82,24 +90,35 @@ evalStructLit s =
       modify (\estate -> estate {path = init (path estate)})
       return (name, v)
 
-    unifySameKeys :: (MonadError String m, MonadState EvalState m) => [(String, Value)] -> m (Map.Map String Value)
-    unifySameKeys fields' = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unify x y) (map (\(k, v) -> (k, return v)) fields')
+    -- buildFieldsMap is used to build a map from the field names to the values.
+    buildFieldsMap :: (MonadError String m, MonadState EvalState m) => [(String, Value)] -> m (Map.Map String Value)
+    buildFieldsMap fields' = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; unifySameKeys x y) fieldsM
+      where
+        fieldsM = (map (\(k, v) -> (k, return v)) fields')
+
+        unifySameKeys :: (MonadError String m, MonadState EvalState m) => Value -> Value -> m Value
+        unifySameKeys (Pending d ev) (Pending d' ev') = undefined
+        unifySameKeys (Pending d ev) v                = undefined
+        unifySameKeys v1 v2                           = liftEither $ unify v1 v2
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var
-    fetchVarLabel _ = Nothing
+    fetchVarLabel _                                 = Nothing
 
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
 
-    evalPending mx k (Pending [x] evlt) = do
-      EvalState path' _ <- get
-      case relPath x path' of
+    evalPending :: (MonadError String m, MonadState EvalState m) => Map.Map String Value -> String -> Value -> m Value
+    evalPending mx _ p@(Pending [dep] evalf) = do
+      EvalState path' _ _ <- get
+      case relPath (snd dep) path' of
         [] -> throwError "evalPending: empty path"
-        [StringSelector name] -> case Map.lookup name mx of
-          Just v -> return $ evlt [v]
-          Nothing -> throwError "evalPending: not found"
-        _ -> throwError $ "evalPending: TODO" ++ show x ++ ", path: " ++ show path'
+        -- the var is defined in the current block.
+        [StringSelector localVar] -> case Map.lookup localVar mx of
+          Just v  -> liftEither $ evalf [v]
+          Nothing -> throwError $ localVar ++ "is not defined"
+        -- the var is defined in the parent block.
+        _ -> return p
     evalPending _ _ (Pending _ _) = throwError "evalPending: TODO"
     evalPending _ _ v = return v
 
@@ -118,13 +137,14 @@ evalUnaryOp op e = do
   val <- evalUnaryExpr e
   f val
   where
-    f (Pending d ef) = return $ Pending d (ce op . ef)
-    f v = return $ ce op v
-    -- ce is short for concrete evaluation.
-    ce Plus (Int i) = Int i
-    ce Minus (Int i) = Int (-i)
-    ce Not (Bool b) = Bool (not b)
-    ce _ _ = Bottom "evalUnaryOp: not correct type"
+    f v@(Pending {}) = chainPending (\x _ -> conEval op x) v Top
+    f v              = liftEither $ conEval op v
+    -- conEval evaluates non-pending operands.
+    conEval :: UnaryOp -> Value -> EvalMonad Value
+    conEval Plus (Int i)  = return $ Int i
+    conEval Minus (Int i) = return $ Int (-i)
+    conEval Not (Bool b)  = return $ Bool (not b)
+    conEval _ _           = throwError "conEval: unsupported unary operator"
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -133,22 +153,40 @@ evalBinary AST.Disjunction e1 e2 = evalDisjunction e1 e2
 evalBinary op e1 e2 = do
   v1 <- eval' e1
   v2 <- eval' e2
-  f v1 v2
+  binOp v1 v2
   where
-    f v1 v2
-      | op == Unify = unify v1 v2
-      | op == Add = return $ h (+) v1 v2
-      | op == Sub = return $ h (-) v1 v2
-      | op == Mul = return $ h (*) v1 v2
-      | op == Div = return $ h div v1 v2
-      | otherwise = throwError "evalBinary: unsupported binary operator"
+    intf :: (MonadError String m) => (Integer -> Integer -> Integer) -> Value -> Value -> m Value
+    intf f = evalBinVals f'
+      where
+        f' (Int i1) (Int i2) = return $ Int (f i1 i2)
+        f' _ _               = throwError "intf: unsupported binary operator"
 
-    h bin (Int l) (Int r) = Int $ bin l r
-    h bin li@(Int _) (Pending d ef) = Pending d (\xs -> h bin li (ef xs))
-    h bin (Pending d ef) ri@(Int _) = Pending d (\xs -> h bin (ef xs) ri)
-    h bin (Pending d1 ef1) (Pending d2 ef2) =
-      Pending (mergePaths d1 d2) (\xs -> h bin (ef1 xs) (ef2 xs))
-    h _ _ _ = Bottom "evalBinary: not of type Int"
+    binOp :: (MonadError String m) => Value -> Value -> m Value
+    binOp
+      | op == Unify = evalBinVals unify
+      | op == Add = intf (+)
+      | op == Sub = intf (-)
+      | op == Mul = intf (*)
+      | op == Div = intf div
+      | otherwise = \_ _ -> throwError "binOp: unsupported binary operator"
+
+evalBinVals :: (MonadError String m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
+evalBinVals bin li v2@(Pending {}) = chainPending (evalBinVals bin) li v2
+evalBinVals bin v1@(Pending {}) ri = chainPending (evalBinVals bin) v1 ri
+evalBinVals bin v1 v2              = liftEither $ bin v1 v2
+
+chainPending ::
+  (MonadError String m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
+chainPending bin (Pending d1 ef1) v2 =
+  return $
+    Pending
+      d1
+      ( \vs -> do
+          v1 <- ef1 vs
+          bin v1 v2
+      )
+chainPending bin v1 (Pending d2 ef2) = chainPending (flip bin) (Pending d2 ef2) v1
+chainPending _ _ _ = throwError "chainPending: values are not pending"
 
 data DisjunctItem = DisjunctDefault Value | DisjunctRegular Value
 
@@ -208,10 +246,19 @@ evalDisjunction e1 e2 = case (e1, e2) of
 
     newDisj df1 ds1 df2 ds2 = return $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)
 
+-- lookupVar looks up the variable denoted by the name.
 lookupVar :: (MonadError String m, MonadState EvalState m) => String -> m Value
 lookupVar name = do
-  EvalState path' block <- get
+  EvalState path' block _ <- get
   case searchUp name block of
-    Just Unevaluated -> return $ Pending [init path' ++ [StringSelector name]] head
+    -- TODO: currently we should only look up the current block.
+    Just Unevaluated -> return $ Pending [(path', init path' ++ [StringSelector name])] (return . head)
     Just v -> return v
-    Nothing -> throwError $ "lookupVar: " ++ name ++ " not found" ++ ", path: " ++ show path' ++ ", block: " ++ show block
+    Nothing ->
+      throwError $
+        name
+          ++ " is not found"
+          ++ ", path: "
+          ++ show path'
+          ++ ", block: "
+          ++ show (snd block)

@@ -9,7 +9,7 @@ import           Control.Monad.State.Strict (MonadState, runState)
 import qualified Data.IntMap.Strict         as IntMap
 import qualified Data.Map.Strict            as Map
 import qualified Data.Set                   as Set
-import           Value                      (Value (..))
+import           Value                      (EvalMonad, Value (..))
 
 data TraverseState = TraverseState
   { getVisisted :: IntMap.IntMap Bool
@@ -20,15 +20,15 @@ data UnifyState = UnifyState
     getTraverseState2 :: TraverseState
   }
 
-unify :: (MonadError String m) => Value -> Value -> m Value
+unify :: Value -> Value -> EvalMonad Value
 unify val1 val2 =
   let (res, _) = runState (runExceptT (unify' val1 val2)) (UnifyState (TraverseState IntMap.empty) (TraverseState IntMap.empty))
    in case res of
         Left err  -> throwError err
         Right val -> return val
 
-edgesToValue :: Map.Map String Value -> Value
-edgesToValue edges = Struct (Map.keys edges) edges Set.empty
+fieldsToValue :: Map.Map String Value -> Value
+fieldsToValue fds = Struct (Map.keys fds) fds Set.empty
 
 unify' :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
 unify' val1 val2 = case (val1, val2) of
@@ -42,7 +42,7 @@ unify' val1 val2 = case (val1, val2) of
   _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct _ edges1 _) (Struct _ edges2 _) = do
+unifyStructs (Struct _ fields1 _) (Struct _ fields2 _) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of
@@ -52,13 +52,13 @@ unifyStructs (Struct _ edges1 _) (Struct _ edges2 _) = do
     Right vs' ->
       do
         let newEdges = Map.unions [disjointVertices1, disjointVertices2, Map.fromList vs']
-        return $ edgesToValue newEdges
+        return $ fieldsToValue newEdges
   where
-    labels1Set = Map.keysSet edges1
-    labels2Set = Map.keysSet edges2
+    labels1Set = Map.keysSet fields1
+    labels2Set = Map.keysSet fields2
     interLabels = Set.intersection labels1Set labels2Set
-    disjointVertices1 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) edges1
-    disjointVertices2 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) edges2
+    disjointVertices1 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) fields1
+    disjointVertices2 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) fields2
     processUnified :: String -> Value -> Either Value (String, Value)
     processUnified key val = case val of
       Bottom _ -> Left val
@@ -67,8 +67,8 @@ unifyStructs (Struct _ edges1 _) (Struct _ edges2 _) = do
       sequence
         ( Set.foldr
             ( \key acc ->
-                let valx = edges1 Map.! key
-                    valy = edges2 Map.! key
+                let valx = fields1 Map.! key
+                    valy = fields2 Map.! key
                     unified = unify' valx valy
                  in fmap (processUnified key) unified : acc
             )
