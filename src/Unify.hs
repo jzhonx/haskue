@@ -1,36 +1,19 @@
 {-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Unify (unify) where
 
-import           Control.Monad.Except       (MonadError, runExceptT, throwError)
-import           Control.Monad.State.Strict (MonadState, runState)
-import qualified Data.IntMap.Strict         as IntMap
+import           Control.Monad.Except       (MonadError, throwError)
+import           Control.Monad.State.Strict (MonadState)
 import qualified Data.Map.Strict            as Map
 import qualified Data.Set                   as Set
-import           Value                      (EvalMonad, Value (..))
+import           Value                      (Context, Value (..))
 
-data TraverseState = TraverseState
-  { getVisisted :: IntMap.IntMap Bool
-  }
+unify :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
+unify = unify'
 
-data UnifyState = UnifyState
-  { getTraverseState1 :: TraverseState,
-    getTraverseState2 :: TraverseState
-  }
-
-unify :: Value -> Value -> EvalMonad Value
-unify val1 val2 =
-  let (res, _) = runState (runExceptT (unify' val1 val2)) (UnifyState (TraverseState IntMap.empty) (TraverseState IntMap.empty))
-   in case res of
-        Left err  -> throwError err
-        Right val -> return val
-
-fieldsToValue :: Map.Map String Value -> Value
-fieldsToValue fds = Struct (Map.keys fds) fds Set.empty
-
-unify' :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
+unify' :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
 unify' val1 val2 = case (val1, val2) of
   (Bottom _, _) -> return val1
   (String x, String y) -> return $ if x == y then val1 else Bottom "strings mismatch"
@@ -41,7 +24,7 @@ unify' val1 val2 = case (val1, val2) of
   (_, Disjunction _ _) -> unify' val2 val1
   _ -> return $ Bottom "values not unifiable"
 
-unifyStructs :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
+unifyStructs :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
 unifyStructs (Struct _ fields1 _) (Struct _ fields2 _) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
@@ -75,9 +58,12 @@ unifyStructs (Struct _ fields1 _) (Struct _ fields2 _) = do
             []
             interLabels
         )
+
+    fieldsToValue :: Map.Map String Value -> Value
+    fieldsToValue fds = Struct (Map.keys fds) fds Set.empty
 unifyStructs _ _ = throwError "unifyStructs: impossible"
 
-unifyDisjunctions :: (MonadState UnifyState m, MonadError String m) => Value -> Value -> m Value
+unifyDisjunctions :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
 -- this is U0 rule, <v1> & <v2> => <v1&v2>
 unifyDisjunctions (Disjunction [] ds1) (Disjunction [] ds2) = do
   ds <- mapM (`unifyValues` ds2) ds1
@@ -108,7 +94,7 @@ unifyDisjunctions (Disjunction df ds) val = do
 unifyDisjunctions d1 d2 =
   throwError $ "unifyDisjunctions: impossible unification, d1: " ++ show d1 ++ ", d2: " ++ show d2
 
-unifyValues :: (MonadState UnifyState m, MonadError String m) => Value -> [Value] -> m [Value]
+unifyValues :: (MonadState Context m, MonadError String m) => Value -> [Value] -> m [Value]
 unifyValues val = mapM (`unify'` val)
 
 disjunctionFromValues :: (MonadError String m) => [[Value]] -> [[Value]] -> m Value

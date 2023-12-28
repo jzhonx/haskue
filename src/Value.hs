@@ -1,10 +1,16 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module Value where
 
-import           Data.ByteString.Builder (Builder, char7, integerDec, string7)
-import qualified Data.Map.Strict         as Map
-import qualified Data.Set                as Set
+import           Control.Monad.Except       (ExceptT, MonadError, runExceptT,
+                                             throwError)
+import           Control.Monad.State.Strict (MonadState, State, get, put,
+                                             runState)
+import           Data.ByteString.Builder    (Builder, char7, integerDec,
+                                             string7)
+import qualified Data.Map.Strict            as Map
+import qualified Data.Set                   as Set
 
 -- TODO: IntSelector
 data Selector = StringSelector String deriving (Eq, Ord, Show)
@@ -22,9 +28,23 @@ relPath x base =
 mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
 mergePaths p1 p2 = p1 ++ p2
 
-type EvalMonad = Either String
+data Context = Context
+  { -- path is the path to the current expression.
+    -- the path should be the full path.
+    path      :: Path,
+    -- curBlock is the current block that contains the variables.
+    -- A new block will replace the current one when a new block is entered.
+    -- A new block is entered when one of the following is encountered:
+    -- - The "{" token
+    -- - for and let clauses
+    curBlockZ :: Zipper
+  }
+
+type EvalMonad a = forall m. (MonadError String m, MonadState Context m) => m a
 
 type Evaluator = [Value] -> EvalMonad Value
+
+type ValueStore = Map.Map Path Value
 
 data Value
   = Top
@@ -33,7 +53,6 @@ data Value
   | Bool Bool
   | Struct
       { orderedLabels :: [String],
-        -- fields should only be fulfilled after all evaluation is done.
         fields        :: Map.Map String Value,
         identifiers   :: Set.Set String
       }
@@ -54,6 +73,22 @@ data Value
         evaluator :: Evaluator
       }
   | Unevaluated
+
+-- binFunc is used to evaluate a binary function with two arguments.
+binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
+binFunc bin v1@(Pending {}) v2@(Pending {}) = unaFunc (\x -> unaFunc (bin x) v2) v1
+binFunc bin v1@(Pending {}) v2 = unaFunc (`bin` v2) v1
+binFunc bin v1 v2@(Pending {}) = unaFunc (bin v1) v2
+binFunc bin v1 v2 = bin v1 v2
+
+-- unaFunc is used to evaluate a unary function.
+-- The first argument is the function that takes the evaluated value (inclduing pending) and returns a value.
+unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
+unaFunc una (Pending d ev) = return $ Pending d (bindEval ev una)
+unaFunc una v              = una v
+
+bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
+bindEval evalf f vs = evalf vs >>= f
 
 instance Show Value where
   show (String s) = s
