@@ -4,7 +4,7 @@
 module Eval where
 
 import           AST
-import           Control.Monad.Except (MonadError, liftEither, throwError)
+import           Control.Monad.Except (MonadError, throwError)
 import           Control.Monad.State  (MonadState, get, modify, put, runStateT)
 import qualified Data.Map.Strict      as Map
 import           Data.Maybe           (fromJust, isJust)
@@ -14,7 +14,7 @@ import           Unify                (unify)
 import           Value
 
 initState :: Context
-initState = Context [StringSelector "."] (Top, [])
+initState = Context [TopSelector] (emptyStruct, []) Map.empty
 
 eval :: (MonadError String m) => Expression -> m Value
 eval expr = fst <$> runStateT (eval' expr) initState
@@ -44,23 +44,27 @@ evalStructLit s =
           orderedKeys
       fieldsStub = foldr (\k acc -> Map.insert k Unevaluated acc) Map.empty filteredKeys
       idSet = Set.fromList (getVarLabels s)
-      structStub = Struct filteredKeys fieldsStub idSet
+      structStub = Struct (StructValue filteredKeys fieldsStub idSet)
    in do
-        estate@(Context path' cblock) <- get
+        ctx@(Context path' cblock _) <- get
         -- create a new block since we are entering a new struct.
-        let curBlock = addSubZipper (last path') structStub cblock
-        put $ estate {curBlockZ = curBlock}
+        let newBlock = addSubTree (last path') structStub cblock
+        put $ ctx {curBlock = newBlock}
 
         evaled <-
           mapM evalField (zipWith (\name (_, e) -> (name, e)) orderedKeys s)
             >>= unifySameFields
-            >>= evalPendings
 
-        let newStruct = Struct filteredKeys evaled idSet
-        let newBlock = attach newStruct curBlock
+        let newStruct = Struct (StructValue filteredKeys evaled idSet)
+        let newBlock' = attach newStruct newBlock
         -- restore the current block.
-        put $ estate {curBlockZ = trace ("put new block" ++ show newBlock ++ show path') newBlock}
-        return newStruct
+        modify (\ctx' -> ctx' {curBlock = newBlock'})
+
+        tryEvalPendings
+
+        (Context _ (blockVal, _) _) <- get
+
+        return blockVal
   where
     evalLabel (Label (LabelName ln), _) =
       let name = case ln of
@@ -72,7 +76,7 @@ evalStructLit s =
       -- push the current field to the path.
       modify (\estate -> estate {path = path estate ++ [StringSelector name]})
       v <- eval' e
-      -- pop the current field from the path.
+      -- restore path.
       modify (\estate -> estate {path = init (path estate)})
       return (name, v)
 
@@ -92,23 +96,34 @@ evalStructLit s =
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
 
-    evalPending :: (MonadError String m, MonadState Context m) => Map.Map String Value -> String -> Value -> m Value
-    evalPending mx _ p@(Pending [dep] evalf) = do
-      Context path' _ <- get
-      case relPath (snd dep) path' of
-        [] -> throwError "evalPending: empty path"
-        -- the var is defined in the current block.
-        [StringSelector localVar] -> case Map.lookup localVar mx of
-          Just v  -> evalf [v]
-          Nothing -> throwError $ localVar ++ "is not defined"
-        -- the var is defined in the parent block.
-        _ -> return p
-    evalPending _ _ (Pending _ _) = throwError "evalPending: TODO"
-    evalPending _ _ v = return v
+    -- evalPending :: (MonadError String m, MonadState Context m) => Map.Map String Value -> String -> Value -> m Value
+    -- evalPending mx _ p@(Pending [dep] evalf) = do
+    --   Context curPath _ _ <- get
+    --   case relPath (snd dep) curPath of
+    --     [] -> throwError "evalPending: empty path"
+    --     -- the var is defined in the current block.
+    --     [StringSelector localVar] -> case Map.lookup localVar mx of
+    --       Just v  -> evalf [(snd dep, v)]
+    --       Nothing -> throwError $ localVar ++ "is not defined"
+    --     -- the var is defined in the parent block.
+    --     _ -> return p
+    -- evalPending _ _ (Pending _ _) = throwError "evalPending: TODO"
+    -- evalPending _ _ v = return v
+    --
+    -- -- TODO:
+    -- evalPendings :: (MonadError String m, MonadState Context m) => Map.Map String Value -> m (Map.Map String Value)
+    -- evalPendings mx = sequence $ Map.mapWithKey (evalPending mx) mx
 
-    -- TODO:
-    evalPendings :: (MonadError String m, MonadState Context m) => Map.Map String Value -> m (Map.Map String Value)
-    evalPendings mx = sequence $ Map.mapWithKey (evalPending mx) mx
+    tryEvalPendings :: (MonadError String m, MonadState Context m) => m ()
+    tryEvalPendings = do
+      (Context blockPath (blockVal, _) revDeps) <- get
+      case trace ("revDeps: " ++ show revDeps) blockVal of
+        Struct (StructValue _ fds _) ->
+          sequence_ $ Map.mapWithKey (tryEvalPending blockPath) fds
+        _ -> return ()
+      where
+        tryEvalPending :: (MonadError String m, MonadState Context m) => Path -> String -> Value -> m ()
+        tryEvalPending blockPath k v = checkEvalPen (blockPath ++ [StringSelector k], v)
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> m Value
 evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
@@ -216,16 +231,20 @@ evalDisjunction e1 e2 = case (e1, e2) of
 -- lookupVar looks up the variable denoted by the name.
 lookupVar :: (MonadError String m, MonadState Context m) => String -> m Value
 lookupVar name = do
-  Context path' block <- get
+  Context curPath block revDeps <- get
   case searchUp name block of
     -- TODO: currently we should only look up the current block.
-    Just Unevaluated -> return $ Pending [(path', init path' ++ [StringSelector name])] (return . head)
+    Just Unevaluated ->
+      let depPath = init curPath ++ [StringSelector name]
+       in do
+            modify (\estate -> estate {reverseDeps = Map.insert depPath curPath revDeps})
+            return $ newPending curPath depPath
     Just v -> return v
     Nothing ->
       throwError $
         name
           ++ " is not found"
           ++ ", path: "
-          ++ show path'
+          ++ show curPath
           ++ ", block: "
           ++ show (snd block)

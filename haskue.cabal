@@ -67,6 +67,9 @@ Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
   hs-source-dirs:   tests
   main-is: Main.hs
+  other-modules:
+    E2E,
+    ValueTest,
   build-depends:
         base ^>=4.16.4.0,
         tasty >= 0.7,

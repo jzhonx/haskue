@@ -8,7 +8,8 @@ import           Control.Monad.Except       (MonadError, throwError)
 import           Control.Monad.State.Strict (MonadState)
 import qualified Data.Map.Strict            as Map
 import qualified Data.Set                   as Set
-import           Value                      (Context, Value (..))
+import           Value                      (Context, StructValue (..),
+                                             Value (..))
 
 unify :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
 unify = unify'
@@ -25,7 +26,7 @@ unify' val1 val2 = case (val1, val2) of
   _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct _ fields1 _) (Struct _ fields2 _) = do
+unifyStructs (Struct (StructValue _ fields1 _)) (Struct (StructValue _ fields2 _)) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of
@@ -60,7 +61,7 @@ unifyStructs (Struct _ fields1 _) (Struct _ fields2 _) = do
         )
 
     fieldsToValue :: Map.Map String Value -> Value
-    fieldsToValue fds = Struct (Map.keys fds) fds Set.empty
+    fieldsToValue fds = Struct (StructValue (Map.keys fds) fds Set.empty)
 unifyStructs _ _ = throwError "unifyStructs: impossible"
 
 unifyDisjunctions :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
