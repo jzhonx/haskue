@@ -8,9 +8,6 @@ import           Test.Tasty          (TestTree, testGroup)
 import           Test.Tasty.HUnit    (assertEqual, assertFailure, testCase)
 import           Value
 
-newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
-newStruct lbls fds ids = Struct (StructValue lbls fds ids)
-
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> ([StringSelector x], [StringSelector y]))
 
@@ -32,12 +29,11 @@ strsToPath = map (\x -> [StringSelector x])
 checkEvalPenCase :: IO ()
 checkEvalPenCase = do
   let m = checkEvalPen (pathY, newVal)
-  let res = runStateT m (Context [] (blockVal, []) revDeps)
+  let res = runStateT m (Context (blockVal, []) revDeps)
   case res of
     Left err -> assertFailure err
-    Right (_, Context resPath (resVal, _) resRev) -> do
-      assertEqual "check path" [] resPath
-      assertEqual "check block" expectedBlockVal resVal
+    Right (_, Context (resBlock, _) resRev) -> do
+      assertEqual "check block" expectedBlockVal resBlock
       assertEqual "check rev" Map.empty resRev
   return ()
   where
@@ -48,7 +44,7 @@ checkEvalPenCase = do
      { x1: y; x2: x1 }
     -}
     blockVal =
-      newStruct
+      StructValue
         ["x1", "x2"]
         ( Map.fromList
             [ ("x1", Pending [(pathY, pathX1)] (\xs -> return $ fromJust $ lookup pathY xs)),
@@ -59,7 +55,7 @@ checkEvalPenCase = do
     newVal = Int 1
     revDeps = Map.fromList [(pathY, pathX1), (pathX1, pathX2)]
     expectedBlockVal =
-      newStruct
+      StructValue
         ["x1", "x2"]
         ( Map.fromList
             [ ("x1", Int 1),

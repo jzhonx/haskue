@@ -13,6 +13,9 @@ import           Value
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids)
 
+startEval :: String -> Either String Value
+startEval s = eval (parseCUE s) [TopSelector]
+
 e2eTests :: TestTree
 e2eTests =
   testGroup
@@ -20,7 +23,7 @@ e2eTests =
     [ testCase "basic" $
         do
           s <- readFile "tests/e2efiles/basic.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -39,7 +42,7 @@ e2eTests =
       testCase "unaryop" $
         do
           s <- readFile "tests/e2efiles/unaryop.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -56,7 +59,7 @@ e2eTests =
       testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -79,7 +82,7 @@ e2eTests =
         "disjunction"
         $ do
           s <- readFile "tests/e2efiles/disjunct.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -103,7 +106,7 @@ e2eTests =
         "disjunction-2"
         $ do
           s <- readFile "tests/e2efiles/disjunct2.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -125,7 +128,7 @@ e2eTests =
         "unify-structs"
         $ do
           s <- readFile "tests/e2efiles/unify_structs.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->
@@ -144,7 +147,7 @@ e2eTests =
         "vars"
         $ do
           s <- readFile "tests/e2efiles/vars.cue"
-          let val = (eval . parseCUE) s
+          let val = startEval s
           case val of
             Left err -> assertFailure err
             Right val' ->

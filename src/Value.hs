@@ -4,8 +4,7 @@
 module Value where
 
 import           Control.Monad.Except       (MonadError, throwError)
-import           Control.Monad.State.Strict (MonadState, get, modify, put,
-                                             runStateT)
+import           Control.Monad.State.Strict (MonadState, get, modify, put)
 import           Data.ByteString.Builder    (Builder, char7, integerDec,
                                              string7)
 import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
@@ -30,9 +29,9 @@ mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
 mergePaths p1 p2 = p1 ++ p2
 
 -- | TreeCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
-type TreeCrumb = (Selector, Value)
+type TreeCrumb = (Selector, StructValue)
 
-type TreeCursor = (Value, [TreeCrumb])
+type TreeCursor = (StructValue, [TreeCrumb])
 
 goUp :: TreeCursor -> Maybe TreeCursor
 goUp (_, [])           = Nothing
@@ -45,33 +44,40 @@ goTo (x : xs) cursor = do
   goTo xs next
   where
     g :: Selector -> TreeCursor -> Maybe TreeCursor
-    g n@(StringSelector name) (val@(Struct (StructValue _ fields' _)), vs) = do
-      val' <- Map.lookup name fields'
-      return (val', (n, val) : vs)
+    g n@(StringSelector name) (sv@(StructValue _ fields _), vs) = do
+      val <- Map.lookup name fields
+      _sv <- svFromVal val
+      return (_sv, (n, sv) : vs)
     g _ (_, _) = Nothing
 
 topTo :: Path -> TreeCursor -> Maybe TreeCursor
 topTo to cursor = goTo to $ topMost cursor
 
-attach :: Value -> TreeCursor -> TreeCursor
-attach val (_, vs) = (val, vs)
+attach :: StructValue -> TreeCursor -> TreeCursor
+attach sv (_, vs) = (sv, vs)
 
-addSubTree :: Selector -> Value -> TreeCursor -> TreeCursor
-addSubTree sel new (old, vs) = (new, (sel, old) : vs)
+addSubBlock :: String -> StructValue -> TreeCursor -> TreeCursor
+addSubBlock sel newBlock (oldBlock, vs) = (newBlock, (StringSelector sel, updatedOldBlock) : vs)
+  where
+    updatedOldBlock = oldBlock {structFields = Map.insert sel (Struct newBlock) (structFields oldBlock)}
 
-searchUp :: String -> TreeCursor -> Maybe Value
-searchUp name (Struct (StructValue _ fields' _), []) = Map.lookup name fields'
-searchUp name z@(Struct (StructValue _ fields' _), _) =
-  case Map.lookup name fields' of
-    Just v -> Just v
-    Nothing -> do
-      z' <- goUp z
-      searchUp name z'
-searchUp _ _ = Nothing
+searchVarUp :: String -> TreeCursor -> Maybe Value
+searchVarUp varName = go
+  where
+    go :: TreeCursor -> Maybe Value
+    go (StructValue _ fields _, []) = Map.lookup varName fields
+    go cursor@(StructValue _ fields _, _) =
+      case Map.lookup varName fields of
+        Just v  -> Just v
+        Nothing -> goUp cursor >>= go
 
 topMost :: TreeCursor -> TreeCursor
 topMost (v, [])          = (v, [])
 topMost (_, (_, v) : vs) = topMost (v, vs)
+
+svFromVal :: Value -> Maybe StructValue
+svFromVal (Struct sv) = Just sv
+svFromVal _           = Nothing
 
 -- -- | Takes a list of paths and returns a list of paths in the dependency order.
 -- -- In the returned list, the first element is the path that has can be evaluated.
@@ -114,16 +120,13 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
 
 -- | Context
 data Context = Context
-  { -- path is the path to the current expression.
-    -- the path should be the full path.
-    path        :: Path,
-    -- curBlock is the current block that contains the variables.
+  { -- curBlock is the current block that contains the variables.
     -- A new block will replace the current one when a new block is entered.
     -- A new block is entered when one of the following is encountered:
     -- - The "{" token
     -- - for and let clauses
-    curBlock    :: TreeCursor,
-    reverseDeps :: Map.Map Path Path
+    ctxCurBlock    :: TreeCursor,
+    ctxReverseDeps :: Map.Map Path Path
   }
 
 type EvalMonad a = forall m. (MonadError String m, MonadState Context m) => m a
@@ -148,18 +151,19 @@ data Value
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the variable path.
         -- the second element of the tuple is the reference path.
-        depEdges  :: [(Path, Path)],
+        pendDepEdges  :: [(Path, Path)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
-        evaluator :: Evaluator
+        pendEvaluator :: Evaluator
       }
   | Unevaluated
 
 data StructValue = StructValue
-  { orderedLabels :: [String],
-    fields        :: Map.Map String Value,
-    identifiers   :: Set.Set String
+  { structOrderedLabels :: [String],
+    structFields        :: Map.Map String Value,
+    structIDs           :: Set.Set String
   }
+  deriving (Show, Eq)
 
 -- | The binFunc is used to evaluate a binary function with two arguments.
 binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
@@ -199,10 +203,10 @@ checkEvalPen ::
   (MonadError String m, MonadState Context m) => (Path, Value) -> m ()
 checkEvalPen (valPath, val) = do
   ctx <- get
-  case Map.lookup valPath (reverseDeps ctx) of
+  case Map.lookup valPath (ctxReverseDeps ctx) of
     Nothing -> return ()
     Just penPath -> do
-      case goToBlock (curBlock ctx) penPath of
+      case goToBlock (ctxCurBlock ctx) penPath of
         Nothing ->
           throwError $
             "pending value block, path: "
@@ -213,10 +217,10 @@ checkEvalPen (valPath, val) = do
           case penValM of
             Nothing -> throwError $ "pending value, path: " ++ show penPath ++ " is not found"
             Just penVal -> do
-              put $ ctx {path = penPath, curBlock = penBlock}
+              put $ ctx {ctxCurBlock = penBlock}
               penVal' <- applyPen (penPath, penVal) (valPath, val)
               -- restore the context.
-              modify (\ctx' -> ctx' {path = path ctx, curBlock = setPenVal (curBlock ctx') (last penPath) penVal'})
+              modify (\ctx' -> ctx' {ctxCurBlock = setPenVal (ctxCurBlock ctx') (last penPath) penVal'})
   where
     goToBlock :: TreeCursor -> Path -> Maybe TreeCursor
     goToBlock block p =
@@ -224,12 +228,12 @@ checkEvalPen (valPath, val) = do
        in goTo (init p) topBlock
 
     getPenVal :: TreeCursor -> Selector -> Maybe Value
-    getPenVal (Struct (StructValue _ fields' _), _) (StringSelector name) = Map.lookup name fields'
+    getPenVal (StructValue _ fields' _, _) (StringSelector name) = Map.lookup name fields'
     getPenVal _ _ = Nothing
 
     setPenVal :: TreeCursor -> Selector -> Value -> TreeCursor
-    setPenVal (Struct (StructValue ols fields' ids), vs) (StringSelector name) val' =
-      (Struct (StructValue ols (Map.insert name val' fields') ids), vs)
+    setPenVal (StructValue ols fields' ids, vs) (StringSelector name) val' =
+      (StructValue ols (Map.insert name val' fields') ids, vs)
     setPenVal _ _ _ = undefined
 
 -- | Apply value to the pending value which is inside the current context.
@@ -240,7 +244,7 @@ applyPen (penPath, Pending dps evalf) (depPath, val) =
       evalf' xs = evalf ((depPath, val) : xs)
       penVal' = Pending dps' evalf'
    in do
-        modify (\ctx -> ctx {reverseDeps = Map.delete depPath (reverseDeps ctx)})
+        modify (\ctx -> ctx {ctxReverseDeps = Map.delete depPath (ctxReverseDeps ctx)})
         if null dps'
           then do
             v <- evalf' []
@@ -251,8 +255,8 @@ applyPen (penPath, Pending dps evalf) (depPath, val) =
           else return penVal'
 applyPen _ _ = throwError "applyPen: impossible"
 
-emptyStruct :: Value
-emptyStruct = Struct (StructValue [] Map.empty Set.empty)
+emptyStruct :: StructValue
+emptyStruct = StructValue [] Map.empty Set.empty
 
 instance Show Value where
   show (String s) = s
