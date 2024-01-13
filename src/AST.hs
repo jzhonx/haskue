@@ -1,21 +1,24 @@
 module AST where
 
 data Expression
-  = UnaryExprCons UnaryExpr
-  | BinaryOpCons BinaryOp Expression Expression
+  = ExprUnaryExpr UnaryExpr
+  | ExprBinaryOp BinaryOp Expression Expression
   deriving (Show)
 
 data UnaryExpr
-  = PrimaryExprCons PrimaryExpr
-  | UnaryOpCons UnaryOp UnaryExpr
+  = UnaryExprPrimaryExpr PrimaryExpr
+  | UnaryExprUnaryOp UnaryOp UnaryExpr
   deriving (Show)
 
 data PrimaryExpr
-  = Operand Operand
+  = PrimExprOperand Operand
+  | PrimExprSelector PrimaryExpr Selector
   deriving (Show)
 
+newtype Selector = IDSelector Identifer deriving (Show)
+
 data Operand
-  = Literal Literal
+  = OpLiteral Literal
   | OpExpression Expression
   | OperandName OperandName
   deriving (Show)

@@ -1,28 +1,16 @@
 module Parser where
 
-import AST
-import Data.Maybe (fromJust)
-import Text.ParserCombinators.Parsec
-  ( Parser,
-    chainr1,
-    char,
-    digit,
-    many,
-    many1,
-    noneOf,
-    oneOf,
-    optionMaybe,
-    parse,
-    spaces,
-    string,
-    try,
-    (<|>),
-  )
+import           AST
+import           Data.Maybe                    (fromJust)
+import           Text.ParserCombinators.Parsec (Parser, chainr1, char, digit,
+                                                many, many1, noneOf, oneOf,
+                                                optionMaybe, parse, spaces,
+                                                string, try, (<|>))
 
 parseCUE :: String -> Expression
 parseCUE s =
   case parse expr "" s of
-    Left err -> error $ show err
+    Left err  -> error $ show err
     Right val -> val
 
 binopTable :: [(String, BinaryOp)]
@@ -75,10 +63,10 @@ expr = do
           <|> char '&'
           <|> char '|'
       skipElements
-      return $ BinaryOpCons (fromJust $ lookup [op] binopTable)
+      return $ ExprBinaryOp (fromJust $ lookup [op] binopTable)
     unaryExpr' = do
       e <- unaryExpr
-      return $ UnaryExprCons e
+      return $ ExprUnaryExpr e
 
 unaryExpr :: Parser UnaryExpr
 unaryExpr = do
@@ -86,24 +74,24 @@ unaryExpr = do
   op' <- optionMaybe unaryOp
   skipElements
   case op' of
-    Nothing -> fmap PrimaryExprCons primaryExpr
+    Nothing -> fmap UnaryExprPrimaryExpr primaryExpr
     Just op -> do
       e <- unaryExpr
       skipElements
-      return $ UnaryOpCons (fromJust $ lookup op unaryOpTable) e
+      return $ UnaryExprUnaryOp (fromJust $ lookup op unaryOpTable) e
 
 primaryExpr :: Parser PrimaryExpr
 primaryExpr = do
   skipElements
   op <- operand
   skipElements
-  return $ Operand op
+  return $ PrimExprOperand op
 
 operand :: Parser Operand
 operand = do
   skipElements
   op <-
-    fmap Literal literal
+    fmap OpLiteral literal
       <|> (OperandName . Identifier <$> identifier)
       <|> ( do
               _ <- char '('

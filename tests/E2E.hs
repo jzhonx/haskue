@@ -16,6 +16,65 @@ newStruct lbls fds ids = Struct (StructValue lbls fds ids)
 startEval :: String -> Either String Value
 startEval s = eval (parseCUE s) (Path [])
 
+testVars :: IO ()
+testVars = do
+  s <- readFile "tests/e2efiles/vars.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["z", "x", "y"]
+          ( Map.fromList
+              [ ("z", Int 1),
+                ("x", Int 1),
+                ("y", Int 1)
+              ]
+          )
+          Set.empty
+
+testVars2 :: IO ()
+testVars2 = do
+  s <- readFile "tests/e2efiles/vars2.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= undefined
+  where
+    structX =
+      newStruct
+        ["a", "b", "c"]
+        ( Map.fromList
+            [ ("a", Int 1),
+              ("b", Int 2),
+              ("c", Int 9)
+            ]
+        )
+        Set.empty
+    structY =
+      newStruct
+        ["e", "f", "g"]
+        ( Map.fromList
+            [ ("e", Int 3),
+              ("f", Int 4),
+              ("g", Int 9)
+            ]
+        )
+        Set.empty
+    structTop =
+      newStruct
+        ["x", "y", "z"]
+        ( Map.fromList
+            [ ("x", structX),
+              ("y", structY),
+              ("z", Int 12)
+            ]
+        )
+        Set.empty
+
 e2eTests :: TestTree
 e2eTests =
   testGroup
@@ -143,22 +202,6 @@ e2eTests =
                       ]
                   )
                   Set.empty,
-      testCase
-        "vars"
-        $ do
-          s <- readFile "tests/e2efiles/vars.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  ["z", "x", "y"]
-                  ( Map.fromList
-                      [ ("z", Int 1),
-                        ("x", Int 1),
-                        ("y", Int 1)
-                      ]
-                  )
-                  Set.empty
+      testCase "vars" testVars
+      -- testCase "vars2" testVars2
     ]

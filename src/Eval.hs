@@ -20,8 +20,8 @@ eval :: (MonadError String m) => Expression -> Path -> m Value
 eval expr path = fst <$> runStateT (doEval expr path) initState
 
 doEval :: (MonadError String m, MonadState Context m) => Expression -> Path -> m Value
-doEval (UnaryExprCons e)       = evalUnaryExpr e
-doEval (BinaryOpCons op e1 e2) = evalBinary op e1 e2
+doEval (ExprUnaryExpr e)       = evalUnaryExpr e
+doEval (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
 
 evalLiteral :: (MonadError String m, MonadState Context m) => Literal -> Path -> m Value
 evalLiteral = f
@@ -123,10 +123,10 @@ enterNewBlock structStub path = do
   put $ ctx {ctxCurBlock = newBlock}
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> Path -> m Value
-evalUnaryExpr (PrimaryExprCons (Operand (Literal lit))) = evalLiteral lit
-evalUnaryExpr (PrimaryExprCons (Operand (OpExpression expr))) = doEval expr
-evalUnaryExpr (PrimaryExprCons (Operand (OperandName (Identifier ident)))) = lookupVar ident
-evalUnaryExpr (UnaryOpCons op e) = evalUnaryOp op e
+evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OpLiteral lit))) = evalLiteral lit
+evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OpExpression expr))) = doEval expr
+evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OperandName (Identifier ident)))) = lookupVar ident
+evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
 evalUnaryOp :: (MonadError String m, MonadState Context m) => UnaryOp -> UnaryExpr -> Path -> m Value
 evalUnaryOp op e path = do
@@ -172,11 +172,11 @@ data DisjunctItem = DisjunctDefault Value | DisjunctRegular Value
 -- evalDisjunction is used to evaluate a disjunction.
 evalDisjunction :: (MonadError String m, MonadState Context m) => Expression -> Expression -> Path -> m Value
 evalDisjunction e1 e2 path = case (e1, e2) of
-  (UnaryExprCons (UnaryOpCons Star e1'), UnaryExprCons (UnaryOpCons Star e2')) ->
+  (ExprUnaryExpr (UnaryExprUnaryOp Star e1'), ExprUnaryExpr (UnaryExprUnaryOp Star e2')) ->
     evalExprPair (evalUnaryExpr e1' path) DisjunctDefault (evalUnaryExpr e2' path) DisjunctDefault
-  (UnaryExprCons (UnaryOpCons Star e1'), _) ->
+  (ExprUnaryExpr (UnaryExprUnaryOp Star e1'), _) ->
     evalExprPair (evalUnaryExpr e1' path) DisjunctDefault (doEval e2 path) DisjunctRegular
-  (_, UnaryExprCons (UnaryOpCons Star e2')) ->
+  (_, ExprUnaryExpr (UnaryExprUnaryOp Star e2')) ->
     evalExprPair (doEval e1 path) DisjunctRegular (evalUnaryExpr e2' path) DisjunctDefault
   (_, _) -> evalExprPair (doEval e1 path) DisjunctRegular (doEval e2 path) DisjunctRegular
   where
