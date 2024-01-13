@@ -224,24 +224,3 @@ evalDisjunction e1 e2 path = case (e1, e2) of
     dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
 
     newDisj df1 ds1 df2 ds2 = return $ Value.Disjunction (dedupAppend df1 df2) (dedupAppend ds1 ds2)
-
--- lookupVar looks up the variable denoted by the name.
-lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m Value
-lookupVar name path = do
-  Context block revDeps <- get
-  case searchVarUp name block of
-    -- TODO: currently we should only look up the current block.
-    Just Unevaluated ->
-      let depPath = appendSel (StringSelector name) (fromJust $ initPath path)
-       in do
-            modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
-            return $ newPending path depPath
-    Just v -> return v
-    Nothing ->
-      throwError $
-        name
-          ++ " is not found"
-          ++ ", path: "
-          ++ show path
-          ++ ", block: "
-          ++ show (snd block)

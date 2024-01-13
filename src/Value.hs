@@ -198,7 +198,7 @@ data Value
       { -- depEdges is a list of paths to the unresolved references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
-        -- the first element of the tuple is the path to the pending value itself.
+        -- the first element of the tuple is the path to a pending value (could be another pending value).
         -- the second element of the tuple is the reference path.
         pendDepEdges  :: [(Path, Path)],
         -- evaluator is a function that takes a list of values and returns a value.
@@ -305,7 +305,7 @@ checkEvalPen ::
   (MonadError String m, MonadState Context m) => (Path, Value) -> m ()
 checkEvalPen (valPath, val) = do
   Context curBlock revDeps <- get
-  case Map.lookup valPath (trace ("revDeps: " ++ show revDeps ++ ", valPath: " ++ show valPath) revDeps) of
+  case Map.lookup valPath revDeps of
     Nothing -> return ()
     Just penPath -> do
       penVal <- locateGetValue curBlock penPath
@@ -342,6 +342,27 @@ applyPen (penPath, Pending deps evalf) (valPath, val) =
             return v
           else return $ Pending newDeps newEvalf
 applyPen _ _ = throwError "applyPen: impossible"
+
+-- lookupVar looks up the variable denoted by the name.
+lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m Value
+lookupVar name path = do
+  Context block revDeps <- get
+  case searchVarUp name block of
+    -- TODO: currently we should only look up the current block.
+    Just Unevaluated ->
+      let depPath = appendSel (StringSelector name) (fromJust $ initPath path)
+       in do
+            modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
+            return $ newPending path depPath
+    Just v -> return v
+    Nothing ->
+      throwError $
+        name
+          ++ " is not found"
+          ++ ", path: "
+          ++ show path
+          ++ ", block: "
+          ++ show (snd block)
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty
