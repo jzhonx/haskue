@@ -5,15 +5,17 @@ module Value where
 
 import           Control.Monad.Except       (MonadError, throwError)
 import           Control.Monad.State.Strict (MonadState, get, modify, put)
+import           Control.Monad.Trans.Maybe  (MaybeT (..))
 import           Data.ByteString.Builder    (Builder, char7, integerDec,
                                              string7)
 import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
                                              reverseTopSort, stronglyConnComp)
 import qualified Data.Map.Strict            as Map
 import qualified Data.Set                   as Set
+import           Debug.Trace
 
 -- TODO: IntSelector
-data Selector = TopSelector | StringSelector String deriving (Eq, Ord, Show)
+data Selector = StringSelector String deriving (Eq, Ord, Show)
 
 type Path = [Selector]
 
@@ -37,11 +39,11 @@ goUp :: TreeCursor -> Maybe TreeCursor
 goUp (_, [])           = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
-goTo :: Path -> TreeCursor -> Maybe TreeCursor
-goTo [] cursor = Just cursor
-goTo (x : xs) cursor = do
+goDown :: Path -> TreeCursor -> Maybe TreeCursor
+goDown [] cursor = Just cursor
+goDown (x : xs) cursor = do
   next <- g x cursor
-  goTo xs next
+  goDown xs next
   where
     g :: Selector -> TreeCursor -> Maybe TreeCursor
     g n@(StringSelector name) (sv@(StructValue _ fields _), vs) = do
@@ -50,8 +52,8 @@ goTo (x : xs) cursor = do
       return (_sv, (n, sv) : vs)
     g _ (_, _) = Nothing
 
-topTo :: Path -> TreeCursor -> Maybe TreeCursor
-topTo to cursor = goTo to $ topMost cursor
+-- topTo :: Path -> TreeCursor -> Maybe TreeCursor
+-- topTo to cursor = goDown to $ topMost cursor
 
 attach :: StructValue -> TreeCursor -> TreeCursor
 attach sv (_, vs) = (sv, vs)
@@ -71,9 +73,16 @@ searchVarUp varName = go
         Just v  -> Just v
         Nothing -> goUp cursor >>= go
 
-topMost :: TreeCursor -> TreeCursor
-topMost (v, [])          = (v, [])
-topMost (_, (_, v) : vs) = topMost (v, vs)
+-- topMost :: TreeCursor -> TreeCursor
+-- topMost (v, [])          = (v, [])
+-- topMost (_, (_, v) : vs) = topMost (v, vs)
+
+pathFromBlock :: TreeCursor -> Path
+pathFromBlock (_, crumbs) = go crumbs []
+  where
+    go :: [TreeCrumb] -> Path -> Path
+    go [] acc            = acc
+    go ((n, _) : cs) acc = go cs (n : acc)
 
 svFromVal :: Value -> Maybe StructValue
 svFromVal (Struct sv) = Just sv
@@ -197,62 +206,85 @@ newPending selfPath depPath =
                 ++ show xs
     )
 
+goToBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
+goToBlock block p = do
+  topBlock <- propagateBack block
+  case goDown p topBlock of
+    Just b -> return b
+    Nothing ->
+      throwError $
+        "value block, path: "
+          ++ show p
+          ++ " is not found"
+
+-- | Go to the block that contains the value.
+goToValBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
+goToValBlock block p = goToBlock block (init p)
+
+propagateBack :: (MonadError String m) => TreeCursor -> m TreeCursor
+propagateBack (sv, cs) = go cs sv
+  where
+    go :: (MonadError String m) => [TreeCrumb] -> StructValue -> m TreeCursor
+    go [] acc = return (acc, [])
+    go ((StringSelector sel, parSV) : restCS) acc =
+      go restCS (parSV {structFields = Map.insert sel (Struct acc) (structFields parSV)})
+    go _ _ = throwError "propagateBack: impossible"
+
+locateGetValue :: (MonadError String m) => TreeCursor -> Path -> m Value
+locateGetValue block path = goToValBlock block path >>= getVal (last path)
+  where
+    getVal :: (MonadError String m) => Selector -> TreeCursor -> m Value
+    getVal (StringSelector name) (StructValue _ fields _, _) =
+      case Map.lookup name fields of
+        Nothing -> throwError $ "pending value, name: " ++ show name ++ " is not found"
+        Just penVal -> return penVal
+    getVal _ _ = throwError "getPenVal: impossible"
+
+locateSetValue :: (MonadError String m) => TreeCursor -> Path -> Value -> m TreeCursor
+locateSetValue block path val = goToValBlock block path >>= updateVal (last path) val
+  where
+    updateVal :: (MonadError String m) => Selector -> Value -> TreeCursor -> m TreeCursor
+    updateVal (StringSelector name) newVal (StructValue ols fields ids, vs) =
+      return (StructValue ols (Map.insert name newVal fields) ids, vs)
+    updateVal _ _ _ = throwError "updateVal: impossible"
+
+modifyValueInCtx :: (MonadError String m, MonadState Context m) => Path -> Value -> m ()
+modifyValueInCtx path val = do
+  ctx@(Context block _) <- get
+  newBlock <- locateSetValue block path val
+  updatedOrig <- goToBlock newBlock (pathFromBlock block)
+  put $ ctx {ctxCurBlock = updatedOrig}
+
 -- | Checks whether the given value can be applied to the pending value that depends on the given value. If it can, then
 -- apply the value to the pending value.
 checkEvalPen ::
   (MonadError String m, MonadState Context m) => (Path, Value) -> m ()
 checkEvalPen (valPath, val) = do
-  ctx <- get
-  case Map.lookup valPath (ctxReverseDeps ctx) of
+  Context curBlock revDeps <- get
+  case Map.lookup valPath revDeps of
     Nothing -> return ()
     Just penPath -> do
-      case goToBlock (ctxCurBlock ctx) penPath of
-        Nothing ->
-          throwError $
-            "pending value block, path: "
-              ++ show penPath
-              ++ " is not found"
-        Just penBlock -> do
-          let penValM = getPenVal penBlock (last penPath)
-          case penValM of
-            Nothing -> throwError $ "pending value, path: " ++ show penPath ++ " is not found"
-            Just penVal -> do
-              put $ ctx {ctxCurBlock = penBlock}
-              penVal' <- applyPen (penPath, penVal) (valPath, val)
-              -- restore the context.
-              modify (\ctx' -> ctx' {ctxCurBlock = setPenVal (ctxCurBlock ctx') (last penPath) penVal'})
-  where
-    goToBlock :: TreeCursor -> Path -> Maybe TreeCursor
-    goToBlock block p =
-      let topBlock = topMost block
-       in goTo (init p) topBlock
-
-    getPenVal :: TreeCursor -> Selector -> Maybe Value
-    getPenVal (StructValue _ fields' _, _) (StringSelector name) = Map.lookup name fields'
-    getPenVal _ _ = Nothing
-
-    setPenVal :: TreeCursor -> Selector -> Value -> TreeCursor
-    setPenVal (StructValue ols fields' ids, vs) (StringSelector name) val' =
-      (StructValue ols (Map.insert name val' fields') ids, vs)
-    setPenVal _ _ _ = undefined
+      penVal <- locateGetValue curBlock penPath
+      newPenVal <- applyPen (penPath, penVal) (valPath, val)
+      -- update the pending block.
+      modifyValueInCtx penPath newPenVal
 
 -- | Apply value to the pending value which is inside the current context.
 -- It returns the new updated value.
 applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Path, Value) -> m Value
-applyPen (penPath, Pending dps evalf) (depPath, val) =
-  let dps' = filter (\(p, _) -> p /= depPath) dps
-      evalf' xs = evalf ((depPath, val) : xs)
-      penVal' = Pending dps' evalf'
+applyPen (penPath, Pending deps evalf) (depPath, val) =
+  let newDeps = filter (\(p, _) -> p /= depPath) deps
+      newEvalf xs = evalf ((depPath, val) : xs)
    in do
         modify (\ctx -> ctx {ctxReverseDeps = Map.delete depPath (ctxReverseDeps ctx)})
-        if null dps'
+        if null newDeps
           then do
-            v <- evalf' []
+            v <- newEvalf []
             -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
             -- on this value.
             checkEvalPen (penPath, v)
             return v
-          else return penVal'
+          else return $ Pending newDeps newEvalf
 applyPen _ _ = throwError "applyPen: impossible"
 
 emptyStruct :: StructValue

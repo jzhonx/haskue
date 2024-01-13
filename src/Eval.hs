@@ -121,7 +121,6 @@ enterNewBlock structStub path = do
   ctx@(Context block _) <- get
   let blockName = case last path of
         StringSelector name -> name
-        _                   -> error "block does not have a string name"
   let newBlock = addSubBlock blockName structStub block
   put $ ctx {ctxCurBlock = newBlock}
 

@@ -14,7 +14,7 @@ newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids)
 
 startEval :: String -> Either String Value
-startEval s = eval (parseCUE s) [TopSelector]
+startEval s = eval (parseCUE s) []
 
 e2eTests :: TestTree
 e2eTests =
