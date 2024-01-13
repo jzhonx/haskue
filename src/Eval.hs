@@ -71,7 +71,7 @@ evalStructLit s path =
        in name
 
     evalField (name, e) = do
-      v <- doEval e $ path ++ [StringSelector name]
+      v <- doEval e $ appendSel (StringSelector name) path
       return (name, v)
 
     -- unifySameFields is used to build a map from the field names to the values.
@@ -114,14 +114,12 @@ tryEvalPendings path = do
   sequence_ $ Map.mapWithKey tryEvalPending fds
   where
     tryEvalPending :: (MonadError String m, MonadState Context m) => String -> Value -> m ()
-    tryEvalPending k v = checkEvalPen (path ++ [StringSelector k], v)
+    tryEvalPending k v = checkEvalPen (appendSel (StringSelector k) path, v)
 
 enterNewBlock :: (MonadError String m, MonadState Context m) => StructValue -> Path -> m ()
 enterNewBlock structStub path = do
   ctx@(Context block _) <- get
-  let blockName = case last path of
-        StringSelector name -> name
-  let newBlock = addSubBlock blockName structStub block
+  let newBlock = addSubBlock (lastSel path) structStub block
   put $ ctx {ctxCurBlock = newBlock}
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> Path -> m Value
@@ -234,7 +232,7 @@ lookupVar name path = do
   case searchVarUp name block of
     -- TODO: currently we should only look up the current block.
     Just Unevaluated ->
-      let depPath = init path ++ [StringSelector name]
+      let depPath = appendSel (StringSelector name) (fromJust $ initPath path)
        in do
             modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
             return $ newPending path depPath

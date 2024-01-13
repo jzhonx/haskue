@@ -11,20 +11,58 @@ import           Data.ByteString.Builder    (Builder, char7, integerDec,
 import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
                                              reverseTopSort, stronglyConnComp)
 import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
 import qualified Data.Set                   as Set
 import           Debug.Trace
+import           Text.Printf                (printf)
 
 -- TODO: IntSelector
-data Selector = StringSelector String deriving (Eq, Ord, Show)
+data Selector = StringSelector String deriving (Eq, Ord)
 
-type Path = [Selector]
+instance Show Selector where
+  show (StringSelector s) = s
 
--- relPath x base returns the relative path from base to x.
--- If base is not a prefix of x, then x is returned.
-relPath :: Path -> Path -> Path
-relPath x base =
-  let (prefix, suffix) = splitAt (length base) x
-   in if prefix == base then suffix else x
+-- | Path is full path to a value.
+newtype Path = Path [Selector] deriving (Eq, Ord)
+
+showPath :: Path -> String
+showPath (Path sels) = go (reverse sels) ""
+  where
+    go :: [Selector] -> String -> String
+    go [] acc = acc
+    go (x : xs) acc
+      | acc == "" = go xs (show x)
+      | otherwise = go xs (show x ++ "." ++ acc)
+
+instance Show Path where
+  show = showPath
+
+pathFromList :: [Selector] -> Path
+pathFromList sels = Path (reverse sels)
+
+appendSel :: Selector -> Path -> Path
+appendSel sel (Path xs) = Path (sel : xs)
+
+initPath :: Path -> Maybe Path
+initPath (Path []) = Nothing
+initPath (Path xs) = Just $ Path (tail xs)
+
+lastSel :: Path -> Maybe Selector
+lastSel (Path []) = Nothing
+lastSel (Path xs) = Just $ head xs
+
+-- -- relPath p base returns the relative path from base to p.
+-- -- If base is not a prefix of p, then p is returned.
+-- relPath :: Path -> Path -> Path
+-- relPath (Path p) (Path base) = Path $ go (reverse p) (reverse base) []
+--   where
+--     go :: [Selector] -> [Selector] -> [Selector] -> [Selector]
+--     go [] _ acc = acc
+--     go _ [] acc = acc
+--     go (x : xs) (y : ys) acc =
+--       if x == y
+--         then go xs ys (x : acc)
+--         else acc
 
 -- TODO: dedeup
 mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
@@ -40,17 +78,19 @@ goUp (_, [])           = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goDown :: Path -> TreeCursor -> Maybe TreeCursor
-goDown [] cursor = Just cursor
-goDown (x : xs) cursor = do
-  next <- g x cursor
-  goDown xs next
+goDown (Path sels) = go (reverse sels)
   where
-    g :: Selector -> TreeCursor -> Maybe TreeCursor
-    g n@(StringSelector name) (sv@(StructValue _ fields _), vs) = do
+    next :: Selector -> TreeCursor -> Maybe TreeCursor
+    next n@(StringSelector name) (sv@(StructValue _ fields _), vs) = do
       val <- Map.lookup name fields
-      _sv <- svFromVal val
-      return (_sv, (n, sv) : vs)
-    g _ (_, _) = Nothing
+      newSv <- svFromVal val
+      return (newSv, (n, sv) : vs)
+
+    go :: [Selector] -> TreeCursor -> Maybe TreeCursor
+    go [] cursor = Just cursor
+    go (x : xs) cursor = do
+      nextCur <- next x cursor
+      go xs nextCur
 
 -- topTo :: Path -> TreeCursor -> Maybe TreeCursor
 -- topTo to cursor = goDown to $ topMost cursor
@@ -58,10 +98,10 @@ goDown (x : xs) cursor = do
 attach :: StructValue -> TreeCursor -> TreeCursor
 attach sv (_, vs) = (sv, vs)
 
-addSubBlock :: String -> StructValue -> TreeCursor -> TreeCursor
-addSubBlock sel newBlock (oldBlock, vs) = (newBlock, (StringSelector sel, updatedOldBlock) : vs)
-  where
-    updatedOldBlock = oldBlock {structFields = Map.insert sel (Struct newBlock) (structFields oldBlock)}
+addSubBlock :: Maybe Selector -> StructValue -> TreeCursor -> TreeCursor
+addSubBlock Nothing newSv (sv, vs) = (mergeStructValues newSv sv, vs)
+addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
+  (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
 
 searchVarUp :: String -> TreeCursor -> Maybe Value
 searchVarUp varName = go
@@ -78,9 +118,9 @@ searchVarUp varName = go
 -- topMost (_, (_, v) : vs) = topMost (v, vs)
 
 pathFromBlock :: TreeCursor -> Path
-pathFromBlock (_, crumbs) = go crumbs []
+pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
   where
-    go :: [TreeCrumb] -> Path -> Path
+    go :: [TreeCrumb] -> [Selector] -> [Selector]
     go [] acc            = acc
     go ((n, _) : cs) acc = go cs (n : acc)
 
@@ -158,7 +198,7 @@ data Value
       { -- depEdges is a list of paths to the unresolved references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
-        -- the first element of the tuple is the variable path.
+        -- the first element of the tuple is the path to the pending value itself.
         -- the second element of the tuple is the reference path.
         pendDepEdges  :: [(Path, Path)],
         -- evaluator is a function that takes a list of values and returns a value.
@@ -173,6 +213,12 @@ data StructValue = StructValue
     structIDs           :: Set.Set String
   }
   deriving (Show, Eq)
+
+-- TODO: merge same keys handler
+-- two embeded structs can have same keys
+mergeStructValues :: StructValue -> StructValue -> StructValue
+mergeStructValues (StructValue ols1 fields1 ids1) (StructValue ols2 fields2 ids2) =
+  StructValue (ols1 ++ ols2) (Map.union fields1 fields2) (Set.union ids1 ids2)
 
 -- | The binFunc is used to evaluate a binary function with two arguments.
 binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
@@ -218,8 +264,9 @@ goToBlock block p = do
           ++ " is not found"
 
 -- | Go to the block that contains the value.
+-- The path should be the full path to the value.
 goToValBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
-goToValBlock block p = goToBlock block (init p)
+goToValBlock cursor p = goToBlock cursor (fromJust $ initPath p)
 
 propagateBack :: (MonadError String m) => TreeCursor -> m TreeCursor
 propagateBack (sv, cs) = go cs sv
@@ -228,25 +275,22 @@ propagateBack (sv, cs) = go cs sv
     go [] acc = return (acc, [])
     go ((StringSelector sel, parSV) : restCS) acc =
       go restCS (parSV {structFields = Map.insert sel (Struct acc) (structFields parSV)})
-    go _ _ = throwError "propagateBack: impossible"
 
 locateGetValue :: (MonadError String m) => TreeCursor -> Path -> m Value
-locateGetValue block path = goToValBlock block path >>= getVal (last path)
+locateGetValue block path = goToValBlock block path >>= getVal (fromJust $ lastSel path)
   where
     getVal :: (MonadError String m) => Selector -> TreeCursor -> m Value
     getVal (StringSelector name) (StructValue _ fields _, _) =
       case Map.lookup name fields of
         Nothing -> throwError $ "pending value, name: " ++ show name ++ " is not found"
         Just penVal -> return penVal
-    getVal _ _ = throwError "getPenVal: impossible"
 
 locateSetValue :: (MonadError String m) => TreeCursor -> Path -> Value -> m TreeCursor
-locateSetValue block path val = goToValBlock block path >>= updateVal (last path) val
+locateSetValue block path val = goToValBlock block path >>= updateVal (fromJust $ lastSel path) val
   where
     updateVal :: (MonadError String m) => Selector -> Value -> TreeCursor -> m TreeCursor
     updateVal (StringSelector name) newVal (StructValue ols fields ids, vs) =
       return (StructValue ols (Map.insert name newVal fields) ids, vs)
-    updateVal _ _ _ = throwError "updateVal: impossible"
 
 modifyValueInCtx :: (MonadError String m, MonadState Context m) => Path -> Value -> m ()
 modifyValueInCtx path val = do
@@ -261,23 +305,35 @@ checkEvalPen ::
   (MonadError String m, MonadState Context m) => (Path, Value) -> m ()
 checkEvalPen (valPath, val) = do
   Context curBlock revDeps <- get
-  case Map.lookup valPath revDeps of
+  case Map.lookup valPath (trace ("revDeps: " ++ show revDeps ++ ", valPath: " ++ show valPath) revDeps) of
     Nothing -> return ()
     Just penPath -> do
       penVal <- locateGetValue curBlock penPath
       newPenVal <- applyPen (penPath, penVal) (valPath, val)
       -- update the pending block.
-      modifyValueInCtx penPath newPenVal
+      modifyValueInCtx
+        penPath
+        ( trace
+            ( printf
+                "penVal: %s, penPath: %s, val: %s, valPath: %s, newPenVal: %s"
+                (show penVal)
+                (show penPath)
+                (show val)
+                (show valPath)
+                (show newPenVal)
+            )
+            newPenVal
+        )
 
 -- | Apply value to the pending value which is inside the current context.
 -- It returns the new updated value.
 applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Path, Value) -> m Value
-applyPen (penPath, Pending deps evalf) (depPath, val) =
-  let newDeps = filter (\(p, _) -> p /= depPath) deps
-      newEvalf xs = evalf ((depPath, val) : xs)
+applyPen (penPath, Pending deps evalf) (valPath, val) =
+  let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
+      newEvalf xs = evalf ((valPath, val) : xs)
    in do
-        modify (\ctx -> ctx {ctxReverseDeps = Map.delete depPath (ctxReverseDeps ctx)})
-        if null newDeps
+        modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
+        if null (trace (printf "penPath: %s newDeps: %s" (show penPath) (show newDeps)) newDeps)
           then do
             v <- newEvalf []
             -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
@@ -290,6 +346,7 @@ applyPen _ _ = throwError "applyPen: impossible"
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty
 
+-- | Show is only used for debugging.
 instance Show Value where
   show (String s) = s
   show (Int i) = show i
@@ -299,8 +356,8 @@ instance Show Value where
   show (Struct (StructValue ols fds _)) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
-  show Pending {} = "_|_"
-  show Unevaluated = "_|_"
+  show (Pending edges _) = printf "(Pending, edges: %s)" (show edges)
+  show Unevaluated = "Unevaluated"
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2

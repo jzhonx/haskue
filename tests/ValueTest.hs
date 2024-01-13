@@ -9,10 +9,10 @@ import           Test.Tasty.HUnit    (assertEqual, assertFailure, testCase)
 import           Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
-edgesGen = map (\(x, y) -> ([StringSelector x], [StringSelector y]))
+edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
 
 strsToPath :: [String] -> [Path]
-strsToPath = map (\x -> [StringSelector x])
+strsToPath = map (\x -> Path [StringSelector x])
 
 -- [ testCase "depsOrder-cycle" $
 --     let deps = edgesGen [("a", "b"), ("b", "c"), ("c", "a")]
@@ -27,15 +27,21 @@ strsToPath = map (\x -> [StringSelector x])
 -- ]
 --
 --
-pathY = [StringSelector "y"]
+selY = StringSelector "y"
 
-pathX1 = [StringSelector "x1"]
+pathY = Path [selY]
 
-pathX2 = [StringSelector "x2"]
+selX1 = StringSelector "x1"
+
+pathX1 = Path [selX1]
+
+selX2 = StringSelector "x2"
+
+pathX2 = Path [selX2]
 
 modifyValueInCtxTest :: IO ()
 modifyValueInCtxTest = do
-  let m = modifyValueInCtx [head pathX1, head pathY] (String "world")
+  let m = modifyValueInCtx (pathFromList [selX1, selY]) (String "world")
   let res = runStateT m (Context (outer, []) Map.empty)
   case res of
     Left err -> assertFailure err
@@ -79,8 +85,8 @@ checkEvalPenTest = do
       StructValue
         ["x1", "x2"]
         ( Map.fromList
-            [ ("x1", Pending [(pathY, pathX1)] (\xs -> return $ fromJust $ lookup pathY xs)),
-              ("x2", Pending [(pathX1, pathX2)] (\xs -> return $ fromJust $ lookup pathX1 xs))
+            [ ("x1", Pending [(pathX1, pathY)] (\xs -> return $ fromJust $ lookup pathY xs)),
+              ("x2", Pending [(pathX2, pathX1)] (\xs -> return $ fromJust $ lookup pathX1 xs))
             ]
         )
         Set.empty
