@@ -15,7 +15,10 @@ data PrimaryExpr
   | PrimExprSelector PrimaryExpr Selector
   deriving (Show)
 
-newtype Selector = IDSelector Identifer deriving (Show)
+data Selector
+  = IDSelector Identifer
+  | StringSelector SimpleStringLit
+  deriving (Show)
 
 data Operand
   = OpLiteral Literal

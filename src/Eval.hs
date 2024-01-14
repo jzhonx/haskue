@@ -71,7 +71,10 @@ evalStructLit s path =
        in name
 
     evalField (name, e) = do
-      v <- doEval e $ appendSel (StringSelector name) path
+      v <- doEval e $ appendSel (Value.StringSelector name) path
+      ctx <- get
+      updatedBlock <- goToBlock (ctxCurBlock ctx) path
+      put $ ctx {ctxCurBlock = updatedBlock}
       return (name, v)
 
     -- unifySameFields is used to build a map from the field names to the values.
@@ -90,31 +93,13 @@ evalStructLit s path =
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
 
--- evalPending :: (MonadError String m, MonadState Context m) => Map.Map String Value -> String -> Value -> m Value
--- evalPending mx _ p@(Pending [dep] evalf) = do
---   Context curPath _ _ <- get
---   case relPath (snd dep) curPath of
---     [] -> throwError "evalPending: empty path"
---     -- the var is defined in the current block.
---     [StringSelector localVar] -> case Map.lookup localVar mx of
---       Just v  -> evalf [(snd dep, v)]
---       Nothing -> throwError $ localVar ++ "is not defined"
---     -- the var is defined in the parent block.
---     _ -> return p
--- evalPending _ _ (Pending _ _) = throwError "evalPending: TODO"
--- evalPending _ _ v = return v
---
--- -- TODO:
--- evalPendings :: (MonadError String m, MonadState Context m) => Map.Map String Value -> m (Map.Map String Value)
--- evalPendings mx = sequence $ Map.mapWithKey (evalPending mx) mx
-
 tryEvalPendings :: (MonadError String m, MonadState Context m) => Path -> m ()
 tryEvalPendings path = do
   (Context (StructValue _ fds _, _) _) <- get
   sequence_ $ Map.mapWithKey tryEvalPending fds
   where
     tryEvalPending :: (MonadError String m, MonadState Context m) => String -> Value -> m ()
-    tryEvalPending k v = checkEvalPen (appendSel (StringSelector k) path, v)
+    tryEvalPending k v = checkEvalPen (appendSel (Value.StringSelector k) path, v)
 
 enterNewBlock :: (MonadError String m, MonadState Context m) => StructValue -> Path -> m ()
 enterNewBlock structStub path = do
@@ -123,10 +108,28 @@ enterNewBlock structStub path = do
   put $ ctx {ctxCurBlock = newBlock}
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> Path -> m Value
-evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OpLiteral lit))) = evalLiteral lit
-evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OpExpression expr))) = doEval expr
-evalUnaryExpr (UnaryExprPrimaryExpr (PrimExprOperand (OperandName (Identifier ident)))) = lookupVar ident
-evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
+evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
+evalUnaryExpr (UnaryExprUnaryOp op e)         = evalUnaryOp op e
+
+evalPrimExpr :: (MonadError String m, MonadState Context m) => PrimaryExpr -> Path -> m Value
+evalPrimExpr (PrimExprOperand op) = case op of
+  OpLiteral lit                  -> evalLiteral lit
+  OpExpression expr              -> doEval expr
+  OperandName (Identifier ident) -> lookupVar ident
+evalPrimExpr (PrimExprSelector primExpr sel) = \path -> do
+  val <- evalPrimExpr primExpr path
+  evalSelector sel val
+
+evalSelector :: (MonadError String m, MonadState Context m) => AST.Selector -> Value -> m Value
+evalSelector sel val = case sel of
+  IDSelector ident       -> evalF ident
+  AST.StringSelector str -> evalF str
+  where
+    evalF s = case val of
+      Struct (StructValue _ fields _) -> case Map.lookup s fields of
+        Just v  -> return v
+        Nothing -> return $ Bottom $ s ++ " is not found"
+      _ -> throwError $ "evalSelector: not a struct: " ++ show s
 
 evalUnaryOp :: (MonadError String m, MonadState Context m) => UnaryOp -> UnaryExpr -> Path -> m Value
 evalUnaryOp op e path = do

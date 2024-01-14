@@ -1,17 +1,21 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module Parser where
 
 import           AST
+import           Control.Monad.Except          (MonadError, throwError)
 import           Data.Maybe                    (fromJust)
-import           Text.ParserCombinators.Parsec (Parser, chainr1, char, digit,
-                                                many, many1, noneOf, oneOf,
-                                                optionMaybe, parse, spaces,
-                                                string, try, (<|>))
+import           Text.Parsec                   (parserTrace, parserTraced)
+import           Text.ParserCombinators.Parsec (Parser, chainl1, chainr1, char,
+                                                digit, many, many1, noneOf,
+                                                oneOf, optionMaybe, parse,
+                                                spaces, string, try, (<?>),
+                                                (<|>))
 
-parseCUE :: String -> Expression
-parseCUE s =
-  case parse expr "" s of
-    Left err  -> error $ show err
-    Right val -> val
+parseCUE :: (MonadError String m) => String -> m Expression
+parseCUE s = case parse expr "" s of
+  Left err  -> throwError $ show err
+  Right val -> return val
 
 binopTable :: [(String, BinaryOp)]
 binopTable =
@@ -48,11 +52,11 @@ skipElements = try (comment >> spaces) <|> spaces
 expr :: Parser Expression
 expr = do
   skipElements
-  e <- chainr1 unaryExpr' binOp'
+  e <- chainr1 (ExprUnaryExpr <$> unaryExpr) binOpF
   skipElements
   return e
   where
-    binOp' = do
+    binOpF = do
       skipElements
       -- the following order is the operator precedence order.
       op <-
@@ -64,9 +68,6 @@ expr = do
           <|> char '|'
       skipElements
       return $ ExprBinaryOp (fromJust $ lookup [op] binopTable)
-    unaryExpr' = do
-      e <- unaryExpr
-      return $ ExprUnaryExpr e
 
 unaryExpr :: Parser UnaryExpr
 unaryExpr = do
@@ -74,7 +75,7 @@ unaryExpr = do
   op' <- optionMaybe unaryOp
   skipElements
   case op' of
-    Nothing -> fmap UnaryExprPrimaryExpr primaryExpr
+    Nothing -> UnaryExprPrimaryExpr <$> primaryExpr
     Just op -> do
       e <- unaryExpr
       skipElements
@@ -83,15 +84,36 @@ unaryExpr = do
 primaryExpr :: Parser PrimaryExpr
 primaryExpr = do
   skipElements
-  op <- operand
+  e <- chainPrimExpr primOperand selector
   skipElements
-  return $ PrimExprOperand op
+  return e
+  where
+    primOperand = PrimExprOperand <$> operand
+
+    selector :: Parser (PrimaryExpr -> PrimaryExpr)
+    selector = do
+      _ <- char '.'
+      sel <- (IDSelector <$> identifier) <|> (StringSelector <$> simpleStringLit)
+      return $ \pe -> PrimExprSelector pe sel
+
+chainPrimExpr :: Parser PrimaryExpr -> Parser (PrimaryExpr -> PrimaryExpr) -> Parser PrimaryExpr
+chainPrimExpr p op = do
+  x <- p
+  rest x
+  where
+    rest x =
+      ( do
+          g <- op
+          rest (g x)
+      )
+        <|> return x
+        <?> "failed to parse chainPrimExpr"
 
 operand :: Parser Operand
 operand = do
   skipElements
-  op <-
-    fmap OpLiteral literal
+  opd <-
+    OpLiteral <$> literal
       <|> (OperandName . Identifier <$> identifier)
       <|> ( do
               _ <- char '('
@@ -99,8 +121,9 @@ operand = do
               _ <- char ')'
               return $ OpExpression e
           )
+      <?> "failed to parse operand"
   skipElements
-  return op
+  return opd
 
 literal :: Parser Literal
 literal = do
@@ -109,7 +132,7 @@ literal = do
     parseInt
       <|> struct
       <|> bool
-      <|> (StringLit . SimpleStringLit <$> stringLit)
+      <|> (StringLit . SimpleStringLit <$> simpleStringLit)
       <|> try bottom
       <|> top
       <|> null'
@@ -140,7 +163,7 @@ identifier = do
 field :: Parser (Label, Expression)
 field = do
   skipElements
-  ln <- (LabelID <$> identifier) <|> (LabelString <$> stringLit)
+  ln <- (LabelID <$> identifier) <|> (LabelString <$> simpleStringLit)
   skipElements
   _ <- char ':'
   skipElements
@@ -148,8 +171,8 @@ field = do
   skipElements
   return ((Label . LabelName) ln, e)
 
-stringLit :: Parser SimpleStringLit
-stringLit = do
+simpleStringLit :: Parser SimpleStringLit
+simpleStringLit = do
   _ <- char '"'
   s <- many (noneOf "\"")
   _ <- char '"'

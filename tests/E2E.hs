@@ -13,8 +13,51 @@ import           Value
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids)
 
+newSimpleStruct :: [String] -> [(String, Value)] -> Value
+newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
+
 startEval :: String -> Either String Value
-startEval s = eval (parseCUE s) (Path [])
+startEval s = do
+  parsedE <- parseCUE s
+  eval parsedE (Path [])
+
+testSelector :: IO ()
+testSelector = do
+  s <- readFile "tests/e2efiles/selector.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["T", "a", "b", "c", "d", "e", "f"]
+          ( Map.fromList
+              [ ("T", structT),
+                ("a", Int 1),
+                ("b", Int 3),
+                ("c", Bottom "z is not found"),
+                ("d", Int 4),
+                ("e", structE),
+                ("f", Disjunction [Int 4] [Int 3, Int 4])
+              ]
+          )
+          Set.empty
+  where
+    structT =
+      newStruct
+        ["x", "y", "x-y"]
+        ( Map.fromList
+            [ ("x", Int 1),
+              ("y", Int 3),
+              ("x-y", Int 4)
+            ]
+        )
+        Set.empty
+    fieldEDefault = newSimpleStruct ["a"] [("a", Disjunction [Int 4] [Int 3, Int 4])]
+    structE =
+      Disjunction
+        [fieldEDefault]
+        [newSimpleStruct ["a"] [("a", Disjunction [Int 2] [Int 1, Int 2])], fieldEDefault]
 
 testVars :: IO ()
 testVars = do
@@ -202,6 +245,7 @@ e2eTests =
                       ]
                   )
                   Set.empty,
-      testCase "vars" testVars
+      testCase "vars" testVars,
       -- testCase "vars2" testVars2
+      testCase "selector" testSelector
     ]

@@ -92,9 +92,6 @@ goDown (Path sels) = go (reverse sels)
       nextCur <- next x cursor
       go xs nextCur
 
--- topTo :: Path -> TreeCursor -> Maybe TreeCursor
--- topTo to cursor = goDown to $ topMost cursor
-
 attach :: StructValue -> TreeCursor -> TreeCursor
 attach sv (_, vs) = (sv, vs)
 
@@ -112,10 +109,6 @@ searchVarUp varName = go
       case Map.lookup varName fields of
         Just v  -> Just v
         Nothing -> goUp cursor >>= go
-
--- topMost :: TreeCursor -> TreeCursor
--- topMost (v, [])          = (v, [])
--- topMost (_, (_, v) : vs) = topMost (v, vs)
 
 pathFromBlock :: TreeCursor -> Path
 pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
@@ -348,7 +341,6 @@ lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m 
 lookupVar name path = do
   Context block revDeps <- get
   case searchVarUp name block of
-    -- TODO: currently we should only look up the current block.
     Just Unevaluated ->
       let depPath = appendSel (StringSelector name) (fromJust $ initPath path)
        in do
@@ -362,7 +354,7 @@ lookupVar name path = do
           ++ ", path: "
           ++ show path
           ++ ", block: "
-          ++ show (snd block)
+          ++ show block
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty
