@@ -246,6 +246,6 @@ e2eTests =
                   )
                   Set.empty,
       testCase "vars" testVars,
-      -- testCase "vars2" testVars2
+      testCase "vars2" testVars2,
       testCase "selector" testSelector
     ]

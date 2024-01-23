@@ -79,4 +79,5 @@ Test-Suite haskue-unit-test
         bytestring,
         mtl,
         containers,
+        transformers,
   default-language: Haskell2010

@@ -10,6 +10,7 @@ import           Data.ByteString.Builder    (Builder, char7, integerDec,
                                              string7)
 import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
                                              reverseTopSort, stronglyConnComp)
+import           Data.List                  (intercalate)
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromJust)
 import qualified Data.Set                   as Set
@@ -26,16 +27,13 @@ instance Show Selector where
 newtype Path = Path [Selector] deriving (Eq, Ord)
 
 showPath :: Path -> String
-showPath (Path sels) = go (reverse sels) ""
-  where
-    go :: [Selector] -> String -> String
-    go [] acc = acc
-    go (x : xs) acc
-      | acc == "" = go xs (show x)
-      | otherwise = go xs (show x ++ "." ++ acc)
+showPath (Path sels) = intercalate "." $ map (\(StringSelector s) -> s) (reverse sels)
 
 instance Show Path where
   show = showPath
+
+emptyPath :: Path
+emptyPath = Path []
 
 pathFromList :: [Selector] -> Path
 pathFromList sels = Path (reverse sels)
@@ -100,14 +98,16 @@ addSubBlock Nothing newSv (sv, vs) = (mergeStructValues newSv sv, vs)
 addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
   (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
 
-searchVarUp :: String -> TreeCursor -> Maybe Value
+searchVarUp :: String -> TreeCursor -> Maybe (Value, TreeCursor)
 searchVarUp varName = go
   where
-    go :: TreeCursor -> Maybe Value
-    go (StructValue _ fields _, []) = Map.lookup varName fields
+    go :: TreeCursor -> Maybe (Value, TreeCursor)
+    go cursor@(StructValue _ fields _, []) = case Map.lookup varName fields of
+      Just v  -> Just (v, cursor)
+      Nothing -> Nothing
     go cursor@(StructValue _ fields _, _) =
       case Map.lookup varName fields of
-        Just v  -> Just v
+        Just v  -> Just (v, cursor)
         Nothing -> goUp cursor >>= go
 
 pathFromBlock :: TreeCursor -> Path
@@ -173,6 +173,7 @@ data Context = Context
 
 type EvalMonad a = forall m. (MonadError String m, MonadState Context m) => m a
 
+-- | Evaluator is a function that takes a list of tuples values and their paths and returns a value.
 type Evaluator = [(Path, Value)] -> EvalMonad Value
 
 data Value
@@ -191,8 +192,8 @@ data Value
       { -- depEdges is a list of paths to the unresolved references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
-        -- the first element of the tuple is the path to a pending value (could be another pending value).
-        -- the second element of the tuple is the reference path.
+        -- the first element of the tuple is the path to a pending value.
+        -- the second element of the tuple is the path to a value that the pending value depends on.
         pendDepEdges  :: [(Path, Path)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
@@ -221,15 +222,16 @@ binFunc bin v1 v2@(Pending {}) = unaFunc (bin v1) v2
 binFunc bin v1 v2 = bin v1 v2
 
 -- | The unaFunc is used to evaluate a unary function.
--- The first argument is the function that takes the evaluated value (inclduing pending) and returns a value.
+-- The first argument is the function that takes the value and returns a value.
 unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
-unaFunc una (Pending d ev) = return $ Pending d (bindEval ev una)
-unaFunc una v              = una v
+unaFunc f (Pending d e) = return $ Pending d (bindEval e f)
+unaFunc f v             = f v
 
--- | The bindEval function is used to bind the evaluator to the function.
+-- | Binds the evaluator to a function that uses the value as the argument.
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
-bindEval evalf f vs = evalf vs >>= f
+bindEval evalf f xs = evalf xs >>= f
 
+-- | Creates a new pending value.
 newPending :: Path -> Path -> Value
 newPending selfPath depPath =
   Pending
@@ -239,10 +241,10 @@ newPending selfPath depPath =
           Just v -> return v
           Nothing ->
             throwError $
-              "Pending value can not find the dependent value, depPath: "
-                ++ show depPath
-                ++ ", args: "
-                ++ show xs
+              printf
+                "Pending value can not find the dependent value, depPath: %s, args: %s"
+                (show depPath)
+                (show xs)
     )
 
 goToBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
@@ -299,10 +301,15 @@ checkEvalPen ::
 checkEvalPen (valPath, val) = do
   Context curBlock revDeps <- get
   case Map.lookup valPath revDeps of
-    Nothing -> return ()
+    Nothing -> pure ()
     Just penPath -> do
       penVal <- locateGetValue curBlock penPath
       newPenVal <- applyPen (penPath, penVal) (valPath, val)
+      case newPenVal of
+        Pending {} -> pure ()
+        -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
+        -- on this value.
+        v          -> checkEvalPen (penPath, v)
       -- update the pending block.
       modifyValueInCtx
         penPath
@@ -318,43 +325,45 @@ checkEvalPen (valPath, val) = do
             newPenVal
         )
 
--- | Apply value to the pending value which is inside the current context.
--- It returns the new updated value.
+-- | Apply value to the pending value. It returns the new updated value.
+-- It keeps applying the value to the pending value until the pending value is evaluated.
 applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Path, Value) -> m Value
-applyPen (penPath, Pending deps evalf) (valPath, val) =
-  let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
-      newEvalf xs = evalf ((valPath, val) : xs)
-   in do
-        modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
-        if null (trace (printf "penPath: %s newDeps: %s" (show penPath) (show newDeps)) newDeps)
-          then do
-            v <- newEvalf []
-            -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
-            -- on this value.
-            checkEvalPen (penPath, v)
-            return v
-          else return $ Pending newDeps newEvalf
-applyPen _ _ = throwError "applyPen: impossible"
+applyPen (penPath, pendV@(Pending {})) pair = go pendV pair
+  where
+    go :: (MonadError String m, MonadState Context m) => Value -> (Path, Value) -> m Value
+    go (Pending deps evalf) (valPath, val) =
+      let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
+          newEvalf xs = evalf ((valPath, val) : xs)
+       in do
+            modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
+            if null (trace (printf "penPath: %s newDeps: %s" (show penPath) (show newDeps)) newDeps)
+              then newEvalf [] >>= \v -> go v pair
+              else return $ Pending newDeps newEvalf
+    go v _ = return v
+applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
 
--- lookupVar looks up the variable denoted by the name.
+-- | Looks up the variable denoted by the name in the current block or the parent blocks.
+-- If the variable is not evaluated yet, a new pending value is created and returned.
+--
+-- name denotes the identifier.
+-- path is the path to the current value.
+-- For example,
+--  { a: b: x+y }
+-- If the name is "y", and the path is "a.b".
 lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m Value
 lookupVar name path = do
   Context block revDeps <- get
   case searchVarUp name block of
-    Just Unevaluated ->
-      let depPath = appendSel (StringSelector name) (fromJust $ initPath path)
+    Just (Unevaluated, varBlock) ->
+      let depPath = appendSel (StringSelector name) (pathFromBlock varBlock)
        in do
             modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
             return $ newPending path depPath
-    Just v -> return v
+    -- TODO: do we need to return a new pending for a pending?
+    Just (v, _) -> return (trace (printf "searchVarUp %s, block: %s, found: %s" (show name) (show block) (show v)) v)
     Nothing ->
       throwError $
-        name
-          ++ " is not found"
-          ++ ", path: "
-          ++ show path
-          ++ ", block: "
-          ++ show block
+        printf "variable %s is not found, path: %s, block: %s" name (show path) (show block)
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty

@@ -1,11 +1,19 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase       #-}
+{-# LANGUAGE RankNTypes       #-}
+
 module ValueTest where
 
-import           Control.Monad.State (StateT (runStateT))
-import qualified Data.Map.Strict     as Map
-import           Data.Maybe          (fromJust)
-import qualified Data.Set            as Set
-import           Test.Tasty          (TestTree, testGroup)
-import           Test.Tasty.HUnit    (assertEqual, assertFailure, testCase)
+import           Control.Monad.Except       (MonadError, runExceptT, throwError)
+import           Control.Monad.IO.Class     (MonadIO, liftIO)
+import           Control.Monad.State        (StateT (runStateT))
+import           Control.Monad.State.Strict (MonadState)
+import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
+import qualified Data.Set                   as Set
+import           Test.Tasty                 (TestTree, testGroup)
+import           Test.Tasty.HUnit           (assertEqual, assertFailure,
+                                             testCase)
 import           Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
@@ -30,6 +38,10 @@ strsToPath = map (\x -> Path [StringSelector x])
 selY = StringSelector "y"
 
 pathY = Path [selY]
+
+selZ = StringSelector "z"
+
+pathZ = Path [selZ]
 
 selX1 = StringSelector "x1"
 
@@ -76,7 +88,6 @@ checkEvalPenTest = do
     Right (_, Context (resBlock, _) resRev) -> do
       assertEqual "check block" expectedBlockVal resBlock
       assertEqual "check rev" Map.empty resRev
-  return ()
   where
     {-
      { x1: y; x2: x1 }
@@ -102,10 +113,60 @@ checkEvalPenTest = do
         )
         Set.empty
 
+runEmptyCtx :: (MonadError String m) => StateT Context m Value -> m Value
+runEmptyCtx m = do
+  res <- runStateT m (Context (emptyStruct, []) Map.empty)
+  return $ fst res
+
+-- | binFuncTest1 tests the case that two pending values depend on the same value.
+binFuncTest1 :: IO ()
+binFuncTest1 =
+  runExceptT binFuncTestHelper
+    >>= \case
+      Left err -> assertFailure err
+      Right _ -> return ()
+  where
+    addF :: Value -> Value -> EvalMonad Value
+    addF (Int a) (Int b) = return $ Int (a + b)
+    addF _ _             = throwError "addF: invalid arguments"
+
+    pend1 = newPending pathX1 pathY
+    pend2 = newPending pathX2 pathY
+
+    binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
+    binFuncTestHelper = do
+      vx <- runEmptyCtx (binFunc addF pend1 pend2)
+      vy <- runEmptyCtx $ applyPen (emptyPath, vx) (pathY, Int 2)
+      liftIO $ assertEqual "check value" (Int 4) vy
+
+-- | binFuncTest2 tests the case that two pending values order.
+binFuncTest2 :: IO ()
+binFuncTest2 =
+  runExceptT binFuncTestHelper
+    >>= \case
+      Left err -> assertFailure err
+      Right _ -> return ()
+  where
+    divF :: Value -> Value -> EvalMonad Value
+    divF (Int a) (Int b) = return $ Int (a `div` b)
+    divF _ _             = throwError "addF: invalid arguments"
+
+    pend1 = newPending pathX1 pathY
+    pend2 = newPending pathX2 pathZ
+
+    binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
+    binFuncTestHelper = do
+      vx <- runEmptyCtx (binFunc divF pend1 pend2)
+      vy <- runEmptyCtx $ applyPen (emptyPath, vx) (pathY, Int 12)
+      res <- runEmptyCtx $ applyPen (emptyPath, vy) (pathZ, Int 4)
+      liftIO $ assertEqual "check value" (Int 3) res
+
 valueTests :: TestTree
 valueTests =
   testGroup
     "value test"
     [ testCase "checkEvalPen" checkEvalPenTest,
-      testCase "modifyValueInCtx" modifyValueInCtxTest
+      testCase "modifyValueInCtx" modifyValueInCtxTest,
+      testCase "binFunc1" binFuncTest1,
+      testCase "binFunc2" binFuncTest2
     ]
