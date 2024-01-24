@@ -3,6 +3,7 @@ module E2E where
 import           Data.ByteString.Builder
 import qualified Data.Map.Strict         as Map
 import qualified Data.Set                as Set
+import           Debug.Trace
 import           Eval                    (eval)
 import           Parser
 import           System.IO               (readFile)
@@ -19,7 +20,25 @@ newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
 startEval :: String -> Either String Value
 startEval s = do
   parsedE <- parseCUE s
-  eval parsedE (Path [])
+  trace (show parsedE) pure ()
+  eval parsedE emptyPath
+
+testBinOp2 :: IO ()
+testBinOp2 = do
+  s <- readFile "tests/e2efiles/binop2.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newStruct
+          ["x1", "x2"]
+          ( Map.fromList
+              [ ("x1", Int 7),
+                ("x2", Int 7)
+              ]
+          )
+          Set.empty
 
 testSelector :: IO ()
 testSelector = do
@@ -99,11 +118,11 @@ testVars2 = do
         Set.empty
     structY =
       newStruct
-        ["e", "f" {- , "g" -}]
+        ["e", "f", "g"]
         ( Map.fromList
             [ ("e", Int 3),
-              ("f", Int 4)
-              -- ("g", Int 9)
+              ("f", Int 4),
+              ("g", Int 9)
             ]
         )
         Set.empty
@@ -167,7 +186,7 @@ e2eTests =
             Right val' ->
               val'
                 @?= newStruct
-                  (map (\i -> "x" ++ show i) [1 .. 8])
+                  (map (\i -> "x" ++ show i) [1 .. 10])
                   ( Map.fromList
                       [ ("x1", Int 3),
                         ("x2", Int 8),
@@ -177,10 +196,12 @@ e2eTests =
                         ("x6", Int (-3)),
                         ("x7", Int 7),
                         ("x8", Int 5),
-                        ("x9", Int 9)
+                        ("x9", Int 9),
+                        ("x10", Int 9)
                       ]
                   )
                   Set.empty,
+      testCase "binop2" testBinOp2,
       testCase
         "disjunction"
         $ do

@@ -52,22 +52,35 @@ skipElements = try (comment >> spaces) <|> spaces
 expr :: Parser Expression
 expr = do
   skipElements
-  e <- chainr1 (ExprUnaryExpr <$> unaryExpr) binOpF
+  e <- prec1
   skipElements
   return e
   where
-    binOpF = do
+    binOp :: Parser Expression -> Parser (Expression -> Expression -> Expression) -> Parser Expression
+    binOp higher sep = do
       skipElements
-      -- the following order is the operator precedence order.
-      op <-
-        char '*'
-          <|> char '/'
-          <|> char '+'
-          <|> char '-'
-          <|> char '&'
-          <|> char '|'
+      e <- chainl1 higher sep
       skipElements
-      return $ ExprBinaryOp (fromJust $ lookup [op] binopTable)
+      return e
+
+    precedence :: Parser String -> Parser (Expression -> Expression -> Expression)
+    precedence op = do
+      skipElements
+      s <- op
+      skipElements
+      return $ ExprBinaryOp (fromJust $ lookup s binopTable)
+
+    prec7 :: Parser Expression
+    prec7 = binOp (ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
+
+    prec6 :: Parser Expression
+    prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
+
+    prec2 :: Parser Expression
+    prec2 = binOp prec6 (precedence (string "&"))
+
+    prec1 :: Parser Expression
+    prec1 = binOp prec2 (precedence (string "|"))
 
 unaryExpr :: Parser UnaryExpr
 unaryExpr = do
