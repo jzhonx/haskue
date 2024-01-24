@@ -96,8 +96,8 @@ checkEvalPenTest = do
       StructValue
         ["x1", "x2"]
         ( Map.fromList
-            [ ("x1", Pending [(pathX1, pathY)] (\xs -> return $ fromJust $ lookup pathY xs)),
-              ("x2", Pending [(pathX2, pathX1)] (\xs -> return $ fromJust $ lookup pathX1 xs))
+            [ ("x1", newPending pathX1 pathY),
+              ("x2", newPending pathX2 pathX1)
             ]
         )
         Set.empty
@@ -164,7 +164,7 @@ binFuncTest2 =
 valueTests :: TestTree
 valueTests =
   testGroup
-    "value test"
+    "valueTest"
     [ testCase "checkEvalPen" checkEvalPenTest,
       testCase "modifyValueInCtx" modifyValueInCtxTest,
       testCase "binFunc1" binFuncTest1,

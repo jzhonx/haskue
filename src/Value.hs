@@ -62,9 +62,8 @@ lastSel (Path xs) = Just $ head xs
 --         then go xs ys (x : acc)
 --         else acc
 
--- TODO: dedeup
 mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
-mergePaths p1 p2 = p1 ++ p2
+mergePaths p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
 
 -- | TreeCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type TreeCrumb = (Selector, StructValue)
@@ -195,6 +194,7 @@ data Value
         -- the first element of the tuple is the path to a pending value.
         -- the second element of the tuple is the path to a value that the pending value depends on.
         pendDepEdges  :: [(Path, Path)],
+        pendArgs      :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
         pendEvaluator :: Evaluator
@@ -214,9 +214,23 @@ mergeStructValues :: StructValue -> StructValue -> StructValue
 mergeStructValues (StructValue ols1 fields1 ids1) (StructValue ols2 fields2 ids2) =
   StructValue (ols1 ++ ols2) (Map.union fields1 fields2) (Set.union ids1 ids2)
 
+mergeArgs :: [(Path, Value)] -> [(Path, Value)] -> [(Path, Value)]
+mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
+
 -- | The binFunc is used to evaluate a binary function with two arguments.
 binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
-binFunc bin v1@(Pending {}) v2@(Pending {}) = unaFunc (\x -> unaFunc (bin x) v2) v1
+binFunc bin (Pending d1 a1 e1) (Pending d2 a2 e2) = do
+  let newDeps = mergePaths d1 d2
+      newArgs = mergeArgs a1 a2
+  return $
+    Pending
+      newDeps
+      newArgs
+      ( \xs -> do
+          v1 <- e1 xs
+          v2 <- e2 xs
+          bin v1 v2
+      )
 binFunc bin v1@(Pending {}) v2 = unaFunc (`bin` v2) v1
 binFunc bin v1 v2@(Pending {}) = unaFunc (bin v1) v2
 binFunc bin v1 v2 = bin v1 v2
@@ -224,8 +238,8 @@ binFunc bin v1 v2 = bin v1 v2
 -- | The unaFunc is used to evaluate a unary function.
 -- The first argument is the function that takes the value and returns a value.
 unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
-unaFunc f (Pending d e) = return $ Pending d (bindEval e f)
-unaFunc f v             = f v
+unaFunc f (Pending d a e) = return $ Pending d a (bindEval e f)
+unaFunc f v               = f v
 
 -- | Binds the evaluator to a function that uses the value as the argument.
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
@@ -236,6 +250,7 @@ newPending :: Path -> Path -> Value
 newPending selfPath depPath =
   Pending
     [(selfPath, depPath)]
+    []
     ( \xs -> do
         case lookup depPath xs of
           Just v -> return v
@@ -315,11 +330,11 @@ checkEvalPen (valPath, val) = do
         penPath
         ( trace
             ( printf
-                "penVal: %s, penPath: %s, val: %s, valPath: %s, newPenVal: %s"
-                (show penVal)
+                "checkEvalPen: penPath: %s, penVal: %s, valPath: %s, val: %s, newPenVal: %s"
                 (show penPath)
-                (show val)
+                (show penVal)
                 (show valPath)
+                (show val)
                 (show newPenVal)
             )
             newPenVal
@@ -328,17 +343,26 @@ checkEvalPen (valPath, val) = do
 -- | Apply value to the pending value. It returns the new updated value.
 -- It keeps applying the value to the pending value until the pending value is evaluated.
 applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Path, Value) -> m Value
-applyPen (penPath, pendV@(Pending {})) pair = go pendV pair
+applyPen (penPath, penV@(Pending {})) pair = go penV pair
   where
     go :: (MonadError String m, MonadState Context m) => Value -> (Path, Value) -> m Value
-    go (Pending deps evalf) (valPath, val) =
+    go (Pending deps args f) (valPath, val) =
       let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
-          newEvalf xs = evalf ((valPath, val) : xs)
+          newArgs = ((valPath, val) : args)
        in do
             modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
-            if null (trace (printf "penPath: %s newDeps: %s" (show penPath) (show newDeps)) newDeps)
-              then newEvalf [] >>= \v -> go v pair
-              else return $ Pending newDeps newEvalf
+            trace
+              ( printf
+                  "applyPen: valPath: %s, penPath: %s, newDeps: %s"
+                  (show valPath)
+                  (show penPath)
+                  (show newDeps)
+              )
+              pure
+              ()
+            if null newDeps
+              then f newArgs >>= \v -> go v pair
+              else return $ Pending newDeps newArgs f
     go v _ = return v
 applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
 
@@ -378,7 +402,7 @@ instance Show Value where
   show (Struct (StructValue ols fds _)) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
-  show (Pending edges _) = printf "(Pending, edges: %s)" (show edges)
+  show (Pending edges args _) = printf "(Pending, edges: %s, args: %s)" (show edges) (show args)
   show Unevaluated = "Unevaluated"
 
 instance Eq Value where

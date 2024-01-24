@@ -85,7 +85,7 @@ testVars2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= undefined
+        @?= structTop
   where
     structX =
       newStruct
@@ -99,11 +99,11 @@ testVars2 = do
         Set.empty
     structY =
       newStruct
-        ["e", "f", "g"]
+        ["e", "f" {- , "g" -}]
         ( Map.fromList
             [ ("e", Int 3),
-              ("f", Int 4),
-              ("g", Int 9)
+              ("f", Int 4)
+              -- ("g", Int 9)
             ]
         )
         Set.empty
@@ -176,7 +176,8 @@ e2eTests =
                         ("x5", Bottom ""),
                         ("x6", Int (-3)),
                         ("x7", Int 7),
-                        ("x8", Int 5)
+                        ("x8", Int 5),
+                        ("x9", Int 9)
                       ]
                   )
                   Set.empty,

@@ -1,18 +1,18 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module Eval where
 
-import AST
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State (MonadState, get, modify, put, runStateT)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
-import qualified Data.Set as Set
-import Debug.Trace
-import Text.Printf (printf)
-import Unify (unify)
-import Value
+import           AST
+import           Control.Monad.Except (MonadError, throwError)
+import           Control.Monad.State  (MonadState, get, modify, put, runStateT)
+import qualified Data.Map.Strict      as Map
+import           Data.Maybe           (fromJust, isJust)
+import qualified Data.Set             as Set
+import           Debug.Trace
+import           Text.Printf          (printf)
+import           Unify                (unify)
+import           Value
 
 initState :: Context
 initState = Context (emptyStruct, []) Map.empty
@@ -21,7 +21,7 @@ eval :: (MonadError String m) => Expression -> Path -> m Value
 eval expr path = fst <$> runStateT (doEval expr path) initState
 
 doEval :: (MonadError String m, MonadState Context m) => Expression -> Path -> m Value
-doEval (ExprUnaryExpr e) = evalUnaryExpr e
+doEval (ExprUnaryExpr e)       = evalUnaryExpr e
 doEval (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
 
 evalLiteral :: (MonadError String m, MonadState Context m) => Literal -> Path -> m Value
@@ -29,12 +29,12 @@ evalLiteral = f
   where
     f :: (MonadError String m, MonadState Context m) => Literal -> Path -> m Value
     f (StringLit (SimpleStringLit s)) _ = return $ String s
-    f (IntLit i) _ = return $ Int i
-    f (BoolLit b) _ = return $ Bool b
-    f TopLit _ = return Top
-    f BottomLit _ = return $ Bottom ""
-    f NullLit _ = return Null
-    f (StructLit s) path = evalStructLit s path
+    f (IntLit i) _                      = return $ Int i
+    f (BoolLit b) _                     = return $ Bool b
+    f TopLit _                          = return Top
+    f BottomLit _                       = return $ Bottom ""
+    f NullLit _                         = return Null
+    f (StructLit s) path                = evalStructLit s path
 
 evalStructLit :: (MonadError String m, MonadState Context m) => [(Label, Expression)] -> Path -> m Value
 evalStructLit s path =
@@ -67,15 +67,17 @@ evalStructLit s path =
   where
     evalLabel (Label (LabelName ln), _) =
       let name = case ln of
-            LabelID ident -> ident
+            LabelID ident  -> ident
             LabelString ls -> ls
        in name
 
+    evalField :: (MonadError String m, MonadState Context m) => (String, Expression) -> m (String, Value)
     evalField (name, e) = do
       v <- doEval e $ appendSel (Value.StringSelector name) path
       ctx <- get
       updatedBlock <- goToBlock (ctxCurBlock ctx) path
       put $ ctx {ctxCurBlock = updatedBlock}
+      trace ("evalField: " ++ show name ++ ", " ++ show v) pure ()
       return (name, v)
 
     -- unifySameFields is used to build a map from the field names to the values.
@@ -89,7 +91,7 @@ evalStructLit s path =
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var
-    fetchVarLabel _ = Nothing
+    fetchVarLabel _                                 = Nothing
 
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
@@ -110,12 +112,12 @@ enterNewBlock structStub path = do
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> Path -> m Value
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
-evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
+evalUnaryExpr (UnaryExprUnaryOp op e)         = evalUnaryOp op e
 
 evalPrimExpr :: (MonadError String m, MonadState Context m) => PrimaryExpr -> Path -> m Value
 evalPrimExpr (PrimExprOperand op) = case op of
-  OpLiteral lit -> evalLiteral lit
-  OpExpression expr -> doEval expr
+  OpLiteral lit                  -> evalLiteral lit
+  OpExpression expr              -> doEval expr
   OperandName (Identifier ident) -> lookupVar ident
 evalPrimExpr (PrimExprSelector primExpr sel) = \path -> do
   val <- evalPrimExpr primExpr path
@@ -123,13 +125,13 @@ evalPrimExpr (PrimExprSelector primExpr sel) = \path -> do
 
 evalSelector :: (MonadError String m, MonadState Context m) => AST.Selector -> Value -> Path -> m Value
 evalSelector sel val path = case sel of
-  IDSelector ident -> evalF ident
+  IDSelector ident       -> evalF ident
   AST.StringSelector str -> evalF str
   where
-    evalInVal :: (MonadError String m, MonadState Context m) => String -> Value -> m Value
-    evalInVal s value = case value of
+    dot :: (MonadError String m, MonadState Context m) => String -> Value -> m Value
+    dot s value = case value of
       Struct (StructValue _ fields _) -> case Map.lookup s fields of
-        Just v -> return v
+        Just v  -> return v
         Nothing -> return $ Bottom $ s ++ " is not found"
       _ ->
         throwError $
@@ -140,15 +142,8 @@ evalSelector sel val path = case sel of
             (show value)
 
     evalF s = case val of
-      Pending deps f ->
-        return $
-          Pending
-            deps
-            ( \xs -> do
-                v <- f xs
-                evalInVal s v
-            )
-      _ -> evalInVal s val
+      pendV@(Pending {}) -> unaFunc (dot s) pendV
+      _                  -> dot s val
 
 evalUnaryOp :: (MonadError String m, MonadState Context m) => UnaryOp -> UnaryExpr -> Path -> m Value
 evalUnaryOp op e path = do
@@ -156,13 +151,13 @@ evalUnaryOp op e path = do
   f val
   where
     f v@(Pending {}) = unaFunc (conEval op) v
-    f v = conEval op v
+    f v              = conEval op v
     -- conEval evaluates non-pending operands.
     conEval :: (MonadError String m, MonadState Context m) => UnaryOp -> Value -> m Value
-    conEval Plus (Int i) = return $ Int i
+    conEval Plus (Int i)  = return $ Int i
     conEval Minus (Int i) = return $ Int (-i)
-    conEval Not (Bool b) = return $ Bool (not b)
-    conEval _ _ = throwError "conEval: unsupported unary operator"
+    conEval Not (Bool b)  = return $ Bool (not b)
+    conEval _ _           = throwError "conEval: unsupported unary operator"
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -171,13 +166,16 @@ evalBinary AST.Disjunction e1 e2 path = evalDisjunction e1 e2 path
 evalBinary op e1 e2 path = do
   v1 <- doEval e1 path
   v2 <- doEval e2 path
+  trace (printf "eval binary (%s %s %s)" (show v1) (show op) (show v2)) pure ()
   binOp v1 v2
   where
     intf :: (MonadError String m, MonadState Context m) => (Integer -> Integer -> Integer) -> Value -> Value -> m Value
     intf f = binFunc g
       where
         g :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value
-        g (Int i1) (Int i2) = return $ Int (f i1 i2)
+        g (Int i1) (Int i2) = do
+          trace (printf "exec (%s %s %s)" (show i1) (show op) (show i2)) pure ()
+          return $ Int (f i1 i2)
         g v1 v2 = throwError $ "intf: unsupported binary operator for values: " ++ show v1 ++ ", " ++ show v2
 
     binOp :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value
