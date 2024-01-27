@@ -148,16 +148,16 @@ testVars3 = do
         @?= structTop
   return ()
   where
-    structY =
+    structX =
       newStruct
-        ["b"]
-        ( Map.fromList [("b", Int 3)]
+        ["a", "b"]
+        ( Map.fromList [("a", Int 2), ("b", Int 2)]
         )
         Set.empty
     structTop =
       newStruct
-        ["x", "y"]
-        ( Map.fromList [("x", Int 3), ("y", structY)]
+        ["x"]
+        ( Map.fromList [("x", structX)]
         )
         Set.empty
 

@@ -210,6 +210,8 @@ data Value
         pendEvaluator :: Evaluator
       }
   | Unevaluated
+      { unevalPath :: Path
+      }
 
 data StructValue = StructValue
   { structOrderedLabels :: [String],
@@ -393,7 +395,7 @@ lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m 
 lookupVar var path = do
   Context block revDeps <- get
   case searchUpVar var block of
-    Just (Unevaluated, varBlock) ->
+    Just (Unevaluated {}, varBlock) ->
       let depPath = appendSel (StringSelector var) (pathFromBlock varBlock)
        in do
             modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
@@ -416,9 +418,9 @@ dot field path value = case value of
     Just v@(Pending {}) -> do
       modify (\ctx -> ctx {ctxReverseDeps = Map.insert (pendPath v) path (ctxReverseDeps ctx)})
       return $ newPending path (pendPath v)
-    Just Unevaluated ->
-      throwError $
-        printf "dot: field: %s, path: %s, value: %s is not evaluated" field (show path) (show value)
+    Just v@(Unevaluated {}) -> do
+      modify (\ctx -> ctx {ctxReverseDeps = Map.insert (unevalPath v) path (ctxReverseDeps ctx)})
+      return $ newPending path (unevalPath v)
     Just v -> return v
     Nothing -> return $ Bottom $ field ++ " is not found"
   _ ->
@@ -443,7 +445,7 @@ instance Show Value where
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
   show (Pending p edges args _) = printf "(Pending, path: %s edges: %s, args: %s)" (show p) (show edges) (show args)
-  show Unevaluated = "Unevaluated"
+  show (Unevaluated _) = "Unevaluated"
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
@@ -477,7 +479,7 @@ buildCUEStr' ident (Disjunction dfs djs) =
     buildList xs = foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> buildCUEStr' ident d) xs)
 buildCUEStr' _ (Bottom _) = string7 "_|_"
 buildCUEStr' _ (Pending {}) = string7 "_|_"
-buildCUEStr' _ Unevaluated = string7 "_|_"
+buildCUEStr' _ (Unevaluated {}) = string7 "_|_"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =
