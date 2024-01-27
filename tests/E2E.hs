@@ -1,15 +1,15 @@
 module E2E where
 
-import           Data.ByteString.Builder
-import qualified Data.Map.Strict         as Map
-import qualified Data.Set                as Set
-import           Debug.Trace
-import           Eval                    (eval)
-import           Parser
-import           System.IO               (readFile)
-import           Test.Tasty
-import           Test.Tasty.HUnit
-import           Value
+import Data.ByteString.Builder
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Debug.Trace
+import Eval (eval)
+import Parser
+import System.IO (readFile)
+import Test.Tasty
+import Test.Tasty.HUnit
+import Value
 
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids)
@@ -134,6 +134,30 @@ testVars2 = do
               ("y", structY),
               ("z", Int 12)
             ]
+        )
+        Set.empty
+
+testVars3 :: IO ()
+testVars3 = do
+  s <- readFile "tests/e2efiles/vars3.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= structTop
+  return ()
+  where
+    structY =
+      newStruct
+        ["b"]
+        ( Map.fromList [("b", Int 3)]
+        )
+        Set.empty
+    structTop =
+      newStruct
+        ["x", "y"]
+        ( Map.fromList [("x", Int 3), ("y", structY)]
         )
         Set.empty
 
@@ -269,5 +293,6 @@ e2eTests =
                   Set.empty,
       testCase "vars" testVars,
       testCase "vars2" testVars2,
+      testCase "vars3" testVars3,
       testCase "selector" testSelector
     ]

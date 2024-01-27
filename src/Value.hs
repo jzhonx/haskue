@@ -1,21 +1,29 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Value where
 
-import           Control.Monad.Except       (MonadError, throwError)
-import           Control.Monad.State.Strict (MonadState, get, modify, put)
-import           Control.Monad.Trans.Maybe  (MaybeT (..))
-import           Data.ByteString.Builder    (Builder, char7, integerDec,
-                                             string7)
-import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
-                                             reverseTopSort, stronglyConnComp)
-import           Data.List                  (intercalate)
-import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (fromJust)
-import qualified Data.Set                   as Set
-import           Debug.Trace
-import           Text.Printf                (printf)
+import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.State.Strict (MonadState, get, modify, put)
+import Control.Monad.Trans.Maybe (MaybeT (..))
+import Data.ByteString.Builder
+  ( Builder,
+    char7,
+    integerDec,
+    string7,
+  )
+import Data.Graph
+  ( SCC (CyclicSCC),
+    graphFromEdges,
+    reverseTopSort,
+    stronglyConnComp,
+  )
+import Data.List (intercalate)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
+import qualified Data.Set as Set
+import Debug.Trace
+import Text.Printf (printf)
 
 -- TODO: IntSelector
 data Selector = StringSelector String deriving (Eq, Ord)
@@ -71,7 +79,7 @@ type TreeCrumb = (Selector, StructValue)
 type TreeCursor = (StructValue, [TreeCrumb])
 
 goUp :: TreeCursor -> Maybe TreeCursor
-goUp (_, [])           = Nothing
+goUp (_, []) = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goDown :: Path -> TreeCursor -> Maybe TreeCursor
@@ -97,28 +105,28 @@ addSubBlock Nothing newSv (sv, vs) = (mergeStructValues newSv sv, vs)
 addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
   (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
 
-searchVarUp :: String -> TreeCursor -> Maybe (Value, TreeCursor)
-searchVarUp varName = go
+searchUpVar :: String -> TreeCursor -> Maybe (Value, TreeCursor)
+searchUpVar var = go
   where
     go :: TreeCursor -> Maybe (Value, TreeCursor)
-    go cursor@(StructValue _ fields _, []) = case Map.lookup varName fields of
-      Just v  -> Just (v, cursor)
+    go cursor@(StructValue _ fields _, []) = case Map.lookup var fields of
+      Just v -> Just (v, cursor)
       Nothing -> Nothing
     go cursor@(StructValue _ fields _, _) =
-      case Map.lookup varName fields of
-        Just v  -> Just (v, cursor)
+      case Map.lookup var fields of
+        Just v -> Just (v, cursor)
         Nothing -> goUp cursor >>= go
 
 pathFromBlock :: TreeCursor -> Path
 pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
   where
     go :: [TreeCrumb] -> [Selector] -> [Selector]
-    go [] acc            = acc
+    go [] acc = acc
     go ((n, _) : cs) acc = go cs (n : acc)
 
 svFromVal :: Value -> Maybe StructValue
 svFromVal (Struct sv) = Just sv
-svFromVal _           = Nothing
+svFromVal _ = Nothing
 
 -- -- | Takes a list of paths and returns a list of paths in the dependency order.
 -- -- In the returned list, the first element is the path that has can be evaluated.
@@ -144,7 +152,7 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
     edgesForGraph = map (\(k, vs) -> ((), k, vs)) edges
 
     isCycle (CyclicSCC _) = True
-    isCycle _             = False
+    isCycle _ = False
 
 -- structPenOrder :: Path -> Map.Map String Value -> Maybe [String]
 -- structPenOrder curPath xs = undefined
@@ -166,7 +174,7 @@ data Context = Context
     -- A new block is entered when one of the following is encountered:
     -- - The "{" token
     -- - for and let clauses
-    ctxCurBlock    :: TreeCursor,
+    ctxCurBlock :: TreeCursor,
     ctxReverseDeps :: Map.Map Path Path
   }
 
@@ -182,19 +190,21 @@ data Value
   | Bool Bool
   | Struct StructValue
   | Disjunction
-      { defaults  :: [Value],
+      { defaults :: [Value],
         disjuncts :: [Value]
       }
   | Null
   | Bottom String
   | Pending
-      { -- depEdges is a list of paths to the unresolved references.
+      { -- pendPath is the path to the pending value.
+        pendPath :: Path,
+        -- depEdges is a list of paths to the unresolved references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the path to a pending value.
         -- the second element of the tuple is the path to a value that the pending value depends on.
-        pendDepEdges  :: [(Path, Path)],
-        pendArgs      :: [(Path, Value)],
+        pendDepEdges :: [(Path, Path)],
+        pendArgs :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
         pendEvaluator :: Evaluator
@@ -203,8 +213,8 @@ data Value
 
 data StructValue = StructValue
   { structOrderedLabels :: [String],
-    structFields        :: Map.Map String Value,
-    structIDs           :: Set.Set String
+    structFields :: Map.Map String Value,
+    structIDs :: Set.Set String
   }
   deriving (Show, Eq)
 
@@ -219,18 +229,21 @@ mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
 
 -- | The binFunc is used to evaluate a binary function with two arguments.
 binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
-binFunc bin (Pending d1 a1 e1) (Pending d2 a2 e2) = do
-  let newDeps = mergePaths d1 d2
-      newArgs = mergeArgs a1 a2
-  return $
-    Pending
-      newDeps
-      newArgs
-      ( \xs -> do
-          v1 <- e1 xs
-          v2 <- e2 xs
-          bin v1 v2
-      )
+binFunc bin (Pending p1 d1 a1 e1) (Pending p2 d2 a2 e2)
+  | p1 == p2 =
+      return $
+        Pending
+          p1
+          (mergePaths d1 d2)
+          (mergeArgs a1 a2)
+          ( \xs -> do
+              v1 <- e1 xs
+              v2 <- e2 xs
+              bin v1 v2
+          )
+  | otherwise =
+      throwError $
+        printf "binFunc: two pending values have different paths, p1: %s, p2: %s" (show p1) (show p2)
 binFunc bin v1@(Pending {}) v2 = unaFunc (`bin` v2) v1
 binFunc bin v1 v2@(Pending {}) = unaFunc (bin v1) v2
 binFunc bin v1 v2 = bin v1 v2
@@ -238,8 +251,8 @@ binFunc bin v1 v2 = bin v1 v2
 -- | The unaFunc is used to evaluate a unary function.
 -- The first argument is the function that takes the value and returns a value.
 unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
-unaFunc f (Pending d a e) = return $ Pending d a (bindEval e f)
-unaFunc f v               = f v
+unaFunc f (Pending p d a e) = return $ Pending p d a (bindEval e f)
+unaFunc f v = f v
 
 -- | Binds the evaluator to a function that uses the value as the argument.
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
@@ -249,18 +262,20 @@ bindEval evalf f xs = evalf xs >>= f
 newPending :: Path -> Path -> Value
 newPending selfPath depPath =
   Pending
+    selfPath
     [(selfPath, depPath)]
     []
-    ( \xs -> do
-        case lookup depPath xs of
-          Just v -> return v
-          Nothing ->
-            throwError $
-              printf
-                "Pending value can not find the dependent value, depPath: %s, args: %s"
-                (show depPath)
-                (show xs)
-    )
+    f
+  where
+    f xs = do
+      case lookup depPath xs of
+        Just v -> return v
+        Nothing ->
+          throwError $
+            printf
+              "Pending value can not find its dependent value, depPath: %s, args: %s"
+              (show depPath)
+              (show xs)
 
 goToBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
 goToBlock block p = do
@@ -324,7 +339,7 @@ checkEvalPen (valPath, val) = do
         Pending {} -> pure ()
         -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
         -- on this value.
-        v          -> checkEvalPen (penPath, v)
+        v -> checkEvalPen (penPath, v)
       -- update the pending block.
       modifyValueInCtx
         penPath
@@ -346,7 +361,7 @@ applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Pat
 applyPen (penPath, penV@(Pending {})) pair = go penV pair
   where
     go :: (MonadError String m, MonadState Context m) => Value -> (Path, Value) -> m Value
-    go (Pending deps args f) (valPath, val) =
+    go (Pending selfPath deps args f) (valPath, val) =
       let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
           newArgs = ((valPath, val) : args)
        in do
@@ -362,32 +377,57 @@ applyPen (penPath, penV@(Pending {})) pair = go penV pair
               ()
             if null newDeps
               then f newArgs >>= \v -> go v pair
-              else return $ Pending newDeps newArgs f
+              else return $ Pending selfPath newDeps newArgs f
     go v _ = return v
 applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
 
 -- | Looks up the variable denoted by the name in the current block or the parent blocks.
--- If the variable is not evaluated yet, a new pending value is created and returned.
---
--- name denotes the identifier.
--- path is the path to the current value.
+-- If the variable is not evaluated yet or pending, a new pending value is created and returned.
+-- Parameters:
+--   var denotes the variable name.
+--   path is the path to the current expression that contains the selector.
 -- For example,
 --  { a: b: x+y }
 -- If the name is "y", and the path is "a.b".
 lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m Value
-lookupVar name path = do
+lookupVar var path = do
   Context block revDeps <- get
-  case searchVarUp name block of
+  case searchUpVar var block of
     Just (Unevaluated, varBlock) ->
-      let depPath = appendSel (StringSelector name) (pathFromBlock varBlock)
+      let depPath = appendSel (StringSelector var) (pathFromBlock varBlock)
        in do
             modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path revDeps})
             return $ newPending path depPath
     -- TODO: do we need to return a new pending for a pending?
-    Just (v, _) -> return (trace (printf "searchVarUp %s, block: %s, found: %s" (show name) (show block) (show v)) v)
+    Just (v, _) -> do
+      trace (printf "lookupVar found var %s, block: %s, found: %s" (show var) (show block) (show v)) pure ()
+      pure v
     Nothing ->
       throwError $
-        printf "variable %s is not found, path: %s, block: %s" name (show path) (show block)
+        printf "variable %s is not found, path: %s, block: %s" var (show path) (show block)
+
+-- | access the named field of the struct.
+-- Parameters:
+--   s is the name of the field.
+--   path is the path to the current expression that contains the selector.
+dot :: (MonadError String m, MonadState Context m) => String -> Path -> Value -> m Value
+dot field path value = case value of
+  Struct (StructValue _ fields _) -> case Map.lookup field fields of
+    Just v@(Pending {}) -> do
+      modify (\ctx -> ctx {ctxReverseDeps = Map.insert (pendPath v) path (ctxReverseDeps ctx)})
+      return $ newPending path (pendPath v)
+    Just Unevaluated ->
+      throwError $
+        printf "dot: field: %s, path: %s, value: %s is not evaluated" field (show path) (show value)
+    Just v -> return v
+    Nothing -> return $ Bottom $ field ++ " is not found"
+  _ ->
+    throwError $
+      printf
+        "evalSelector: path: %s, sel: %s, value: %s is not a struct"
+        (show path)
+        (show field)
+        (show value)
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty
@@ -402,7 +442,7 @@ instance Show Value where
   show (Struct (StructValue ols fds _)) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
-  show (Pending edges args _) = printf "(Pending, edges: %s, args: %s)" (show edges) (show args)
+  show (Pending p edges args _) = printf "(Pending, path: %s edges: %s, args: %s)" (show p) (show edges) (show args)
   show Unevaluated = "Unevaluated"
 
 instance Eq Value where

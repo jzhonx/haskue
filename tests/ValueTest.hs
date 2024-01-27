@@ -1,20 +1,23 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase       #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 
 module ValueTest where
 
-import           Control.Monad.Except       (MonadError, runExceptT, throwError)
-import           Control.Monad.IO.Class     (MonadIO, liftIO)
-import           Control.Monad.State        (StateT (runStateT))
-import           Control.Monad.State.Strict (MonadState)
-import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (fromJust)
-import qualified Data.Set                   as Set
-import           Test.Tasty                 (TestTree, testGroup)
-import           Test.Tasty.HUnit           (assertEqual, assertFailure,
-                                             testCase)
-import           Value
+import Control.Monad.Except (MonadError, runExceptT, throwError)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.State (StateT (runStateT))
+import Control.Monad.State.Strict (MonadState)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
+import qualified Data.Set as Set
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit
+  ( assertEqual,
+    assertFailure,
+    testCase,
+  )
+import Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
@@ -128,10 +131,10 @@ binFuncTest1 =
   where
     addF :: Value -> Value -> EvalMonad Value
     addF (Int a) (Int b) = return $ Int (a + b)
-    addF _ _             = throwError "addF: invalid arguments"
+    addF _ _ = throwError "addF: invalid arguments"
 
     pend1 = newPending pathX1 pathY
-    pend2 = newPending pathX2 pathY
+    pend2 = newPending pathX1 pathY
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do
@@ -149,10 +152,10 @@ binFuncTest2 =
   where
     divF :: Value -> Value -> EvalMonad Value
     divF (Int a) (Int b) = return $ Int (a `div` b)
-    divF _ _             = throwError "addF: invalid arguments"
+    divF _ _ = throwError "addF: invalid arguments"
 
     pend1 = newPending pathX1 pathY
-    pend2 = newPending pathX2 pathZ
+    pend2 = newPending pathX1 pathZ
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do
