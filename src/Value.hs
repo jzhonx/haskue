@@ -208,20 +208,26 @@ data StructValue = StructValue
   }
   deriving (Show, Eq)
 
-data PendingValue = PendingValue
-  { -- pendPath is the path to the pending value.
-    pendPath :: Path,
-    -- depEdges is a list of paths to the unresolved references.
-    -- path should be the full path.
-    -- The edges are primarily used to detect cycles.
-    -- the first element of the tuple is the path to a pending value.
-    -- the second element of the tuple is the path to a value that the pending value depends on.
-    pendEdges :: [(Path, Path)],
-    pendArgs :: [(Path, Value)],
-    -- evaluator is a function that takes a list of values and returns a value.
-    -- The order of the values in the list is the same as the order of the paths in deps.
-    pendEvaluator :: Evaluator
-  }
+data PendingValue
+  = PendingValue
+      { -- pendPath is the path to the pending value.
+        pendPath :: Path,
+        -- depEdges is a list of paths to the unresolved references.
+        -- path should be the full path.
+        -- The edges are primarily used to detect cycles.
+        -- the first element of the tuple is the path to a pending value.
+        -- the second element of the tuple is the path to a value that the pending value depends on.
+        pendDeps :: [(Path, Path)],
+        pendArgs :: [(Path, Value)],
+        -- evaluator is a function that takes a list of values and returns a value.
+        -- The order of the values in the list is the same as the order of the paths in deps.
+        pendEvaluator :: Evaluator
+      }
+  | Unevaluated {unevalPath :: Path}
+
+instance Show PendingValue where
+  show (PendingValue p d a _) = printf "(Pending, path: %s edges: %s, args: %s)" (show p) (show d) (show a)
+  show (Unevaluated p) = printf "(Unevaluated, path: %s)" (show p)
 
 -- TODO: merge same keys handler
 -- two embeded structs can have same keys
@@ -264,27 +270,26 @@ unaFunc f v = f v
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
 bindEval evalf f xs = evalf xs >>= f
 
--- pipePending :: (MonadError String m, MonadState Context m) => Path -> Value -> m Value
--- pipePending path (Pending p d a e) = do
+mkUnevaluated :: Path -> Value
+mkUnevaluated = Pending . Unevaluated
 
 -- | Creates a new pending value.
-newPending :: Path -> Path -> Value
-newPending selfPath depPath = Pending $ PendingValue selfPath [(selfPath, depPath)] [] f
+mkPending :: Path -> Path -> Value
+mkPending src dst = Pending $ newPendingValue src dst
+
+newPendingValue :: Path -> Path -> PendingValue
+newPendingValue src dst = PendingValue src [(src, dst)] [] f
   where
     f xs = do
-      case lookup depPath xs of
+      case lookup dst xs of
         Just v -> return v
         Nothing ->
           throwError $
             printf
-              "Pending value can not find its dependent value, depPath: %s, args: %s"
-              (show depPath)
+              "Pending value can not find its dependent value, path: %s, depPath: %s, args: %s"
+              (show src)
+              (show dst)
               (show xs)
-
-newUnevaluated :: Path -> Value
-newUnevaluated p = Pending $ PendingValue p [] [] f
-  where
-    f _ = throwError $ printf "newUnevaluated: unevaluated value, path: %s" (show p)
 
 goToBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
 goToBlock block p = do
@@ -377,9 +382,10 @@ applyPen (penPath, penV@(Pending {})) pair = go penV pair
             modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
             trace
               ( printf
-                  "applyPen: valPath: %s, penPath: %s, newDeps: %s"
+                  "applyPen: valPath: %s, penPath: %s, args: %s, newDeps: %s"
                   (show valPath)
                   (show penPath)
+                  (show newArgs)
                   (show newDeps)
               )
               pure
@@ -402,9 +408,7 @@ lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m 
 lookupVar var path = do
   Context block _ <- get
   case searchUpVar var block of
-    Just (Pending {}, varBlock) ->
-      let depPath = appendSel (StringSelector var) (pathFromBlock varBlock)
-       in depend path depPath
+    Just (Pending v, _) -> Pending <$> depend path v
     Just (v, _) -> do
       trace (printf "lookupVar found var %s, block: %s, found: %s" (show var) (show block) (show v)) pure ()
       pure v
@@ -421,7 +425,7 @@ dot field path value = case value of
   Struct (StructValue _ fields _) -> case Map.lookup field fields of
     -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
     -- populated with the value.
-    Just (Pending v@(PendingValue {})) -> depend path (pendPath v)
+    Just (Pending v) -> Pending <$> depend path v
     Just v -> return v
     Nothing -> return $ Bottom $ field ++ " is not found"
   _ ->
@@ -432,13 +436,16 @@ dot field path value = case value of
         (show field)
         (show value)
 
--- | Creates a dependency between the current value of the curPath to the value of the depPath.
-depend :: (MonadError String m, MonadState Context m) => Path -> Path -> m Value
-depend curPath depPath = do
-  modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath curPath (ctxReverseDeps ctx)})
-  return $ newPending curPath depPath
-
--- unaFunc return depVal
+-- -- | Creates a dependency between the current value of the curPath to the value of the depPath.
+depend :: (MonadError String m, MonadState Context m) => Path -> PendingValue -> m PendingValue
+depend path (Unevaluated depPath) = do
+  modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
+  trace (printf "Unevaluated depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
+  return $ newPendingValue path depPath
+depend path (PendingValue depPath _ _ _) = do
+  modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
+  trace (printf "PendingValue depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
+  return $ newPendingValue path depPath
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty
@@ -453,7 +460,7 @@ instance Show Value where
   show (Struct (StructValue ols fds _)) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
   show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
-  show (Pending (PendingValue p edges args _)) = printf "(Pending, path: %s edges: %s, args: %s)" (show p) (show edges) (show args)
+  show (Pending v) = show v
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2

@@ -96,8 +96,8 @@ checkEvalPenTest = do
       StructValue
         ["x1", "x2"]
         ( Map.fromList
-            [ ("x1", newPending pathX1 pathY),
-              ("x2", newPending pathX2 pathX1)
+            [ ("x1", mkPending pathX1 pathY),
+              ("x2", mkPending pathX2 pathX1)
             ]
         )
         Set.empty
@@ -130,8 +130,8 @@ binFuncTest1 =
     addF (Int a) (Int b) = return $ Int (a + b)
     addF _ _ = throwError "addF: invalid arguments"
 
-    pend1 = newPending pathX1 pathY
-    pend2 = newPending pathX1 pathY
+    pend1 = mkPending pathX1 pathY
+    pend2 = mkPending pathX1 pathY
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do
@@ -151,8 +151,8 @@ binFuncTest2 =
     divF (Int a) (Int b) = return $ Int (a `div` b)
     divF _ _ = throwError "addF: invalid arguments"
 
-    pend1 = newPending pathX1 pathY
-    pend2 = newPending pathX1 pathZ
+    pend1 = mkPending pathX1 pathY
+    pend2 = mkPending pathX1 pathZ
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do
