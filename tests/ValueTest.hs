@@ -25,19 +25,16 @@ edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
 strsToPath :: [String] -> [Path]
 strsToPath = map (\x -> Path [StringSelector x])
 
--- [ testCase "depsOrder-cycle" $
---     let deps = edgesGen [("a", "b"), ("b", "c"), ("c", "a")]
---         result = depsOrder deps
---      in do
---           assertEqual "depsOrder-cycle" Nothing result,
---   testCase "depsOrder-happy-path" $
---     let deps = edgesGen [("a", "b"), ("b", "c"), ("c", "d")]
---         result = depsOrder deps
---      in do
---           assertEqual "" (Just $ strsToPath ["c", "b", "a"]) result
--- ]
---
---
+testDepsHasCycle :: IO ()
+testDepsHasCycle =
+  let deps1 = edgesGen [("a", "b"), ("b", "c"), ("c", "a")]
+      result1 = depsHasCycle deps1
+      deps2 = edgesGen [("a", "b"), ("b", "c"), ("c", "d")]
+      result2 = depsHasCycle deps2
+   in do
+        assertEqual "depsHasCycle" True result1
+        assertEqual "depsHasCycle" False result2
+
 selY = StringSelector "y"
 
 pathY = Path [selY]
@@ -171,5 +168,6 @@ valueTests =
     [ testCase "checkEvalPen" checkEvalPenTest,
       testCase "modifyValueInCtx" modifyValueInCtxTest,
       testCase "binFunc1" binFuncTest1,
-      testCase "binFunc2" binFuncTest2
+      testCase "binFunc2" binFuncTest2,
+      testCase "depsHasCycle" testDepsHasCycle
     ]

@@ -44,7 +44,7 @@ evalStructLit s path =
           (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
           ([], Set.empty)
           orderedKeys
-      fieldsStub = foldr (\k acc -> Map.insert k (Unevaluated (appendSel (Value.StringSelector k) path)) acc) Map.empty filteredKeys
+      fieldsStub = foldr (\k acc -> Map.insert k (newUnevaluated (appendSel (Value.StringSelector k) path)) acc) Map.empty filteredKeys
       idSet = Set.fromList (getVarLabels s)
       structStub = StructValue filteredKeys fieldsStub idSet
    in do
