@@ -212,7 +212,7 @@ data PendingValue
   = PendingValue
       { -- pendPath is the path to the pending value.
         pendPath :: Path,
-        -- depEdges is a list of paths to the unresolved references.
+        -- depEdges is a list of paths to the unresolved immediate references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the path to a pending value.
@@ -226,7 +226,8 @@ data PendingValue
   | Unevaluated {unevalPath :: Path}
 
 instance Show PendingValue where
-  show (PendingValue p d a _) = printf "(Pending, path: %s edges: %s, args: %s)" (show p) (show d) (show a)
+  show (PendingValue p d a _) =
+    printf "(Pending, path: %s deps: %s, args: %s)" (show p) (show d) (show a)
   show (Unevaluated p) = printf "(Unevaluated, path: %s)" (show p)
 
 -- TODO: merge same keys handler
@@ -273,10 +274,11 @@ bindEval evalf f xs = evalf xs >>= f
 mkUnevaluated :: Path -> Value
 mkUnevaluated = Pending . Unevaluated
 
--- | Creates a new pending value.
+-- | Creates a new simple pending value.
 mkPending :: Path -> Path -> Value
 mkPending src dst = Pending $ newPendingValue src dst
 
+-- | Creates a new pending value.
 newPendingValue :: Path -> Path -> PendingValue
 newPendingValue src dst = PendingValue src [(src, dst)] [] f
   where
@@ -296,11 +298,7 @@ goToBlock block p = do
   topBlock <- propagateBack block
   case goDown p topBlock of
     Just b -> return b
-    Nothing ->
-      throwError $
-        "value block, path: "
-          ++ show p
-          ++ " is not found"
+    Nothing -> throwError $ printf "value block is not found, path: %s" (show p)
 
 -- | Go to the block that contains the value.
 -- The path should be the full path to the value.
@@ -315,14 +313,20 @@ propagateBack (sv, cs) = go cs sv
     go ((StringSelector sel, parSV) : restCS) acc =
       go restCS (parSV {structFields = Map.insert sel (Struct acc) (structFields parSV)})
 
+-- | Locates the value block that contains the value denoted by the path.
 locateGetValue :: (MonadError String m) => TreeCursor -> Path -> m Value
 locateGetValue block path = goToValBlock block path >>= getVal (fromJust $ lastSel path)
   where
     getVal :: (MonadError String m) => Selector -> TreeCursor -> m Value
     getVal (StringSelector name) (StructValue _ fields _, _) =
       case Map.lookup name fields of
-        Nothing -> throwError $ "pending value, name: " ++ show name ++ " is not found"
+        Nothing -> throwError $ printf "locateGetValue: path: %s, field: %s is not found" (show path) name
         Just penVal -> return penVal
+
+getValueInCtx :: (MonadError String m, MonadState Context m) => Path -> m Value
+getValueInCtx path = do
+  (Context block _) <- get
+  locateGetValue block path
 
 locateSetValue :: (MonadError String m) => TreeCursor -> Path -> Value -> m TreeCursor
 locateSetValue block path val = goToValBlock block path >>= updateVal (fromJust $ lastSel path) val
@@ -336,6 +340,7 @@ modifyValueInCtx path val = do
   ctx@(Context block _) <- get
   newBlock <- locateSetValue block path val
   updatedOrig <- goToBlock newBlock (pathFromBlock block)
+  -- TODO: or we can just put the root.
   put $ ctx {ctxCurBlock = updatedOrig}
 
 -- | Checks whether the given value can be applied to the pending value that depends on the given value. If it can, then
@@ -345,9 +350,19 @@ checkEvalPen ::
 checkEvalPen (valPath, val) = do
   Context curBlock revDeps <- get
   case Map.lookup valPath revDeps of
-    Nothing -> pure ()
+    Nothing -> return ()
     Just penPath -> do
       penVal <- locateGetValue curBlock penPath
+      trace
+        ( printf
+            "checkEvalPen pre: penPath: %s, penVal: %s, valPath: %s, val: %s"
+            (show penPath)
+            (show penVal)
+            (show valPath)
+            (show val)
+        )
+        pure
+        ()
       newPenVal <- applyPen (penPath, penVal) (valPath, val)
       case newPenVal of
         Pending {} -> pure ()
@@ -355,19 +370,18 @@ checkEvalPen (valPath, val) = do
         -- on this value.
         v -> checkEvalPen (penPath, v)
       -- update the pending block.
-      modifyValueInCtx
-        penPath
-        ( trace
-            ( printf
-                "checkEvalPen: penPath: %s, penVal: %s, valPath: %s, val: %s, newPenVal: %s"
-                (show penPath)
-                (show penVal)
-                (show valPath)
-                (show val)
-                (show newPenVal)
-            )
-            newPenVal
+      modifyValueInCtx penPath newPenVal
+      trace
+        ( printf
+            "checkEvalPen post: penPath: %s, penVal: %s, valPath: %s, val: %s, newPenVal: %s"
+            (show penPath)
+            (show penVal)
+            (show valPath)
+            (show val)
+            (show newPenVal)
         )
+        pure
+        ()
 
 -- | Apply value to the pending value. It returns the new updated value.
 -- It keeps applying the value to the pending value until the pending value is evaluated.
@@ -408,7 +422,7 @@ lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m 
 lookupVar var path = do
   Context block _ <- get
   case searchUpVar var block of
-    Just (Pending v, _) -> Pending <$> depend path v
+    Just (Pending v, _) -> depend path v
     Just (v, _) -> do
       trace (printf "lookupVar found var %s, block: %s, found: %s" (show var) (show block) (show v)) pure ()
       pure v
@@ -425,7 +439,7 @@ dot field path value = case value of
   Struct (StructValue _ fields _) -> case Map.lookup field fields of
     -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
     -- populated with the value.
-    Just (Pending v) -> Pending <$> depend path v
+    Just (Pending v) -> depend path v
     Just v -> return v
     Nothing -> return $ Bottom $ field ++ " is not found"
   _ ->
@@ -436,16 +450,40 @@ dot field path value = case value of
         (show field)
         (show value)
 
--- -- | Creates a dependency between the current value of the curPath to the value of the depPath.
-depend :: (MonadError String m, MonadState Context m) => Path -> PendingValue -> m PendingValue
-depend path (Unevaluated depPath) = do
-  modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
-  trace (printf "Unevaluated depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
-  return $ newPendingValue path depPath
-depend path (PendingValue depPath _ _ _) = do
-  modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
-  trace (printf "PendingValue depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
-  return $ newPendingValue path depPath
+-- | Creates a dependency between the current value of the curPath to the value of the depPath.
+-- If there is a cycle, the Top is returned.
+depend :: (MonadError String m, MonadState Context m) => Path -> PendingValue -> m Value
+depend path val = case val of
+  (Unevaluated p) ->
+    if p == path
+      then do
+        trace (printf "depend Cycle detected: path: %s" (show path)) pure ()
+        createTop
+      else createDepVal p
+  (PendingValue p _ _ _) -> createDepVal p
+  where
+    createTop :: (MonadError String m, MonadState Context m) => m Value
+    createTop = do
+      -- checkEvalPen (path, Top)
+      return Top
+
+    checkCycle :: (MonadError String m, MonadState Context m) => (Path, Path) -> m Bool
+    checkCycle (src, dst) = do
+      Context _ revDeps <- get
+      -- we have to reverse the new edge because the graph is reversed.
+      return $ depsHasCycle ((dst, src) : Map.toList revDeps)
+
+    createDepVal :: (MonadError String m, MonadState Context m) => Path -> m Value
+    createDepVal depPath = do
+      cycleDetected <- checkCycle (path, depPath)
+      if cycleDetected
+        then do
+          trace (printf "depend Cycle detected: path: %s" (show path)) pure ()
+          createTop
+        else do
+          modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
+          trace (printf "depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
+          return $ Pending $ newPendingValue path depPath
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty

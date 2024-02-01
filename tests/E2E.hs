@@ -161,6 +161,24 @@ testVars3 = do
         )
         Set.empty
 
+testCycles1 :: IO ()
+testCycles1 = do
+  s <- readFile "tests/e2efiles/cycles1.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= structTop
+  return ()
+  where
+    structTop =
+      newStruct
+        ["x", "b", "c", "d"]
+        ( Map.fromList [("x", Top), ("b", Top), ("c", Top), ("d", Top)]
+        )
+        Set.empty
+
 e2eTests :: TestTree
 e2eTests =
   testGroup
@@ -294,5 +312,6 @@ e2eTests =
       testCase "vars" testVars,
       testCase "vars2" testVars2,
       testCase "vars3" testVars3,
-      testCase "selector" testSelector
+      testCase "selector" testSelector,
+      testCase "cycles1" testCycles1
     ]
