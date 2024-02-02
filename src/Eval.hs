@@ -50,14 +50,12 @@ evalStructLit s path =
   let labels = map evalLabel s
       fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty labels
       idSet = Set.fromList (getVarLabels s)
-      structStub = StructValue labels fieldsStub idSet
+      structStub = StructValue labels fieldsStub idSet Set.empty
    in do
         trace (printf "new struct, path: %s" (show path)) pure ()
         -- create a new block since we are entering a new struct.
         putValueInCtx path (Struct structStub)
-
-        _ <- mapM evalField (zipWith (\name (_, e) -> (name, e)) labels s)
-
+        mapM_ evalField (zipWith (\name (_, e) -> (name, e)) labels s)
         getValueFromCtx path
   where
     evalLabel (Label (LabelName ln), _) = case ln of
@@ -134,6 +132,8 @@ evalBinary op e1 e2 path = do
         g (Int i1) (Int i2) = do
           trace (printf "exec (%s %s %s)" (show i1) (show op) (show i2)) pure ()
           return $ Int (f i1 i2)
+        g Top (Int _) = return Top
+        g (Int _) Top = return Top
         g v1 v2 = throwError $ "intf: unsupported binary operator for values: " ++ show v1 ++ ", " ++ show v2
 
     binOp :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value

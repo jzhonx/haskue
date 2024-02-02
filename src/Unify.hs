@@ -1,32 +1,32 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Unify (unify) where
 
-import           Control.Monad.Except       (MonadError, throwError)
-import           Control.Monad.State.Strict (MonadState)
-import qualified Data.Map.Strict            as Map
-import qualified Data.Set                   as Set
-import           Value                      (Context, StructValue (..),
-                                             Value (..))
+import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.State.Strict (MonadState)
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Value
+  ( Context,
+    StructValue (..),
+    Value (..),
+  )
 
 unify :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unify = unify'
-
-unify' :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unify' val1 val2 = case (val1, val2) of
+unify val1 val2 = case (val1, val2) of
   (Bottom _, _) -> return val1
   (String x, String y) -> return $ if x == y then val1 else Bottom "strings mismatch"
   (Int x, Int y) -> return $ if x == y then val1 else Bottom "ints mismatch"
   (Struct {}, Struct {}) -> unifyStructs val1 val2
   (Disjunction _ _, _) -> unifyDisjunctions val1 val2
-  (_, Bottom _) -> unify' val2 val1
-  (_, Disjunction _ _) -> unify' val2 val1
+  (_, Bottom _) -> unify val2 val1
+  (_, Disjunction _ _) -> unify val2 val1
   _ -> return $ Bottom "values not unifiable"
 
 unifyStructs :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct (StructValue _ fields1 _)) (Struct (StructValue _ fields2 _)) = do
+unifyStructs (Struct (StructValue _ fields1 _ _)) (Struct (StructValue _ fields2 _ _)) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of
@@ -46,14 +46,14 @@ unifyStructs (Struct (StructValue _ fields1 _)) (Struct (StructValue _ fields2 _
     processUnified :: String -> Value -> Either Value (String, Value)
     processUnified key val = case val of
       Bottom _ -> Left val
-      _        -> Right (key, val)
+      _ -> Right (key, val)
     unifyIntersectionLabels =
       sequence
         ( Set.foldr
             ( \key acc ->
                 let valx = fields1 Map.! key
                     valy = fields2 Map.! key
-                    unified = unify' valx valy
+                    unified = unify valx valy
                  in fmap (processUnified key) unified : acc
             )
             []
@@ -61,7 +61,7 @@ unifyStructs (Struct (StructValue _ fields1 _)) (Struct (StructValue _ fields2 _
         )
 
     fieldsToValue :: Map.Map String Value -> Value
-    fieldsToValue fds = Struct (StructValue (Map.keys fds) fds Set.empty)
+    fieldsToValue fds = Struct (StructValue (Map.keys fds) fds Set.empty Set.empty)
 unifyStructs _ _ = throwError "unifyStructs: impossible"
 
 unifyDisjunctions :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
@@ -96,21 +96,21 @@ unifyDisjunctions d1 d2 =
   throwError $ "unifyDisjunctions: impossible unification, d1: " ++ show d1 ++ ", d2: " ++ show d2
 
 unifyValues :: (MonadState Context m, MonadError String m) => Value -> [Value] -> m [Value]
-unifyValues val = mapM (`unify'` val)
+unifyValues val = mapM (`unify` val)
 
 disjunctionFromValues :: (MonadError String m) => [[Value]] -> [[Value]] -> m Value
 disjunctionFromValues df ds = f (concatFilter df) (concatFilter ds)
   where
     concatFilter :: [[Value]] -> [Value]
     concatFilter xs = case filter (\x -> case x of Bottom _ -> False; _ -> True) (concat xs) of
-      []  -> [Bottom "empty disjuncts"]
+      [] -> [Bottom "empty disjuncts"]
       xs' -> xs'
     f :: (MonadError String m) => [Value] -> [Value] -> m Value
-    f [] []                 = emptyDisjunctError [] []
+    f [] [] = emptyDisjunctError [] []
     f [Bottom _] [Bottom _] = return $ Bottom "empty disjuncts"
-    f df' [Bottom _]        = return $ Disjunction [] df'
-    f [Bottom _] ds'        = return $ Disjunction [] ds'
-    f df' ds'               = return $ Disjunction df' ds'
+    f df' [Bottom _] = return $ Disjunction [] df'
+    f [Bottom _] ds' = return $ Disjunction [] ds'
+    f df' ds' = return $ Disjunction df' ds'
     emptyDisjunctError :: (MonadError String m) => [Value] -> [Value] -> m Value
     emptyDisjunctError df' ds' =
       throwError $

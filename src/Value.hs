@@ -5,7 +5,6 @@ module Value where
 
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (MonadState, get, modify, put)
-import Control.Monad.Trans.Maybe (MaybeT (..))
 import Data.ByteString.Builder
   ( Builder,
     char7,
@@ -54,10 +53,19 @@ data Value
   | Bottom String
   | Pending PendingValue
 
+isValueAtom :: Value -> Bool
+isValueAtom Top = True
+isValueAtom (String _) = True
+isValueAtom (Int _) = True
+isValueAtom (Bool _) = True
+isValueAtom Null = True
+isValueAtom _ = False
+
 data StructValue = StructValue
   { structOrderedLabels :: [String],
     structFields :: Map.Map String Value,
-    structIDs :: Set.Set String
+    structIDs :: Set.Set String,
+    structConcretes :: Set.Set String
   }
   deriving (Show, Eq)
 
@@ -80,14 +88,16 @@ data PendingValue
 
 instance Show PendingValue where
   show (PendingValue p d a _) =
-    printf "(Pending, path: %s deps: %s, args: %s)" (show p) (show d) (show a)
+    printf "(Pending, path: %s, deps: %s, args: %s)" (show p) prettyDeps (show a)
+    where
+      prettyDeps = intercalate ", " $ map (\(p1, p2) -> printf "(%s->%s)" (show p1) (show p2)) d
   show (Unevaluated p) = printf "(Unevaluated, path: %s)" (show p)
 
 -- TODO: merge same keys handler
 -- two embeded structs can have same keys
-mergeStructValues :: StructValue -> StructValue -> StructValue
-mergeStructValues (StructValue ols1 fields1 ids1) (StructValue ols2 fields2 ids2) =
-  StructValue (ols1 ++ ols2) (Map.union fields1 fields2) (Set.union ids1 ids2)
+-- mergeStructValues :: StructValue -> StructValue -> StructValue
+-- mergeStructValues (StructValue ols1 fields1 ids1 atoms1) (StructValue ols2 fields2 ids2 atoms2) =
+--   StructValue (ols1 ++ ols2) (Map.union fields1 fields2) (Set.union ids1 ids2) (isAtom1 && isAtom2)
 
 mergeArgs :: [(Path, Value)] -> [(Path, Value)] -> [(Path, Value)]
 mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
@@ -159,7 +169,7 @@ goDown :: Path -> TreeCursor -> Maybe TreeCursor
 goDown (Path sels) = go (reverse sels)
   where
     next :: Selector -> TreeCursor -> Maybe TreeCursor
-    next n@(StringSelector name) (sv@(StructValue _ fields _), vs) = do
+    next n@(StringSelector name) (sv@(StructValue _ fields _ _), vs) = do
       val <- Map.lookup name fields
       newSv <- svFromVal val
       return (newSv, (n, sv) : vs)
@@ -173,19 +183,19 @@ goDown (Path sels) = go (reverse sels)
 attach :: StructValue -> TreeCursor -> TreeCursor
 attach sv (_, vs) = (sv, vs)
 
-addSubBlock :: Maybe Selector -> StructValue -> TreeCursor -> TreeCursor
-addSubBlock Nothing newSv (sv, vs) = (mergeStructValues newSv sv, vs)
-addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
-  (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
+-- addSubBlock :: Maybe Selector -> StructValue -> TreeCursor -> TreeCursor
+-- addSubBlock Nothing newSv (sv, vs) = (mergeStructValues newSv sv, vs)
+-- addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
+--   (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
 
 searchUpVar :: String -> TreeCursor -> Maybe (Value, TreeCursor)
 searchUpVar var = go
   where
     go :: TreeCursor -> Maybe (Value, TreeCursor)
-    go cursor@(StructValue _ fields _, []) = case Map.lookup var fields of
+    go cursor@(StructValue _ fields _ _, []) = case Map.lookup var fields of
       Just v -> Just (v, cursor)
       Nothing -> Nothing
-    go cursor@(StructValue _ fields _, _) =
+    go cursor@(StructValue _ fields _ _, _) =
       case Map.lookup var fields of
         Just v -> Just (v, cursor)
         Nothing -> goUp cursor >>= go
@@ -224,7 +234,7 @@ locateGetValue block path = case goToScope block path of
   Just parentBlock -> getVal (fromJust $ lastSel path) parentBlock
     where
       getVal :: (MonadError String m) => Selector -> TreeCursor -> m Value
-      getVal (StringSelector name) (StructValue _ fields _, _) =
+      getVal (StringSelector name) (StructValue _ fields _ _, _) =
         case Map.lookup name fields of
           Nothing -> throwError $ printf "locateGetValue: path: %s, field: %s is not found" (show path) name
           Just penVal -> return penVal
@@ -239,12 +249,17 @@ locateSetValue block (Path []) (Struct sv) = return $ attach sv block
 locateSetValue _ (Path []) v =
   throwError $ printf "locateSetValue: cannot set value to a non-struct value, value: %s" (show v)
 locateSetValue block path val = case goToScope block path of
-  Nothing -> throwError $ printf "locateSetValue: holding block is not found, path: %s" (show path)
-  Just parentBlock -> updateVal (fromJust $ lastSel path) val parentBlock
+  Nothing -> throwError $ printf "locateSetValue: scope is not found, path: %s" (show path)
+  Just scope -> updateVal (fromJust $ lastSel path) val scope
   where
     updateVal :: (MonadError String m) => Selector -> Value -> TreeCursor -> m TreeCursor
-    updateVal (StringSelector name) newVal (StructValue ols fields ids, vs) =
-      return (StructValue ols (Map.insert name newVal fields) ids, vs)
+    updateVal (StringSelector name) newVal (sv, vs) =
+      let newFields = Map.insert name newVal (structFields sv)
+          newConcrSet =
+            if isValueAtom newVal
+              then Set.insert name (structConcretes sv)
+              else structConcretes sv
+       in return (sv {structFields = newFields, structConcretes = newConcrSet}, vs)
 
 -- | Put value to the context at the given path. The ctx is updated to the root.
 putValueInCtx :: (MonadError String m, MonadState Context m) => Path -> Value -> m ()
@@ -353,7 +368,7 @@ dot field path value = case value of
   Disjunction [x] _ -> lookupStructField x
   _ -> lookupStructField value
   where
-    lookupStructField (Struct (StructValue _ fields _)) = case Map.lookup field fields of
+    lookupStructField (Struct (StructValue _ fields _ _)) = case Map.lookup field fields of
       -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
       -- populated with the value.
       Just (Pending v) -> depend path v
@@ -375,7 +390,7 @@ depend path val = case val of
   (Unevaluated p) ->
     if p == path
       then do
-        trace (printf "depend Cycle detected: path: %s" (show path)) pure ()
+        trace (printf "depend self Cycle detected: path: %s" (show path)) pure ()
         createTop
       else createDepVal p
   (PendingValue p _ _ _) -> createDepVal p
@@ -400,11 +415,11 @@ depend path val = case val of
           createTop
         else do
           modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
-          trace (printf "depend: path: %s, depPath: %s" (show path) (show depPath)) pure ()
+          trace (printf "depend: %s->%s" (show path) (show depPath)) pure ()
           return $ Pending $ newPendingValue path depPath
 
 emptyStruct :: StructValue
-emptyStruct = StructValue [] Map.empty Set.empty
+emptyStruct = StructValue [] Map.empty Set.empty Set.empty
 
 -- | Show is only used for debugging.
 instance Show Value where
@@ -413,8 +428,9 @@ instance Show Value where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Struct (StructValue ols fds _)) = "{ labels:" ++ show ols ++ ", fields: " ++ show fds ++ "}"
-  show (Disjunction dfs djs) = "Disjunction: " ++ show dfs ++ ", " ++ show djs
+  show (Struct (StructValue ols fds _ atoms)) =
+    printf "{labels: %s, fields: %s, atoms: %s }" (show ols) (show fds) (show atoms)
+  show (Disjunction dfs djs) = "D: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
   show (Pending v) = show v
 
@@ -422,8 +438,8 @@ instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) (Struct (StructValue orderedLabels1 edges1 _)) (Struct (StructValue orderedLabels2 edges2 _)) =
-    orderedLabels1 == orderedLabels2 && edges1 == edges2
+  (==) (Struct (StructValue orderedLabels1 fields1 _ _)) (Struct (StructValue orderedLabels2 fields2 _ _)) =
+    orderedLabels1 == orderedLabels2 && fields1 == fields2
   (==) (Disjunction defaults1 disjuncts1) (Disjunction defaults2 disjuncts2) =
     disjuncts1 == disjuncts2 && defaults1 == defaults2
   (==) (Bottom _) (Bottom _) = True
@@ -440,7 +456,7 @@ buildCUEStr' _ (Int i) = integerDec i
 buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
 buildCUEStr' _ Top = string7 "_"
 buildCUEStr' _ Null = string7 "null"
-buildCUEStr' ident (Struct (StructValue ols fds _)) =
+buildCUEStr' ident (Struct (StructValue ols fds _ _)) =
   buildStructStr ident (map (\label -> (label, fds Map.! label)) ols)
 buildCUEStr' ident (Disjunction dfs djs) =
   if null dfs
