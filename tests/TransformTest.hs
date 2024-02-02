@@ -16,13 +16,20 @@ testTransform = do
     Right val -> assertEqual "transform" val (transform val)
   where
     aField =
-      ExprBinaryOp Unify (litCons $ IntLit 1) (litCons $ StringLit $ SimpleStringLit "hello")
+      ExprBinaryOp
+        Unify
+        (ExprBinaryOp Unify (litCons $ IntLit 1) (litCons $ (StringLit . SimpleStringLit) "hello"))
+        (litCons $ BoolLit True)
     exp =
       ExprUnaryExpr $
         UnaryExprPrimaryExpr $
           PrimExprOperand $
             OpLiteral $
-              StructLit [((Label . LabelName . LabelString) "a", aField)]
+              StructLit
+                [ ((Label . LabelName . LabelString) "a", aField),
+                  ((Label . LabelName . LabelString) "b", litCons $ IntLit 4),
+                  ((Label . LabelName . LabelString) "c", litCons $ IntLit 3)
+                ]
 
 transformTests :: TestTree
 transformTests = testGroup "Transform Tests" [testCase "simplify-struct" testTransform]
