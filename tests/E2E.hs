@@ -4,8 +4,9 @@ import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
-import Eval (eval)
+import Eval (eval, run)
 import Parser
+import Path
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -18,10 +19,7 @@ newSimpleStruct :: [String] -> [(String, Value)] -> Value
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
 
 startEval :: String -> Either String Value
-startEval s = do
-  parsedE <- parseCUE s
-  trace (show parsedE) pure ()
-  eval parsedE emptyPath
+startEval = run
 
 testBinOp2 :: IO ()
 testBinOp2 = do

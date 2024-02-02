@@ -2,20 +2,13 @@ module Main where
 
 import Control.Monad.Except (MonadError, runExceptT, throwError)
 import Data.ByteString.Builder (hPutBuilder)
-import Eval (eval)
+import Eval (run)
 import Parser (parseCUE)
+import Path (emptyPath)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
-import Value
-  ( Value (Int, String),
-    buildCUEStr,
-    emptyPath,
-  )
-
-run :: String -> Either String Value
-run s = do
-  parsedE <- parseCUE s
-  eval parsedE emptyPath
+import Transform (transform)
+import Value (Value (Int, String), buildCUEStr)
 
 main :: IO ()
 main = do

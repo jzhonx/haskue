@@ -3,28 +3,28 @@ module AST where
 data Expression
   = ExprUnaryExpr UnaryExpr
   | ExprBinaryOp BinaryOp Expression Expression
-  deriving (Show)
+  deriving (Eq, Show)
 
 data UnaryExpr
   = UnaryExprPrimaryExpr PrimaryExpr
   | UnaryExprUnaryOp UnaryOp UnaryExpr
-  deriving (Show)
+  deriving (Eq, Show)
 
 data PrimaryExpr
   = PrimExprOperand Operand
   | PrimExprSelector PrimaryExpr Selector
-  deriving (Show)
+  deriving (Eq, Show)
 
 data Selector
   = IDSelector Identifer
   | StringSelector SimpleStringLit
-  deriving (Show)
+  deriving (Eq, Show)
 
 data Operand
   = OpLiteral Literal
   | OpExpression Expression
   | OperandName OperandName
-  deriving (Show)
+  deriving (Eq, Show)
 
 data Literal
   = StringLit StringLit
@@ -34,19 +34,22 @@ data Literal
   | BottomLit
   | NullLit
   | StructLit [(Label, Expression)]
-  deriving (Show)
+  deriving (Eq, Show)
 
-data OperandName = Identifier Identifer deriving (Show)
+data OperandName = Identifier Identifer deriving (Eq, Show)
 
-data StringLit = SimpleStringLit SimpleStringLit deriving (Show)
+data StringLit = SimpleStringLit SimpleStringLit deriving (Eq, Show)
 
 type SimpleStringLit = String
 
-data Label = Label LabelExpr deriving (Show)
+data Label = Label LabelExpr deriving (Eq, Ord, Show)
 
-data LabelExpr = LabelName LabelName deriving (Show)
+data LabelExpr = LabelName LabelName deriving (Eq, Ord, Show)
 
-data LabelName = LabelID Identifer | LabelString String deriving (Show)
+data LabelName
+  = LabelID Identifer
+  | LabelString String
+  deriving (Eq, Ord, Show)
 
 type Identifer = String
 
@@ -60,21 +63,25 @@ data BinaryOp
   deriving (Eq)
 
 instance Show BinaryOp where
-  show Unify       = "&"
+  show Unify = "&"
   show Disjunction = "|"
-  show Add         = "+"
-  show Sub         = "-"
-  show Mul         = "*"
-  show Div         = "/"
+  show Add = "+"
+  show Sub = "-"
+  show Mul = "*"
+  show Div = "/"
 
 data UnaryOp
   = Plus
   | Minus
   | Not
   | Star
+  deriving (Eq)
 
 instance Show UnaryOp where
-  show Plus  = "+"
+  show Plus = "+"
   show Minus = "-"
-  show Not   = "!"
-  show Star  = "*"
+  show Not = "!"
+  show Star = "*"
+
+litCons :: Literal -> Expression
+litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral

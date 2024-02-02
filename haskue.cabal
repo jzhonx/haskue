@@ -28,6 +28,8 @@ library
         Parser,
         Unify,
         Value,
+        Path,
+        Transform,
     other-modules:
       Paths_haskue
     ghc-options: -Wall
@@ -71,6 +73,7 @@ Test-Suite haskue-unit-test
   other-modules:
     E2E,
     ValueTest,
+    TransformTest,
   build-depends:
         base ^>=4.16.4.0,
         tasty >= 0.7,

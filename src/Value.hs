@@ -1,61 +1,24 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module Value where
 
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (MonadState, get, modify, put)
-import Control.Monad.Trans.Maybe (MaybeT (..))
-import Data.ByteString.Builder
-  ( Builder,
-    char7,
-    integerDec,
-    string7,
-  )
-import Data.Graph
-  ( SCC (CyclicSCC),
-    graphFromEdges,
-    reverseTopSort,
-    stronglyConnComp,
-  )
-import Data.List (intercalate)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
-import qualified Data.Set as Set
-import Debug.Trace
-import Text.Printf (printf)
+import           Control.Monad.Except       (MonadError, throwError)
+import           Control.Monad.State.Strict (MonadState, get, modify, put)
+import           Control.Monad.Trans.Maybe  (MaybeT (..))
+import           Data.ByteString.Builder    (Builder, char7, integerDec,
+                                             string7)
+import           Data.Graph                 (SCC (CyclicSCC), graphFromEdges,
+                                             reverseTopSort, stronglyConnComp)
+import           Data.List                  (intercalate)
+import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
+import qualified Data.Set                   as Set
+import           Debug.Trace
+import           Path
+import           Text.Printf                (printf)
 
 -- TODO: IntSelector
-data Selector = StringSelector String deriving (Eq, Ord)
-
-instance Show Selector where
-  show (StringSelector s) = s
-
--- | Path is full path to a value.
-newtype Path = Path [Selector] deriving (Eq, Ord)
-
-showPath :: Path -> String
-showPath (Path sels) = intercalate "." $ map (\(StringSelector s) -> s) (reverse sels)
-
-instance Show Path where
-  show = showPath
-
-emptyPath :: Path
-emptyPath = Path []
-
-pathFromList :: [Selector] -> Path
-pathFromList sels = Path (reverse sels)
-
-appendSel :: Selector -> Path -> Path
-appendSel sel (Path xs) = Path (sel : xs)
-
-initPath :: Path -> Maybe Path
-initPath (Path []) = Nothing
-initPath (Path xs) = Just $ Path (tail xs)
-
-lastSel :: Path -> Maybe Selector
-lastSel (Path []) = Nothing
-lastSel (Path xs) = Just $ head xs
 
 -- -- relPath p base returns the relative path from base to p.
 -- -- If base is not a prefix of p, then p is returned.
@@ -70,16 +33,13 @@ lastSel (Path xs) = Just $ head xs
 --         then go xs ys (x : acc)
 --         else acc
 
-mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
-mergePaths p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
-
 -- | TreeCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type TreeCrumb = (Selector, StructValue)
 
 type TreeCursor = (StructValue, [TreeCrumb])
 
 goUp :: TreeCursor -> Maybe TreeCursor
-goUp (_, []) = Nothing
+goUp (_, [])           = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goDown :: Path -> TreeCursor -> Maybe TreeCursor
@@ -110,23 +70,23 @@ searchUpVar var = go
   where
     go :: TreeCursor -> Maybe (Value, TreeCursor)
     go cursor@(StructValue _ fields _, []) = case Map.lookup var fields of
-      Just v -> Just (v, cursor)
+      Just v  -> Just (v, cursor)
       Nothing -> Nothing
     go cursor@(StructValue _ fields _, _) =
       case Map.lookup var fields of
-        Just v -> Just (v, cursor)
+        Just v  -> Just (v, cursor)
         Nothing -> goUp cursor >>= go
 
 pathFromBlock :: TreeCursor -> Path
 pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
   where
     go :: [TreeCrumb] -> [Selector] -> [Selector]
-    go [] acc = acc
+    go [] acc            = acc
     go ((n, _) : cs) acc = go cs (n : acc)
 
 svFromVal :: Value -> Maybe StructValue
 svFromVal (Struct sv) = Just sv
-svFromVal _ = Nothing
+svFromVal _           = Nothing
 
 -- -- | Takes a list of paths and returns a list of paths in the dependency order.
 -- -- In the returned list, the first element is the path that has can be evaluated.
@@ -156,7 +116,7 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
     edgesForGraph = map (\(k, vs) -> ((), k, vs)) edges
 
     isCycle (CyclicSCC _) = True
-    isCycle _ = False
+    isCycle _             = False
 
 -- structPenOrder :: Path -> Map.Map String Value -> Maybe [String]
 -- structPenOrder curPath xs = undefined
@@ -178,7 +138,7 @@ data Context = Context
     -- A new block is entered when one of the following is encountered:
     -- - The "{" token
     -- - for and let clauses
-    ctxCurBlock :: TreeCursor,
+    ctxCurBlock    :: TreeCursor,
     ctxReverseDeps :: Map.Map Path Path
   }
 
@@ -194,7 +154,7 @@ data Value
   | Bool Bool
   | Struct StructValue
   | Disjunction
-      { defaults :: [Value],
+      { defaults  :: [Value],
         disjuncts :: [Value]
       }
   | Null
@@ -203,22 +163,22 @@ data Value
 
 data StructValue = StructValue
   { structOrderedLabels :: [String],
-    structFields :: Map.Map String Value,
-    structIDs :: Set.Set String
+    structFields        :: Map.Map String Value,
+    structIDs           :: Set.Set String
   }
   deriving (Show, Eq)
 
 data PendingValue
   = PendingValue
       { -- pendPath is the path to the pending value.
-        pendPath :: Path,
+        pendPath      :: Path,
         -- depEdges is a list of paths to the unresolved immediate references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the path to a pending value.
         -- the second element of the tuple is the path to a value that the pending value depends on.
-        pendDeps :: [(Path, Path)],
-        pendArgs :: [(Path, Value)],
+        pendDeps      :: [(Path, Path)],
+        pendArgs      :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
         pendEvaluator :: Evaluator
@@ -297,7 +257,7 @@ goToBlock :: (MonadError String m) => TreeCursor -> Path -> m TreeCursor
 goToBlock block p = do
   topBlock <- propagateBack block
   case goDown p topBlock of
-    Just b -> return b
+    Just b  -> return b
     Nothing -> throwError $ printf "value block is not found, path: %s" (show p)
 
 -- | Go to the block that contains the value.
@@ -368,7 +328,7 @@ checkEvalPen (valPath, val) = do
         Pending {} -> pure ()
         -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
         -- on this value.
-        v -> checkEvalPen (penPath, v)
+        v          -> checkEvalPen (penPath, v)
       -- update the pending block.
       modifyValueInCtx penPath newPenVal
       trace
@@ -440,8 +400,8 @@ dot field path value = case value of
     -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
     -- populated with the value.
     Just (Pending v) -> depend path v
-    Just v -> return v
-    Nothing -> return $ Bottom $ field ++ " is not found"
+    Just v           -> return v
+    Nothing          -> return $ Bottom $ field ++ " is not found"
   _ ->
     throwError $
       printf

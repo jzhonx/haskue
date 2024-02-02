@@ -10,12 +10,20 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Debug.Trace
+import Parser (parseCUE)
+import Path
 import Text.Printf (printf)
+import Transform (transform)
 import Unify (unify)
 import Value
 
 initState :: Context
 initState = Context (emptyStruct, []) Map.empty
+
+run :: String -> Either String Value
+run s = do
+  parsedE <- parseCUE s
+  eval (transform parsedE) emptyPath
 
 eval :: (MonadError String m) => Expression -> Path -> m Value
 eval expr path = fst <$> runStateT (doEval expr path) initState
@@ -46,7 +54,7 @@ evalStructLit s path =
           (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
           ([], Set.empty)
           orderedKeys
-      fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Value.StringSelector k) path)) acc) Map.empty filteredKeys
+      fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty filteredKeys
       idSet = Set.fromList (getVarLabels s)
       structStub = StructValue filteredKeys fieldsStub idSet
    in do
@@ -71,7 +79,7 @@ evalStructLit s path =
 
     evalField :: (MonadError String m, MonadState Context m) => (String, Expression) -> m (String, Value)
     evalField (name, e) =
-      let fieldPath = appendSel (Value.StringSelector name) path
+      let fieldPath = appendSel (Path.StringSelector name) path
        in do
             v <- doEval e fieldPath
             ctx <- get

@@ -11,6 +11,7 @@ import Control.Monad.State.Strict (MonadState)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
+import Path
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( assertEqual,
