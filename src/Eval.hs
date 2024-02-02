@@ -57,15 +57,7 @@ evalStructLit s path =
         putValueInCtx path (Struct structStub)
 
         _ <- mapM evalField (zipWith (\name (_, e) -> (name, e)) labels s)
-        -- let newStructVal = StructValue filteredKeys evaled idSet
-        -- restore the current block.
-        -- modify (\ctx -> ctx {ctxCurBlock = attach newStructVal (ctxCurBlock ctx)})
 
-        -- tryEvalPendings path
-
-        -- (Context (block, _) _) <- get
-
-        -- return $ Struct block
         getValueFromCtx path
   where
     evalLabel (Label (LabelName ln), _) = case ln of
@@ -78,22 +70,9 @@ evalStructLit s path =
        in do
             v <- doEval e fieldPath
             putValueInCtx fieldPath v
-            -- ctx <- get
-            -- updatedBlock <- goToBlock (ctxCurBlock ctx) path
-            -- -- There could be a problem here. The v is not put into the block.
-            -- put $ ctx {ctxCurBlock = updatedBlock}
             trace ("evalField: " ++ show fieldPath ++ ", " ++ show v) pure ()
             tryEvalPen (fieldPath, v)
             return (name, v)
-
-    -- -- unifySameFields is used to build a map from the field names to the values.
-    -- unifySameFields :: (MonadError String m, MonadState Context m) => [(String, Value)] -> m (Map.Map String Value)
-    -- unifySameFields fds = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; u x y) fieldsM
-    --   where
-    --     fieldsM = map (\(k, v) -> (k, return v)) fds
-    --
-    --     u :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value
-    --     u = binFunc unify
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var
@@ -101,20 +80,6 @@ evalStructLit s path =
 
     getVarLabels :: [(Label, Expression)] -> [String]
     getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
-
--- tryEvalPendings :: (MonadError String m, MonadState Context m) => Path -> m ()
--- tryEvalPendings path = do
---   (Context (StructValue _ fds _, _) _) <- get
---   sequence_ $ Map.mapWithKey tryEvalPending fds
---   where
---     tryEvalPending :: (MonadError String m, MonadState Context m) => String -> Value -> m ()
---     tryEvalPending k v = checkEvalPen (appendSel (Value.StringSelector k) path, v)
-
--- enterNewScope :: (MonadError String m, MonadState Context m) => StructValue -> Path -> m ()
--- enterNewScope structStub path = do
---   ctx@(Context block _) <- get
---   let newBlock = addSubBlock (lastSel path) structStub block
---   put $ ctx {ctxCurBlock = newBlock}
 
 evalUnaryExpr :: (MonadError String m, MonadState Context m) => UnaryExpr -> Path -> m Value
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr

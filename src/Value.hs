@@ -20,52 +20,9 @@ import Debug.Trace
 import Path
 import Text.Printf (printf)
 
--- -- relPath p base returns the relative path from base to p.
--- -- If base is not a prefix of p, then p is returned.
--- relPath :: Path -> Path -> Path
--- relPath (Path p) (Path base) = Path $ go (reverse p) (reverse base) []
---   where
---     go :: [Selector] -> [Selector] -> [Selector] -> [Selector]
---     go [] _ acc = acc
---     go _ [] acc = acc
---     go (x : xs) (y : ys) acc =
---       if x == y
---         then go xs ys (x : acc)
---         else acc
-
 svFromVal :: Value -> Maybe StructValue
 svFromVal (Struct sv) = Just sv
 svFromVal _ = Nothing
-
--- -- | Takes a list of paths and returns a list of paths in the dependency order.
--- -- In the returned list, the first element is the path that has can be evaluated.
--- depEdgesOrder :: [(Path, Path)] -> Maybe [Path]
--- depEdgesOrder ps = depsOrder edges
---   where
---     depMap = Map.fromListWith (++) (map (\(k, v) -> (k, [v])) ps)
---     edges = Map.toList depMap
---
--- depsOrder :: [(Path, [Path])] -> Maybe [Path]
--- depsOrder dps =
---   if hasCycle edgesForGraph
---     then Nothing
---     else Just $ map (\v -> let (_, p, _) = nodeFromVertex v in p) (reverseTopSort graph)
---   where
---     edgesForGraph = map (\(k, vs) -> ((), k, vs)) dps
---     (graph, nodeFromVertex, _) = graphFromEdges edgesForGraph
-
--- structPenOrder :: Path -> Map.Map String Value -> Maybe [String]
--- structPenOrder curPath xs = undefined
---   where
---     penSubGraph :: String -> Value -> Maybe (Path, String, [Path])
---     penSubGraph k (Pending dps _) = Just (curPath ++ [StringSelector k], k, map snd dps)
---     penSubGraph _ _ = Nothing
---
---     penFields :: [(Path, String, [Path])]
---     penFields = Map.foldrWithKey (\k field acc -> case penSubGraph k field of Just res -> res : acc; Nothing -> acc) [] xs
---
---     penOrder :: Maybe [Path]
---     penOrder = depsOrder $ map (\(p, _, dps) -> (p, dps)) penFields
 
 -- | Context
 data Context = Context
