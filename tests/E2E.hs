@@ -76,9 +76,9 @@ testSelector = do
         [fieldEDefault]
         [newSimpleStruct ["a"] [("a", Disjunction [Int 2] [Int 1, Int 2])], fieldEDefault]
 
-testVars :: IO ()
-testVars = do
-  s <- readFile "tests/e2efiles/vars.cue"
+testVars1 :: IO ()
+testVars1 = do
+  s <- readFile "tests/e2efiles/vars1.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -177,46 +177,50 @@ testCycles1 = do
         )
         Set.empty
 
+testBasic :: IO ()
+testBasic = do
+  s <- readFile "tests/e2efiles/basic.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["x1", "x2", "y1", "y2", "z1"]
+          ( Map.fromList
+              [ ("x1", Bool True),
+                ("x2", Bool False),
+                ("y1", Top),
+                ("y2", Bottom ""),
+                ("z1", Null)
+              ]
+          )
+          Set.empty
+
+testUnaryOp :: IO ()
+testUnaryOp = do
+  s <- readFile "tests/e2efiles/unaryop.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["x", "y", "z"]
+          ( Map.fromList
+              [ ("x", Int 1),
+                ("y", Int (-1)),
+                ("z", Bool False)
+              ]
+          )
+          Set.empty
+
 e2eTests :: TestTree
 e2eTests =
   testGroup
-    "e2e tests"
-    [ testCase "basic" $
-        do
-          s <- readFile "tests/e2efiles/basic.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  ["x1", "x2", "y1", "y2", "z1"]
-                  ( Map.fromList
-                      [ ("x1", Bool True),
-                        ("x2", Bool False),
-                        ("y1", Top),
-                        ("y2", Bottom ""),
-                        ("z1", Null)
-                      ]
-                  )
-                  Set.empty,
-      testCase "unaryop" $
-        do
-          s <- readFile "tests/e2efiles/unaryop.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  ["x", "y", "z"]
-                  ( Map.fromList
-                      [ ("x", Int 1),
-                        ("y", Int (-1)),
-                        ("z", Bool False)
-                      ]
-                  )
-                  Set.empty,
+    "e2eTests"
+    [ testCase "basic" testBasic,
+      testCase "unaryop" testUnaryOp,
       testCase "binop" $
         do
           s <- readFile "tests/e2efiles/binop.cue"
@@ -307,7 +311,7 @@ e2eTests =
                       ]
                   )
                   Set.empty,
-      testCase "vars" testVars,
+      testCase "vars1" testVars1,
       testCase "vars2" testVars2,
       testCase "vars3" testVars3,
       testCase "selector" testSelector,

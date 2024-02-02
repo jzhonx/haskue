@@ -44,24 +44,19 @@ evalLiteral = f
     f NullLit _ = return Null
     f (StructLit s) path = evalStructLit s path
 
--- Rules of evaluating a struct literal:
--- 1. Create a new scope.
+-- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (MonadError String m, MonadState Context m) => [(Label, Expression)] -> Path -> m Value
 evalStructLit s path =
-  let orderedKeys = map evalLabel s
-      (filteredKeys, _) =
-        foldr
-          (\k (l, set) -> if Set.notMember k set then (k : l, Set.insert k set) else (l, set))
-          ([], Set.empty)
-          orderedKeys
-      fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty filteredKeys
+  let labels = map evalLabel s
+      fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty labels
       idSet = Set.fromList (getVarLabels s)
-      structStub = StructValue filteredKeys fieldsStub idSet
+      structStub = StructValue labels fieldsStub idSet
    in do
+        trace (printf "new struct, path: %s" (show path)) pure ()
         -- create a new block since we are entering a new struct.
-        modifyValueInCtx path (Struct structStub)
+        putValueInCtx path (Struct structStub)
 
-        _ <- mapM evalField (zipWith (\name (_, e) -> (name, e)) orderedKeys s) >>= unifySameFields
+        _ <- mapM evalField (zipWith (\name (_, e) -> (name, e)) labels s)
         -- let newStructVal = StructValue filteredKeys evaled idSet
         -- restore the current block.
         -- modify (\ctx -> ctx {ctxCurBlock = attach newStructVal (ctxCurBlock ctx)})
@@ -71,7 +66,7 @@ evalStructLit s path =
         -- (Context (block, _) _) <- get
 
         -- return $ Struct block
-        getValueInCtx path
+        getValueFromCtx path
   where
     evalLabel (Label (LabelName ln), _) = case ln of
       LabelID ident -> ident
@@ -82,21 +77,23 @@ evalStructLit s path =
       let fieldPath = appendSel (Path.StringSelector name) path
        in do
             v <- doEval e fieldPath
-            ctx <- get
-            updatedBlock <- goToBlock (ctxCurBlock ctx) path
-            -- There could be a problem here. The v is not put into the block.
-            put $ ctx {ctxCurBlock = updatedBlock}
-            trace ("evalField: " ++ show name ++ ", " ++ show v) pure ()
+            putValueInCtx fieldPath v
+            -- ctx <- get
+            -- updatedBlock <- goToBlock (ctxCurBlock ctx) path
+            -- -- There could be a problem here. The v is not put into the block.
+            -- put $ ctx {ctxCurBlock = updatedBlock}
+            trace ("evalField: " ++ show fieldPath ++ ", " ++ show v) pure ()
+            tryEvalPen (fieldPath, v)
             return (name, v)
 
-    -- unifySameFields is used to build a map from the field names to the values.
-    unifySameFields :: (MonadError String m, MonadState Context m) => [(String, Value)] -> m (Map.Map String Value)
-    unifySameFields fds = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; u x y) fieldsM
-      where
-        fieldsM = map (\(k, v) -> (k, return v)) fds
-
-        u :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value
-        u = binFunc unify
+    -- -- unifySameFields is used to build a map from the field names to the values.
+    -- unifySameFields :: (MonadError String m, MonadState Context m) => [(String, Value)] -> m (Map.Map String Value)
+    -- unifySameFields fds = sequence $ Map.fromListWith (\mx my -> do x <- mx; y <- my; u x y) fieldsM
+    --   where
+    --     fieldsM = map (\(k, v) -> (k, return v)) fds
+    --
+    --     u :: (MonadError String m, MonadState Context m) => Value -> Value -> m Value
+    --     u = binFunc unify
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var

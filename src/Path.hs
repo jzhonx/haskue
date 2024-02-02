@@ -1,8 +1,11 @@
 module Path where
 
+import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
+-- TODO: IntSelector
 data Selector = StringSelector String deriving (Eq, Ord)
 
 instance Show Selector where
@@ -36,3 +39,17 @@ lastSel (Path xs) = Just $ head xs
 
 mergePaths :: [(Path, Path)] -> [(Path, Path)] -> [(Path, Path)]
 mergePaths p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
+
+depsHasCycle :: [(Path, Path)] -> Bool
+depsHasCycle ps = hasCycle edges
+  where
+    depMap = Map.fromListWith (++) (map (\(k, v) -> (k, [v])) ps)
+    edges = Map.toList depMap
+
+hasCycle :: [(Path, [Path])] -> Bool
+hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
+  where
+    edgesForGraph = map (\(k, vs) -> ((), k, vs)) edges
+
+    isCycle (CyclicSCC _) = True
+    isCycle _ = False

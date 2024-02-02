@@ -52,9 +52,9 @@ selX2 = StringSelector "x2"
 
 pathX2 = Path [selX2]
 
-modifyValueInCtxTest :: IO ()
-modifyValueInCtxTest = do
-  let m = modifyValueInCtx (pathFromList [selX1, selY]) (String "world")
+putValueInCtxTest :: IO ()
+putValueInCtxTest = do
+  let m = putValueInCtx (pathFromList [selX1, selY]) (String "world")
   let res = runStateT m (Context (outer, []) Map.empty)
   case res of
     Left err -> assertFailure err
@@ -80,9 +80,9 @@ modifyValueInCtxTest = do
         )
         Set.empty
 
-checkEvalPenTest :: IO ()
-checkEvalPenTest = do
-  let m = checkEvalPen (pathY, newVal)
+tryEvalPenTest :: IO ()
+tryEvalPenTest = do
+  let m = tryEvalPen (pathY, newVal)
   let res = runStateT m (Context (blockVal, []) revDeps)
   case res of
     Left err -> assertFailure err
@@ -166,8 +166,8 @@ valueTests :: TestTree
 valueTests =
   testGroup
     "valueTest"
-    [ testCase "checkEvalPen" checkEvalPenTest,
-      testCase "modifyValueInCtx" modifyValueInCtxTest,
+    [ testCase "tryEvalPen" tryEvalPenTest,
+      testCase "putValueInCtx" putValueInCtxTest,
       testCase "binFunc1" binFuncTest1,
       testCase "binFunc2" binFuncTest2,
       testCase "depsHasCycle" testDepsHasCycle
