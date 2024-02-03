@@ -1,16 +1,16 @@
 module E2E where
 
-import           Data.ByteString.Builder
-import qualified Data.Map.Strict         as Map
-import qualified Data.Set                as Set
-import           Debug.Trace
-import           Eval                    (eval, run)
-import           Parser
-import           Path
-import           System.IO               (readFile)
-import           Test.Tasty
-import           Test.Tasty.HUnit
-import           Value
+import Data.ByteString.Builder
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Debug.Trace
+import Eval (eval, run)
+import Parser
+import Path
+import System.IO (readFile)
+import Test.Tasty
+import Test.Tasty.HUnit
+import Value
 
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids Set.empty)
@@ -20,6 +20,15 @@ newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
 
 startEval :: String -> Either String Value
 startEval = run
+
+testBottom :: IO ()
+testBottom = do
+  s <- readFile "tests/e2efiles/bottom.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y @?= Bottom ""
 
 testBinOp2 :: IO ()
 testBinOp2 = do
@@ -186,13 +195,12 @@ testBasic = do
     Right val' ->
       val'
         @?= newStruct
-          ["x1", "x2", "y1", "y2", "z1"]
+          ["a", "b", "c", "d"]
           ( Map.fromList
-              [ ("x1", Bool True),
-                ("x2", Bool False),
-                ("y1", Top),
-                ("y2", Bottom ""),
-                ("z1", Null)
+              [ ("a", Bool True),
+                ("b", Bool False),
+                ("c", Top),
+                ("d", Null)
               ]
           )
           Set.empty
@@ -215,102 +223,107 @@ testUnaryOp = do
           )
           Set.empty
 
+testBinop :: IO ()
+testBinop = do
+  s <- readFile "tests/e2efiles/binop.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          (map (\i -> "x" ++ show i) [1 .. 9])
+          ( Map.fromList
+              [ ("x1", Int 3),
+                ("x2", Int 8),
+                ("x3", Int 2),
+                ("x4", Int 5),
+                ("x5", Int (-3)),
+                ("x6", Int 7),
+                ("x7", Int 5),
+                ("x8", Int 9),
+                ("x9", Int 9)
+              ]
+          )
+          Set.empty
+
+testDisjunction1 :: IO ()
+testDisjunction1 = do
+  s <- readFile "tests/e2efiles/disjunct.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
+          ( Map.fromList
+              [ ("x1", Disjunction [String "tcp"] [String "tcp", String "udp"]),
+                ("x2", Disjunction [Int 1] [Int 1, Int 2, Int 3]),
+                ("x3", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
+                ("x4", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
+                ("x5", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
+                ("x6", Disjunction [] [Int 1, Int 2]),
+                ("y0", Disjunction [] [Int 1, Int 2, Int 3]),
+                ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
+                ("y2", Disjunction [Int 3] [Int 1, Int 2, Int 3])
+              ]
+          )
+          Set.empty
+
+testDisjunction2 :: IO ()
+testDisjunction2 = do
+  s <- readFile "tests/e2efiles/disjunct2.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["x"]
+          ( Map.fromList
+              [ ( "x",
+                  Disjunction
+                    []
+                    [ newStruct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty,
+                      newStruct ["y"] (Map.fromList [("y", Int 2)]) Set.empty
+                    ]
+                )
+              ]
+          )
+          Set.empty
+
+testUnifyStructs :: IO ()
+testUnifyStructs = do
+  s <- readFile "tests/e2efiles/unify_structs.cue"
+  let val = startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["a", "b", "d", "z"]
+          ( Map.fromList
+              [ ("a", Int 123),
+                ("b", Int 456),
+                ("d", String "hello"),
+                ("z", Int 4321)
+              ]
+          )
+          Set.empty
+
 e2eTests :: TestTree
 e2eTests =
   testGroup
     "e2eTests"
     [ testCase "basic" testBasic,
+      testCase "bottom" testBottom,
       testCase "unaryop" testUnaryOp,
-      testCase "binop" $
-        do
-          s <- readFile "tests/e2efiles/binop.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  (map (\i -> "x" ++ show i) [1 .. 10])
-                  ( Map.fromList
-                      [ ("x1", Int 3),
-                        ("x2", Int 8),
-                        ("x3", Int 2),
-                        ("x4", Int 5),
-                        ("x5", Bottom ""),
-                        ("x6", Int (-3)),
-                        ("x7", Int 7),
-                        ("x8", Int 5),
-                        ("x9", Int 9),
-                        ("x10", Int 9)
-                      ]
-                  )
-                  Set.empty,
+      testCase "binop" testBinop,
       testCase "binop2" testBinOp2,
-      testCase
-        "disjunction"
-        $ do
-          s <- readFile "tests/e2efiles/disjunct.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
-                  ( Map.fromList
-                      [ ("x1", Disjunction [String "tcp"] [String "tcp", String "udp"]),
-                        ("x2", Disjunction [Int 1] [Int 1, Int 2, Int 3]),
-                        ("x3", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
-                        ("x4", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
-                        ("x5", Disjunction [Int 1, Int 2] [Int 1, Int 2, Int 3]),
-                        ("x6", Disjunction [] [Int 1, Int 2]),
-                        ("y0", Disjunction [] [Int 1, Int 2, Int 3]),
-                        ("y1", Disjunction [Int 2] [Int 1, Int 2, Int 3]),
-                        ("y2", Disjunction [Int 3] [Int 1, Int 2, Int 3])
-                      ]
-                  )
-                  Set.empty,
-      testCase
-        "disjunction-2"
-        $ do
-          s <- readFile "tests/e2efiles/disjunct2.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  ["x"]
-                  ( Map.fromList
-                      [ ( "x",
-                          Disjunction
-                            []
-                            [ newStruct ["y", "z"] (Map.fromList [("y", Int 1), ("z", Int 3)]) Set.empty,
-                              newStruct ["y"] (Map.fromList [("y", Int 2)]) Set.empty
-                            ]
-                        )
-                      ]
-                  )
-                  Set.empty,
-      testCase
-        "unify-structs"
-        $ do
-          s <- readFile "tests/e2efiles/unify_structs.cue"
-          let val = startEval s
-          case val of
-            Left err -> assertFailure err
-            Right val' ->
-              val'
-                @?= newStruct
-                  ["a", "b", "d", "z"]
-                  ( Map.fromList
-                      [ ("a", Int 123),
-                        ("b", Int 456),
-                        ("d", String "hello"),
-                        ("z", Int 4321)
-                      ]
-                  )
-                  Set.empty,
+      testCase "disjunction1" testDisjunction1,
+      testCase "disjunction2" testDisjunction2,
+      testCase "unifyStructs" testUnifyStructs,
       testCase "vars1" testVars1,
       testCase "vars2" testVars2,
       testCase "vars3" testVars3,

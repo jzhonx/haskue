@@ -4,6 +4,7 @@
 module Eval where
 
 import AST
+import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, get, modify, put, runStateT)
 import qualified Data.Map.Strict as Map
@@ -46,31 +47,38 @@ evalLiteral = f
 
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (MonadError String m, MonadState Context m) => [(Label, Expression)] -> Path -> m Value
-evalStructLit s path =
-  let labels = map evalLabel s
+evalStructLit lit path =
+  let labels = map evalLabel lit
       fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty labels
-      idSet = Set.fromList (getVarLabels s)
+      idSet = Set.fromList (getVarLabels lit)
       structStub = StructValue labels fieldsStub idSet Set.empty
    in do
         trace (printf "new struct, path: %s" (show path)) pure ()
         -- create a new block since we are entering a new struct.
         putValueInCtx path (Struct structStub)
-        mapM_ evalField (zipWith (\name (_, e) -> (name, e)) labels s)
-        getValueFromCtx path
+        bm <- foldM evalField Nothing (zipWith (\name (_, e) -> (name, e)) labels lit)
+        case bm of
+          Just b -> return b
+          Nothing -> getValueFromCtx path
   where
     evalLabel (Label (LabelName ln), _) = case ln of
       LabelID ident -> ident
       LabelString ls -> ls
 
-    evalField :: (MonadError String m, MonadState Context m) => (String, Expression) -> m (String, Value)
-    evalField (name, e) =
+    -- evalField evaluates a field in a struct. It returns whether the evaluated value is Bottom.
+    evalField :: (MonadError String m, MonadState Context m) => Maybe Value -> (String, Expression) -> m (Maybe Value)
+    evalField acc (name, e) =
       let fieldPath = appendSel (Path.StringSelector name) path
-       in do
-            v <- doEval e fieldPath
-            putValueInCtx fieldPath v
-            trace ("evalField: " ++ show fieldPath ++ ", " ++ show v) pure ()
-            tryEvalPen (fieldPath, v)
-            return (name, v)
+       in if isJust acc
+            then return acc
+            else do
+              v <- doEval e fieldPath
+              putValueInCtx fieldPath v
+              trace ("evalField: " ++ show fieldPath ++ ", " ++ show v) pure ()
+              tryEvalPen (fieldPath, v)
+              case v of
+                Bottom {} -> return $ Just v
+                _ -> return Nothing
 
     fetchVarLabel :: Label -> Maybe String
     fetchVarLabel (Label (LabelName (LabelID var))) = Just var
