@@ -67,7 +67,12 @@ data StructValue = StructValue
     structIDs :: Set.Set String,
     structConcretes :: Set.Set String
   }
-  deriving (Show, Eq)
+  deriving (Show)
+
+-- | For now we don't compare IDs and Concrete fields.
+instance Eq StructValue where
+  (==) (StructValue ols1 fields1 _ _) (StructValue ols2 fields2 _ _) =
+    ols1 == ols2 && fields1 == fields2
 
 data PendingValue
   = PendingValue
@@ -438,8 +443,7 @@ instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) (Struct (StructValue orderedLabels1 fields1 _ _)) (Struct (StructValue orderedLabels2 fields2 _ _)) =
-    orderedLabels1 == orderedLabels2 && fields1 == fields2
+  (==) (Struct sv1) (Struct sv2) = sv1 == sv2
   (==) (Disjunction defaults1 disjuncts1) (Disjunction defaults2 disjuncts2) =
     disjuncts1 == disjuncts2 && defaults1 == defaults2
   (==) (Bottom _) (Bottom _) = True

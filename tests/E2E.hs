@@ -1,19 +1,19 @@
 module E2E where
 
-import Data.ByteString.Builder
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Debug.Trace
-import Eval (eval, run)
-import Parser
-import Path
-import System.IO (readFile)
-import Test.Tasty
-import Test.Tasty.HUnit
-import Value
+import           Data.ByteString.Builder
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
+import           Debug.Trace
+import           Eval                    (eval, run)
+import           Parser
+import           Path
+import           System.IO               (readFile)
+import           Test.Tasty
+import           Test.Tasty.HUnit
+import           Value
 
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
-newStruct lbls fds ids = Struct (StructValue lbls fds ids)
+newStruct lbls fds ids = Struct (StructValue lbls fds ids Set.empty)
 
 newSimpleStruct :: [String] -> [(String, Value)] -> Value
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty

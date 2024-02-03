@@ -1,24 +1,21 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE LambdaCase       #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module ValueTest where
 
-import Control.Monad.Except (MonadError, runExceptT, throwError)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.State (StateT (runStateT))
-import Control.Monad.State.Strict (MonadState)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
-import qualified Data.Set as Set
-import Path
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
-  ( assertEqual,
-    assertFailure,
-    testCase,
-  )
-import Value
+import           Control.Monad.Except       (MonadError, runExceptT, throwError)
+import           Control.Monad.IO.Class     (MonadIO, liftIO)
+import           Control.Monad.State        (StateT (runStateT))
+import           Control.Monad.State.Strict (MonadState)
+import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
+import qualified Data.Set                   as Set
+import           Path
+import           Test.Tasty                 (TestTree, testGroup)
+import           Test.Tasty.HUnit           (assertEqual, assertFailure,
+                                             testCase)
+import           Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
@@ -68,16 +65,17 @@ putValueInCtxTest = do
       x2: 42
      }
     -}
-    inner = StructValue ["y"] (Map.fromList [("y", String "hello")]) Set.empty
-    outer = StructValue ["x1", "x2"] (Map.fromList [("x1", Struct inner), ("x2", Int 42)]) Set.empty
+    inner = StructValue ["y"] (Map.fromList [("y", String "hello")]) Set.empty Set.empty
+    outer = StructValue ["x1", "x2"] (Map.fromList [("x1", Struct inner), ("x2", Int 42)]) Set.empty Set.empty
     expectedVal =
       StructValue
         ["x1", "x2"]
         ( Map.fromList
-            [ ("x1", Struct $ StructValue ["y"] (Map.fromList [("y", String "world")]) Set.empty),
+            [ ("x1", Struct $ StructValue ["y"] (Map.fromList [("y", String "world")]) Set.empty Set.empty),
               ("x2", Int 42)
             ]
         )
+        Set.empty
         Set.empty
 
 tryEvalPenTest :: IO ()
@@ -102,6 +100,7 @@ tryEvalPenTest = do
             ]
         )
         Set.empty
+        Set.empty
     newVal = Int 1
     revDeps = Map.fromList [(pathY, pathX1), (pathX1, pathX2)]
     expectedBlockVal =
@@ -112,6 +111,7 @@ tryEvalPenTest = do
               ("x2", Int 1)
             ]
         )
+        Set.empty
         Set.empty
 
 runEmptyCtx :: (MonadError String m) => StateT Context m Value -> m Value
@@ -129,7 +129,7 @@ binFuncTest1 =
   where
     addF :: Value -> Value -> EvalMonad Value
     addF (Int a) (Int b) = return $ Int (a + b)
-    addF _ _ = throwError "addF: invalid arguments"
+    addF _ _             = throwError "addF: invalid arguments"
 
     pend1 = mkPending pathX1 pathY
     pend2 = mkPending pathX1 pathY
@@ -150,7 +150,7 @@ binFuncTest2 =
   where
     divF :: Value -> Value -> EvalMonad Value
     divF (Int a) (Int b) = return $ Int (a `div` b)
-    divF _ _ = throwError "addF: invalid arguments"
+    divF _ _             = throwError "addF: invalid arguments"
 
     pend1 = mkPending pathX1 pathY
     pend2 = mkPending pathX1 pathZ
