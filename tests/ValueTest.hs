@@ -13,8 +13,8 @@ import           Data.Maybe                 (fromJust)
 import qualified Data.Set                   as Set
 import           Path
 import           Test.Tasty                 (TestTree, testGroup)
-import           Test.Tasty.HUnit           (assertEqual, assertFailure,
-                                             testCase)
+import           Test.Tasty.HUnit           (assertBool, assertEqual,
+                                             assertFailure, testCase)
 import           Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
@@ -86,7 +86,7 @@ tryEvalPenTest = do
     Left err -> assertFailure err
     Right (_, Context (resBlock, _) resRev) -> do
       assertEqual "check block" expectedBlockVal resBlock
-      assertEqual "check rev" Map.empty resRev
+      assertBool "check rev" $ resRev /= Map.empty
   where
     {-
      { x1: y; x2: x1 }

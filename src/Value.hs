@@ -324,7 +324,6 @@ applyPen (penPath, penV@(Pending {})) pair = go penV pair
       let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
           newArgs = ((valPath, val) : args)
        in do
-            modify (\ctx -> ctx {ctxReverseDeps = Map.delete valPath (ctxReverseDeps ctx)})
             trace
               ( printf
                   "applyPen: %s->%s, args: %s, newDeps: %s"
