@@ -67,7 +67,10 @@ data StructValue = StructValue
     structIDs :: Set.Set String,
     structConcretes :: Set.Set String
   }
-  deriving (Show)
+
+instance Show StructValue where
+  show (StructValue ols fds _ atoms) =
+    printf "{labels: %s, fields: %s, atoms: %s }" (show ols) (show fds) (show atoms)
 
 -- | For now we don't compare IDs and Concrete fields.
 instance Eq StructValue where
@@ -432,8 +435,7 @@ instance Show Value where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Struct (StructValue ols fds _ atoms)) =
-    printf "{labels: %s, fields: %s, atoms: %s }" (show ols) (show fds) (show atoms)
+  show (Struct sv) = show sv
   show (Disjunction dfs djs) = "D: " ++ show dfs ++ ", " ++ show djs
   show (Bottom msg) = "_|_: " ++ msg
   show (Pending v) = show v
