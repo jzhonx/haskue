@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module Value
   ( Context (..),
@@ -24,25 +24,21 @@ module Value
   )
 where
 
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (MonadState, get, modify, put)
-import Data.ByteString.Builder
-  ( Builder,
-    char7,
-    integerDec,
-    string7,
-  )
-import Data.List (intercalate)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
-import qualified Data.Set as Set
-import Debug.Trace
-import Path
-import Text.Printf (printf)
+import           Control.Monad.Except       (MonadError, throwError)
+import           Control.Monad.State.Strict (MonadState, get, modify, put)
+import           Data.ByteString.Builder    (Builder, char7, integerDec,
+                                             string7)
+import           Data.List                  (intercalate)
+import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
+import qualified Data.Set                   as Set
+import           Debug.Trace
+import           Path
+import           Text.Printf                (printf)
 
 svFromVal :: Value -> Maybe StructValue
 svFromVal (Struct sv) = Just sv
-svFromVal _ = Nothing
+svFromVal _           = Nothing
 
 -- | Context
 data Context = Context
@@ -51,7 +47,7 @@ data Context = Context
     -- A new block is entered when one of the following is encountered:
     -- - The "{" token
     -- - for and let clauses
-    ctxCurBlock :: TreeCursor,
+    ctxCurBlock    :: TreeCursor,
     ctxReverseDeps :: Map.Map Path Path
   }
 
@@ -67,7 +63,7 @@ data Value
   | Bool Bool
   | Struct StructValue
   | Disjunction
-      { defaults :: [Value],
+      { defaults  :: [Value],
         disjuncts :: [Value]
       }
   | Null
@@ -75,18 +71,18 @@ data Value
   | Pending PendingValue
 
 isValueAtom :: Value -> Bool
-isValueAtom Top = True
+isValueAtom Top        = True
 isValueAtom (String _) = True
-isValueAtom (Int _) = True
-isValueAtom (Bool _) = True
-isValueAtom Null = True
-isValueAtom _ = False
+isValueAtom (Int _)    = True
+isValueAtom (Bool _)   = True
+isValueAtom Null       = True
+isValueAtom _          = False
 
 data StructValue = StructValue
-  { structOrderedLabels :: [String],
-    structFields :: Map.Map String Value,
-    structIDs :: Set.Set String,
-    structConcretes :: Set.Set String
+  { svLabels    :: [String],
+    svFields    :: Map.Map String Value,
+    svVars      :: Set.Set String,
+    svConcretes :: Set.Set String
   }
 
 instance Show StructValue where
@@ -101,14 +97,14 @@ instance Eq StructValue where
 data PendingValue
   = PendingValue
       { -- pendPath is the path to the pending value.
-        pendPath :: Path,
+        pendPath      :: Path,
         -- depEdges is a list of paths to the unresolved immediate references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the path to a pending value.
         -- the second element of the tuple is the path to a value that the pending value depends on.
-        pendDeps :: [(Path, Path)],
-        pendArgs :: [(Path, Value)],
+        pendDeps      :: [(Path, Path)],
+        pendArgs      :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
         pendEvaluator :: Evaluator
@@ -191,7 +187,7 @@ type TreeCrumb = (Selector, StructValue)
 type TreeCursor = (StructValue, [TreeCrumb])
 
 goUp :: TreeCursor -> Maybe TreeCursor
-goUp (_, []) = Nothing
+goUp (_, [])           = Nothing
 goUp (_, (_, v') : vs) = Just (v', vs)
 
 goDown :: Path -> TreeCursor -> Maybe TreeCursor
@@ -222,19 +218,19 @@ searchUpVar var = go
   where
     go :: TreeCursor -> Maybe (Value, TreeCursor)
     go cursor@(StructValue _ fields _ _, []) = case Map.lookup var fields of
-      Just v -> Just (v, cursor)
+      Just v  -> Just (v, cursor)
       Nothing -> Nothing
     go cursor@(StructValue _ fields _ _, _) =
       case Map.lookup var fields of
-        Just v -> Just (v, cursor)
+        Just v  -> Just (v, cursor)
         Nothing -> goUp cursor >>= go
 
-pathFromBlock :: TreeCursor -> Path
-pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
-  where
-    go :: [TreeCrumb] -> [Selector] -> [Selector]
-    go [] acc = acc
-    go ((n, _) : cs) acc = go cs (n : acc)
+-- pathFromBlock :: TreeCursor -> Path
+-- pathFromBlock (_, crumbs) = Path . reverse $ go crumbs []
+--   where
+--     go :: [TreeCrumb] -> [Selector] -> [Selector]
+--     go [] acc = acc
+--     go ((n, _) : cs) acc = go cs (n : acc)
 
 goToBlock :: TreeCursor -> Path -> Maybe TreeCursor
 goToBlock block p =
@@ -248,7 +244,7 @@ propagateBack (sv, cs) = go cs sv
     go :: [TreeCrumb] -> StructValue -> TreeCursor
     go [] acc = (acc, [])
     go ((StringSelector sel, parSV) : restCS) acc =
-      go restCS (parSV {structFields = Map.insert sel (Struct acc) (structFields parSV)})
+      go restCS (parSV {svFields = Map.insert sel (Struct acc) (svFields parSV)})
 
 -- | Go to the block that contains the value.
 -- The path should be the full path to the value.
@@ -283,12 +279,12 @@ locateSetValue block path val = case goToScope block path of
   where
     updateVal :: (MonadError String m) => Selector -> Value -> TreeCursor -> m TreeCursor
     updateVal (StringSelector name) newVal (sv, vs) =
-      let newFields = Map.insert name newVal (structFields sv)
+      let newFields = Map.insert name newVal (svFields sv)
           newConcrSet =
             if isValueAtom newVal
-              then Set.insert name (structConcretes sv)
-              else structConcretes sv
-       in return (sv {structFields = newFields, structConcretes = newConcrSet}, vs)
+              then Set.insert name (svConcretes sv)
+              else svConcretes sv
+       in return (sv {svFields = newFields, svConcretes = newConcrSet}, vs)
 
 -- | Put value to the context at the given path. The ctx is updated to the root.
 putValueInCtx :: (MonadError String m, MonadState Context m) => Path -> Value -> m ()
@@ -323,7 +319,7 @@ tryEvalPen (valPath, val) = do
         Pending {} -> pure ()
         -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
         -- on this value.
-        v -> tryEvalPen (penPath, v)
+        v          -> tryEvalPen (penPath, v)
       -- update the pending block.
       putValueInCtx penPath newPenVal
       trace
@@ -376,7 +372,7 @@ lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m 
 lookupVar var path = do
   ctx <- get
   let scope = case goToScope (ctxCurBlock ctx) path of
-        Just b -> b
+        Just b  -> b
         Nothing -> ctxCurBlock ctx
   case searchUpVar var scope of
     Just (Pending v, _) -> depend path v
@@ -394,14 +390,14 @@ lookupVar var path = do
 dot :: (MonadError String m, MonadState Context m) => String -> Path -> Value -> m Value
 dot field path value = case value of
   Disjunction [x] _ -> lookupStructField x
-  _ -> lookupStructField value
+  _                 -> lookupStructField value
   where
     lookupStructField (Struct (StructValue _ fields _ _)) = case Map.lookup field fields of
       -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
       -- populated with the value.
       Just (Pending v) -> depend path v
-      Just v -> return v
-      Nothing -> return $ Bottom $ field ++ " is not found"
+      Just v           -> return v
+      Nothing          -> return $ Bottom $ field ++ " is not found"
     lookupStructField _ =
       return $
         Bottom $
@@ -451,15 +447,15 @@ emptyStruct = StructValue [] Map.empty Set.empty Set.empty
 
 -- | Show is only used for debugging.
 instance Show Value where
-  show (String s) = s
-  show (Int i) = show i
-  show (Bool b) = show b
-  show Top = "_"
-  show Null = "null"
-  show (Struct sv) = show sv
+  show (String s)            = s
+  show (Int i)               = show i
+  show (Bool b)              = show b
+  show Top                   = "_"
+  show Null                  = "null"
+  show (Struct sv)           = show sv
   show (Disjunction dfs djs) = "D: " ++ show dfs ++ ", " ++ show djs
-  show (Bottom msg) = "_|_: " ++ msg
-  show (Pending v) = show v
+  show (Bottom msg)          = "_|_: " ++ msg
+  show (Pending v)           = show v
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
