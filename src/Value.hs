@@ -394,8 +394,8 @@ lookupVar var path = do
 -- Parameters:
 --   s is the name of the field.
 --   path is the path to the current expression that contains the selector.
-dot :: (MonadError String m, MonadState Context m) => String -> Path -> Value -> m Value
-dot field path value = case value of
+dot :: (MonadError String m, MonadState Context m) => AST.Expression -> String -> Path -> Value -> m Value
+dot expr field path value = case value of
   Disjunction [x] _ -> lookupStructField x
   _                 -> lookupStructField value
   where
@@ -403,8 +403,9 @@ dot field path value = case value of
       -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
       -- populated with the value.
       Just (Pending v) -> depend path v
-      Just v           -> return v
-      Nothing          -> return $ Bottom $ field ++ " is not found"
+      Just v -> return v
+      -- The "incomplete" expression case.
+      Nothing -> return $ mkPending expr path (appendSel (StringSelector field) path)
     lookupStructField _ =
       return $
         Bottom $

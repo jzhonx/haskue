@@ -59,15 +59,15 @@ data Literal
   | StructLit [(Label, Expression)]
   deriving (Eq, Show)
 
-data OperandName = Identifier Identifer deriving (Eq, Show)
+newtype OperandName = Identifier Identifer deriving (Eq, Show)
 
-data StringLit = SimpleStringLit SimpleStringLit deriving (Eq, Show)
+newtype StringLit = SimpleStringLit SimpleStringLit deriving (Eq, Show)
 
 type SimpleStringLit = String
 
-data Label = Label LabelExpr deriving (Eq, Ord, Show)
+newtype Label = Label LabelExpr deriving (Eq, Ord, Show)
 
-data LabelExpr = LabelName LabelName deriving (Eq, Ord, Show)
+newtype LabelExpr = LabelName LabelName deriving (Eq, Ord, Show)
 
 data LabelName
   = LabelID Identifer

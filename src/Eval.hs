@@ -6,7 +6,7 @@ module Eval (run, eval) where
 import           AST
 import           Control.Monad        (foldM)
 import           Control.Monad.Except (MonadError, throwError)
-import           Control.Monad.State  (MonadState, get, modify, put, runStateT)
+import           Control.Monad.State  (MonadState, runStateT)
 import qualified Data.Map.Strict      as Map
 import           Data.Maybe           (fromJust, isJust)
 import qualified Data.Set             as Set
@@ -96,18 +96,19 @@ evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit                  -> evalLiteral lit
   OpExpression expr              -> doEval expr
   OperandName (Identifier ident) -> lookupVar ident
-evalPrimExpr (PrimExprSelector primExpr sel) = \path -> do
+evalPrimExpr e@(PrimExprSelector primExpr sel) = \path -> do
   val <- evalPrimExpr primExpr path
-  evalSelector sel val path
+  evalSelector e sel val path
 
-evalSelector :: (MonadError String m, MonadState Context m) => AST.Selector -> Value -> Path -> m Value
-evalSelector sel val path = case sel of
+evalSelector :: (MonadError String m, MonadState Context m) => PrimaryExpr -> AST.Selector -> Value -> Path -> m Value
+evalSelector pe sel val path = case sel of
   IDSelector ident       -> evalF ident
   AST.StringSelector str -> evalF str
   where
+    e = ExprUnaryExpr (UnaryExprPrimaryExpr pe)
     evalF s = case val of
-      pendV@(Pending {}) -> unaFunc (dot s path) pendV
-      _                  -> dot s path val
+      pendV@(Pending {}) -> unaFunc (dot e s path) pendV
+      _                  -> dot e s path val
 
 evalUnaryOp :: (MonadError String m, MonadState Context m) => UnaryOp -> UnaryExpr -> Path -> m Value
 evalUnaryOp op e path = do
