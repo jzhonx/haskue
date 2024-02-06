@@ -97,17 +97,17 @@ instance Eq StructValue where
 data PendingValue
   = PendingValue
       { -- pendPath is the path to the pending value.
-        pendPath      :: Path,
+        pvPath      :: Path,
         -- depEdges is a list of paths to the unresolved immediate references.
         -- path should be the full path.
         -- The edges are primarily used to detect cycles.
         -- the first element of the tuple is the path to a pending value.
         -- the second element of the tuple is the path to a value that the pending value depends on.
-        pendDeps      :: [(Path, Path)],
-        pendArgs      :: [(Path, Value)],
+        pvDeps      :: [(Path, Path)],
+        pvArgs      :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
-        pendEvaluator :: Evaluator
+        pvEvaluator :: Evaluator
       }
   | Unevaluated {unevalPath :: Path}
 
