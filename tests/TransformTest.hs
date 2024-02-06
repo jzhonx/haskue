@@ -1,35 +1,35 @@
 module TransformTest where
 
-import AST
-import Parser (parseCUE)
-import System.IO (readFile)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
-import Transform (transform)
+import           AST
+import           Parser           (parseCUE)
+import           System.IO        (readFile)
+import           Test.Tasty       (TestTree, testGroup)
+import           Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import           Transform        (transform)
 
 testTransform :: IO ()
 testTransform = do
-  s <- readFile "tests/e2efiles/binop2.cue"
+  s <- readFile "tests/transform/transform.cue"
   let res = parseCUE s
   case res of
-    Left err -> assertFailure err
-    Right val -> assertEqual "transform" val (transform val)
+    Left err  -> assertFailure err
+    Right val -> assertEqual "transformed" exp (transform val)
   where
     aField =
       ExprBinaryOp
         Unify
-        (ExprBinaryOp Unify (litCons $ IntLit 1) (litCons $ (StringLit . SimpleStringLit) "hello"))
         (litCons $ BoolLit True)
+        (ExprBinaryOp Unify (litCons $ (StringLit . SimpleStringLit) "hello") (litCons $ IntLit 1))
     exp =
       ExprUnaryExpr $
         UnaryExprPrimaryExpr $
           PrimExprOperand $
             OpLiteral $
               StructLit
-                [ ((Label . LabelName . LabelString) "a", aField),
-                  ((Label . LabelName . LabelString) "b", litCons $ IntLit 4),
-                  ((Label . LabelName . LabelString) "c", litCons $ IntLit 3)
+                [ ((Label . LabelName . LabelID) "a", aField),
+                  ((Label . LabelName . LabelID) "b", litCons $ IntLit 4),
+                  ((Label . LabelName . LabelID) "c", litCons $ IntLit 3)
                 ]
 
 transformTests :: TestTree
-transformTests = testGroup "Transform Tests" [testCase "simplify-struct" testTransform]
+transformTests = testGroup "Transform Tests" [testCase "transform" testTransform]

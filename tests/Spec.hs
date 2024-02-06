@@ -1,16 +1,16 @@
-module E2E where
+module Spec where
 
-import Data.ByteString.Builder
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Debug.Trace
-import Eval (eval, run)
-import Parser
-import Path
-import System.IO (readFile)
-import Test.Tasty
-import Test.Tasty.HUnit
-import Value
+import           Data.ByteString.Builder
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
+import           Debug.Trace
+import           Eval                    (eval, run)
+import           Parser
+import           Path
+import           System.IO               (readFile)
+import           Test.Tasty
+import           Test.Tasty.HUnit
+import           Value
 
 newStruct :: [String] -> Map.Map String Value -> Set.Set String -> Value
 newStruct lbls fds ids = Struct (StructValue lbls fds ids Set.empty)
@@ -23,7 +23,7 @@ startEval = run
 
 testBottom :: IO ()
 testBottom = do
-  s <- readFile "tests/e2efiles/bottom.cue"
+  s <- readFile "tests/spec/bottom.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -32,7 +32,7 @@ testBottom = do
 
 testBinOp2 :: IO ()
 testBinOp2 = do
-  s <- readFile "tests/e2efiles/binop2.cue"
+  s <- readFile "tests/spec/binop2.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -49,7 +49,7 @@ testBinOp2 = do
 
 testSelector :: IO ()
 testSelector = do
-  s <- readFile "tests/e2efiles/selector.cue"
+  s <- readFile "tests/spec/selector.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -87,7 +87,7 @@ testSelector = do
 
 testVars1 :: IO ()
 testVars1 = do
-  s <- readFile "tests/e2efiles/vars1.cue"
+  s <- readFile "tests/spec/vars1.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -105,7 +105,7 @@ testVars1 = do
 
 testVars2 :: IO ()
 testVars2 = do
-  s <- readFile "tests/e2efiles/vars2.cue"
+  s <- readFile "tests/spec/vars2.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -146,7 +146,7 @@ testVars2 = do
 
 testVars3 :: IO ()
 testVars3 = do
-  s <- readFile "tests/e2efiles/vars3.cue"
+  s <- readFile "tests/spec/vars3.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -170,7 +170,7 @@ testVars3 = do
 
 testCycles1 :: IO ()
 testCycles1 = do
-  s <- readFile "tests/e2efiles/cycles1.cue"
+  s <- readFile "tests/spec/cycles1.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -188,7 +188,7 @@ testCycles1 = do
 
 testBasic :: IO ()
 testBasic = do
-  s <- readFile "tests/e2efiles/basic.cue"
+  s <- readFile "tests/spec/basic.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -207,7 +207,7 @@ testBasic = do
 
 testUnaryOp :: IO ()
 testUnaryOp = do
-  s <- readFile "tests/e2efiles/unaryop.cue"
+  s <- readFile "tests/spec/unaryop.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -225,7 +225,7 @@ testUnaryOp = do
 
 testBinop :: IO ()
 testBinop = do
-  s <- readFile "tests/e2efiles/binop.cue"
+  s <- readFile "tests/spec/binop.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -249,7 +249,7 @@ testBinop = do
 
 testDisjunction1 :: IO ()
 testDisjunction1 = do
-  s <- readFile "tests/e2efiles/disjunct.cue"
+  s <- readFile "tests/spec/disjunct.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -273,7 +273,7 @@ testDisjunction1 = do
 
 testDisjunction2 :: IO ()
 testDisjunction2 = do
-  s <- readFile "tests/e2efiles/disjunct2.cue"
+  s <- readFile "tests/spec/disjunct2.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -295,7 +295,7 @@ testDisjunction2 = do
 
 testUnifyStructs :: IO ()
 testUnifyStructs = do
-  s <- readFile "tests/e2efiles/unify_structs.cue"
+  s <- readFile "tests/spec/unify_structs.cue"
   let val = startEval s
   case val of
     Left err -> assertFailure err
@@ -312,10 +312,10 @@ testUnifyStructs = do
           )
           Set.empty
 
-e2eTests :: TestTree
-e2eTests =
+specTests :: TestTree
+specTests =
   testGroup
-    "e2eTests"
+    "specTests"
     [ testCase "basic" testBasic,
       testCase "bottom" testBottom,
       testCase "unaryop" testUnaryOp,
