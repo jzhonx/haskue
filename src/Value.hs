@@ -1,7 +1,28 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Value where
+module Value
+  ( Context (..),
+    EvalMonad,
+    Evaluator,
+    Value (..),
+    PendingValue (..),
+    StructValue (..),
+    emptyStruct,
+    isValueAtom,
+    binFunc,
+    unaFunc,
+    mkUnevaluated,
+    mkPending,
+    putValueInCtx,
+    getValueFromCtx,
+    tryEvalPen,
+    lookupVar,
+    dot,
+    buildCUEStr,
+    applyPen,
+  )
+where
 
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (MonadState, get, modify, put)
