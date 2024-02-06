@@ -24,7 +24,7 @@ module Value
   )
 where
 
-import           AST                        (Expression)
+import qualified AST
 import           Control.Monad.Except       (MonadError, throwError)
 import           Control.Monad.State.Strict (MonadState, get, modify, put)
 import           Data.ByteString.Builder    (Builder, char7, integerDec,
@@ -495,7 +495,9 @@ buildCUEStr' ident (Disjunction dfs djs) =
   where
     buildList xs = foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> buildCUEStr' ident d) xs)
 buildCUEStr' _ (Bottom _) = string7 "_|_"
-buildCUEStr' _ (Pending {}) = string7 "_|_"
+buildCUEStr' _ (Pending p) = case p of
+  pv@(PendingValue {}) -> string7 (show $ pvExpr pv)
+  (Unevaluated {})     -> string7 "_|_: Unevaluated"
 
 buildStructStr :: Int -> [(String, Value)] -> Builder
 buildStructStr ident xs =
