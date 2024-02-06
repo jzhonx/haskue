@@ -4,6 +4,7 @@
 
 module ValueTest where
 
+import qualified AST
 import           Control.Monad.Except       (MonadError, runExceptT, throwError)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import           Control.Monad.State        (StateT (runStateT))
@@ -48,6 +49,8 @@ pathX1 = Path [selX1]
 selX2 = StringSelector "x2"
 
 pathX2 = Path [selX2]
+
+bottomExpr = AST.litCons AST.BottomLit
 
 putValueInCtxTest :: IO ()
 putValueInCtxTest = do
@@ -95,8 +98,8 @@ tryEvalPenTest = do
       StructValue
         ["x1", "x2"]
         ( Map.fromList
-            [ ("x1", mkPending pathX1 pathY),
-              ("x2", mkPending pathX2 pathX1)
+            [ ("x1", mkPending bottomExpr pathX1 pathY),
+              ("x2", mkPending bottomExpr pathX2 pathX1)
             ]
         )
         Set.empty
@@ -131,8 +134,8 @@ binFuncTest1 =
     addF (Int a) (Int b) = return $ Int (a + b)
     addF _ _             = throwError "addF: invalid arguments"
 
-    pend1 = mkPending pathX1 pathY
-    pend2 = mkPending pathX1 pathY
+    pend1 = mkPending bottomExpr pathX1 pathY
+    pend2 = mkPending bottomExpr pathX1 pathY
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do
@@ -152,8 +155,8 @@ binFuncTest2 =
     divF (Int a) (Int b) = return $ Int (a `div` b)
     divF _ _             = throwError "addF: invalid arguments"
 
-    pend1 = mkPending pathX1 pathY
-    pend2 = mkPending pathX1 pathZ
+    pend1 = mkPending bottomExpr pathX1 pathY
+    pend2 = mkPending bottomExpr pathX1 pathZ
 
     binFuncTestHelper :: (MonadError String m, MonadIO m) => m ()
     binFuncTestHelper = do

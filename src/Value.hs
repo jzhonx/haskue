@@ -24,6 +24,7 @@ module Value
   )
 where
 
+import           AST                        (Expression)
 import           Control.Monad.Except       (MonadError, throwError)
 import           Control.Monad.State.Strict (MonadState, get, modify, put)
 import           Data.ByteString.Builder    (Builder, char7, integerDec,
@@ -96,7 +97,7 @@ instance Eq StructValue where
 
 data PendingValue
   = PendingValue
-      { -- pendPath is the path to the pending value.
+      { -- pvPath is the path to the pending value.
         pvPath      :: Path,
         -- depEdges is a list of paths to the unresolved immediate references.
         -- path should be the full path.
@@ -107,16 +108,20 @@ data PendingValue
         pvArgs      :: [(Path, Value)],
         -- evaluator is a function that takes a list of values and returns a value.
         -- The order of the values in the list is the same as the order of the paths in deps.
-        pvEvaluator :: Evaluator
+        pvEvaluator :: Evaluator,
+        pvExpr      :: AST.Expression
       }
-  | Unevaluated {unevalPath :: Path}
+  | Unevaluated
+      { uePath :: Path,
+        ueExpr :: AST.Expression
+      }
 
 instance Show PendingValue where
-  show (PendingValue p d a _) =
-    printf "(Pending, path: %s, deps: %s, args: %s)" (show p) prettyDeps (show a)
+  show (PendingValue p d a _ e) =
+    printf "(Pending, path: %s, deps: %s, args: %s, expr: %s)" (show p) prettyDeps (show a) (show e)
     where
       prettyDeps = intercalate ", " $ map (\(p1, p2) -> printf "(%s->%s)" (show p1) (show p2)) d
-  show (Unevaluated p) = printf "(Unevaluated, path: %s)" (show p)
+  show (Unevaluated p e) = printf "(Unevaluated, path: %s, expr: %s)" (show p) (show e)
 
 -- TODO: merge same keys handler
 -- two embeded structs can have same keys
@@ -129,7 +134,7 @@ mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
 
 -- | The binFunc is used to evaluate a binary function with two arguments.
 binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
-binFunc bin (Pending (PendingValue p1 d1 a1 e1)) (Pending (PendingValue p2 d2 a2 e2))
+binFunc bin (Pending (PendingValue p1 d1 a1 e1 ex1)) (Pending (PendingValue p2 d2 a2 e2 _))
   | p1 == p2 =
       return $
         Pending $
@@ -142,6 +147,8 @@ binFunc bin (Pending (PendingValue p1 d1 a1 e1)) (Pending (PendingValue p2 d2 a2
                 v2 <- e2 xs
                 bin v1 v2
             )
+            -- TODO: use expr1 for now
+            ex1
   | otherwise =
       throwError $
         printf "binFunc: two pending values have different paths, p1: %s, p2: %s" (show p1) (show p2)
@@ -152,23 +159,23 @@ binFunc bin v1 v2 = bin v1 v2
 -- | The unaFunc is used to evaluate a unary function.
 -- The first argument is the function that takes the value and returns a value.
 unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
-unaFunc f (Pending (PendingValue p d a e)) = return $ Pending $ PendingValue p d a (bindEval e f)
+unaFunc f (Pending (PendingValue p d a e expr)) = return $ Pending $ PendingValue p d a (bindEval e f) expr
 unaFunc f v = f v
 
 -- | Binds the evaluator to a function that uses the value as the argument.
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
 bindEval evalf f xs = evalf xs >>= f
 
-mkUnevaluated :: Path -> Value
-mkUnevaluated = Pending . Unevaluated
+mkUnevaluated :: Path -> AST.Expression -> Value
+mkUnevaluated p e = Pending $ Unevaluated p e
 
 -- | Creates a new simple pending value.
-mkPending :: Path -> Path -> Value
-mkPending src dst = Pending $ newPendingValue src dst
+mkPending :: AST.Expression -> Path -> Path -> Value
+mkPending expr src dst = Pending $ newPendingValue expr src dst
 
 -- | Creates a new pending value.
-newPendingValue :: Path -> Path -> PendingValue
-newPendingValue src dst = PendingValue src [(src, dst)] [] f
+newPendingValue :: AST.Expression -> Path -> Path -> PendingValue
+newPendingValue expr src dst = PendingValue src [(src, dst)] [] f expr
   where
     f xs = do
       case lookup dst xs of
@@ -340,9 +347,9 @@ applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Pat
 applyPen (penPath, penV@(Pending {})) pair = go penV pair
   where
     go :: (MonadError String m, MonadState Context m) => Value -> (Path, Value) -> m Value
-    go (Pending (PendingValue selfPath deps args f)) (valPath, val) =
-      let newDeps = filter (\(_, depPath) -> depPath /= valPath) deps
-          newArgs = ((valPath, val) : args)
+    go (Pending pv@(PendingValue {})) (valPath, val) =
+      let newDeps = filter (\(_, depPath) -> depPath /= valPath) (pvDeps pv)
+          newArgs = ((valPath, val) : pvArgs pv)
        in do
             trace
               ( printf
@@ -355,8 +362,8 @@ applyPen (penPath, penV@(Pending {})) pair = go penV pair
               pure
               ()
             if null newDeps
-              then f newArgs >>= \v -> go v pair
-              else return $ Pending $ PendingValue selfPath newDeps newArgs f
+              then pvEvaluator pv newArgs >>= \v -> go v pair
+              else return $ Pending $ pv {pvDeps = newDeps, pvArgs = newArgs}
     go v _ = return v
 applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
 
@@ -411,13 +418,13 @@ dot field path value = case value of
 -- If there is a cycle, the Top is returned.
 depend :: (MonadError String m, MonadState Context m) => Path -> PendingValue -> m Value
 depend path val = case val of
-  (Unevaluated p) ->
+  (Unevaluated p e) ->
     if p == path
       then do
         trace (printf "depend self Cycle detected: path: %s" (show path)) pure ()
         createTop
-      else createDepVal p
-  (PendingValue p _ _ _) -> createDepVal p
+      else createDepVal e p
+  pv@(PendingValue {}) -> createDepVal (pvExpr pv) (pvPath pv)
   where
     createTop :: (MonadError String m, MonadState Context m) => m Value
     createTop = do
@@ -430,8 +437,8 @@ depend path val = case val of
       -- we have to reverse the new edge because the graph is reversed.
       return $ depsHasCycle ((dst, src) : Map.toList revDeps)
 
-    createDepVal :: (MonadError String m, MonadState Context m) => Path -> m Value
-    createDepVal depPath = do
+    createDepVal :: (MonadError String m, MonadState Context m) => AST.Expression -> Path -> m Value
+    createDepVal expr depPath = do
       cycleDetected <- checkCycle (path, depPath)
       if cycleDetected
         then do
@@ -440,7 +447,8 @@ depend path val = case val of
         else do
           modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
           trace (printf "depend: %s->%s" (show path) (show depPath)) pure ()
-          return $ Pending $ newPendingValue path depPath
+          -- TODO: fix the expr
+          return $ Pending $ newPendingValue expr path depPath
 
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty Set.empty

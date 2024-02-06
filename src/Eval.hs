@@ -49,7 +49,7 @@ evalLiteral = f
 evalStructLit :: (MonadError String m, MonadState Context m) => [(Label, Expression)] -> Path -> m Value
 evalStructLit lit path =
   let labels = map evalLabel lit
-      fieldsStub = foldr (\k acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path)) acc) Map.empty labels
+      fieldsStub = foldr (\(k, e) acc -> Map.insert k (mkUnevaluated (appendSel (Path.StringSelector k) path) e) acc) Map.empty (map (\x -> (evalLabel x, snd x)) lit)
       idSet = Set.fromList (getVarLabels lit)
       structStub = StructValue labels fieldsStub idSet Set.empty
    in do

@@ -63,12 +63,12 @@ data BinaryOp
   deriving (Eq)
 
 instance Show BinaryOp where
-  show Unify = "&"
+  show Unify       = "&"
   show Disjunction = "|"
-  show Add = "+"
-  show Sub = "-"
-  show Mul = "*"
-  show Div = "/"
+  show Add         = "+"
+  show Sub         = "-"
+  show Mul         = "*"
+  show Div         = "/"
 
 data UnaryOp
   = Plus
@@ -78,10 +78,10 @@ data UnaryOp
   deriving (Eq)
 
 instance Show UnaryOp where
-  show Plus = "+"
+  show Plus  = "+"
   show Minus = "-"
-  show Not = "!"
-  show Star = "*"
+  show Not   = "!"
+  show Star  = "*"
 
 litCons :: Literal -> Expression
 litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral
