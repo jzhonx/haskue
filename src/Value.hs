@@ -422,15 +422,10 @@ depend path val = case val of
     if p == path
       then do
         trace (printf "depend self Cycle detected: path: %s" (show path)) pure ()
-        createTop
+        return Top
       else createDepVal e p
   pv@(PendingValue {}) -> createDepVal (pvExpr pv) (pvPath pv)
   where
-    createTop :: (MonadError String m, MonadState Context m) => m Value
-    createTop = do
-      -- checkEvalPen (path, Top)
-      return Top
-
     checkCycle :: (MonadError String m, MonadState Context m) => (Path, Path) -> m Bool
     checkCycle (src, dst) = do
       Context _ revDeps <- get
@@ -443,7 +438,7 @@ depend path val = case val of
       if cycleDetected
         then do
           trace (printf "depend Cycle detected: path: %s" (show path)) pure ()
-          createTop
+          return Top
         else do
           modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
           trace (printf "depend: %s->%s" (show path) (show depPath)) pure ()
