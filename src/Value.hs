@@ -19,7 +19,7 @@ module Value
     tryEvalPen,
     lookupVar,
     dot,
-    buildCUEStr,
+    strBld,
     applyPen,
   )
 where
@@ -118,10 +118,10 @@ data PendingValue
 
 instance Show PendingValue where
   show (PendingValue p d a _ e) =
-    printf "(Pending, path: %s, deps: %s, args: %s, expr: %s)" (show p) prettyDeps (show a) (show e)
+    printf "(Pending, path: %s, deps: %s, args: %s, expr: %s)" (show p) prettyDeps (show a) (AST.exprStr e)
     where
       prettyDeps = intercalate ", " $ map (\(p1, p2) -> printf "(%s->%s)" (show p1) (show p2)) d
-  show (Unevaluated p e) = printf "(Unevaluated, path: %s, expr: %s)" (show p) (show e)
+  show (Unevaluated p e) = printf "(Unevaluated, path: %s, expr: %s)" (show p) (AST.exprStr e)
 
 -- TODO: merge same keys handler
 -- two embeded structs can have same keys
@@ -472,47 +472,47 @@ instance Eq Value where
   (==) Null Null = True
   (==) _ _ = False
 
-buildCUEStr :: Value -> Builder
-buildCUEStr = buildCUEStr' 0
+strBld :: Value -> Builder
+strBld = strBldIdent 0
 
-buildCUEStr' :: Int -> Value -> Builder
-buildCUEStr' _ (String s) = char7 '"' <> string7 s <> char7 '"'
-buildCUEStr' _ (Int i) = integerDec i
-buildCUEStr' _ (Bool b) = if b then string7 "true" else string7 "false"
-buildCUEStr' _ Top = string7 "_"
-buildCUEStr' _ Null = string7 "null"
-buildCUEStr' ident (Struct (StructValue ols fds _ _)) =
-  buildStructStr ident (map (\label -> (label, fds Map.! label)) ols)
-buildCUEStr' ident (Disjunction dfs djs) =
+strBldIdent :: Int -> Value -> Builder
+strBldIdent _ (String s) = char7 '"' <> string7 s <> char7 '"'
+strBldIdent _ (Int i) = integerDec i
+strBldIdent _ (Bool b) = if b then string7 "true" else string7 "false"
+strBldIdent _ Top = string7 "_"
+strBldIdent _ Null = string7 "null"
+strBldIdent ident (Struct (StructValue ols fds _ _)) =
+  structBld ident (map (\label -> (label, fds Map.! label)) ols)
+strBldIdent ident (Disjunction dfs djs) =
   if null dfs
     then buildList djs
     else buildList dfs
   where
-    buildList xs = foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> buildCUEStr' ident d) xs)
-buildCUEStr' _ (Bottom _) = string7 "_|_"
-buildCUEStr' _ (Pending p) = case p of
-  pv@(PendingValue {}) -> string7 (show $ pvExpr pv)
+    buildList xs = foldl1 (\x y -> x <> string7 " | " <> y) (map (\d -> strBldIdent ident d) xs)
+strBldIdent _ (Bottom _) = string7 "_|_"
+strBldIdent _ (Pending p) = case p of
+  pv@(PendingValue {}) -> AST.exprBld 0 (pvExpr pv)
   (Unevaluated {})     -> string7 "_|_: Unevaluated"
 
-buildStructStr :: Int -> [(String, Value)] -> Builder
-buildStructStr ident xs =
+structBld :: Int -> [(String, Value)] -> Builder
+structBld ident xs =
   if null xs
     then string7 "{}"
     else
       char7 '{'
         <> char7 '\n'
-        <> buildFieldsStr ident xs
+        <> fieldsBld ident xs
         <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
 
-buildFieldsStr :: Int -> [(String, Value)] -> Builder
-buildFieldsStr _ [] = string7 ""
-buildFieldsStr ident (x : xs) =
-  f x <> buildFieldsStr ident xs
+fieldsBld :: Int -> [(String, Value)] -> Builder
+fieldsBld _ [] = string7 ""
+fieldsBld ident (x : xs) =
+  f x <> fieldsBld ident xs
   where
     f (label, val) =
       string7 (replicate ((ident + 1) * 2) ' ')
         <> string7 label
         <> string7 ": "
-        <> buildCUEStr' (ident + 1) val
+        <> strBldIdent (ident + 1) val
         <> char7 '\n'
