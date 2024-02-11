@@ -10,7 +10,6 @@ module Value
     PendingValue (..),
     StructValue (..),
     emptyStruct,
-    isValueAtom,
     binFunc,
     unaFunc,
     mkUnevaluated,
@@ -81,8 +80,14 @@ isValueAtom (String _) = True
 isValueAtom (Int _) = True
 isValueAtom (Bool _) = True
 isValueAtom Null = True
--- TODO: default disjunction can be atom.
 isValueAtom _ = False
+
+isValueConcrete :: Value -> Bool
+isValueConcrete v
+  | isValueAtom v = True
+isValueConcrete (Struct sv) = Set.size (svConcretes sv) == Map.size (svFields sv)
+isValueConcrete (Disjunction dfs _) = not (null dfs)
+isValueConcrete _ = False
 
 data StructValue = StructValue
   { svLabels :: [String],
@@ -92,8 +97,8 @@ data StructValue = StructValue
   }
 
 instance Show StructValue where
-  show (StructValue ols fds _ atoms) =
-    printf "{labels: %s, fields: %s, atoms: %s }" (show ols) (show fds) (show atoms)
+  show (StructValue ols fds _ concretes) =
+    printf "{labels: %s, fields: %s, concretes: %s }" (show ols) (show fds) (show concretes)
 
 -- | For now we don't compare IDs and Concrete fields.
 instance Eq StructValue where
@@ -293,7 +298,7 @@ locateSetValue block path val = case goToScope block path of
     updateVal (StringSelector name) newVal (sv, vs) =
       let newFields = Map.insert name newVal (svFields sv)
           newConcrSet =
-            if isValueAtom newVal
+            if isValueConcrete newVal
               then Set.insert name (svConcretes sv)
               else svConcretes sv
        in return (sv {svFields = newFields, svConcretes = newConcrSet}, vs)
@@ -373,7 +378,6 @@ applyPen (penPath, penV@(Pending {})) pair = go penV pair
 applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
 
 -- | Looks up the variable denoted by the name in the current block or the parent blocks.
--- TODO: require concreteness.
 -- If the variable is not evaluated yet or pending, a new pending value is created and returned.
 -- Parameters:
 --   var denotes the variable name.
@@ -397,9 +401,8 @@ lookupVar var scopePath = do
         printf "variable %s is not found, path: %s, scope: %s" var (show scopePath) (show scope)
 
 -- | access the named field of the struct.
--- TODO: require concreteness.
 -- Parameters:
---   s is the name of the field.
+--   field is the name of the field.
 --   path is the path to the current expression that contains the selector.
 --   value is the struct value.
 dot :: (MonadError String m, MonadState Context m) => (Path, AST.Expression) -> (Path, Value) -> String -> m Value
@@ -409,36 +412,38 @@ dot (path, expr) (structPath, structVal) field = case structVal of
   _ -> lookupStructField structVal
   where
     lookupStructField (Struct sv) = case Map.lookup field (svFields sv) of
-      -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
-      -- populated with the value.
-      Just (Pending v) -> depend path v
-      Just v ->
-        if isValueAtom v
-          then return v
-          else -- The incomplete selector case.
-
-            let newPath = appendSel (StringSelector field) path
-             in do
-                  trace
-                    ( printf
-                        "dot: path: %s, sel: %s, value: %s is not an atom"
-                        (show newPath)
-                        (show field)
-                        (show v)
-                    )
-                    pure
-                    ()
-                  return $ mkPending expr path newPath
+      Just v -> getField v
       -- The "incomplete" selector case.
       Nothing -> return $ mkPending expr path (appendSel (StringSelector field) structPath)
     lookupStructField _ =
       return $
         Bottom $
           printf
-            "evalSelector: path: %s, sel: %s, value: %s is not a struct"
+            "dot: path: %s, sel: %s, value: %s is not a struct"
             (show path)
             (show field)
             (show structVal)
+
+    getField :: (MonadError String m, MonadState Context m) => Value -> m Value
+    -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
+    -- populated with the value.
+    getField (Pending v) = depend path v
+    getField v@(Struct _) = return v
+    getField v
+      | isValueConcrete v = return v
+    getField v =
+      let newPath = appendSel (StringSelector field) path
+       in do
+            trace
+              ( printf
+                  "dot: path: %s, sel: %s, value: %s is not concrete"
+                  (show newPath)
+                  (show field)
+                  (show v)
+              )
+              pure
+              ()
+            return $ mkPending expr path newPath
 
 -- | Creates a dependency between the current value of the curPath to the value of the depPath.
 -- If there is a cycle, the Top is returned.
