@@ -20,8 +20,13 @@ module AST
   )
 where
 
-import           Data.ByteString.Builder (Builder, char7, integerDec, string7,
-                                          toLazyByteString)
+import Data.ByteString.Builder
+  ( Builder,
+    char7,
+    integerDec,
+    string7,
+    toLazyByteString,
+  )
 
 data Expression
   = ExprUnaryExpr UnaryExpr
@@ -86,12 +91,12 @@ data BinaryOp
   deriving (Eq)
 
 instance Show BinaryOp where
-  show Unify       = "&"
+  show Unify = "&"
   show Disjunction = "|"
-  show Add         = "+"
-  show Sub         = "-"
-  show Mul         = "*"
-  show Div         = "/"
+  show Add = "+"
+  show Sub = "-"
+  show Mul = "*"
+  show Div = "/"
 
 data UnaryOp
   = Plus
@@ -101,10 +106,10 @@ data UnaryOp
   deriving (Eq)
 
 instance Show UnaryOp where
-  show Plus  = "+"
+  show Plus = "+"
   show Minus = "-"
-  show Not   = "!"
-  show Star  = "*"
+  show Not = "!"
+  show Star = "*"
 
 litCons :: Literal -> Expression
 litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral
@@ -125,21 +130,21 @@ exprBld ident e = case e of
 unaryBld :: Int -> UnaryExpr -> Builder
 unaryBld ident e = case e of
   UnaryExprPrimaryExpr pe -> primBld ident pe
-  UnaryExprUnaryOp op ue  -> string7 (show op) <> unaryBld ident ue
+  UnaryExprUnaryOp op ue -> string7 (show op) <> unaryBld ident ue
 
 primBld :: Int -> PrimaryExpr -> Builder
 primBld ident e = case e of
-  PrimExprOperand op      -> opBld ident op
+  PrimExprOperand op -> opBld ident op
   PrimExprSelector pe sel -> primBld ident pe <> string7 "." <> selBld sel
 
 selBld :: Selector -> Builder
 selBld e = case e of
-  IDSelector is    -> string7 is
+  IDSelector is -> string7 is
   StringSelector s -> string7 s
 
 opBld :: Int -> Operand -> Builder
 opBld ident op = case op of
-  OpLiteral lit  -> litBld ident lit
+  OpLiteral lit -> litBld ident lit
   OpExpression e -> exprBld ident e
   OperandName on -> opNameBld ident on
 
@@ -150,11 +155,11 @@ opNameBld _ e = case e of
 litBld :: Int -> Literal -> Builder
 litBld ident e = case e of
   StringLit s -> strLitBld s
-  IntLit i    -> integerDec i
-  BoolLit b   -> string7 (show b)
-  TopLit      -> string7 "_"
-  BottomLit   -> string7 "_|_"
-  NullLit     -> string7 "null"
+  IntLit i -> integerDec i
+  BoolLit b -> string7 (show b)
+  TopLit -> string7 "_"
+  BottomLit -> string7 "_|_"
+  NullLit -> string7 "null"
   StructLit l -> structBld ident l
 
 strLitBld :: StringLit -> Builder
@@ -189,5 +194,5 @@ labelExprBld (LabelName e) = labelNameBld e
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case e of
-  LabelID i     -> string7 i
+  LabelID i -> string7 i
   LabelString s -> string7 s
