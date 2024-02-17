@@ -15,6 +15,9 @@ module AST
     BinaryOp (..),
     UnaryOp (..),
     litCons,
+    idCons,
+    unaryOpCons,
+    binaryOpCons,
     exprStr,
     exprBld,
   )
@@ -113,6 +116,16 @@ instance Show UnaryOp where
 
 litCons :: Literal -> Expression
 litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral
+
+idCons :: Identifer -> Expression
+idCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OperandName . Identifier
+
+unaryOpCons :: UnaryOp -> Expression -> Maybe Expression
+unaryOpCons op (ExprUnaryExpr e) = Just $ ExprUnaryExpr $ UnaryExprUnaryOp op e
+unaryOpCons _ _ = Nothing
+
+binaryOpCons :: BinaryOp -> Expression -> Expression -> Expression
+binaryOpCons = ExprBinaryOp
 
 exprStr :: Expression -> String
 exprStr e = show $ toLazyByteString $ exprBld 0 e

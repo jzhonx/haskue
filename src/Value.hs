@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TupleSections #-}
 
 module Value
   ( Context (..),
@@ -9,24 +8,27 @@ module Value
     Value (..),
     PendingValue (..),
     StructValue (..),
+    TreeCursor,
     emptyStruct,
-    binFunc,
-    unaFunc,
     mkUnevaluated,
+    mkCycleBegin,
     mkPending,
     putValueInCtx,
     getValueFromCtx,
-    tryEvalPen,
-    lookupVar,
-    dot,
     strBld,
-    applyPen,
+    isValueConcrete,
+    isValuePending,
+    bindEval,
+    mergeArgs,
+    goToScope,
+    searchUpVar,
+    toExpr,
   )
 where
 
 import qualified AST
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (MonadState, get, modify, put)
+import Control.Monad.State.Strict (MonadState, get, put)
 import Data.ByteString.Builder
   ( Builder,
     char7,
@@ -37,7 +39,6 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
-import Debug.Trace
 import Path
 import Text.Printf (printf)
 
@@ -89,6 +90,10 @@ isValueConcrete (Struct sv) = Set.size (svConcretes sv) == Map.size (svFields sv
 isValueConcrete (Disjunction dfs _) = not (null dfs)
 isValueConcrete _ = False
 
+isValuePending :: Value -> Bool
+isValuePending (Pending _) = True
+isValuePending _ = False
+
 data StructValue = StructValue
   { svLabels :: [String],
     svFields :: Map.Map String Value,
@@ -125,6 +130,12 @@ data PendingValue
       { uePath :: Path,
         ueExpr :: AST.Expression
       }
+  | -- CycleBegin is needed because once there is a concrete value unified with the identifier, the identifier is no
+    -- longer pending. All dependent values should be updated to reflect the change.
+    CycleBegin
+      { cbPath :: Path,
+        cbExpr :: AST.Expression
+      }
 
 instance Show PendingValue where
   show (PendingValue p d a _ e) =
@@ -132,6 +143,7 @@ instance Show PendingValue where
     where
       prettyDeps = intercalate ", " $ map (\(p1, p2) -> printf "(%s->%s)" (show p1) (show p2)) d
   show (Unevaluated p e) = printf "(Unevaluated, path: %s, expr: %s)" (show p) (AST.exprStr e)
+  show (CycleBegin p e) = printf "(CycleBegin, begin: %s, expr: %s)" (show p) (AST.exprStr e)
 
 -- TODO: merge same keys handler
 -- two embeded structs can have same keys
@@ -142,36 +154,6 @@ instance Show PendingValue where
 mergeArgs :: [(Path, Value)] -> [(Path, Value)] -> [(Path, Value)]
 mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
 
--- | The binFunc is used to evaluate a binary function with two arguments.
-binFunc :: (MonadError String m, MonadState Context m) => (Value -> Value -> EvalMonad Value) -> Value -> Value -> m Value
-binFunc bin (Pending (PendingValue p1 d1 a1 e1 ex1)) (Pending (PendingValue p2 d2 a2 e2 _))
-  | p1 == p2 =
-      return $
-        Pending $
-          PendingValue
-            p1
-            (mergePaths d1 d2)
-            (mergeArgs a1 a2)
-            ( \xs -> do
-                v1 <- e1 xs
-                v2 <- e2 xs
-                bin v1 v2
-            )
-            -- TODO: use expr1 for now
-            ex1
-  | otherwise =
-      throwError $
-        printf "binFunc: two pending values have different paths, p1: %s, p2: %s" (show p1) (show p2)
-binFunc bin v1@(Pending {}) v2 = unaFunc (`bin` v2) v1
-binFunc bin v1 v2@(Pending {}) = unaFunc (bin v1) v2
-binFunc bin v1 v2 = bin v1 v2
-
--- | The unaFunc is used to evaluate a unary function.
--- The first argument is the function that takes the value and returns a value.
-unaFunc :: (MonadError String m, MonadState Context m) => (Value -> EvalMonad Value) -> Value -> m Value
-unaFunc f (Pending pv@(PendingValue {})) = return $ Pending $ pv {pvEvaluator = bindEval (pvEvaluator pv) f}
-unaFunc f v = f v
-
 -- | Binds the evaluator to a function that uses the value as the argument.
 bindEval :: Evaluator -> (Value -> EvalMonad Value) -> Evaluator
 bindEval evalf f xs = evalf xs >>= f
@@ -179,7 +161,10 @@ bindEval evalf f xs = evalf xs >>= f
 mkUnevaluated :: Path -> AST.Expression -> Value
 mkUnevaluated p e = Pending $ Unevaluated p e
 
--- | Creates a new simple pending value.
+mkCycleBegin :: Path -> AST.Expression -> Value
+mkCycleBegin p e = Pending $ CycleBegin p e
+
+-- | Creates a new simple pending.
 mkPending :: AST.Expression -> Path -> Path -> Value
 mkPending expr src dst = Pending $ newPendingValue expr src dst
 
@@ -230,16 +215,17 @@ attach sv (_, vs) = (sv, vs)
 -- addSubBlock (Just (StringSelector sel)) newSv (sv, vs) =
 --   (sv {structFields = Map.insert sel (Struct newSv) (structFields sv)}, vs)
 
+-- | Search the var upwards in the tree. Returns the path to the value and the value.
 searchUpVar :: String -> TreeCursor -> Maybe (Path, Value)
 searchUpVar var = go
   where
     go :: TreeCursor -> Maybe (Path, Value)
-    go cursor@(sv, []) = case Map.lookup var (svFields sv) of
-      Just v -> Just (pathFromBlock cursor, v)
+    go (sv, []) = case Map.lookup var (svFields sv) of
+      Just v -> Just (Path [StringSelector var], v)
       Nothing -> Nothing
     go cursor@(sv, _) =
       case Map.lookup var (svFields sv) of
-        Just v -> Just (pathFromBlock cursor, v)
+        Just v -> Just (appendSel (StringSelector var) (pathFromBlock cursor), v)
         Nothing -> goUp cursor >>= go
 
 pathFromBlock :: TreeCursor -> Path
@@ -310,172 +296,6 @@ putValueInCtx path val = do
   newBlock <- locateSetValue block path val
   put $ ctx {ctxCurBlock = propagateBack newBlock}
 
--- | Checks whether the given value can be applied to the pending value that depends on the given value. If it can, then
--- apply the value to the pending value.
-tryEvalPen ::
-  (MonadError String m, MonadState Context m) => (Path, Value) -> m ()
-tryEvalPen (_, Pending {}) = return ()
-tryEvalPen (valPath, val) = do
-  Context curBlock revDeps <- get
-  case Map.lookup valPath revDeps of
-    Nothing -> return ()
-    Just penPath -> do
-      penVal <- locateGetValue curBlock penPath
-      trace
-        ( printf
-            "checkEvalPen pre: %s->%s, val: %s, penVal: %s"
-            (show valPath)
-            (show penPath)
-            (show val)
-            (show penVal)
-        )
-        pure
-        ()
-      newPenVal <- applyPen (penPath, penVal) (valPath, val)
-      case newPenVal of
-        Pending {} -> pure ()
-        -- Once the pending value is evaluated, we should trigger the fillPen for other pending values that depend
-        -- on this value.
-        v -> tryEvalPen (penPath, v)
-      -- update the pending block.
-      putValueInCtx penPath newPenVal
-      trace
-        ( printf
-            "checkEvalPen post: %s->%s, val: %s, penVal: %s, newPenVal: %s"
-            (show valPath)
-            (show penPath)
-            (show val)
-            (show penVal)
-            (show newPenVal)
-        )
-        pure
-        ()
-
--- | Apply value to the pending value. It returns the new updated value.
--- It keeps applying the value to the pending value until the pending value is evaluated.
-applyPen :: (MonadError String m, MonadState Context m) => (Path, Value) -> (Path, Value) -> m Value
-applyPen (penPath, penV@(Pending {})) pair = go penV pair
-  where
-    go :: (MonadError String m, MonadState Context m) => Value -> (Path, Value) -> m Value
-    go (Pending pv@(PendingValue {})) (valPath, val) =
-      let newDeps = filter (\(_, depPath) -> depPath /= valPath) (pvDeps pv)
-          newArgs = ((valPath, val) : pvArgs pv)
-       in do
-            trace
-              ( printf
-                  "applyPen: %s->%s, args: %s, newDeps: %s"
-                  (show valPath)
-                  (show penPath)
-                  (show newArgs)
-                  (show newDeps)
-              )
-              pure
-              ()
-            if null newDeps
-              then pvEvaluator pv newArgs >>= \v -> go v pair
-              else return $ Pending $ pv {pvDeps = newDeps, pvArgs = newArgs}
-    go v _ = return v
-applyPen (_, v) _ = throwError $ printf "applyPen expects a pending value, but got %s" (show v)
-
--- | Looks up the variable denoted by the name in the current block or the parent blocks.
--- If the variable is not evaluated yet or pending, a new pending value is created and returned.
--- Parameters:
---   var denotes the variable name.
---   scopePath is the path to the current expression that contains the selector.
--- For example,
---  { a: b: x+y }
--- If the name is "y", and the path is "a.b".
-lookupVar :: (MonadError String m, MonadState Context m) => String -> Path -> m (Path, Value)
-lookupVar var scopePath = do
-  ctx <- get
-  let scope = case goToScope (ctxCurBlock ctx) scopePath of
-        Just b -> b
-        Nothing -> ctxCurBlock ctx
-  case searchUpVar var scope of
-    Just (valPath, Pending v) -> (valPath,) <$> depend scopePath v
-    Just pair@(_, v) -> do
-      trace (printf "lookupVar found var %s, block: %s, value: %s" (show var) (show scope) (show v)) pure ()
-      return pair
-    Nothing ->
-      throwError $
-        printf "variable %s is not found, path: %s, scope: %s" var (show scopePath) (show scope)
-
--- | access the named field of the struct.
--- Parameters:
---   field is the name of the field.
---   path is the path to the current expression that contains the selector.
---   value is the struct value.
-dot :: (MonadError String m, MonadState Context m) => (Path, AST.Expression) -> (Path, Value) -> String -> m Value
-dot (path, expr) (structPath, structVal) field = case structVal of
-  -- Default disjunction case.
-  Disjunction [x] _ -> lookupStructField x
-  _ -> lookupStructField structVal
-  where
-    lookupStructField (Struct sv) = case Map.lookup field (svFields sv) of
-      Just v -> getField v
-      -- The "incomplete" selector case.
-      Nothing -> return $ mkPending expr path (appendSel (StringSelector field) structPath)
-    lookupStructField _ =
-      return $
-        Bottom $
-          printf
-            "dot: path: %s, sel: %s, value: %s is not a struct"
-            (show path)
-            (show field)
-            (show structVal)
-
-    getField :: (MonadError String m, MonadState Context m) => Value -> m Value
-    -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
-    -- populated with the value.
-    getField (Pending v) = depend path v
-    getField v@(Struct _) = return v
-    getField v
-      | isValueConcrete v = return v
-    getField v =
-      let newPath = appendSel (StringSelector field) path
-       in do
-            trace
-              ( printf
-                  "dot: path: %s, sel: %s, value: %s is not concrete"
-                  (show newPath)
-                  (show field)
-                  (show v)
-              )
-              pure
-              ()
-            return $ mkPending expr path newPath
-
--- | Creates a dependency between the current value of the curPath to the value of the depPath.
--- If there is a cycle, the Top is returned.
-depend :: (MonadError String m, MonadState Context m) => Path -> PendingValue -> m Value
-depend path val = case val of
-  (Unevaluated p e) ->
-    if p == path
-      then do
-        trace (printf "depend self Cycle detected: path: %s" (show path)) pure ()
-        return Top
-      else createDepVal e p
-  pv@(PendingValue {}) -> createDepVal (pvExpr pv) (pvPath pv)
-  where
-    checkCycle :: (MonadError String m, MonadState Context m) => (Path, Path) -> m Bool
-    checkCycle (src, dst) = do
-      Context _ revDeps <- get
-      -- we have to reverse the new edge because the graph is reversed.
-      return $ depsHasCycle ((dst, src) : Map.toList revDeps)
-
-    createDepVal :: (MonadError String m, MonadState Context m) => AST.Expression -> Path -> m Value
-    createDepVal expr depPath = do
-      cycleDetected <- checkCycle (path, depPath)
-      if cycleDetected
-        then do
-          trace (printf "depend Cycle detected: path: %s" (show path)) pure ()
-          return Top
-        else do
-          modify (\ctx -> ctx {ctxReverseDeps = Map.insert depPath path (ctxReverseDeps ctx)})
-          trace (printf "depend: %s->%s" (show path) (show depPath)) pure ()
-          -- TODO: fix the expr
-          return $ Pending $ newPendingValue expr path depPath
-
 emptyStruct :: StructValue
 emptyStruct = StructValue [] Map.empty Set.empty Set.empty
 
@@ -524,6 +344,7 @@ strBldIdent _ (Bottom _) = string7 "_|_"
 strBldIdent _ (Pending p) = case p of
   pv@(PendingValue {}) -> AST.exprBld 0 (pvExpr pv)
   (Unevaluated {}) -> string7 "_|_: Unevaluated"
+  (CycleBegin {}) -> string7 "_"
 
 structBld :: Int -> [(String, Value)] -> Builder
 structBld ident xs =
@@ -547,3 +368,14 @@ fieldsBld ident (x : xs) =
         <> string7 ": "
         <> strBldIdent (ident + 1) val
         <> char7 '\n'
+
+toExpr :: Value -> Maybe AST.Expression
+toExpr Top = Just $ AST.litCons AST.TopLit
+toExpr (String s) = Just $ AST.litCons (AST.StringLit (AST.SimpleStringLit s))
+toExpr (Int i) = Just $ AST.litCons (AST.IntLit i)
+toExpr (Bool b) = Just $ AST.litCons (AST.BoolLit b)
+toExpr Null = Just $ AST.litCons AST.NullLit
+toExpr (Bottom _) = Just $ AST.litCons AST.BottomLit
+toExpr (Struct _) = Nothing
+toExpr (Disjunction _ _) = Nothing
+toExpr (Pending _) = Nothing
