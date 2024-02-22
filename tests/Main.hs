@@ -1,9 +1,10 @@
 module Main where
 
-import           Spec          (specTests)
-import           Test.Tasty
-import           TransformTest (transformTests)
-import           ValueTest     (valueTests)
+import EvalTest (evalTests)
+import Spec (specTests)
+import Test.Tasty
+import TransformTest (transformTests)
+import ValueTest (valueTests)
 
 main = defaultMain tests
 
@@ -13,5 +14,6 @@ tests =
     "Tests"
     [ specTests,
       valueTests,
+      evalTests,
       transformTests
     ]

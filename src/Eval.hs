@@ -2,7 +2,14 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 
-module Eval (run, eval) where
+module Eval
+  ( run,
+    eval,
+    tryEvalPen,
+    applyPen,
+    bindBinary,
+  )
+where
 
 import AST
 import Control.Monad (foldM)

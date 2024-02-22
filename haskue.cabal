@@ -74,6 +74,7 @@ Test-Suite haskue-unit-test
     Spec,
     ValueTest,
     TransformTest,
+    EvalTest,
   build-depends:
         base ^>=4.16.4.0,
         tasty >= 0.7,
