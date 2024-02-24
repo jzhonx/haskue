@@ -456,47 +456,54 @@ depend (exprPath, expr) dstVal = case dstVal of
           trace (printf "created pending value: %s" (show v)) pure ()
           return v
 
-data DisjunctItem = DisjunctDefault Value | DisjunctRegular Value
+data DisjItem = DisjDefault Value | DisjRegular Value
 
 -- evalDisjunction is used to evaluate a disjunction.
 evalDisjunction :: (MonadError String m, MonadState Context m) => Expression -> Expression -> Path -> m Value
 evalDisjunction e1 e2 path = case (e1, e2) of
   (ExprUnaryExpr (UnaryExprUnaryOp Star e1'), ExprUnaryExpr (UnaryExprUnaryOp Star e2')) ->
-    evalExprPair (evalUnaryExpr e1' path) DisjunctDefault (evalUnaryExpr e2' path) DisjunctDefault
+    evalExprPair (evalUnaryExpr e1' path) DisjDefault (evalUnaryExpr e2' path) DisjDefault
   (ExprUnaryExpr (UnaryExprUnaryOp Star e1'), _) ->
-    evalExprPair (evalUnaryExpr e1' path) DisjunctDefault (doEval e2 path) DisjunctRegular
+    evalExprPair (evalUnaryExpr e1' path) DisjDefault (doEval e2 path) DisjRegular
   (_, ExprUnaryExpr (UnaryExprUnaryOp Star e2')) ->
-    evalExprPair (doEval e1 path) DisjunctRegular (evalUnaryExpr e2' path) DisjunctDefault
-  (_, _) -> evalExprPair (doEval e1 path) DisjunctRegular (doEval e2 path) DisjunctRegular
+    evalExprPair (doEval e1 path) DisjRegular (evalUnaryExpr e2' path) DisjDefault
+  (_, _) -> evalExprPair (doEval e1 path) DisjRegular (doEval e2 path) DisjRegular
   where
     -- evalExprPair is used to evaluate a disjunction with both sides still being unevaluated.
-    evalExprPair :: (MonadError String m, MonadState Context m) => m Value -> (Value -> DisjunctItem) -> m Value -> (Value -> DisjunctItem) -> m Value
+    evalExprPair ::
+      (MonadError String m, MonadState Context m) =>
+      m Value ->
+      (Value -> DisjItem) ->
+      m Value ->
+      (Value -> DisjItem) ->
+      m Value
     evalExprPair m1 cons1 m2 cons2 = do
       v1 <- m1
       v2 <- m2
       evalDisjPair (cons1 v1) (cons2 v2)
 
     -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
-    evalDisjPair :: (MonadError String m, MonadState Context m) => DisjunctItem -> DisjunctItem -> m Value
-    evalDisjPair (DisjunctDefault v1) r2 =
+    evalDisjPair :: (MonadError String m, MonadState Context m) => DisjItem -> DisjItem -> m Value
+    evalDisjPair (DisjDefault v1) r2 =
       evalLeftPartial (\(df1, ds1, df2, ds2) -> newDisj df1 ds1 df2 ds2) v1 r2
     -- reverse v2 r1 and also the order to the disjCons.
-    evalDisjPair r1@(DisjunctRegular _) (DisjunctDefault v2) =
+    evalDisjPair r1@(DisjRegular _) (DisjDefault v2) =
       evalLeftPartial (\(df2, ds2, df1, ds1) -> newDisj df1 ds1 df2 ds2) v2 r1
-    evalDisjPair (DisjunctRegular v1) (DisjunctRegular v2) = evalRegularDisj v1 v2
+    evalDisjPair (DisjRegular v1) (DisjRegular v2) = evalRegularDisj v1 v2
 
     -- evalLeftPartial is used to evaluate a disjunction whose left side is a default.
     -- the first argument is a function that takes the four lists of values and returns a disjunction.
-    evalLeftPartial :: (MonadError String m) => (([Value], [Value], [Value], [Value]) -> m Value) -> Value -> DisjunctItem -> m Value
-    evalLeftPartial disjCons (Value.Disjunction df1 ds1) (DisjunctRegular (Value.Disjunction _ ds2)) =
+    evalLeftPartial ::
+      (MonadError String m) => (([Value], [Value], [Value], [Value]) -> m Value) -> Value -> DisjItem -> m Value
+    evalLeftPartial disjCons (Value.Disjunction df1 ds1) (DisjRegular (Value.Disjunction _ ds2)) =
       -- This is rule M2 and M3. We eliminate the defaults from the right side.
       disjCons (df1, ds1, [], ds2)
-    evalLeftPartial disjCons v1 (DisjunctRegular (Value.Disjunction df2 ds2)) =
+    evalLeftPartial disjCons v1 (DisjRegular (Value.Disjunction df2 ds2)) =
       -- This is rule M1.
       disjCons ([v1], [v1], df2, ds2)
-    evalLeftPartial disjCons v1 (DisjunctRegular v2) =
+    evalLeftPartial disjCons v1 (DisjRegular v2) =
       disjCons ([v1], [v1], [], [v2])
-    evalLeftPartial disjCons v1 (DisjunctDefault v2) =
+    evalLeftPartial disjCons v1 (DisjDefault v2) =
       disjCons ([], [v1], [], [v2])
 
     -- evalFullDisj is used to evaluate a disjunction whose both sides are regular.

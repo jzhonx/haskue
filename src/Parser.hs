@@ -2,19 +2,30 @@
 
 module Parser where
 
-import           AST
-import           Control.Monad.Except          (MonadError, throwError)
-import           Data.Maybe                    (fromJust)
-import           Text.Parsec                   (parserTrace, parserTraced)
-import           Text.ParserCombinators.Parsec (Parser, chainl1, chainr1, char,
-                                                digit, many, many1, noneOf,
-                                                oneOf, optionMaybe, parse,
-                                                spaces, string, try, (<?>),
-                                                (<|>))
+import AST
+import Control.Monad.Except (MonadError, throwError)
+import Data.Maybe (fromJust)
+import Text.ParserCombinators.Parsec
+  ( Parser,
+    chainl1,
+    char,
+    digit,
+    many,
+    many1,
+    noneOf,
+    oneOf,
+    optionMaybe,
+    parse,
+    spaces,
+    string,
+    try,
+    (<?>),
+    (<|>),
+  )
 
 parseCUE :: (MonadError String m) => String -> m Expression
 parseCUE s = case parse expr "" s of
-  Left err  -> throwError $ show err
+  Left err -> throwError $ show err
   Right val -> return val
 
 binopTable :: [(String, BinaryOp)]
