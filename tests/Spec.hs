@@ -1,10 +1,11 @@
 module Spec where
 
+import qualified AST
 import           Data.ByteString.Builder
 import qualified Data.Map.Strict         as Map
 import qualified Data.Set                as Set
 import           Debug.Trace
-import           Eval                    (eval, run)
+import           Eval                    (eval, runIO)
 import           Parser
 import           Path
 import           System.IO               (readFile)
@@ -18,13 +19,21 @@ newStruct lbls fds ids = Struct (StructValue lbls fds ids Set.empty)
 newSimpleStruct :: [String] -> [(String, Value)] -> Value
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
 
-startEval :: String -> Either String Value
-startEval = run
+startEval :: String -> IO (Either String Value)
+startEval = runIO
+
+assertStructs :: Value -> Value -> IO ()
+assertStructs (Struct exp) (Struct act) = do
+  assertEqual "labels" (svLabels exp) (svLabels act)
+  assertEqual "fields-length" (length $ svFields exp) (length $ svFields act)
+  mapM_ (\(k, v) -> assertEqual k v (svFields act Map.! k)) (Map.toList $ svFields exp)
+  mapM_ (\(k, v) -> assertEqual k (svFields exp Map.! k) v) (Map.toList $ svFields act)
+assertStructs _ _ = assertFailure "Not structs"
 
 testBottom :: IO ()
 testBottom = do
   s <- readFile "tests/spec/bottom.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right y ->
@@ -33,7 +42,7 @@ testBottom = do
 testBinOp2 :: IO ()
 testBinOp2 = do
   s <- readFile "tests/spec/binop2.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right y ->
@@ -50,24 +59,10 @@ testBinOp2 = do
 testSelector :: IO ()
 testSelector = do
   s <- readFile "tests/spec/selector.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
-        @?= newStruct
-          ["T", "a", "b", "c", "d", "e", "f"]
-          ( Map.fromList
-              [ ("T", structT),
-                ("a", Int 1),
-                ("b", Int 3),
-                ("c", Bottom "z is not found"),
-                ("d", Int 4),
-                ("e", structE),
-                ("f", Disjunction [Int 4] [Int 3, Int 4])
-              ]
-          )
-          Set.empty
+    Right v  -> assertStructs expStruct v
   where
     structT =
       newStruct
@@ -84,11 +79,36 @@ testSelector = do
       Disjunction
         [fieldEDefault]
         [newSimpleStruct ["a"] [("a", Disjunction [Int 2] [Int 1, Int 2])], fieldEDefault]
+    pathC = Path [StringSelector "c"]
+    pendValC = PendingValue pathC [] [] undefined (Unevaluated pathC) (AST.litCons AST.BottomLit)
+    pathF = Path [StringSelector "f"]
+    pendValF =
+      PendingValue
+        pathF
+        []
+        []
+        undefined
+        (Disjunction [Int 4] [Int 3, Int 4])
+        (AST.litCons AST.BottomLit)
+    expStruct =
+      newStruct
+        ["T", "a", "b", "c", "d", "e", "f"]
+        ( Map.fromList
+            [ ("T", structT),
+              ("a", Int 1),
+              ("b", Int 3),
+              ("c", Pending pendValC),
+              ("d", Int 4),
+              ("e", structE),
+              ("f", Pending pendValF)
+            ]
+        )
+        Set.empty
 
 testVars1 :: IO ()
 testVars1 = do
   s <- readFile "tests/spec/vars1.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -106,7 +126,7 @@ testVars1 = do
 testVars2 :: IO ()
 testVars2 = do
   s <- readFile "tests/spec/vars2.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -147,7 +167,7 @@ testVars2 = do
 testVars3 :: IO ()
 testVars3 = do
   s <- readFile "tests/spec/vars3.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -171,7 +191,7 @@ testVars3 = do
 testCycles1 :: IO ()
 testCycles1 = do
   s <- readFile "tests/spec/cycles1.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -179,17 +199,31 @@ testCycles1 = do
         @?= structTop
   return ()
   where
+    pendValGen path =
+      Pending $
+        PendingValue
+          path
+          []
+          []
+          undefined
+          Top
+          (AST.litCons AST.BottomLit)
     structTop =
       newStruct
         ["x", "b", "c", "d"]
-        ( Map.fromList [("x", Top), ("b", Top), ("c", Top), ("d", Top)]
+        ( Map.fromList
+            [ ("x", Top),
+              ("b", pendValGen (Path [StringSelector "b"])),
+              ("c", pendValGen (Path [StringSelector "c"])),
+              ("d", pendValGen (Path [StringSelector "d"]))
+            ]
         )
         Set.empty
 
 testBasic :: IO ()
 testBasic = do
   s <- readFile "tests/spec/basic.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -208,7 +242,7 @@ testBasic = do
 testUnaryOp :: IO ()
 testUnaryOp = do
   s <- readFile "tests/spec/unaryop.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -226,7 +260,7 @@ testUnaryOp = do
 testBinop :: IO ()
 testBinop = do
   s <- readFile "tests/spec/binop.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -250,7 +284,7 @@ testBinop = do
 testDisjunction1 :: IO ()
 testDisjunction1 = do
   s <- readFile "tests/spec/disjunct.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -274,7 +308,7 @@ testDisjunction1 = do
 testDisjunction2 :: IO ()
 testDisjunction2 = do
   s <- readFile "tests/spec/disjunct2.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -296,7 +330,7 @@ testDisjunction2 = do
 testUnifyStructs :: IO ()
 testUnifyStructs = do
   s <- readFile "tests/spec/unify_structs.cue"
-  let val = startEval s
+  val <- startEval s
   case val of
     Left err -> assertFailure err
     Right val' ->
@@ -315,7 +349,7 @@ testUnifyStructs = do
 specTests :: TestTree
 specTests =
   testGroup
-    "specTests"
+    "specTest"
     [ testCase "basic" testBasic,
       testCase "bottom" testBottom,
       testCase "unaryop" testUnaryOp,

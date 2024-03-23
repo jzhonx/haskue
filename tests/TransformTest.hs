@@ -1,18 +1,18 @@
 module TransformTest where
 
-import           AST
-import           Parser           (parseCUE)
-import           System.IO        (readFile)
-import           Test.Tasty       (TestTree, testGroup)
-import           Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
-import           Transform        (transform)
+import AST
+import Parser (parseCUE)
+import System.IO (readFile)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertEqual, assertFailure, testCase)
+import Transform (transform)
 
 testTransform :: IO ()
 testTransform = do
   s <- readFile "tests/transform/transform.cue"
   let res = parseCUE s
   case res of
-    Left err  -> assertFailure err
+    Left err -> assertFailure err
     Right val -> assertEqual "transformed" exp (transform val)
   where
     aField =
@@ -32,4 +32,4 @@ testTransform = do
                 ]
 
 transformTests :: TestTree
-transformTests = testGroup "Transform Tests" [testCase "transform" testTransform]
+transformTests = testGroup "transformTest" [testCase "transform" testTransform]

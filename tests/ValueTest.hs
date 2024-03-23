@@ -1,25 +1,22 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module ValueTest where
 
 import qualified AST
-import Control.Monad.Except (MonadError, runExceptT, throwError)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.State (StateT (runStateT))
-import Control.Monad.State.Strict (MonadState)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
-import qualified Data.Set as Set
-import Path
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
-  ( assertBool,
-    assertEqual,
-    assertFailure,
-    testCase,
-  )
-import Value
+import           Control.Monad.Except       (MonadError, runExceptT, throwError)
+import           Control.Monad.IO.Class     (MonadIO, liftIO)
+import           Control.Monad.Logger       (runNoLoggingT)
+import           Control.Monad.State        (StateT (runStateT))
+import           Control.Monad.State.Strict (MonadState)
+import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromJust)
+import qualified Data.Set                   as Set
+import           Path
+import           Test.Tasty                 (TestTree, testGroup)
+import           Test.Tasty.HUnit           (assertBool, assertEqual,
+                                             assertFailure, testCase)
+import           Value
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
@@ -58,7 +55,7 @@ bottomExpr = AST.litCons AST.BottomLit
 putValueInCtxTest :: IO ()
 putValueInCtxTest = do
   let m = putValueInCtx (pathFromList [selX1, selY]) (String "world")
-  let res = runStateT m (Context (outer, []) Map.empty)
+  let res = runStateT (runNoLoggingT m) (Context (outer, []) Map.empty)
   case res of
     Left err -> assertFailure err
     Right (_, Context (resVal, _) _) -> do

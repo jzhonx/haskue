@@ -1,32 +1,64 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Unify (unify) where
 
+import qualified AST
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (MonadState)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Text.Printf (printf)
 import Value
-  ( Context,
-    StructValue (..),
-    Value (..),
-  )
 
-unify :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unify val1 val2 = case (val1, val2) of
-  (Bottom _, _) -> return val1
-  (String x, String y) -> return $ if x == y then val1 else Bottom "strings mismatch"
-  (Int x, Int y) -> return $ if x == y then val1 else Bottom "ints mismatch"
-  (Struct {}, Struct {}) -> unifyStructs val1 val2
-  (Disjunction _ _, _) -> unifyDisjunctions val1 val2
-  (_, Bottom _) -> unify val2 val1
-  (_, Disjunction _ _) -> unify val2 val1
-  _ -> return $ Bottom "values not unifiable"
+unify :: (Runtime m) => Value -> Value -> m Value
+unify v1@(Pending p1) v2@(Pending p2) =
+  let temp1 = pvTemp p1
+      temp2 = pvTemp p2
+   in if
+          | isValueUnevaluated temp1 && isValueUnevaluated temp2 -> delayBinaryOp AST.Unify unify p1 p2
+          | isValueUnevaluated temp1 ->
+              delayUnaryOp (AST.binaryOpCons AST.Unify (pvExpr p1) (pvExpr p2)) (`unify` v2) p1
+          | isValueUnevaluated temp2 ->
+              delayUnaryOp (AST.binaryOpCons AST.Unify (pvExpr p1) (pvExpr p2)) (unify v1) p2
+          | otherwise -> unifyNonPends temp1 temp2
+unify (Pending p1) v2 =
+  let temp1 = pvTemp p1
+   in if isValueUnevaluated temp1
+        then do
+          e2 <- toExpr v2
+          delayUnaryOp (AST.binaryOpCons AST.Unify (pvExpr p1) e2) (`unify` v2) p1
+        else unifyNonPends temp1 v2
+unify v1 (Pending p2) =
+  let temp2 = pvTemp p2
+   in if isValueUnevaluated temp2
+        then do
+          e1 <- toExpr v1
+          delayUnaryOp (AST.binaryOpCons AST.Unify e1 (pvExpr p2)) (unify v1) p2
+        else unifyNonPends v1 temp2
+unify v1 v2 = unifyNonPends v1 v2
 
-unifyStructs :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
-unifyStructs (Struct (StructValue _ fields1 _ _)) (Struct (StructValue _ fields2 _ _)) = do
+unifyNonPends :: (Runtime m) => Value -> Value -> m Value
+unifyNonPends v1 v2 = case (v1, v2) of
+  (Bottom _, _) -> return v1
+  (Top, _) -> return v2
+  (String x, String y) ->
+    return $ if x == y then v1 else Bottom $ printf "strings mismatch: %s != %s" x y
+  (Int x, Int y) ->
+    return $ if x == y then v1 else Bottom $ printf "ints mismatch: %d != %d" x y
+  (Bool x, Bool y) ->
+    return $ if x == y then v1 else Bottom $ printf "bools mismatch: %s != %s" (show x) (show y)
+  (Null, Null) -> return v1
+  (Struct {}, Struct {}) -> unifyStructs v1 v2
+  (Disjunction _ _, _) -> unifyDisjunctions v1 v2
+  (_, Top) -> unify v2 v1
+  (_, Bottom _) -> unify v2 v1
+  (_, Disjunction _ _) -> unify v2 v1
+  _ -> return $ Bottom $ printf "values not unifiable: %s, %s" (show v1) (show v2)
+
+unifyStructs :: (Runtime m) => Value -> Value -> m Value
+unifyStructs (Struct v1) (Struct v2) = do
   valList <- unifyIntersectionLabels
   let vs = sequence valList
   case vs of
@@ -38,6 +70,7 @@ unifyStructs (Struct (StructValue _ fields1 _ _)) (Struct (StructValue _ fields2
         let newEdges = Map.unions [disjointVertices1, disjointVertices2, Map.fromList vs']
         return $ fieldsToValue newEdges
   where
+    (fields1, fields2) = (svFields v1, svFields v2)
     labels1Set = Map.keysSet fields1
     labels2Set = Map.keysSet fields2
     interLabels = Set.intersection labels1Set labels2Set
@@ -64,7 +97,7 @@ unifyStructs (Struct (StructValue _ fields1 _ _)) (Struct (StructValue _ fields2
     fieldsToValue fds = Struct (StructValue (Map.keys fds) fds Set.empty Set.empty)
 unifyStructs _ _ = throwError "unifyStructs: impossible"
 
-unifyDisjunctions :: (MonadState Context m, MonadError String m) => Value -> Value -> m Value
+unifyDisjunctions :: (Runtime m) => Value -> Value -> m Value
 -- this is U0 rule, <v1> & <v2> => <v1&v2>
 unifyDisjunctions (Disjunction [] ds1) (Disjunction [] ds2) = do
   ds <- mapM (`unifyValues` ds2) ds1
@@ -95,7 +128,7 @@ unifyDisjunctions (Disjunction df ds) val = do
 unifyDisjunctions d1 d2 =
   throwError $ "unifyDisjunctions: impossible unification, d1: " ++ show d1 ++ ", d2: " ++ show d2
 
-unifyValues :: (MonadState Context m, MonadError String m) => Value -> [Value] -> m [Value]
+unifyValues :: (Runtime m) => Value -> [Value] -> m [Value]
 unifyValues val = mapM (`unify` val)
 
 disjunctionFromValues :: (MonadError String m) => [[Value]] -> [[Value]] -> m Value

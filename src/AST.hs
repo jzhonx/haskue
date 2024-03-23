@@ -20,6 +20,7 @@ module AST
     binaryOpCons,
     exprStr,
     exprBld,
+    exprBldIdent,
   )
 where
 
@@ -127,18 +128,23 @@ unaryOpCons _ _ = Nothing
 binaryOpCons :: BinaryOp -> Expression -> Expression -> Expression
 binaryOpCons = ExprBinaryOp
 
-exprStr :: Expression -> String
-exprStr e = show $ toLazyByteString $ exprBld 0 e
+-- Below are functions for pretty printing the AST.
 
-exprBld :: Int -> Expression -> Builder
-exprBld ident e = case e of
+exprStr :: Expression -> String
+exprStr e = show $ toLazyByteString $ exprBldIdent 0 e
+
+exprBld :: Expression -> Builder
+exprBld = exprBldIdent 0
+
+exprBldIdent :: Int -> Expression -> Builder
+exprBldIdent ident e = case e of
   ExprUnaryExpr ue -> unaryBld ident ue
   ExprBinaryOp op e1 e2 ->
-    exprBld ident e1
+    exprBldIdent ident e1
       <> char7 ' '
       <> string7 (show op)
       <> char7 ' '
-      <> exprBld ident e2
+      <> exprBldIdent ident e2
 
 unaryBld :: Int -> UnaryExpr -> Builder
 unaryBld ident e = case e of
@@ -158,7 +164,7 @@ selBld e = case e of
 opBld :: Int -> Operand -> Builder
 opBld ident op = case op of
   OpLiteral lit -> litBld ident lit
-  OpExpression e -> exprBld ident e
+  OpExpression e -> exprBldIdent ident e
   OperandName on -> opNameBld ident on
 
 opNameBld :: Int -> OperandName -> Builder
@@ -192,7 +198,7 @@ structBld ident lit =
       string7 (replicate ((ident + 1) * 2) ' ')
         <> labelBld label
         <> string7 ": "
-        <> exprBld (ident + 1) val
+        <> exprBldIdent (ident + 1) val
         <> char7 '\n'
     goFields :: [(Label, Expression)] -> Builder
     goFields [] = string7 ""
