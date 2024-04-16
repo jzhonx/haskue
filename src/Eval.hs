@@ -14,7 +14,7 @@ where
 
 import AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, runExceptT, throwError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.State (get, gets, modify, runStateT)
@@ -29,23 +29,28 @@ import Transform (transform)
 import Unify (unify)
 import Value
 
-initState :: Context
-initState = Context (emptyStruct, []) Map.empty
 
-runIO :: (MonadIO m) => String -> m (Either String Value)
-runIO s = runStderrLoggingT $ runExceptT $ runStr s
+initState :: Context
+initState = Context [] (undefined, []) Map.empty
+
+runIO :: (MonadIO m, MonadError String m) => String -> m Value
+runIO s = runStderrLoggingT $ runStr s
 
 runStr :: (MonadError String m, MonadLogger m) => String -> m Value
 runStr s = do
   parsedE <- parseCUE s
-  eval (transform parsedE) emptyPath
+  -- eval (transform parsedE) emptyPath
+  eval parsedE emptyPath
 
 eval :: (MonadError String m, MonadLogger m) => Expression -> Path -> m Value
 eval expr path = fst <$> runStateT (doEval expr path) initState
 
 doEval :: Runtime m => Expression -> Path -> m Value
-doEval (ExprUnaryExpr e) = evalUnaryExpr e
-doEval (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
+doEval = evalExpr
+
+evalExpr :: Runtime m => Expression -> Path -> m Value
+evalExpr (ExprUnaryExpr e) = evalUnaryExpr e
+evalExpr (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
 
 evalLiteral :: Runtime m => Literal -> Path -> m Value
 evalLiteral = f
@@ -59,31 +64,41 @@ evalLiteral = f
     f NullLit _ = return Null
     f (StructLit s) path = evalStructLit s path
 
+enterNewScope :: Runtime m => Path -> [String] -> m ()
+enterNewScope path labels = do
+  stack <- gets ctxScopeStack
+  updated <- pushScope path (Set.fromList labels) stack
+  modify $ \ctx -> ctx {ctxScopeStack = updated}
+
+leaveScope :: Runtime m => m ()
+leaveScope = do
+  stack <- gets ctxScopeStack
+  updated <- popScope stack
+  modify $ \ctx -> ctx {ctxScopeStack = updated}
+
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: Runtime m => [(Label, Expression)] -> Path -> m Value
 evalStructLit lit path =
   let labels = map evalLabel lit
-      fieldsStub =
-        foldr
-          ( \(k, _) acc ->
-              Map.insert
-                k
-                ( Unevaluated (appendSel (Path.StringSelector k) path)
-                )
-                acc
-          )
-          Map.empty
-          (map (\x -> (evalLabel x, snd x)) lit)
-      idSet = Set.fromList (getVarLabels lit)
-      structStub = StructValue labels fieldsStub idSet Set.empty
-   in do
+   in -- fieldsStub =
+      --   foldr
+      --     (\(k, _) acc -> Map.insert k Stub acc)
+      --     Map.empty
+      --     (map (\x -> (evalLabel x, snd x)) lit)
+      -- idSet = Set.fromList (getVarLabels lit)
+      -- structStub = StructValue labels fieldsStub idSet Set.empty
+      do
         dump $ printf "new struct, path: %s" (show path)
         -- create a new block since we are entering a new struct.
-        putValueInCtx path (Struct structStub)
+        enterNewScope path labels
         bm <- foldM evalField Nothing (zipWith (\name (_, e) -> (name, e)) labels lit)
-        case bm of
+        v <- case bm of
           Just b -> return b
-          Nothing -> getValueFromCtx path
+          -- Nothing -> fromJust <$> getValueFromCtx path
+          Nothing -> undefined
+        dump $ printf "new struct, path: %s, evaluated to %s" (show path) (show v)
+        leaveScope
+        return v
   where
     evalLabel (Label (LabelName ln), _) = case ln of
       LabelID ident -> ident
@@ -99,19 +114,35 @@ evalStructLit lit path =
               dump $ printf "evalField: path: %s, starts, expr: %s" (show fieldPath) (show e)
               v <- doEval e fieldPath
               dump $ printf "evalField: path: %s, evaluated, expr is evaluated to %s" (show fieldPath) (show v)
-              putValueInCtx fieldPath v
+              storeValueInCtx fieldPath v
+              -- The reason we need to propagate here, not after once a value is evaluated, is that the value could be
+              -- part of a binary or unary operation.
               propagate (fieldPath, v)
               dump $ printf "evalField: path: %s, done" (show fieldPath)
               case v of
                 Bottom {} -> return $ Just v
                 _ -> return Nothing
 
-    fetchVarLabel :: Label -> Maybe String
-    fetchVarLabel (Label (LabelName (LabelID var))) = Just var
-    fetchVarLabel _ = Nothing
+-- fetchVarLabel :: Label -> Maybe String
+-- fetchVarLabel (Label (LabelName (LabelID var))) = Just var
+-- fetchVarLabel _ = Nothing
+--
+-- getVarLabels :: [(Label, Expression)] -> [String]
+-- getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
 
-    getVarLabels :: [(Label, Expression)] -> [String]
-    getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
+-- | Put the value in the context with the path. If there already exists a value with the same path, it will be unified.
+storeValueInCtx :: (Runtime m) => Path -> Value -> m ()
+storeValueInCtx path val = do
+  -- mv <- getValueFromCtx path
+  mv <- undefined
+  case mv of
+    Just v -> do
+      dump $ printf "storeValueInCtx: path: %s, unify %s with %s" (show path) (show v) (show val)
+      u <- unify v val
+      return undefined
+      -- putValueInCtx path u
+    -- Nothing -> putValueInCtx path val
+    Nothing -> undefined
 
 evalUnaryExpr :: Runtime m => UnaryExpr -> Path -> m Value
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr path >>= pure . snd
@@ -139,31 +170,32 @@ evalPrimExpr e@(PrimExprSelector primExpr sel) path = do
 lookupVar :: Runtime m => String -> Path -> m (Path, Value)
 lookupVar var exprPath = do
   dump $ printf "lookupVar: path: %s, looks up var: %s" (show exprPath) var
-  ctx <- get
-  let scope = case goToScope (ctxCurBlock ctx) exprPath of
-        Just b -> b
-        Nothing -> ctxCurBlock ctx
-  case searchUpVar var scope of
-    -- varPath is only a placeholder here.
-    Just (varPath, varVal) -> do
-      res <- (varPath,) <$> mkRef (exprPath, AST.idCons var) (varPath, varVal)
-      dump $ printf "lookupVar: path: %s, found var: %s, value: %s" (show exprPath) var (show res)
-      return res
-    Nothing ->
-      throwError $
-        printf "variable %s is not found, path: %s, scope: %s" var (show exprPath) (show scope)
+  stack <- gets ctxScopeStack
+  case searchUpVar var stack of
+    Nothing -> do
+      throwError $ printf "variable %s is not found, path: %s" var (show exprPath)
+    Just varPath -> do
+      -- vm <- getValueFromCtx varPath
+      vm <- undefined
+      case vm of
+        Nothing -> throwError $ printf "variable %s is not found, path: %s" var (show exprPath)
+        Just varVal -> do
+          res <- (varPath,) <$> mkRef (exprPath, AST.idCons var) (varPath, varVal)
+          dump $ printf "lookupVar: path: %s, found var: %s, value: %s" (show exprPath) var (show res)
+          return res
 
--- where
---   getVarPair :: (MonadError String m, MonadState Context m) => TreeCursor -> Path -> Value -> m (Path, Value)
---   getVarPair scope valPath v
---     | isValueAtom v = do
---         trace (printf "lookupVar found atom %s, scope: %s, value: %s" (show var) (show scope) (show v)) pure ()
---         return (valPath, v)
---   -- valPath is only a placeholder here.
---   getVarPair _ valPath (Pending v) = (valPath,) <$> depend (exprPath, AST.idCons var) v
---   -- This is the case when the value is not atom, nor pending.
---   -- valPath is only a placeholder here.
---   getVarPair _ valPath v = return (valPath, mkReference (AST.idCons var) exprPath valPath v)
+-- let scope = case goToScope (ctxCurBlock ctx) exprPath of
+--       Just b -> b
+--       Nothing -> ctxCurBlock ctx
+-- case searchUpVar var scope of
+--   -- varPath is only a placeholder here.
+--   Just (varPath, varVal) -> do
+--     res <- (varPath,) <$> mkRef (exprPath, AST.idCons var) (varPath, varVal)
+--     dump $ printf "lookupVar: path: %s, found var: %s, value: %s" (show exprPath) var (show res)
+--     return res
+--   Nothing ->
+--     throwError $
+--       printf "variable %s is not found, path: %s, scope: %s" var (show exprPath) (show scope)
 
 -- | Evaluates the selector.
 -- Parameters:
@@ -194,107 +226,26 @@ evalSelector pe sel (soPath, soVal) path = case sel of
           fieldVal = case Map.lookup field (svFields sv) of
             Just v -> v
             -- The incomplete selector case.
-            Nothing -> Unevaluated fieldPath
+            Nothing -> Stub
        in do
             dump $
               printf "dot: path: %s, spath: %s, field: %s, fieldVal: %s" (show path) (show sPath) field (show fieldVal)
             mkRef (path, expr) (fieldPath, fieldVal)
 
     select :: Runtime m => String -> Value -> m Value
-    -- {x: y, a: x, y: {}}, where y is unevaluated and we are evaluating a.
+    -- {x: y, a: x, y: {}}, where y is stub and we are evaluating a.
     select field (Pending pv) =
       let temp = pvTemp pv
        in case temp of
-            Unevaluated {} -> do
-              dump $ printf "evalSelector: %s is unevaluated" (show soVal)
+            Stub -> do
+              dump $ printf "evalSelector: %s is stub" (show soVal)
               delayUnaryOp expr (select field) pv
             _ -> select field temp
     select field (Struct sv) = dot (soPath, sv) field
     select field (Value.Disjunction [x] _) = select field x
-    -- {a: x.c, x: {}}, where x is unevaluated.
-    select _ (Unevaluated _) = throwError $ printf "evalSelector: %s is unevaluated" (show soVal)
+    -- {a: x.c, x: {}}, where x is stub.
+    select _ Stub = throwError $ printf "evalSelector: %s is stub" (show soVal)
     select _ _ = return . Bottom $ printf "%s is not a struct" (show soVal)
-
--- refField (path, expr) (_, uv@(Unevaluated {})) =
---   if uePath uv == path
---     then do
---       dump $ printf "depend: self cycle detected. path: %s" (show path)
---       return Top
---     else do
---       dump $ printf "depend: unevaluated is %s" (show uv)
---       createDepVal (uePath uv)
--- refField (path, expr) (_, Pending pv) = do
---   dump $ printf "refField: %s is referencing pending %s" (show path) (show pv)
---   depend (path, expr) pv
--- refField (path, expr) (valPath, val) = return $ mkReference expr path valPath val
-
--- | Access the named field of the struct.
--- Parameters:
---   field is the name of the field.
---   path is the path to the current expression that contains the selector.
---   value is the struct value.
--- For example,
---  { a: b: x.y }
--- If the field is "y", and the exprPath is "a.b", expr is "x.y", the structPath is "x".
--- TODO:
--- Value.Disjunction [x] _ -> lookupStructField x
--- dot :: Runtime m => (Path, AST.Expression) -> (Path, StructValue) -> String -> m Value
--- dot (path, expr) (structPath, sv) field = case Map.lookup field (svFields sv) of
---   Just v -> refField (path, expr) (fieldPath, v)
---   -- The incomplete selector case.
---   Nothing ->
---     return $
---       mkReference expr path fieldPath (mkUnevaluated path)
---   where
---     fieldPath = appendSel (Path.StringSelector field) structPath
-
---   lookupStructField _ =
---     return $
---       Bottom $
---         printf
---           "dot: path: %s, sel: %s, value: %s is not a struct"
---           (show path)
---           (show field)
---           (show structVal)
--- _ -> lookupStructField structVal
--- where
---   fieldPath = appendSel (Path.StringSelector field) structPath
---   lookupStructField (Struct sv) = case Map.lookup field (svFields sv) of
---     Just v -> refField (path, expr) (fieldPath, v)
---     -- The incomplete selector case.
---     Nothing ->
---       return $
---         mkReference expr path fieldPath (mkUnevaluated path)
---   lookupStructField _ =
---     return $
---       Bottom $
---         printf
---           "dot: path: %s, sel: %s, value: %s is not a struct"
---           (show path)
---           (show field)
---           (show structVal)
-
--- getField :: (MonadError String m, MonadState Context m) => Value -> m Value
--- -- The referenced value could be a pending value. Once the pending value is evaluated, the selector should be
--- -- populated with the value.
--- getField (Pending v) = depend (path, idCons field) v
--- getField v@(Struct _) = return v
--- getField v
---   | isValueConcrete v = return v
--- -- The value is incomplete, so we create a new pending value.
--- getField v =
---   let newPath = appendSel (Path.StringSelector field) path
---    in do
---         trace
---           ( printf
---               "dot: path: %s, sel: %s, value %s is not concrete"
---               (show newPath)
---               (show field)
---               (show v)
---           )
---           pure
---           ()
---         return $ mkReference expr path newPath
 
 -- | Evaluates the unary operator.
 -- unary operator should only be applied to atoms.
@@ -312,30 +263,6 @@ evalUnaryOp op e path = do
     go Minus (Int i) = return $ Int (-i)
     go Not (Bool b) = return $ Bool (not b)
     go _ v = throwError $ printf "%s cannot be used for value %s" (show op) (show v)
-
--- -- | Bind a pending value to a function.
--- -- The first argument is the function that takes the value and returns a value.
--- bindUnary ::
---   Runtime m =>
---   (Value -> EvalMonad Value) ->
---   (AST.Expression -> Maybe AST.Expression) ->
---   Value ->
---   m Value
--- bindUnary f exprF (Pending v) = case v of
---   pv@(PendingValue {}) -> do
---     expr <- transExpr exprF (pvExpr pv)
---     newTemp <-
---       if isValueConcrete (pvTemp pv)
---         then f (pvTemp pv)
---         else return $ mkUnevaluated (pvPath pv)
---     return $ Pending $ pv {pvEvaluator = bindEval (pvEvaluator pv) f, pvTemp = newTemp, pvExpr = expr, pvIsRef = False}
---   _ -> throwError $ printf "bindUnary: value %s is not PendingValue" (show v)
--- bindUnary _ _ v = throwError $ printf "bindUnary: value %s is not pending" (show v)
---
--- transExpr :: MonadError String m => (AST.Expression -> Maybe AST.Expression) -> AST.Expression -> m AST.Expression
--- transExpr f e = case f e of
---   Just _e -> return _e
---   Nothing -> throwError "bindUnary: exprF returns Nothing"
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -368,35 +295,6 @@ evalBinary op e1 e2 path = do
             (_, Pending p2) -> delayUnaryOp expr (f v1) p2
             (_, _) -> f v1 v2
 
--- unifyOp :: Runtime m => Value -> Value -> m Value
--- unifyOp v1@(Pending p1) v2@(Pending p2) = case (p1, p2) of
---   (PendingValue {}, PendingValue {}) ->
---     if
---         | isValueUnevaluated (pvTemp p1) && isValueUnevaluated (pvTemp p2) -> delayBinaryOp op unify p1 p2
---         | isValueUnevaluated (pvTemp p1) -> delayUnaryOp expr (`unify` v2) p1
---         | isValueUnevaluated (pvTemp p2) -> delayUnaryOp expr (unify v1) p2
---         | otherwise -> unify v1 v2
---   _ -> return $ Bottom $ printf "%s and %s can not be unified" (show v1) (show v2)
--- unifyOp v1@(Pending p1) v2 = case p1 of
---   PendingValue {} ->
---     if isValueUnevaluated (pvTemp p1)
---       then delayUnaryOp expr (`unify` v2) p1
---       else unify (pvTemp p1) v2
---   _ -> return $ Bottom $ printf "%s and %s can not be unified" (show v1) (show v2)
-
--- unifyOp v1 v2
---   | isValuePending v1 && isValuePending v2 =
---       if hasConcreteTemp v1 && hasConcreteTemp v2
---         then do
---           tv1 <- getTemp v1
---           tv2 <- getTemp v2
---           dispatch op tv1 tv2
---         else -- since both values are pending, we should bind both, not bind one of them because both can be updated.
---           bindBinary (ExprBinaryOp op e1 e2) (dispatch op) v1 v2
---   | isValuePending v1 = let f = dispatch op in bindUnary (`f` v2) (binExpr op (Right v2)) v1
---   | isValuePending v2 = let f = dispatch op in bindUnary (f v1) (binExpr op (Left v1)) v2
---   | otherwise = dispatch op v1 v2
-
 calcNum :: (Runtime m) => BinaryOp -> Value -> Value -> m Value
 calcNum op v1 v2 = do
   dump $ printf "exec (%s %s %s)" (show op) (show v1) (show v2)
@@ -415,41 +313,34 @@ numOp AST.Mul = return (*)
 numOp AST.Div = return div
 numOp op = throwError $ printf "unsupported binary operator: %s" (show op)
 
--- binExpr :: AST.BinaryOp -> Either Value Value -> AST.Expression -> Maybe AST.Expression
--- binExpr op (Left v) e2 = do
---   e1 <- toExpr v
---   return $ AST.binaryOpCons op e1 e2
--- binExpr op (Right v) e1 = do
---   e2 <- toExpr v
---   return $ AST.binaryOpCons op e1 e2
-
 -- | Checks whether the given value can be applied to other dependents. If it can, then apply the value to
 -- the pending value, and propagate the value to other dependents.
 -- Parameters:
 --  path is the path to the trigger value.
 propagate :: Runtime m => (Path, Value) -> m ()
 propagate (path, val) = do
-  _revDeps <- gets ctxReverseDeps
-  dump $ printf "propagate: path: %s, value: %s, revDeps: %s" (show path) (show val) (prettyRevDeps _revDeps)
+  rvDeps <- gets ctxReverseDeps
+  dump $ printf "propagate: path: %s, value: %s, revDeps: %s" (show path) (show val) (prettyRevDeps rvDeps)
   case val of
+    Stub -> throwError $ printf "propagate: path: %s, stub value: %s" (show path) (show val)
     Pending pv@(PendingValue {}) ->
       let temp = pvTemp pv
-       in if not $ isValueDep temp
-            then -- If the pending value has a non-pending temp value, use that value to try to evaluate the pending value.
-            -- This works because the reverse dependency is always a 1-1 mapping.
-            do
-              dump $ printf "propagate: path: %s, pending value uses temp %s" (show path) (show temp)
-              propagate (path, temp)
-            else dump $ printf "propagate: path: %s, skip pending value with pending temp value" (show path)
-    Unevaluated {} -> throwError $ printf "propagate: path: %s, unevaluated value: %s" (show path) (show val)
-    _ -> do
+       in if isValueStub temp
+            then dump $ printf "propagate: path: %s, skip stub pending value" (show path)
+            else do
+              dump $ printf "propagate: path: %s, pending value has evaluated temp: %s" (show path) (show temp)
+              prop
+    _ -> prop
+  where
+    prop = do
       revDeps <- gets ctxReverseDeps
       case Map.lookup path revDeps of
         Nothing -> do
           dump $ printf "propagate: path: %s, no reverse dependency, revDeps: %s" (show path) (prettyRevDeps revDeps)
           return ()
         Just penPath -> do
-          pendVal <- getValueFromCtx penPath
+          -- pendVal <- fromJust <$> getValueFromCtx penPath
+          pendVal <- undefined
           dump $
             printf
               "propagate: path: %s, pre: %s->%s, val: %s, pendVal: %s"
@@ -464,7 +355,7 @@ propagate (path, val) = do
           -- on this value.
           propagate (penPath, newPendVal)
           -- update the pending block.
-          putValueInCtx penPath newPendVal
+          storeValueInCtx penPath newPendVal
           dump $
             printf
               "propagate: path: %s, post: %s->%s, val: %s, pendVal: %s, newPendVal: %s"
@@ -478,15 +369,11 @@ propagate (path, val) = do
 -- | Tries to re-evaluate the pending value with the new value once all the dependencies are available. If not all
 -- available, the new value is added to the dependencies of the pending value.
 -- Parameters:
---  penPath is the path to the pending value.
---  penV is the pending value.
+--  value is the pending value that is to be resolved.
 --  pair is the new (path, value) pair that is used to re-evaluate the pending value.
 resolve :: Runtime m => Value -> (Path, Value) -> m Value
-resolve _ (_, val@(Pending {})) =
-  throwError $
-    printf "resolve expects a non-pending value to trigger re-evaluation, but got %s" (show val)
-resolve uv@(Unevaluated {}) _ =
-  throwError $ printf "resolve: can not resolve an unevaluated value: %s" (show uv)
+resolve Stub _ =
+  throwError $ printf "resolve: can not resolve a stub value"
 resolve (Pending pv@(PendingValue {})) (tgPath, tg)
   | isNothing $ find (== tgPath) (pvDeps pv) =
       throwError $
@@ -500,16 +387,7 @@ resolve (Pending pv@(PendingValue {})) (tgPath, tg)
             if isNothing $ lookup tgPath (pvArgs pv)
               then (tgPath, tg) : pvArgs pv
               else (tgPath, tg) : filter (\(p, _) -> p /= tgPath) (pvArgs pv)
-       in -- atomsNum =
-          --   foldr (\(_, v) acc -> if isValueAtom v then acc + 1 else acc) 0 newArgs
-          do
-            -- \| atomsNum == length (pvDeps pv) = do
-            --     dump $
-            --       printf "resolve: path: %s, all atoms, pending value is to be evaluated to atom" (show pendPath)
-            --     res <- pvEvaluator pv newArgs
-            --     dump $ printf "resolve: path: %s, pending value is fully evaluated to: %s" (show pendPath) (show res)
-            --     -- TODO: If the result is an atom, we should remove all the reverse dependencies.
-            --     return res
+       in do
             -- arguments are enough, no matter whether all of them are atoms, concrete or not.
             if length newArgs == length (pvDeps pv)
               then do
@@ -575,7 +453,7 @@ evalDisj e1 e2 path = case (e1, e2) of
     evalExprPair (DisjRegular, doEval e1 path) (DisjDefault, evalUnaryExpr se2 path)
   (_, _) -> evalExprPair (DisjRegular, doEval e1 path) (DisjRegular, doEval e2 path)
   where
-    -- evalExprPair is used to evaluate a disjunction with both sides still being unevaluated.
+    -- evalExprPair is used to evaluate a disjunction with both sides still being stub.
     evalExprPair ::
       Runtime m => (Value -> DisjItem, m Value) -> (Value -> DisjItem, m Value) -> m Value
     evalExprPair (cons1, m1) (cons2, m2) = do

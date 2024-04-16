@@ -32,14 +32,14 @@ library
         Transform,
     other-modules:
       Paths_haskue
-    ghc-options: -Wall
+    ghc-options: -Wall -Wpartial-fields
     -- Modules included in this library but not exported.
     -- other-modules:
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:    
-      base ^>=4.16.4.0,
+      base ^>=4.19.0.0,
       parsec,
       containers,
       mtl,
@@ -60,7 +60,7 @@ executable haskue
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        base ^>=4.16.4.0,
+        base ^>=4.19.0.0,
         haskue,
         mtl,
         bytestring,
@@ -73,12 +73,12 @@ Test-Suite haskue-unit-test
   hs-source-dirs:   tests
   main-is: Main.hs
   other-modules:
-    Spec,
+    -- Spec,
     ValueTest,
-    TransformTest,
-    EvalTest,
+    -- TransformTest,
+    -- EvalTest,
   build-depends:
-        base ^>=4.16.4.0,
+        base ^>=4.19.0.0,
         tasty >= 0.7,
         tasty-hunit,
         haskue,

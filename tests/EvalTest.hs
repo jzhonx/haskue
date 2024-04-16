@@ -1,43 +1,26 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE LambdaCase       #-}
+{-# LANGUAGE RankNTypes       #-}
 
 module EvalTest where
 
 import qualified AST
-import Control.Monad.Except
-  ( Except,
-    MonadError,
-    runExcept,
-    runExceptT,
-    throwError,
-  )
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Logger
-  ( LoggingT,
-    MonadLogger,
-    runStderrLoggingT,
-  )
-import Control.Monad.State
-  ( State,
-    StateT (runStateT),
-    evalState,
-    evalStateT,
-    runState,
-  )
-import Control.Monad.State.Strict (MonadState, get, put)
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Eval
-import Path
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
-  ( assertBool,
-    assertEqual,
-    assertFailure,
-    testCase,
-  )
-import Value
+import           Control.Monad.Except       (Except, MonadError, runExcept,
+                                             runExceptT, throwError)
+import           Control.Monad.IO.Class     (MonadIO, liftIO)
+import           Control.Monad.Logger       (LoggingT, MonadLogger,
+                                             runStderrLoggingT)
+import           Control.Monad.State        (State, StateT (runStateT),
+                                             evalState, evalStateT, runState)
+import           Control.Monad.State.Strict (MonadState, get, put)
+import qualified Data.Map.Strict            as Map
+import qualified Data.Set                   as Set
+import           Eval
+import           Path
+import           Test.Tasty                 (TestTree, testGroup)
+import           Test.Tasty.HUnit           (assertBool, assertEqual,
+                                             assertFailure, testCase)
+import           Value
 
 selY = StringSelector "y"
 
@@ -69,7 +52,7 @@ runKeep :: (MonadError String m, MonadIO m) => Context -> LoggingT (StateT Conte
 runKeep ctx m = runStateT (runStderrLoggingT m) ctx
 
 mkPending :: AST.Expression -> Path -> Path -> Value
-mkPending expr src dst = mkReference expr src dst (Unevaluated src)
+mkPending expr src dst = mkReference expr src dst Stub
 
 propagateTest :: IO ()
 propagateTest =

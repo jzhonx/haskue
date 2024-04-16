@@ -9,15 +9,13 @@ import Path (emptyPath)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
 import Transform (transform)
-import Value (Value (Int, String), toExpr)
+import Value (Value (Int, String), exprIO)
 
 main :: IO ()
 main = do
   args <- getArgs
   f <- readFile (head args)
-  x <- runIO f
+  x <- runExceptT $ runIO f >>= exprIO
   case x of
     Left err -> putStrLn err
-    Right val -> case toExpr val of
-      Left err -> putStrLn err
-      Right expr -> hPutBuilder stdout (exprBld expr)
+    Right expr -> hPutBuilder stdout (exprBld expr)

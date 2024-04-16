@@ -1,6 +1,7 @@
 module Spec where
 
 import qualified AST
+import           Control.Monad.Except    (runExceptT)
 import           Data.ByteString.Builder
 import qualified Data.Map.Strict         as Map
 import qualified Data.Set                as Set
@@ -20,7 +21,7 @@ newSimpleStruct :: [String] -> [(String, Value)] -> Value
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds) Set.empty
 
 startEval :: String -> IO (Either String Value)
-startEval = runIO
+startEval = runExceptT . runIO
 
 assertStructs :: Value -> Value -> IO ()
 assertStructs (Struct exp) (Struct act) = do
@@ -80,7 +81,7 @@ testSelector = do
         [fieldEDefault]
         [newSimpleStruct ["a"] [("a", Disjunction [Int 2] [Int 1, Int 2])], fieldEDefault]
     pathC = Path [StringSelector "c"]
-    pendValC = PendingValue pathC [] [] undefined (Unevaluated pathC) (AST.litCons AST.BottomLit)
+    pendValC = PendingValue pathC [] [] undefined Stub (AST.litCons AST.BottomLit)
     pathF = Path [StringSelector "f"]
     pendValF =
       PendingValue
