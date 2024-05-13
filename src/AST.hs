@@ -175,7 +175,7 @@ litBld :: Int -> Literal -> Builder
 litBld ident e = case e of
   StringLit s -> strLitBld s
   IntLit i -> integerDec i
-  BoolLit b -> string7 (show b)
+  BoolLit b -> if b then string7 "true" else string7 "false"
   TopLit -> string7 "_"
   BottomLit -> string7 "_|_"
   NullLit -> string7 "null"

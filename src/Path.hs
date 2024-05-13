@@ -6,17 +6,23 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 data Selector
-  = StringSelector String
+  =  StartSelector
+  | StringSelector String
   | ListSelector Int
   | UnaryOpSelector
   | BinOpSelector BinOpDirect
+  | DisjDefaultSelector Int
+  | DisjDisjunctSelector Int
   deriving (Eq, Ord)
 
 instance Show Selector where
+  show StartSelector = "/"
   show (StringSelector s) = s
   show (ListSelector i) = show i
   show UnaryOpSelector = "u"
   show (BinOpSelector d) = show d
+  show (DisjDefaultSelector i) = "d*" ++ show i
+  show (DisjDisjunctSelector i) = "dj" ++ show i
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -35,8 +41,8 @@ showPath (Path sels) = intercalate "." $ map show (reverse sels)
 instance Show Path where
   show = showPath
 
-emptyPath :: Path
-emptyPath = Path []
+startPath :: Path
+startPath = Path [StartSelector]
 
 pathFromList :: [Selector] -> Path
 pathFromList sels = Path (reverse sels)
