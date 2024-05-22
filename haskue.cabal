@@ -27,7 +27,7 @@ library
         Eval,
         Parser,
         Unify,
-        Value,
+        Tree,
         Path,
         Transform,
     other-modules:

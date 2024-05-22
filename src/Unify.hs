@@ -10,7 +10,7 @@ import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Text.Printf (printf)
-import Value
+import Tree
 
 unify :: (EvalEnv m) => TreeNode -> TreeNode -> m TreeNode
 unify t1 t2 = case (t1, t2) of

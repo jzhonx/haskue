@@ -24,7 +24,7 @@ import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
 import Unify (unify)
-import Value
+import Tree
 
 initState :: Context
 initState = Context (TNRoot $ mkTreeLeaf Top, []) Map.empty

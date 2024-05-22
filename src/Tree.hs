@@ -4,7 +4,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 
-module Value
+module Tree
   ( Context (..),
     EvalEnv,
     EvalMonad,

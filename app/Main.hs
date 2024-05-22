@@ -8,7 +8,7 @@ import Parser (parseCUE)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
 import Transform (transform)
-import Value (Value (Int, String), buildASTExpr)
+import Tree (Value (Int, String), buildASTExpr)
 
 main :: IO ()
 main = do
