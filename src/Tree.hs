@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -22,7 +23,6 @@ module Tree
     dump,
     exprIO,
     finalizeTC,
-    -- getValueTCPath,
     goDownTCPath,
     goDownTCSel,
     goUpTC,
@@ -42,11 +42,8 @@ module Tree
     prettyRevDeps,
     propTopTC,
     pushNewNode,
-    -- putValueTCPath,
     searchTCVar,
-    -- tcFromSV,
     vToE,
-    -- valueOfTreeNode,
     showTreeCursor,
     isValueNode,
     buildASTExpr,
@@ -66,10 +63,8 @@ import Control.Monad.Logger
 import Control.Monad.State.Strict
   ( MonadState,
     evalStateT,
-    get,
     gets,
     modify,
-    put,
   )
 import Data.ByteString.Builder
   ( Builder,
@@ -212,8 +207,7 @@ instance BuildASTExpr TreeNode where
     TNBinaryOp op -> buildASTExpr op
 
 data TNScope = TreeScope
-  { 
-    trsOrdLabels :: [String],
+  { trsOrdLabels :: [String],
     trsVars :: Set.Set String,
     trsConcretes :: Set.Set String,
     trsSubs :: Map.Map String TreeNode
@@ -274,17 +268,20 @@ instance Eq TNBinaryOp where
 
 data TNLink = TreeLink
   { trlTarget :: Path,
-    trlExpr :: AST.Expression,
-    -- | The final value of the target path.
+    -- | The final evaluated tree node of the target path.
     -- It should only be set when in the final evaluating.
-    trlFinal :: Maybe Value
+    trlFinal :: Maybe TreeNode
   }
 
 instance Eq TNLink where
   (==) l1 l2 = trlTarget l1 == trlTarget l2
 
 instance BuildASTExpr TNLink where
-  buildASTExpr = trlExpr
+  buildASTExpr l =
+    if isJust (trlFinal l)
+      then
+        buildASTExpr (fromJust $ trlFinal l)
+      else AST.litCons AST.BottomLit
 
 data TNLeaf = TreeLeaf
   { trfValue :: Value
@@ -335,15 +332,16 @@ tnStrBldr :: Int -> TreeNode -> Builder
 tnStrBldr i t = case t of
   TNRoot sub -> content (showTreeType t) i mempty [(string7 $ show StartSelector, sub)]
   TNLeaf leaf -> content (showTreeType t) i (string7 (show $ trfValue leaf)) []
-  TNLink l -> content (showTreeType t) i (string7 (show $ trlTarget l)) []
+  TNLink l ->
+    let linkMeta = string7 (show $ trlTarget l) <> char7 ' ' <> string7 "Final:" <> string7 (show $ isJust $ trlFinal l)
+     in content (showTreeType t) i (linkMeta) []
   TNScope s ->
-    let 
-      ordLabels = 
-        string7 "ordLabels: "
-          <> char7 '['
-          <> foldl (\b l -> b <> string7 l <> char7 ' ') mempty (trsOrdLabels s)
-          <> char7 ']'
-      fields = map (\(k, v) -> (string7 k, v)) (Map.toList (trsSubs s))
+    let ordLabels =
+          string7 "ordLabels: "
+            <> char7 '['
+            <> foldl (\b l -> b <> string7 l <> char7 ' ') mempty (trsOrdLabels s)
+            <> char7 ']'
+        fields = map (\(k, v) -> (string7 k, v)) (Map.toList (trsSubs s))
      in content (showTreeType t) i ordLabels fields
   TNList vs ->
     let fields = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] vs)
@@ -447,10 +445,16 @@ insertSubTree parent sel sub = case sel of
           (showTreeType sub)
           (showTreeType parent)
   StringSelector s -> case parent of
-    TNScope parScope -> if Map.member s (trsSubs parScope)
-      then return $ TNScope $ parScope {trsSubs = Map.insert s sub (trsSubs parScope)}
-      else return $ TNScope $ parScope {
-        trsOrdLabels = trsOrdLabels parScope ++ [s], trsSubs = Map.insert s sub (trsSubs parScope)}
+    TNScope parScope ->
+      if Map.member s (trsSubs parScope)
+        then return $ TNScope $ parScope {trsSubs = Map.insert s sub (trsSubs parScope)}
+        else
+          return $
+            TNScope $
+              parScope
+                { trsOrdLabels = trsOrdLabels parScope ++ [s],
+                  trsSubs = Map.insert s sub (trsSubs parScope)
+                }
     _ ->
       throwError $
         printf
@@ -530,11 +534,13 @@ showTreeCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
   where
     prettyBldr :: TreeCursor -> Builder
     prettyBldr (t, cs) =
-      string7 (show t)
+      string7 "-- ():\n"
+        <> string7 (show t)
         <> char7 '\n'
         <> foldl
           ( \b (sel, n) ->
               b
+                <> string7 "-- "
                 <> string7 (show sel)
                 <> char7 ':'
                 <> char7 '\n'
@@ -549,8 +555,8 @@ goUpTC :: TreeCursor -> Maybe TreeCursor
 goUpTC (_, []) = Nothing
 goUpTC (_, (_, v) : vs) = Just (v, vs)
 
-goDownTCPath :: TreeCursor -> Path -> Maybe TreeCursor
-goDownTCPath tc (Path sels) = go (reverse sels) tc
+goDownTCPath :: Path -> TreeCursor -> Maybe TreeCursor
+goDownTCPath (Path sels) tc = go (reverse sels) tc
   where
     go :: [Selector] -> TreeCursor -> Maybe TreeCursor
     go [] cursor = Just cursor
@@ -558,11 +564,21 @@ goDownTCPath tc (Path sels) = go (reverse sels) tc
       nextCur <- goDownTCSel x cursor
       go xs nextCur
 
+goDownTCPathErr :: (MonadError String m) => Path -> String -> TreeCursor -> m TreeCursor
+goDownTCPathErr p msg tc = case goDownTCPath p tc of
+  Just c -> return c
+  Nothing -> throwError msg
+
 -- | Go down the TreeCursor with the given selector and return the new cursor.
 goDownTCSel :: Selector -> TreeCursor -> Maybe TreeCursor
 goDownTCSel sel (t, vs) = do
   nextTree <- goTreeSel t sel
   return (nextTree, (sel, t) : vs)
+
+goDownTCSelErr :: (MonadError String m) => Selector -> String -> TreeCursor -> m TreeCursor
+goDownTCSelErr sel msg tc = case goDownTCSel sel tc of
+  Just c -> return c
+  Nothing -> throwError msg
 
 pathFromTC :: TreeCursor -> Path
 pathFromTC (_, crumbs) = Path . reverse $ go crumbs []
@@ -634,6 +650,10 @@ propTopTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 propTopTC (t, []) = return (t, [])
 propTopTC tc = propUpTC tc >>= propTopTC
 
+-- | Go from the current cursor to the root and then go down to the path.
+goTCPath :: (EvalEnv m) => Path -> TreeCursor -> m TreeCursor
+goTCPath p tc = propTopTC tc >>= goDownTCPathErr p (printf "path %s not found" (show p))
+
 -- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 searchTCVar :: String -> TreeCursor -> Maybe TreeCursor
 searchTCVar var tc = case fst tc of
@@ -663,30 +683,37 @@ searchTCVar var tc = case fst tc of
 -- kcFromSV :: StructValue -> TreeCursor
 -- tcFromSV sv = (TNRoot $ mkTreeScope sv, [])
 
--- | Follow the link in the tree cursor and returns the updated tree cursor.
-followLinkTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-followLinkTC tc =
-  let tcPath = pathFromTC tc
-   in do
-        tar <- go tc
-        r <- propTopTC tar
-        case goDownTCPath r tcPath of
-          Nothing -> throwError $ printf "followLinkTC: path not found: %s" (show tcPath)
-          Just ttc -> return (fst tar, snd ttc)
+-- -- | Resolve the link in the tree cursor and returns the updated tree cursor.
+-- resolveLinkTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
+-- resolveLinkTC tc =
+--   let tcPath = pathFromTC tc
+--    in do
+--         tar <- followLinkTC Set.empty tc
+--         r <- propTopTC tar
+--         case goDownTCPath r tcPath of
+--           Nothing -> throwError $ printf "followLinkTC: path not found: %s" (show tcPath)
+--           Just ttc -> return (fst tar, snd ttc)
+--
+followLinkTC :: (EvalEnv m) => TreeCursor -> m (Maybe TreeCursor)
+followLinkTC = go Set.empty
   where
-    go :: (EvalEnv m) => TreeCursor -> m TreeCursor
-    go cursor = case fst cursor of
-      TNLink link -> case trlFinal link of
-        Just {} -> return cursor
-        Nothing -> do
-          rootTC <- propTopTC cursor
-          tarTC <- case goDownTCPath rootTC (trlTarget link) of
-            Nothing -> throwError $ printf "followLinkTC: TNLink value can not be got for %s" (show (trlTarget link))
-            Just tarTC -> return tarTC
-          go tarTC
-      _ -> return cursor
+    go :: (EvalEnv m) => Set.Set Path -> TreeCursor -> m (Maybe TreeCursor)
+    go visited cursor =
+      let tcPath = pathFromTC cursor
+       in if Set.member tcPath visited
+            then do
+              dump $ printf "followLinkTC: link cycle detected: %s" (show tcPath)
+              return $ Just (TNLeaf $ TreeLeaf Top, snd cursor)
+            else case fst cursor of
+              TNLink link -> do
+                rootTC <- propTopTC cursor
+                case goDownTCPath (trlTarget link) rootTC of
+                  Nothing -> return Nothing
+                  Just tarTC -> go (Set.insert tcPath visited) tarTC
+              _ -> return $ Just cursor
 
--- | Insert the tree node to the tree cursor with the given selector.
+-- | Insert the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
+-- newly inserted value.
 insertTCSub :: (EvalEnv m) => Selector -> TreeNode -> TreeCursor -> m TreeCursor
 insertTCSub sel sub (par, cs) = do
   u <- insertSubTree par sel sub
@@ -750,7 +777,7 @@ insertTCBinaryOp sel rep e f tc =
       sub = newSubGen (mkTreeLeaf Stub) (mkTreeLeaf Stub) work
    in insertTCSub sel sub tc
 
-insertTCDisj :: 
+insertTCDisj ::
   (EvalEnv m) => Selector -> AST.Expression -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeCursor -> m TreeCursor
 insertTCDisj sel e f tc =
   let newSubGen :: TreeNode -> TreeNode -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeNode
@@ -779,8 +806,8 @@ insertTCDisj sel e f tc =
 insertTCDot ::
   (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
 insertTCDot sel dotSel ue tc =
-  let newSubGen :: TreeNode -> (TreeNode -> EvalMonad TreeNode) -> TreeNode
-      newSubGen n op =
+  let newUnaryOpSubGen :: TreeNode -> (TreeNode -> EvalMonad TreeNode) -> TreeNode
+      newUnaryOpSubGen n op =
         TNUnaryOp $
           TreeUnaryOp
             { truOp = op,
@@ -799,70 +826,152 @@ insertTCDot sel dotSel ue tc =
         TNScope {} -> case goTreeSel n dotSel of
           Just sub -> return sub
           -- incomplete case
-          Nothing -> return $ newSubGen n dot
+          Nothing -> return $ newUnaryOpSubGen n dot
         TNDisj d ->
           if length (trdDefaults d) == 1
             then dot (trdDefaults d !! 0)
-            else return $ newSubGen n dot
-        TNLink {} -> return $ newSubGen n dot
+            else return $ newUnaryOpSubGen n dot
+        TNLink {} -> return $ newUnaryOpSubGen n dot
         -- The unary operand could be a pending unary operator.
-        TNUnaryOp {} -> return $ newSubGen n dot
+        TNUnaryOp {} -> return $ newUnaryOpSubGen n dot
         -- The unary operand could be a pending binary operator.
-        TNBinaryOp {} -> return $ newSubGen n dot
+        TNBinaryOp {} -> return $ newUnaryOpSubGen n dot
         _ -> throwError $ errMsgGen n
-      curSub = fromJust $ goDownTCSel sel tc
-      newSub = newSubGen (fst curSub) dot
-   in insertTCSub sel newSub tc
+   in do
+        curSub <- case goDownTCSel sel tc of
+          Just subTC -> return subTC
+          Nothing ->
+            throwError $
+              printf "insertTCDot: can not get sub cursor with selector %s, cursor:\n%s" (show sel) (showTreeCursor tc)
+        let newSub = newUnaryOpSubGen (fst curSub) dot
+        insertTCSub sel newSub tc
 
 insertTCLeafValue :: (EvalEnv m) => Selector -> Value -> TreeCursor -> m TreeCursor
 insertTCLeafValue sel v tc = let sub = mkTreeLeaf v in do insertTCSub sel sub tc
 
 insertTCLink :: (EvalEnv m) => Selector -> Path -> TreeCursor -> m TreeCursor
-insertTCLink sel tarPath tc = let sub = TNLink $ TreeLink {trlTarget = tarPath, trlFinal = Nothing} in insertTCSub sel sub tc
+insertTCLink sel tarPath tc =
+  let subPath = appendSel sel (pathFromTC tc)
+   in if
+        | tarPath == subPath -> do
+            dump $ printf "insertTCLink: link to itself, path: %s" (show tarPath)
+            insertTCSub sel (mkTreeLeaf Top) tc
+        -- \| isPrefix tarPath subPath -> do
+        --     dump $ printf "insertTCLink: structural cycle, %s is prefix of %s" (show tarPath) (show subPath)
+        --     insertTCSub sel (mkTreeLeaf $ Bottom "structural cycle") tc
+        | otherwise ->
+            let sub = TNLink $ TreeLink {trlTarget = tarPath, trlFinal = Nothing}
+             in do
+                  u <- insertTCSub sel sub tc
+                  -- try to detect if the new link forms a cycle.
+                  followLinkTC u >>= \case
+                    Just (TNLeaf (TreeLeaf Top), _) -> insertTCLeafValue sel Top tc
+                    _ -> return u
 
 -- | finalizeTC evaluates the tree pointed by the cursor by traversing the tree and evaluating all nodes.
 finalizeTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-finalizeTC tc@(tree, _) =
+finalizeTC tc = evalStateT (finalizeWalkTC tc) (FinalizeState Set.empty Map.empty)
+
+data FinalizeState = FinalizeState
+  { fsVisited :: Set.Set Path,
+    fsRevDeps :: Map.Map Path [Path]
+  }
+
+finalizeWalkTC :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> m TreeCursor
+finalizeWalkTC tc@(tree, _) =
   let getSubTC :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
       getSubTC sel cursor = case goDownTCSel sel cursor of
         Just nextTC -> return nextTC
         Nothing ->
           throwError $
             printf
-              "finalizeTC: can not get sub cursor with selector %s, cursor:\n%s"
+              "finalizeWalkTC: can not get sub cursor with selector %s, cursor:\n%s"
               (show sel)
               (showTreeCursor cursor)
+
+      path = pathFromTC tc
    in do
-        dump $ printf "finalizeTC: node (%s) enter:\n%s" (showTreeType $ fst tc) (show $ fst tc)
+        dump $ printf "finalizeWalkTC: node (%s) path: %s enter:\n%s" (showTreeType $ fst tc) (show path) (show $ fst tc)
         u <- case tree of
           TNLeaf _ -> return tc
-          TNRoot _ -> getSubTC StartSelector tc >>= finalizeTC >>= propUpTC
+          TNRoot _ -> getSubTC StartSelector tc >>= finalizeWalkTC >>= propUpTC
           TNScope scope ->
-            let goSub :: (EvalEnv m) => TreeCursor -> String -> m TreeCursor
-                goSub acc k = getSubTC (StringSelector k) acc >>= finalizeTC >>= propUpTC
+            let goSub :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> String -> m TreeCursor
+                goSub acc k = getSubTC (StringSelector k) acc >>= finalizeWalkTC >>= propUpTC
              in foldM goSub tc (Map.keys (trsSubs scope))
-          TNList _ -> throwError "finalizeTC: TNList is not supported"
-          TNUnaryOp _ -> getSubTC UnaryOpSelector tc >>= finalizeTC >>= propUpTC
+          TNList _ -> throwError "finalizeWalkTC: TNList is not supported"
+          TNUnaryOp _ -> getSubTC UnaryOpSelector tc >>= finalizeWalkTC >>= propUpTC
           TNBinaryOp _ ->
             getSubTC (BinOpSelector L) tc
-              >>= finalizeTC
+              >>= finalizeWalkTC
               >>= propUpTC
               >>= getSubTC (BinOpSelector R)
-              >>= finalizeTC
+              >>= finalizeWalkTC
               >>= propUpTC
-          TNLink {} -> do
-            u <- followLinkTC tc
-            dump $ printf "finalizeTC: TNLink:\n%s" (showTreeCursor u)
-            return u
+          TNLink link ->
+            let tarPath = trlTarget link
+             in do
+                  tar <- goTCPath tarPath tc
+                  visited <- gets fsVisited
+                  if Set.member tarPath visited
+                    then case fst tar of
+                      TNLink _ -> throwError $ printf "finalizeWalkTC: link is not resolved: %s" (show tarPath)
+                      _ -> return (fst tar, snd tc)
+                    else do
+                      modify $ \fs -> fs {fsRevDeps = Map.insertWith (++) tarPath [path] (fsRevDeps fs)}
+                      revDeps <- gets fsRevDeps
+                      dump $
+                        printf
+                          "finalizeWalkTC: new rev dep (%s->%s), revDeps: %s"
+                          (show tarPath)
+                          (show path)
+                          (prettyRevDeps revDeps)
+                      return tc
           TNDisj d ->
-            let goSub :: (EvalEnv m) => TreeCursor -> Selector -> m TreeCursor
-                goSub acc sel = getSubTC sel acc >>= finalizeTC >>= propUpTC
+            let goSub :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> Selector -> m TreeCursor
+                goSub acc sel = getSubTC sel acc >>= finalizeWalkTC >>= propUpTC
              in do
                   utc <- foldM goSub tc (map DisjDefaultSelector [0 .. length (trdDefaults d) - 1])
                   foldM goSub utc (map DisjDisjunctSelector [0 .. length (trdDisjuncts d) - 1])
 
-        dump $ printf "finalizeTC: node (%s) leaves:\n%s" (showTreeType $ fst u) (show $ fst u)
-        return u
+        v <- triggerVisitedUpdate u
+        modify $ \fs -> fs {fsVisited = Set.insert path (fsVisited fs)}
+        dump $
+          printf
+            "finalizeWalkTC: node (%s), path: %s leaves:\n%s"
+            (showTreeType $ fst v)
+            (show path)
+            (show $ fst v)
+        return v
+
+-- | Uses the input tree cursor to trigger the update of the visited node that depends on the input node.
+-- Visited nodes can have unresolved links which depend on the unvisited nodes.
+triggerVisitedUpdate :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> m TreeCursor
+triggerVisitedUpdate tc =
+  let path = pathFromTC tc
+      updatePendTC :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> Path -> m TreeCursor
+      updatePendTC cursor pendPath = do
+        dump $ printf "triggerVisitedUpdate: path %s is visited, update pending %s" (show path) (show pendPath)
+        pendTC <- goTCPath pendPath cursor
+        case fst pendTC of
+          TNLink _ ->
+            let newSub = fst cursor
+                newPendTC = (newSub, snd pendTC)
+             in do
+                  u <- triggerVisitedUpdate newPendTC
+                  v <- goTCPath path u
+                  rootTC <- propTopTC v
+                  dump $ printf "triggerVisitedUpdate: root:\n%s" (showTreeCursor rootTC)
+                  return v
+          _ -> throwError $ printf "triggerVisitedUpdate: pending node is not TNLink: %s" (showTreeCursor pendTC)
+   in do
+        dump $ printf "triggerVisitedUpdate: path %s" (show path)
+        revDeps <- gets fsRevDeps
+        case Map.lookup path revDeps of
+          Nothing -> do
+            dump $ printf "triggerVisitedUpdate: path %s not found in revDeps %s" (show path) (prettyRevDeps revDeps)
+            return tc
+          Just pendPaths -> foldM updatePendTC tc pendPaths
 
 -- | Context
 data Context = Context
@@ -875,7 +984,7 @@ data Context = Context
     ctxReverseDeps :: Map.Map Path Path
   }
 
-prettyRevDeps :: Map.Map Path Path -> String
+prettyRevDeps :: Map.Map Path [Path] -> String
 prettyRevDeps m =
   let p = intercalate ", " $ map (\(k, v) -> printf "(%s->%s)" (show k) (show v)) (Map.toList m)
    in "[" ++ p ++ "]"

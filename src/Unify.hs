@@ -5,7 +5,6 @@
 
 module Unify (unify) where
 
-import qualified AST
 import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -89,34 +88,34 @@ unifyDisjunctions t1 t2 = case (t1, t2) of
     -- this is U0 rule, <v1> & <v2> => <v1&v2>
     (TreeDisj [] ds1, TreeDisj [] ds2) -> do
       ds <- mapM (`unifyValues` ds2) ds1
-      disjunctionFromValues [] ds
+      disjFromNodes [] ds
     -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
     (TreeDisj df1 ds1, TreeDisj [] ds2) -> do
       df <- mapM (`unifyValues` ds2) df1
       ds <- mapM (`unifyValues` ds2) ds1
-      disjunctionFromValues df ds
+      disjFromNodes df ds
     -- this is also the U1 rule.
     (TreeDisj [] _, TreeDisj _ _) -> unifyDisjunctions t2 t1
     -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
     (TreeDisj df1 ds1, TreeDisj df2 ds2) -> do
       df <- mapM (`unifyValues` df2) df1
       ds <- mapM (`unifyValues` ds2) ds1
-      disjunctionFromValues df ds
+      disjFromNodes df ds
   -- this is the case for a disjunction unified with a value.
   (TNDisj (TreeDisj [] ds), val) -> do
     ds2 <- unifyValues val ds
-    disjunctionFromValues [] [ds2]
+    disjFromNodes [] [ds2]
   (TNDisj (TreeDisj df ds), val) -> do
     df2 <- unifyValues val df
     ds2 <- unifyValues val ds
-    disjunctionFromValues [df2] [ds2]
+    disjFromNodes [df2] [ds2]
   (_, _) -> throwError $ printf "unifyDisjunctions: impossible unification, %s, %s" (show t1) (show t2)
 
 unifyValues :: (EvalEnv m) => TreeNode -> [TreeNode] -> m [TreeNode]
 unifyValues val = mapM (`unify` val)
 
-disjunctionFromValues :: (MonadError String m) => [[TreeNode]] -> [[TreeNode]] -> m TreeNode
-disjunctionFromValues df ds = f (concatFilter df) (concatFilter ds)
+disjFromNodes :: (MonadError String m) => [[TreeNode]] -> [[TreeNode]] -> m TreeNode
+disjFromNodes df ds = f (concatFilter df) (concatFilter ds)
   where
     concatFilter :: [[TreeNode]] -> [TreeNode]
     concatFilter xs = case filter

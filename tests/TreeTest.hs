@@ -123,16 +123,16 @@ treeCursorStructTest = (runStderrLoggingT $ runExceptT test) >>= \case
         insertTCLeafValue selC (Int 42) >>=
         propTopTC
 
-      let sva = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector])
+      let sva = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector]) tc 
       liftIO $ assertEqual "struct a" holderA sva
       --
-      let svb = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector,selA])
+      let svb = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector,selA]) tc 
       liftIO $ assertEqual "struct b" holderB svb
       --
-      let trc = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector,selA, selB])
+      let trc = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector,selA, selB]) tc 
       liftIO $ assertEqual "struct c" holderC trc
 
-      let vl = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector, selA, selB, selC])
+      let vl = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector, selA, selB, selC]) tc 
       liftIO $ assertEqual "leaf value" (mkTreeLeaf $ Int 42) vl
       return ()
 

@@ -73,6 +73,17 @@ relPath (Path pxs) (Path pys) = Path . reverse <$> go (reverse pxs) (reverse pys
       | otherwise = Nothing
     go _ _ = Nothing
 
+-- | Check if path x is a prefix of path y.
+isPrefix :: Path -> Path -> Bool
+isPrefix x y = let 
+  Path xs = x
+  Path ys = y
+  rxs = reverse xs
+  rys = reverse ys
+  in if length rxs > length rys
+    then False 
+    else take (length rxs) rys == rxs
+
 depsHasCycle :: [(Path, Path)] -> Bool
 depsHasCycle ps = hasCycle edges
   where
