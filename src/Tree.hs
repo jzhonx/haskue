@@ -17,6 +17,8 @@ module Tree
     TNDisj (..),
     TNLeaf (..),
     TNScope (..),
+    TNBinaryOp (..),
+    TNLink (..),
     dump,
     exprIO,
     finalizeTC,
@@ -48,6 +50,7 @@ module Tree
     showTreeCursor,
     isValueNode,
     buildASTExpr,
+    emptyTNScope,
   )
 where
 
@@ -179,6 +182,8 @@ instance Eq TreeNode where
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNLink l1) (TNLink l2) = l1 == l2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
+  (==) (TNUnaryOp o1) (TNUnaryOp o2) = o1 == o2
+  (==) (TNBinaryOp o1) (TNBinaryOp o2) = o1 == o2
   (==) _ _ = False
 
 instance ValueNode TreeNode where
@@ -207,7 +212,7 @@ instance BuildASTExpr TreeNode where
     TNBinaryOp op -> buildASTExpr op
 
 data TNScope = TreeScope
-  { -- trsValue :: StructValue,
+  { 
     trsOrdLabels :: [String],
     trsVars :: Set.Set String,
     trsConcretes :: Set.Set String,
@@ -250,6 +255,9 @@ data TNUnaryOp = TreeUnaryOp
 instance BuildASTExpr TNUnaryOp where
   buildASTExpr = AST.ExprUnaryExpr . truExpr
 
+instance Eq TNUnaryOp where
+  (==) o1 o2 = (truRep o1 == truRep o2) && (truArg o1 == truArg o2)
+
 data TNBinaryOp = TreeBinaryOp
   { trbRep :: String,
     trbExpr :: AST.Expression,
@@ -260,6 +268,9 @@ data TNBinaryOp = TreeBinaryOp
 
 instance BuildASTExpr TNBinaryOp where
   buildASTExpr = trbExpr
+
+instance Eq TNBinaryOp where
+  (==) o1 o2 = (trbRep o1 == trbRep o2) && (trbArgL o1 == trbArgL o2) && (trbArgR o1 == trbArgR o2)
 
 data TNLink = TreeLink
   { trlTarget :: Path,
@@ -326,8 +337,14 @@ tnStrBldr i t = case t of
   TNLeaf leaf -> content (showTreeType t) i (string7 (show $ trfValue leaf)) []
   TNLink l -> content (showTreeType t) i (string7 (show $ trlTarget l)) []
   TNScope s ->
-    let fields = map (\(k, v) -> (string7 k, v)) (Map.toList (trsSubs s))
-     in content (showTreeType t) i mempty fields
+    let 
+      ordLabels = 
+        string7 "ordLabels: "
+          <> char7 '['
+          <> foldl (\b l -> b <> string7 l <> char7 ' ') mempty (trsOrdLabels s)
+          <> char7 ']'
+      fields = map (\(k, v) -> (string7 k, v)) (Map.toList (trsSubs s))
+     in content (showTreeType t) i ordLabels fields
   TNList vs ->
     let fields = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] vs)
      in content (showTreeType t) i mempty fields
@@ -430,7 +447,10 @@ insertSubTree parent sel sub = case sel of
           (showTreeType sub)
           (showTreeType parent)
   StringSelector s -> case parent of
-    TNScope parScope -> return $ TNScope $ parScope {trsSubs = Map.insert s sub (trsSubs parScope)}
+    TNScope parScope -> if Map.member s (trsSubs parScope)
+      then return $ TNScope $ parScope {trsSubs = Map.insert s sub (trsSubs parScope)}
+      else return $ TNScope $ parScope {
+        trsOrdLabels = trsOrdLabels parScope ++ [s], trsSubs = Map.insert s sub (trsSubs parScope)}
     _ ->
       throwError $
         printf
@@ -574,7 +594,7 @@ propUpTC (sub, (sel, parT) : cs) =
           case u of
             TNRoot _ -> throwError "propUpTC: cannot propagate to root"
             TNList {} -> throwError "unimplemented"
-            _ -> insertParScope parT s u
+            _ -> updateParScope parT s u
         ListSelector i -> case parT of
           TNList vs -> newSubM >>= \u -> return (TNList $ take i vs ++ [u] ++ drop (i + 1) vs, cs)
           _ -> throwError insertErrMsg
@@ -595,11 +615,11 @@ propUpTC (sub, (sel, parT) : cs) =
           TNDisj d -> newSubM >>= \u -> return (TNDisj $ d {trdDisjuncts = take i (trdDisjuncts d) ++ [u] ++ drop (i + 1) (trdDisjuncts d)}, cs)
           _ -> throwError insertErrMsg
   where
-    insertParScope :: (MonadError String m) => TreeNode -> String -> TreeNode -> m TreeCursor
-    insertParScope par label newSub = case par of
-      TNScope parScope ->
-        let newParNode = insertScopeNode parScope label newSub
-         in return (TNScope newParNode, cs)
+    updateParScope :: (MonadError String m) => TreeNode -> String -> TreeNode -> m TreeCursor
+    updateParScope par label newSub = case par of
+      TNScope parScope -> case newSub of
+        TNLeaf (TreeLeaf (Bottom _)) -> return (newSub, cs)
+        _ -> let newParNode = insertScopeNode parScope label newSub in return (TNScope newParNode, cs)
       _ -> throwError insertErrMsg
 
     -- TODO: insertParList
@@ -730,7 +750,8 @@ insertTCBinaryOp sel rep e f tc =
       sub = newSubGen (mkTreeLeaf Stub) (mkTreeLeaf Stub) work
    in insertTCSub sel sub tc
 
-insertTCDisj :: (EvalEnv m) => Selector -> AST.Expression -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeCursor -> m TreeCursor
+insertTCDisj :: 
+  (EvalEnv m) => Selector -> AST.Expression -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeCursor -> m TreeCursor
 insertTCDisj sel e f tc =
   let newSubGen :: TreeNode -> TreeNode -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeNode
       newSubGen n1 n2 op =

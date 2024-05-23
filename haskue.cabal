@@ -73,8 +73,8 @@ Test-Suite haskue-unit-test
   hs-source-dirs:   tests
   main-is: Main.hs
   other-modules:
-    -- Spec,
-    ValueTest,
+    SpecTest,
+    TreeTest,
     -- TransformTest,
     -- EvalTest,
   build-depends:

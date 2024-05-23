@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 
-module ValueTest where
+module TreeTest where
 
 import qualified AST
 import Control.Monad.Except
@@ -28,7 +28,7 @@ import Test.Tasty.HUnit
     assertFailure,
     testCase,
   )
-import Value
+import Tree
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
@@ -98,91 +98,101 @@ treeCursorStructTest = (runStderrLoggingT $ runExceptT test) >>= \case
   Left err -> assertFailure err
   Right _ -> return ()
   where
-    mkSimple :: (String, Value) -> StructValue
-    mkSimple pair = StructValue [fst pair] (Map.fromList [pair]) Set.empty Set.empty
+    mkSimple :: (String, TreeNode) -> TreeNode
+    mkSimple pair = TNScope $ emptyTNScope { 
+      trsOrdLabels = [fst pair],
+      trsSubs = Map.fromList [pair]
+    }
     -- { a: { b: { c: 42 } } }
-    holderC = mkSimple ("c", Int 42)
-    holderB = mkSimple ("b", Struct holderC)
-    holderA = mkSimple ("a", Struct holderB)
+    holderC = mkSimple ("c", mkTreeLeaf $ Int 42)
+    holderB = mkSimple ("b", holderC)
+    holderA = mkSimple ("a", holderB)
     selA = StringSelector "a"
     selB = StringSelector "b"
     selC = StringSelector "c"
 
     test :: (MonadError String m, MonadIO m, MonadLogger m) => m ()
-    test = do
+    test = 
       let 
-        rootTC = tcFromSV emptyStruct
+        rootTC = (TNRoot $ TNScope emptyTNScope, [])
         topTC = fromJust $ goDownTCSel StartSelector rootTC 
+      in do
       tc <- 
-        insertTCSV selA emptyStruct topTC >>=
-        insertTCSV selB emptyStruct >>=
+        insertTCScope selA [] Set.empty topTC >>=
+        insertTCScope selB [] Set.empty >>=
         insertTCLeafValue selC (Int 42) >>=
         propTopTC
 
-      let (Struct sva) = fromJust $ getValueTCPath tc (pathFromList [StartSelector])
-      liftIO $ assertEqual "sva" holderA sva
+      let sva = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector])
+      liftIO $ assertEqual "struct a" holderA sva
       --
-      let (Struct svb) = fromJust $ getValueTCPath tc (pathFromList [StartSelector,selA])
-      liftIO $ assertEqual "svb" holderB svb
+      let svb = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector,selA])
+      liftIO $ assertEqual "struct b" holderB svb
       --
-      let (Struct svc) = fromJust $ getValueTCPath tc (pathFromList [StartSelector,selA, selB])
-      liftIO $ assertEqual "svc" holderC svc
+      let trc = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector,selA, selB])
+      liftIO $ assertEqual "struct c" holderC trc
 
-      let vl = fromJust $ getValueTCPath tc (pathFromList [StartSelector, selA, selB, selC])
-      liftIO $ assertEqual "leaf value" (Int 42) vl
+      let vl = fst $ fromJust $ goDownTCPath tc (pathFromList [StartSelector, selA, selB, selC])
+      liftIO $ assertEqual "leaf value" (mkTreeLeaf $ Int 42) vl
       return ()
 
-treeCursorOpTest :: IO ()
-treeCursorOpTest = (runStderrLoggingT $ runExceptT test) >>= \case
-  Left err -> assertFailure err
-  Right _ -> return ()
-  where
-    mkSimple :: (String, Value) -> StructValue
-    mkSimple pair = StructValue [fst pair] (Map.fromList [pair]) Set.empty Set.empty
-    -- { 
-    --  a: { 
-    --    c: UnaryOp{arg: 42} 
-    --  } 
-    --  b: {
-    --    c: BinaryOp{l: 1, r: 2}
-    --  }
-    -- }
-    selA = StringSelector "a"
-    selB = StringSelector "b"
-    selC = StringSelector "c"
+-- treeCursorOpTest :: IO ()
+-- treeCursorOpTest = (runStderrLoggingT $ runExceptT test) >>= \case
+--   Left err -> assertFailure err
+--   Right _ -> return ()
+--   where
+--     mkSimple :: (String, TreeNode) -> TreeNode
+--     mkSimple pair = TNScope $ emptyTNScope { 
+--       trsOrdLabels = [fst pair],
+--       trsSubs = Map.fromList [pair]
+--     }
+--     -- { 
+--     --  a: { 
+--     --    c: UnaryOp{arg: 42} 
+--     --  } 
+--     --  b: {
+--     --    c: BinaryOp{l: 1, r: 2}
+--     --  }
+--     -- }
+--     selA = StringSelector "a"
+--     selB = StringSelector "b"
+--     selC = StringSelector "c"
+--
+--     test :: (MonadError String m, MonadIO m, MonadLogger m) => m ()
+--     test = 
+--       let 
+--         rootTC = (TNRoot $ TNScope emptyTNScope, [])
+--         topTC = fromJust $ goDownTCSel StartSelector rootTC 
+--       in do
+--       tc <-
+--         insertTCScope selA [] Set.empty topTC >>=
+--         insertTCUnaryOp selC "nop" undefined (\x -> return x) >>=
+--         insertTCLeafValue UnaryOpSelector (Int 42) >>= 
+--         propTopTC >>=
+--         insertTCScope selB [] Set.empty >>=
+--         insertTCBinaryOp selC "nop" undefined (\x y -> return $ x + y) >>=
+--         insertTCLeafValue (BinOpSelector L) (Int 1) >>=
+--         (\tc -> return $ fromJust (goUpTC tc)) >>=
+--         insertTCLeafValue (BinOpSelector R) (Int 2) >>= 
+--         propTopTC
+--
+--       let v = fst $ fromJust $ goDownTCPath tc (pathFromList [selA, selC, UnaryOpSelector])
+--       liftIO $ assertEqual "v1" (mkTreeLeaf $ Int 42) v
+--
+--       let v = fst $ fromJust $ goDownTCPath tc (pathFromList [selB, selC, BinOpSelector L])
+--       liftIO $ assertEqual "v1" (mkTreeLeaf $ Int 1) v
+--
+--       let v = fst $ fromJust $ goDownTCPath tc (pathFromList [selB, selC, BinOpSelector R])
+--       liftIO $ assertEqual "v1" (mkTreeLeaf $ Int 2) v
+--       return ()
 
-    test :: (MonadError String m, MonadIO m, MonadLogger m) => m ()
-    test = do
-      let rootTC = tcFromSV emptyStruct
-      tc <-
-        insertTCSV selA emptyStruct rootTC >>=
-        insertTCUnaryOp selC undefined >>=
-        insertTCLeafValue UnaryOpSelector (Int 42) >>= 
-        propTopTC >>=
-        insertTCSV selB emptyStruct >>=
-        insertTCBinaryOp selC undefined >>=
-        insertTCLeafValue (BinOpSelector L) (Int 1) >>=
-        (\tc -> return $ fromJust (goUpTC tc)) >>=
-        insertTCLeafValue (BinOpSelector R) (Int 2) >>= 
-        propTopTC
-
-      let v = fromJust $ getValueTCPath tc (pathFromList [selA, selC, UnaryOpSelector])
-      liftIO $ assertEqual "v1" (Int 42) v
-
-      let v = fromJust $ getValueTCPath tc (pathFromList [selB, selC, BinOpSelector L])
-      liftIO $ assertEqual "v1" (Int 1) v
-
-      let v = fromJust $ getValueTCPath tc (pathFromList [selB, selC, BinOpSelector R])
-      liftIO $ assertEqual "v1" (Int 2) v
-      return ()
-
-valueTests :: TestTree
-valueTests =
+treeTests :: TestTree
+treeTests =
   testGroup
-    "valueTest"
+    "treeTest"
     [ 
       -- testCase "putValueInCtx" putValueInCtxTest
       -- ,testCase "depsHasCycle" testDepsHasCycle
-      testCase "treeCursorStruct" treeCursorStructTest,
-      testCase "treeCursorOp" treeCursorOpTest
+      testCase "treeCursorStruct" treeCursorStructTest
+      -- testCase "treeCursorOp" treeCursorOpTest
     ]

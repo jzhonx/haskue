@@ -1,10 +1,10 @@
 module Main where
 
 -- import EvalTest (evalTests)
--- import Spec (specTests)
+import SpecTest (specTests)
 import Test.Tasty
 -- import TransformTest (transformTests)
-import ValueTest (valueTests)
+import TreeTest (treeTests)
 
 main = defaultMain tests
 
@@ -13,8 +13,8 @@ tests =
   testGroup
     "Tests"
     [ 
-      -- specTests,
+      specTests,
       -- evalTests,
       -- transformTests
-      valueTests
+      treeTests
     ]

@@ -44,8 +44,10 @@ unifyStructs s1 s2 = do
     Left _ -> throwError "unifyVertices: impossible"
     Right nodes ->
       do
-        let newEdges = Map.unions [disjointVertices1, disjointVertices2, Map.fromList nodes]
-        return $ fieldsToScope newEdges
+        let 
+          ordLabels = trsOrdLabels s1 ++ filter (\x -> notElem x labels1Set ) (trsOrdLabels s2)
+          newEdges = Map.unions [disjointVertices1, disjointVertices2, Map.fromList nodes]
+        return $ fieldsToScope ordLabels newEdges
   where
     (fields1, fields2) = (trsSubs s1, trsSubs s2)
     labels1Set = Map.keysSet fields1
@@ -71,11 +73,11 @@ unifyStructs s1 s2 = do
             interLabels
         )
 
-    fieldsToScope :: Map.Map String TreeNode -> TreeNode
-    fieldsToScope subs =
+    fieldsToScope :: [String] -> Map.Map String TreeNode -> TreeNode
+    fieldsToScope labels subs =
       TNScope $
         TreeScope
-          { trsOrdLabels = [],
+          { trsOrdLabels = labels,
             trsVars = Set.empty,
             trsConcretes = Set.empty,
             trsSubs = subs
