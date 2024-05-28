@@ -296,12 +296,11 @@ testSelector1 = do
           [fieldEDefault]
           [newSimpleStruct ["a"] [("a", newSimpleDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
     pathC = Path [StringSelector "c"]
-    pendValC =
-      TNUnaryOp $
-        TreeUnaryOp
-          { truRep = "\"dot z\"",
-            truArg = structT
-          }
+    pendValC = TNLink $ TreeLink {
+      trlTarget = pathFromList [StartSelector, StringSelector "T", StringSelector "z"],
+      trlFinal = Nothing,
+      trlExpr = Nothing
+    }
     pathF = Path [StringSelector "f"]
     disjF = newSimpleDisj [Int 4] [Int 3, Int 4]
     expStruct =
