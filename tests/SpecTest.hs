@@ -337,40 +337,25 @@ testUnify1 = do
                 ]
           )
 
--- testCycles1 :: IO ()
--- testCycles1 = do
---   s <- readFile "tests/spec/cycles1.cue"
---   val <- startEval s
---   case val of
---     Left err -> assertFailure err
---     Right val' ->
---       val'
---         @?= structTop
---   return ()
---   where
---     pendValGen path =
---       Pending $
---         PendingValue
---           path
---           []
---           []
---           undefined
---           Top
---           (AST.litCons AST.BottomLit)
---     structTop =
---       newStruct
---         ["x", "b", "c", "d"]
---         ( Map.fromList
---             [ ("x", Top),
---               ("b", pendValGen (Path [StringSelector "b"])),
---               ("c", pendValGen (Path [StringSelector "c"])),
---               ("d", pendValGen (Path [StringSelector "d"]))
---             ]
---         )
---         Set.empty
---
---
---
+testCycles1 :: IO ()
+testCycles1 = do
+  s <- readFile "tests/spec/cycles1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["x", "b", "c", "d"]
+          ( Map.fromList $
+              map
+                (\(k, v) -> (k, mkTreeLeaf v))
+                [ ("x", Top),
+                  ("b", Top),
+                  ("c", Top),
+                  ("d", Top)
+                ]
+          )
 
 specTests :: TestTree
 specTests =
@@ -387,6 +372,6 @@ specTests =
       testCase "vars2" testVars2,
       testCase "vars3" testVars3,
       testCase "selector1" testSelector1,
-      testCase "unify1" testUnify1
-      -- testCase "cycles1" testCycles1
+      testCase "unify1" testUnify1,
+      testCase "cycles1" testCycles1
     ]
