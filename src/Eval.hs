@@ -21,8 +21,8 @@ import qualified Data.Set as Set
 import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
-import Unify (unify)
 import Tree
+import Unify (unify)
 
 initState :: Context
 initState = Context (TNRoot $ mkTreeLeaf Top, []) Map.empty
@@ -175,7 +175,7 @@ dispUnaryFunc :: (EvalEnv m) => UnaryOp -> TreeNode -> m TreeNode
 dispUnaryFunc = go
   where
     go Plus (TNLeaf (TreeLeaf (Int i))) = return $ mkTreeLeaf $ Int i
-    go Minus (TNLeaf (TreeLeaf (Int i))) = return $ mkTreeLeaf$ Int (-i)
+    go Minus (TNLeaf (TreeLeaf (Int i))) = return $ mkTreeLeaf $ Int (-i)
     go Not (TNLeaf (TreeLeaf (Bool b))) = return $ mkTreeLeaf $ Bool (not b)
     go op t = throwError $ printf "%s cannot be used for value %s" (show op) (show t)
 
@@ -187,7 +187,7 @@ evalBinary AST.Disjunction e1 e2 path = evalDisj e1 e2 path
 evalBinary op e1 e2 path =
   let parSel = fromJust $ lastSel path
    in do
-        pushNewNode $ insertTCBinaryOp parSel (show op) (ExprBinaryOp op e1 e2) (dispBinFunc op)
+        pushNewNode $ insertTCBinaryOp parSel (show op) (ExprBinaryOp op e1 e2) (dispBinFunc op) (dispBinCond op)
         v1 <- doEval e1 $ appendSel (BinOpSelector L) path
         v2 <- doEval e2 $ appendSel (BinOpSelector R) path
         dump $ printf "eval binary (%s %s %s)" (show op) (show v1) (show v2)
@@ -198,19 +198,30 @@ dispBinFunc op = case op of
   AST.Unify -> unify
   _ -> calcNum op
 
-calcNum :: (EvalEnv m) => BinaryOp -> TreeNode -> TreeNode -> m TreeNode 
-calcNum op t1 t2 = case (t1, t2) of 
-  (TNLeaf l1, TNLeaf l2) -> let
-    v1 = trfValue l1
-    v2 = trfValue l2
-    in do
-      dump $ printf "exec (%s %s %s)" (show op) (show v1) (show v2)
-      case (v1, v2) of
-        (Int i1, Int i2) -> do
-          f <- numOp op
-          return $ mkTreeLeaf $ Int (f i1 i2)
-        _ ->
-          throwError $ printf "values %s and %s cannot be used for %s" (show v1) (show v2) (show op)
+dispBinCond :: BinaryOp -> TreeNode -> TreeNode -> Bool
+dispBinCond op = case op of
+  AST.Unify -> \x y -> isValueNode x && isValueNode y
+  _ -> \x y -> isArithOperand x && isArithOperand y
+  where
+    isArithOperand :: TreeNode -> Bool
+    isArithOperand (TNLeaf leaf) = case trfValue leaf of
+      Int _ -> True
+      _ -> False
+    isArithOperand _ = False
+
+calcNum :: (EvalEnv m) => BinaryOp -> TreeNode -> TreeNode -> m TreeNode
+calcNum op t1 t2 = case (t1, t2) of
+  (TNLeaf l1, TNLeaf l2) ->
+    let v1 = trfValue l1
+        v2 = trfValue l2
+     in do
+          dump $ printf "exec (%s %s %s)" (show op) (show v1) (show v2)
+          case (v1, v2) of
+            (Int i1, Int i2) -> do
+              f <- numOp op
+              return $ mkTreeLeaf $ Int (f i1 i2)
+            _ ->
+              throwError $ printf "values %s and %s cannot be used for %s" (show v1) (show v2) (show op)
   _ -> throwError $ printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
 
 numOp :: (EvalEnv m, Integral a) => BinaryOp -> m (a -> a -> a)
@@ -269,7 +280,7 @@ evalDisj e1 e2 path =
     -- evalFullDisj is used to evaluate a disjunction whose both sides are regular.
     -- Rule: D1, D2
     evalRegularDisj :: (EvalEnv m) => TreeNode -> TreeNode -> m TreeNode
-    evalRegularDisj (TNDisj dj1) (TNDisj dj2) = 
+    evalRegularDisj (TNDisj dj1) (TNDisj dj2) =
       newDisj (trdDefaults dj1) (trdDisjuncts dj1) (trdDefaults dj2) (trdDisjuncts dj2)
     evalRegularDisj (TNDisj dj) y = newDisj (trdDefaults dj) (trdDisjuncts dj) [] [y]
     evalRegularDisj x (TNDisj dj) = newDisj [] [x] (trdDefaults dj) (trdDisjuncts dj)

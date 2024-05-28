@@ -357,6 +357,28 @@ testCycles1 = do
                 ]
           )
 
+testIncomplete :: IO ()
+testIncomplete = do
+  s <- readFile "tests/spec/incomplete.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["a", "b"]
+          ( Map.fromList $
+                [ ("a", mkTreeLeaf Top),
+                  ("b", TNBinaryOp $ TreeBinaryOp {
+                    trbRep = show AST.Minus,
+                    trbExpr = undefined,
+                    trbOp = undefined,
+                    trbArgL = mkTreeLeaf $ Top,
+                    trbArgR = mkTreeLeaf $ Int 1
+                  })
+                ]
+          )
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -373,5 +395,6 @@ specTests =
       testCase "vars3" testVars3,
       testCase "selector1" testSelector1,
       testCase "unify1" testUnify1,
-      testCase "cycles1" testCycles1
+      testCase "cycles1" testCycles1,
+      testCase "incomplete" testIncomplete
     ]

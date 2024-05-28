@@ -316,19 +316,6 @@ mkTreeDisj ds js = TNDisj $ TreeDisj {trdDefaults = ds, trdDisjuncts = js}
 mkTreeLeaf :: Value -> TreeNode
 mkTreeLeaf v = TNLeaf $ TreeLeaf {trfValue = v}
 
--- valueOfTreeNode :: TreeNode -> Maybe Value
--- valueOfTreeNode t = case t of
---   TNRoot sub -> case sub of
---     TNRoot _ -> Nothing
---     _ -> valueOfTreeNode sub
---   TNScope s -> Just (Struct (trsValue s))
---   TNList _ -> Nothing
---   TNUnaryOp _ -> Nothing
---   TNBinaryOp _ -> Nothing
---   TNLink link -> trlFinal link
---   TNLeaf leaf -> Just (trfValue leaf)
---   TNDisj d -> Just (Disjunction (trdValue d))
-
 tnStrBldr :: Int -> TreeNode -> Builder
 tnStrBldr i t = case t of
   TNRoot sub -> content (showTreeType t) i mempty [(string7 $ show StartSelector, sub)]
@@ -423,16 +410,6 @@ mkTreeScope labels =
 mkTreeList :: [Value] -> TreeNode
 mkTreeList vs = TNList $ map mkTreeLeaf vs
 
--- -- | Update the tree node with the given value.
--- updateTreeNode :: (MonadError String m) => TreeNode -> Value -> m TreeNode
--- updateTreeNode t v = case v of
---   Struct sv -> case t of
---     TNScope s -> return $ TNScope $ TreeScope {trsValue = sv, trsSubs = trsSubs s}
---     _ -> throwError $ printf "updateTreeNode: cannot set non-struct value to non-TreeScope, value: %s" (show v)
---   _ -> case t of
---     TNLeaf _ -> return $ mkTreeLeaf v
---     _ -> throwError $ printf "updateTreeNode: cannot set non-struct value to non-TreeLeaf, value: %s" (show v)
-
 -- | Insert a sub-tree to the tree node with the given selector.
 -- Returns the updated tree node that contains the newly inserted sub-tree.
 insertSubTree :: (MonadError String m) => TreeNode -> Selector -> TreeNode -> m TreeNode
@@ -509,11 +486,6 @@ goTreeSel t sel = case sel of
     TNDisj d -> trdDisjuncts d !? i
     _ -> Nothing
 
--- updateTreePathValue :: (MonadError String m) => TreeNode -> Path -> Value -> m TreeNode
--- updateTreePathValue t path v = case goTreePath t path of
---   Just node -> updateTreeNode node v
---   Nothing -> throwError $ printf "updateTreePathValue: path not found: %s" (show path)
-
 -- | TreeCrumb is a pair of a name and an environment. The name is the name of the field in the parent environment.
 type TreeCrumb = (Selector, TreeNode)
 
@@ -569,11 +541,6 @@ goDownTCPathErr :: (MonadError String m) => Path -> String -> TreeCursor -> m Tr
 goDownTCPathErr p msg tc = case goDownTCPath p tc of
   Just c -> return c
   Nothing -> throwError msg
-
--- TNDisj d ->
---   if length (trdDefaults d) == 1
---     then goTreeSel (trdDefaults d !! 0) sel
---     else Nothing
 
 -- | Go down the TreeCursor with the given selector and return the new cursor.
 -- It handles the case when the current node is a disjunction node.
@@ -700,38 +667,6 @@ searchTCVar var tc = case fst tc of
     Nothing -> goUpTC tc >>= searchTCVar var
   _ -> goUpTC tc >>= searchTCVar var
 
--- getValueTCPath :: TreeCursor -> Path -> Maybe Value
--- getValueTCPath tc p = do
---   targetTC <- goDownTCPath tc p
---   valueOfTreeNode $ fst targetTC
-
--- -- | Put the value to the tree cursor at the given path.
--- -- Returns the udpated root tree cursor.
--- putValueTCPath :: (EvalEnv m) => TreeCursor -> Path -> Value -> m TreeCursor
--- putValueTCPath tc p v = do
---   rootTC <- propTopTC tc
---   case goDownTCPath rootTC p of
---     Nothing -> throwError $ printf "putValueTCPath: path not found: %s" (show p)
---     Just ttc -> do
---       updated <- updateTreeNode (fst ttc) v
---       propTopTC (updated, snd ttc)
-
--- -- | Create a new tree cursor from a struct value.
--- -- It is used to create a new tree cursor from scratch.
--- kcFromSV :: StructValue -> TreeCursor
--- tcFromSV sv = (TNRoot $ mkTreeScope sv, [])
-
--- -- | Resolve the link in the tree cursor and returns the updated tree cursor.
--- resolveLinkTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
--- resolveLinkTC tc =
---   let tcPath = pathFromTC tc
---    in do
---         tar <- followLinkTC Set.empty tc
---         r <- propTopTC tar
---         case goDownTCPath r tcPath of
---           Nothing -> throwError $ printf "followLinkTC: path not found: %s" (show tcPath)
---           Just ttc -> return (fst tar, snd ttc)
---
 followLinkTC :: (EvalEnv m) => TreeCursor -> m (Maybe TreeCursor)
 followLinkTC = go Set.empty
   where
@@ -796,8 +731,11 @@ insertTCUnaryOp sel rep ue f tc =
 
 -- | Insert a binary operator that works for scalar values.
 insertTCBinaryOp ::
-  (EvalEnv m) => Selector -> String -> AST.Expression -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeCursor -> m TreeCursor
-insertTCBinaryOp sel rep e f tc =
+  (EvalEnv m) => 
+    Selector -> String -> AST.Expression -> 
+    (TreeNode -> TreeNode -> EvalMonad TreeNode) ->
+    (TreeNode -> TreeNode -> Bool) -> TreeCursor -> m TreeCursor
+insertTCBinaryOp sel rep e f cond tc =
   let newSubGen :: TreeNode -> TreeNode -> (TreeNode -> TreeNode -> EvalMonad TreeNode) -> TreeNode
       newSubGen n1 n2 op =
         TNBinaryOp $
@@ -809,9 +747,9 @@ insertTCBinaryOp sel rep e f tc =
               trbExpr = e
             }
       work :: (EvalEnv m) => TreeNode -> TreeNode -> m TreeNode
-      work n1 n2 = case map isValueNode [n1, n2] of
-        [True, True] -> f n1 n2
-        _ -> return $ newSubGen n1 n2 work
+      work n1 n2 = if cond n1 n2
+        then f n1 n2
+        else return $ newSubGen n1 n2 work
       sub = newSubGen (mkTreeLeaf Stub) (mkTreeLeaf Stub) work
    in insertTCSub sel sub tc
 
