@@ -28,6 +28,8 @@ import Test.Tasty.HUnit
     testCase,
   )
 import Tree
+import Unify (unify)
+import Control.Monad.Reader ( MonadReader, ReaderT(runReaderT))
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
@@ -65,7 +67,7 @@ bottomExpr = AST.litCons AST.BottomLit
 
 treeCursorStructTest :: IO ()
 treeCursorStructTest =
-  (runStderrLoggingT $ runExceptT test) >>= \case
+  (runReaderT (runStderrLoggingT $ runExceptT test) Config {cfUnify = unify}) >>= \case
     Left err -> assertFailure err
     Right _ -> return ()
   where
@@ -84,14 +86,14 @@ treeCursorStructTest =
     selB = StringSelector "b"
     selC = StringSelector "c"
 
-    test :: (MonadError String m, MonadIO m, MonadLogger m) => m ()
+    test :: (MonadError String m, MonadIO m, MonadLogger m, MonadReader Config m) => m ()
     test =
       let rootTC = (TNRoot $ TNScope emptyTNScope, [])
-          topTC = fromJust $ goDownTCSel StartSelector rootTC
        in do
             tc <-
-              insertTCScope selA [] Set.empty topTC
-                >>= insertTCScope selB [] Set.empty
+              insertTCScope StartSelector ["a"] Set.empty rootTC
+                >>= insertTCScope selA ["b"] Set.empty
+                >>= insertTCScope selB ["c"] Set.empty
                 >>= insertTCLeafValue selC (Int 42)
                 >>= propTopTC
 

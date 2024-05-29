@@ -23,12 +23,13 @@ import Path
 import Text.Printf (printf)
 import Tree
 import Unify (unify)
+import Control.Monad.Reader (ReaderT(runReaderT))
 
 initState :: Context
 initState = Context (TNRoot $ mkTreeLeaf Top, []) Map.empty
 
 runIO :: (MonadIO m, MonadError String m) => String -> m TreeCursor
-runIO s = runStderrLoggingT $ runStr s
+runIO s = runStderrLoggingT $ runReaderT (runStr s) Config {cfUnify = unify}
 
 runStr :: (EvalEnv m) => String -> m TreeCursor
 runStr s = do
@@ -59,7 +60,7 @@ evalLiteral lit path =
    in do
         v <- f lit
         pushNewNode $ insertTCLeafValue parSel v
-        leaveCurNode
+        leaveCurNode parSel "evalLiteral"
   where
     f :: (Runtime m) => Literal -> m Value
     f (StringLit (SimpleStringLit s)) = return $ String s
@@ -74,6 +75,13 @@ evalLiteral lit path =
 evalStructLit :: (Runtime m) => [(Label, Expression)] -> Path -> m ()
 evalStructLit lit path =
   let labels = map evalLabel lit
+      dedupLabels =
+        snd $
+          foldr
+            ( \l (s, acc) -> if l `Set.member` s then (s, acc) else (Set.insert l s, l : acc)
+            )
+            (Set.empty, [])
+            labels
 
       fetchVarLabel :: Label -> Maybe String
       fetchVarLabel (Label (LabelName (LabelID var))) = Just var
@@ -87,9 +95,9 @@ evalStructLit lit path =
    in do
         dump $ printf "new struct, path: %s" (show path)
         -- create a new block since we are entering a new struct.
-        pushNewNode $ insertTCScope parSel labels idSet
+        pushNewNode $ insertTCScope parSel dedupLabels idSet
         mapM_ evalField (zipWith (\name (_, e) -> (name, e)) labels lit)
-        leaveCurNode
+        leaveCurNode parSel "evalStructLit"
         dump $ printf "new struct, path: %s, evaluated" (show path)
   where
     evalLabel (Label (LabelName ln), _) = case ln of
@@ -137,7 +145,7 @@ lookupVar var path =
           Nothing -> throwError $ printf "variable %s is not found, path: %s" var (show path)
           Just tarTC -> do
             pushNewNode $ insertTCLink parSel (pathFromTC tarTC)
-            leaveCurNode
+            leaveCurNode parSel "lookupVar"
 
 -- | Evaluates the selector.
 -- Parameters:
@@ -157,7 +165,7 @@ evalSelector pe astSel path =
         AST.StringSelector str -> str
    in do
         pushNewNode $ insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe)
-        leaveCurNode
+        leaveCurNode parSel "evalSelector"
 
 -- | Evaluates the unary operator.
 -- unary operator should only be applied to atoms.
@@ -169,7 +177,7 @@ evalUnaryOp op e path =
         pushNewNode $ insertTCUnaryOp parSel (show op) (UnaryExprUnaryOp op e) (dispUnaryFunc op)
         _ <- evalUnaryExpr e nextPath
         dump $ printf "leaving evalUnaryOp"
-        leaveCurNode
+        leaveCurNode parSel "evalUnaryOp"
 
 dispUnaryFunc :: (EvalEnv m) => UnaryOp -> TreeNode -> m TreeNode
 dispUnaryFunc = go
@@ -188,10 +196,9 @@ evalBinary op e1 e2 path =
   let parSel = fromJust $ lastSel path
    in do
         pushNewNode $ insertTCBinaryOp parSel (show op) (ExprBinaryOp op e1 e2) (dispBinFunc op) (dispBinCond op)
-        v1 <- doEval e1 $ appendSel (BinOpSelector L) path
-        v2 <- doEval e2 $ appendSel (BinOpSelector R) path
-        dump $ printf "eval binary (%s %s %s)" (show op) (show v1) (show v2)
-        leaveCurNode
+        doEval e1 $ appendSel (BinOpSelector L) path
+        doEval e2 $ appendSel (BinOpSelector R) path
+        leaveCurNode parSel "evalBinary"
 
 dispBinFunc :: (EvalEnv m) => BinaryOp -> TreeNode -> TreeNode -> m TreeNode
 dispBinFunc op = case op of
@@ -251,7 +258,7 @@ evalDisj e1 e2 path =
           (_, _) -> do
             _ <- doEval e1 $ appendSel (BinOpSelector L) path
             doEval e2 $ appendSel (BinOpSelector R) path
-        leaveCurNode
+        leaveCurNode parSel "evalDisj"
   where
     -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
     evalDisjPair :: (EvalEnv m) => DisjItem -> DisjItem -> m TreeNode
