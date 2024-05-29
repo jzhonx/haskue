@@ -95,8 +95,6 @@ data Value
   | Bool Bool
   | Null
   | Bottom String
-  | -- Stub is used as placeholder inside a struct. It is like Top. The actual value will be guaranteed to be evaluated.
-    Stub
 
 type EvalEnv m = (MonadError String m, MonadLogger m, MonadReader Config m)
 
@@ -125,7 +123,6 @@ instance Show Value where
   show Top = "_"
   show Null = "null"
   show (Bottom msg) = "_|_: " ++ msg
-  show Stub = "S_" where
 
 instance Eq Value where
   (==) (String s1) (String s2) = s1 == s2
@@ -134,7 +131,6 @@ instance Eq Value where
   (==) (Bottom _) (Bottom _) = True
   (==) Top Top = True
   (==) Null Null = True
-  (==) Stub Stub = True
   (==) _ _ = False
 
 exprIO :: (MonadIO m, MonadError String m) => Value -> m AST.Expression
@@ -148,7 +144,6 @@ vToE (Int i) = return $ AST.litCons (AST.IntLit i)
 vToE (Bool b) = return $ AST.litCons (AST.BoolLit b)
 vToE Null = return $ AST.litCons AST.NullLit
 vToE (Bottom _) = return $ AST.litCons AST.BottomLit
-vToE Stub = throwError "vToE: stub value"
 
 class ValueNode a where
   isValueNode :: a -> Bool
@@ -171,6 +166,7 @@ data TreeNode
     TNLink TNLink
   | -- | TreeLeaf contains an atom value. (could be scalar in the future)
     TNLeaf TNLeaf
+  | TNStub
 
 instance Eq TreeNode where
   (==) (TNLeaf l1) (TNLeaf l2) = l1 == l2
@@ -207,6 +203,7 @@ instance BuildASTExpr TreeNode where
     TNLink l -> buildASTExpr l
     TNUnaryOp op -> buildASTExpr op
     TNBinaryOp op -> buildASTExpr op
+    TNStub -> AST.litCons AST.BottomLit
 
 data TNScope = TreeScope
   { trsOrdLabels :: [String],
@@ -322,6 +319,7 @@ tnStrBldr :: Int -> TreeNode -> Builder
 tnStrBldr i t = case t of
   TNRoot sub -> content (showTreeType t) i mempty [(string7 $ show StartSelector, sub)]
   TNLeaf leaf -> content (showTreeType t) i (string7 (show $ trfValue leaf)) []
+  TNStub -> content (showTreeType t) i mempty []
   TNLink l ->
     let linkMeta = string7 (show $ trlTarget l) <> char7 ' ' <> string7 "Final:" <> string7 (show $ isJust $ trlFinal l)
      in content (showTreeType t) i (linkMeta) []
@@ -386,6 +384,7 @@ showTreeType t = case t of
   TNBinaryOp {} -> "BinaryOp"
   TNLink {} -> "Link"
   TNDisj {} -> "Disj"
+  TNStub -> "Stub"
 
 instance Show TreeNode where
   show tree = showTreeIdent tree 0
@@ -398,16 +397,6 @@ emptyTNScope =
       trsConcretes = Set.empty,
       trsSubs = Map.empty
     }
-
--- | The StructValue should only have one level of children.
-mkTreeScope :: [String] -> TreeNode
-mkTreeScope labels =
-  let subs = Map.fromList $ map (\k -> (k, mkTreeLeaf Stub)) labels
-   in TNScope $
-        emptyTNScope
-          { trsOrdLabels = labels,
-            trsSubs = subs
-          }
 
 mkTreeList :: [Value] -> TreeNode
 mkTreeList vs = TNList $ map mkTreeLeaf vs
@@ -714,7 +703,7 @@ insertTCSub sel sub tc@(par, cs) =
           )
           $ do
             Map.lookup s (trsSubs parScope) >>= \case
-              TNLeaf (TreeLeaf Stub) -> Nothing
+              TNStub -> Nothing
               snode -> Just snode
 
 -- | Update the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
@@ -741,7 +730,7 @@ insertTCScope sel labels vars tc =
             { trsOrdLabels = labels,
               trsVars = vars,
               trsConcretes = Set.empty,
-              trsSubs = Map.fromList [(l, mkTreeLeaf Stub) | l <- labels]
+              trsSubs = Map.fromList [(l, TNStub) | l <- labels]
             }
    in insertTCSub sel sub tc
 
@@ -766,7 +755,7 @@ insertTCUnaryOp sel rep ue f tc =
         -- Notice it only works for value nodes.
         True -> f n
         _ -> return $ newSubGen n work
-      sub = newSubGen (mkTreeLeaf Stub) work
+      sub = newSubGen TNStub work
    in insertTCSub sel sub tc
 
 -- | Insert a binary operator that works for scalar values.
@@ -795,7 +784,7 @@ insertTCBinaryOp sel rep e f cond tc =
         if cond n1 n2
           then f n1 n2
           else return $ newSubGen n1 n2 work
-      sub = newSubGen (mkTreeLeaf Stub) (mkTreeLeaf Stub) work
+      sub = newSubGen TNStub TNStub work
    in insertTCSub sel sub tc
 
 insertTCDisj ::
@@ -821,7 +810,7 @@ insertTCDisj sel e f tc =
         --   _ -> throwError "insertTCDisj: invalid disjunction values"
         -- _ -> return $ newSubGen n1 n2 work
         _ -> return $ newSubGen n1 n2 work
-      sub = newSubGen (mkTreeLeaf Stub) (mkTreeLeaf Stub) work
+      sub = newSubGen TNStub TNStub work
    in insertTCSub sel sub tc
 
 insertTCDot ::
@@ -937,6 +926,7 @@ finalizeWalkTC tc@(tree, _) =
                  in do
                       utc <- foldM goSub tc (map DisjDefaultSelector [0 .. length (trdDefaults d) - 1])
                       foldM goSub utc (map DisjDisjunctSelector [0 .. length (trdDisjuncts d) - 1])
+              TNStub -> throwError "finalizeWalkTC: TNStub should have been resolved"
 
             modify $ \fs -> fs {fsMarks = Map.insert path 2 (fsMarks fs)}
             dump $

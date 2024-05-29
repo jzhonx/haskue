@@ -16,7 +16,6 @@ unify t1 t2 = case (t1, t2) of
   (TNLeaf l1, TNLeaf l2) -> case (trfValue l1, trfValue l2) of
     (Bottom _, _) -> return t1
     (Top, _) -> return t2
-    (Stub, _) -> return t2
     (String x, String y) ->
       return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "strings mismatch: %s != %s" x y
     (Int x, Int y) ->
@@ -25,7 +24,6 @@ unify t1 t2 = case (t1, t2) of
       return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "bools mismatch: %s != %s" (show x) (show y)
     (Null, Null) -> return t1
     (_, Top) -> unify t2 t1
-    (_, Stub) -> unify t2 t1
     (_, Bottom _) -> unify t2 t1
     _ -> return $ mkTreeLeaf $ Bottom $ printf "values not unifiable: %s, %s" (show t1) (show t2)
   (TNScope s1, TNScope s2) -> unifyStructs s1 s2
