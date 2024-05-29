@@ -379,6 +379,114 @@ testIncomplete = do
                 ]
           )
 
+testDup1 :: IO ()
+testDup1 = do
+  s <- readFile "tests/spec/dup1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["z"]
+          [
+            ("z", newSimpleStruct ["y", "x"] [
+              ("x", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)]),
+              ("y", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)])
+            ])
+          ]
+
+testDup2 :: IO ()
+testDup2 = do
+  s <- readFile "tests/spec/dup2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["x"]
+          [
+            ("x", newSimpleStruct ["a", "c"] [
+              ("a", mkTreeLeaf $ Int 1),
+              ("c", mkTreeLeaf $ Int 2)
+            ])
+          ]
+
+testDup3 :: IO ()
+testDup3 = do
+  s <- readFile "tests/spec/dup3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["x"]
+          [
+            ("x", newSimpleStruct ["a", "b", "c"] [
+              ("a", mkTreeLeaf $ Int 1),
+              ("b", mkTreeLeaf $ Int 2),
+              ("c", mkTreeLeaf $ Int 2)
+            ])
+          ]
+
+testRef1 :: IO ()
+testRef1 = do
+  s <- readFile "tests/spec/ref1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["a", "b"]
+          [
+              ("a", mkTreeLeaf $ Int 4),
+              ("b", mkTreeLeaf $ Int 4)
+          ]
+testRef2 :: IO ()
+testRef2 = do
+  s <- readFile "tests/spec/ref2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["a", "x"]
+          [
+            ("a", mkTreeLeaf $ Int 1),
+            ("x", newSimpleStruct ["c", "d"] [
+              ("c", mkTreeLeaf $ Int 1),
+              ("d", mkTreeLeaf $ Top)
+            ])
+          ]
+
+testRef3 :: IO ()
+testRef3 = do
+  s <- readFile "tests/spec/ref3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["x", "d"]
+          [
+            ("x", newSimpleStruct ["a", "c"] [
+              ("a", mkTreeLeaf $ Int 1),
+              ("c", mkTreeLeaf $ Int 2)
+            ]),
+            ("d", newSimpleStruct ["y"] [
+              ("y", newSimpleStruct ["a", "c"] [
+                ("a", mkTreeLeaf $ Int 1),
+                ("c", mkTreeLeaf $ Int 2)
+              ])
+            ])
+          ]
+
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -396,5 +504,11 @@ specTests =
       testCase "selector1" testSelector1,
       testCase "unify1" testUnify1,
       testCase "cycles1" testCycles1,
-      testCase "incomplete" testIncomplete
+      testCase "incomplete" testIncomplete,
+      testCase "dup1" testDup1,
+      testCase "dup2" testDup2,
+      testCase "dup3" testDup3,
+      testCase "ref1" testRef1,
+      testCase "ref2" testRef2,
+      testCase "ref3" testRef3
     ]
