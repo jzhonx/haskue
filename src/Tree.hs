@@ -732,42 +732,6 @@ updateTCSub sel sub (par, cs) =
         dump $ printf "updateTCSub: parent:\n%s" (show u)
         goDownTCSelErr sel errMsg (u, cs)
 
---
--- in case sel of
---      StringSelector s -> case par of
---        TNScope parScope ->
---          maybe
---            uniqueSelInsert
---            ( \extSub -> do
---                Config {cfUnify = unify} <- ask
---                let newSub =
---                      TNBinaryOp $
---                        TreeBinaryOp
---                          { trbRep = show AST.Unify,
---                            trbExpr = AST.ExprBinaryOp AST.Unify (buildASTExpr extSub) (buildASTExpr sub),
---                            trbOp = unify,
---                            trbArgL = extSub,
---                            trbArgR = sub
---                          }
---                return $ TNScope $ parScope {trsSubs = Map.insert s newSub (trsSubs parScope)}
---            )
---            $ do
---              Map.lookup s (trsSubs parScope) >>= \case
---                TNLeaf (TreeLeaf Stub) -> Nothing
---                snode -> Just snode
--- case Map.lookup s (trsSubs parScope) of
---   Just (TNLeaf (TreeLeaf Stub)) -> return $ TNScope $ parScope {trsSubs = Map.insert s sub (trsSubs parScope)}
---   Nothing -> throwError $ printf "insertSubTree: cannot find sub %s in parent %s" s (showTreeType parent)
---   _ ->
-
--- _ -> uniqueSelInsert
--- u <- insertSubTree par sel sub
--- dump $ printf "insertTCSub: parent:\n%s" (show u)
--- case goTreeSel u sel of
---   Just newSub -> return (newSub, (sel, u) : cs)
---   Nothing -> throwError $ printf "insertTCSub: cannot insert sub to %s with selector %s" (showTreeType par) (show sel)
--- _ -> undefined
-
 -- | Insert a list of labels the tree and return the new cursor that contains the newly inserted value.
 insertTCScope :: (EvalEnv m) => Selector -> [String] -> Set.Set String -> TreeCursor -> m TreeCursor
 insertTCScope sel labels vars tc =
@@ -894,11 +858,10 @@ insertTCLink sel tarPath tc =
 
 -- | finalizeTC evaluates the tree pointed by the cursor by traversing the tree and evaluating all nodes.
 finalizeTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-finalizeTC tc = evalStateT (finalizeWalkTC tc) (FinalizeState Map.empty Map.empty)
+finalizeTC tc = evalStateT (finalizeWalkTC tc) (FinalizeState Map.empty)
 
 data FinalizeState = FinalizeState
-  { fsMarks :: Map.Map Path Int,
-    fsRevDeps :: Map.Map Path [Path]
+  { fsMarks :: Map.Map Path Int
   }
 
 finalizeWalkTC :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> m TreeCursor
@@ -919,12 +882,7 @@ finalizeWalkTC tc@(tree, _) =
         conf <- ask
         u <- case Map.lookup path marks of
           Just 2 -> return tc
-          Just 1 ->
-            throwError $
-              printf
-                "finalizeWalkTC: cycle detected: %s, marks: %s"
-                (show path)
-                (show $ Map.toList marks)
+          Just 1 -> throwError $ printf "finalizeWalkTC: visiting node %s should not be visited again" (show path)
           _ -> do
             dump $
               printf
@@ -961,24 +919,18 @@ finalizeWalkTC tc@(tree, _) =
                             "finalizeWalkTC: link discovers path: %s, tree:\n%s"
                             (show $ pathFromTC tar)
                             (show $ fst tar)
-                        u <- finalizeWalkTC tar
-                        v <- goTCPathErr path u
-                        return (fst u, snd v)
-              -- visited <- gets fsVisited
-              -- if Set.member tarPath visited
-              --   then case fst tar of
-              --     TNLink _ -> throwError $ printf "finalizeWalkTC: link is not resolved: %s" (show tarPath)
-              --     _ -> return (fst tar, snd tc)
-              --   else do
-              --     modify $ \fs -> fs {fsRevDeps = Map.insertWith (++) tarPath [path] (fsRevDeps fs)}
-              --     revDeps <- gets fsRevDeps
-              --     dump $
-              --       printf
-              --         "finalizeWalkTC: new rev dep (%s->%s), revDeps: %s"
-              --         (show tarPath)
-              --         (show path)
-              --         (prettyRevDeps revDeps)
-              --     return tc
+                        if maybe 0 id (Map.lookup (pathFromTC tar) marks) == 1
+                          then do
+                            dump $
+                              printf
+                                "finalizeWalkTC: reference cycle detected: %s, marks: %s"
+                                (show path)
+                                (show $ Map.toList marks)
+                            return (TNLeaf $ TreeLeaf Top, snd tc)
+                          else do
+                            u <- finalizeWalkTC tar
+                            v <- goTCPathErr path u
+                            return (fst u, snd v)
               TNDisj d ->
                 let goSub :: (EvalEnv m, MonadState FinalizeState m) => TreeCursor -> Selector -> m TreeCursor
                     goSub acc sel = getSubTC sel acc >>= finalizeWalkTC >>= propUpTC
