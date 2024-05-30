@@ -296,11 +296,12 @@ testSelector1 = do
           [fieldEDefault]
           [newSimpleStruct ["a"] [("a", newSimpleDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
     pathC = Path [StringSelector "c"]
-    pendValC = TNLink $ TreeLink {
-      trlTarget = pathFromList [StartSelector, StringSelector "T", StringSelector "z"],
-      trlFinal = Nothing,
-      trlExpr = Nothing
-    }
+    pendValC =
+      TNLink $
+        TreeLink
+          { trlTarget = pathFromList [StringSelector "T", StringSelector "z"],
+            trlExpr = Nothing
+          }
     pathF = Path [StringSelector "f"]
     disjF = newSimpleDisj [Int 4] [Int 3, Int 4]
     expStruct =
@@ -348,14 +349,97 @@ testCycles1 = do
         @?= newStruct
           ["x", "b", "c", "d"]
           ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeLeaf v))
-                [ ("x", Top),
-                  ("b", Top),
-                  ("c", Top),
-                  ("d", Top)
-                ]
+              [ ("x", refCycle "x"),
+                ("b", refCycle "b"),
+                ("c", TNLink $ TreeLink (pathFromList [StringSelector "b"]) Nothing),
+                ("d", TNLink $ TreeLink (pathFromList [StringSelector "b"]) Nothing)
+              ]
           )
+  where
+    refCycle rep = TNRefCycle $ TreeRefCycle rep TNRefCycleVar
+
+testCycles2 :: IO ()
+testCycles2 = do
+  s <- readFile "tests/spec/cycles2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["b", "a"]
+          ( Map.fromList $
+              [ ("a", mkTreeLeaf $ Int 200),
+                ("b", mkTreeLeaf $ Int 100)
+              ]
+          )
+  where
+    refCycle rep = TNRefCycle $ TreeRefCycle rep TNRefCycleVar
+
+testCycles3 :: IO ()
+testCycles3 = do
+  s <- readFile "tests/spec/cycles3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          ["x", "y"]
+          ( Map.fromList $
+              [ ( "x",
+                  newStruct
+                    ["a", "b"]
+                    ( Map.fromList
+                        [ ("a", refCyle),
+                          ( "b",
+                            TNBinaryOp $
+                              TreeBinaryOp
+                                { trbRep = show AST.Minus,
+                                  trbExpr = undefined,
+                                  trbOp = undefined,
+                                  trbArgL = TNLink $ TreeLink (pathFromList [StringSelector "a"]) Nothing,
+                                  trbArgR = mkTreeLeaf $ Int 100
+                                }
+                          )
+                        ]
+                    )
+                ),
+                ( "y",
+                  newStruct
+                    ["a", "b"]
+                    ( Map.fromList
+                        [ ("a", mkTreeLeaf $ Int 200),
+                          ("b", mkTreeLeaf $ Int 100)
+                        ]
+                    )
+                )
+              ]
+          )
+  where
+    refCyle =
+      TNRefCycle $
+        TreeRefCycle
+          { trRcRep = "a",
+            trRcForm =
+              TNBinaryOp
+                ( TreeBinaryOp
+                    { trbRep = show AST.Plus,
+                      trbExpr = undefined,
+                      trbOp = undefined,
+                      trbArgL =
+                        TNBinaryOp $
+                          TreeBinaryOp
+                            { trbRep = show AST.Minus,
+                              trbExpr = undefined,
+                              trbOp = undefined,
+                              trbArgL = TNRefCycleVar,
+                              trbArgR = mkTreeLeaf $ Int 100
+                            },
+                      trbArgR = mkTreeLeaf $ Int 100
+                    }
+                )
+          }
 
 testIncomplete :: IO ()
 testIncomplete = do
@@ -368,15 +452,18 @@ testIncomplete = do
         @?= newStruct
           ["a", "b"]
           ( Map.fromList $
-                [ ("a", mkTreeLeaf Top),
-                  ("b", TNBinaryOp $ TreeBinaryOp {
-                    trbRep = show AST.Minus,
-                    trbExpr = undefined,
-                    trbOp = undefined,
-                    trbArgL = mkTreeLeaf $ Top,
-                    trbArgR = mkTreeLeaf $ Int 1
-                  })
-                ]
+              [ ("a", mkTreeLeaf Top),
+                ( "b",
+                  TNBinaryOp $
+                    TreeBinaryOp
+                      { trbRep = show AST.Minus,
+                        trbExpr = undefined,
+                        trbOp = undefined,
+                        trbArgL = mkTreeLeaf $ Top,
+                        trbArgR = mkTreeLeaf $ Int 1
+                      }
+                )
+              ]
           )
 
 testDup1 :: IO ()
@@ -389,11 +476,13 @@ testDup1 = do
       val'
         @?= newSimpleStruct
           ["z"]
-          [
-            ("z", newSimpleStruct ["y", "x"] [
-              ("x", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)]),
-              ("y", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)])
-            ])
+          [ ( "z",
+              newSimpleStruct
+                ["y", "x"]
+                [ ("x", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)]),
+                  ("y", newSimpleStruct ["b"] [("b", mkTreeLeaf $ Int 4)])
+                ]
+            )
           ]
 
 testDup2 :: IO ()
@@ -406,11 +495,13 @@ testDup2 = do
       val'
         @?= newSimpleStruct
           ["x"]
-          [
-            ("x", newSimpleStruct ["a", "c"] [
-              ("a", mkTreeLeaf $ Int 1),
-              ("c", mkTreeLeaf $ Int 2)
-            ])
+          [ ( "x",
+              newSimpleStruct
+                ["a", "c"]
+                [ ("a", mkTreeLeaf $ Int 1),
+                  ("c", mkTreeLeaf $ Int 2)
+                ]
+            )
           ]
 
 testDup3 :: IO ()
@@ -423,12 +514,14 @@ testDup3 = do
       val'
         @?= newSimpleStruct
           ["x"]
-          [
-            ("x", newSimpleStruct ["a", "b", "c"] [
-              ("a", mkTreeLeaf $ Int 1),
-              ("b", mkTreeLeaf $ Int 2),
-              ("c", mkTreeLeaf $ Int 2)
-            ])
+          [ ( "x",
+              newSimpleStruct
+                ["a", "b", "c"]
+                [ ("a", mkTreeLeaf $ Int 1),
+                  ("b", mkTreeLeaf $ Int 2),
+                  ("c", mkTreeLeaf $ Int 2)
+                ]
+            )
           ]
 
 testRef1 :: IO ()
@@ -441,10 +534,10 @@ testRef1 = do
       val'
         @?= newSimpleStruct
           ["a", "b"]
-          [
-              ("a", mkTreeLeaf $ Int 4),
-              ("b", mkTreeLeaf $ Int 4)
+          [ ("a", mkTreeLeaf $ Int 4),
+            ("b", mkTreeLeaf $ Int 4)
           ]
+
 testRef2 :: IO ()
 testRef2 = do
   s <- readFile "tests/spec/ref2.cue"
@@ -455,12 +548,14 @@ testRef2 = do
       val'
         @?= newSimpleStruct
           ["a", "x"]
-          [
-            ("a", mkTreeLeaf $ Int 1),
-            ("x", newSimpleStruct ["c", "d"] [
-              ("c", mkTreeLeaf $ Int 1),
-              ("d", mkTreeLeaf $ Top)
-            ])
+          [ ("a", mkTreeLeaf $ Int 1),
+            ( "x",
+              newSimpleStruct
+                ["c", "d"]
+                [ ("c", mkTreeLeaf $ Int 1),
+                  ("d", mkTreeLeaf $ Top)
+                ]
+            )
           ]
 
 testRef3 :: IO ()
@@ -473,19 +568,26 @@ testRef3 = do
       val'
         @?= newSimpleStruct
           ["x", "d"]
-          [
-            ("x", newSimpleStruct ["a", "c"] [
-              ("a", mkTreeLeaf $ Int 1),
-              ("c", mkTreeLeaf $ Int 2)
-            ]),
-            ("d", newSimpleStruct ["y"] [
-              ("y", newSimpleStruct ["a", "c"] [
-                ("a", mkTreeLeaf $ Int 1),
-                ("c", mkTreeLeaf $ Int 2)
-              ])
-            ])
+          [ ( "x",
+              newSimpleStruct
+                ["a", "c"]
+                [ ("a", mkTreeLeaf $ Int 1),
+                  ("c", mkTreeLeaf $ Int 2)
+                ]
+            ),
+            ( "d",
+              newSimpleStruct
+                ["y"]
+                [ ( "y",
+                    newSimpleStruct
+                      ["a", "c"]
+                      [ ("a", mkTreeLeaf $ Int 1),
+                        ("c", mkTreeLeaf $ Int 2)
+                      ]
+                  )
+                ]
+            )
           ]
-
 
 specTests :: TestTree
 specTests =
@@ -504,6 +606,8 @@ specTests =
       testCase "selector1" testSelector1,
       testCase "unify1" testUnify1,
       testCase "cycles1" testCycles1,
+      testCase "cycles2" testCycles2,
+      testCase "cycles3" testCycles3,
       testCase "incomplete" testIncomplete,
       testCase "dup1" testDup1,
       testCase "dup2" testDup2,

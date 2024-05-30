@@ -40,8 +40,7 @@ eval :: (EvalEnv m) => Expression -> Path -> m TreeCursor
 eval expr path = do
   (_, ctx) <- runStateT (doEval expr path) initState
   let tc = ctxEvalTree ctx
-  rootTC <- propTopTC tc
-  dump $ printf "starting finalize:\n%s" (showTreeCursor rootTC)
+  rootTC <- propRootEvalTC tc
   n <- finalizeTC rootTC
   dump $ printf "finalized:\n%s" (showTreeCursor n)
   return n
@@ -143,8 +142,8 @@ lookupVar var path =
         tc <- gets ctxEvalTree
         case searchTCVar var tc of
           Nothing -> throwError $ printf "variable %s is not found, path: %s" var (show path)
-          Just tarTC -> do
-            pushNewNode $ insertTCLink parSel (pathFromTC tarTC)
+          Just _ -> do
+            pushNewNode $ insertTCLink parSel var
             leaveCurNode parSel "lookupVar"
 
 -- | Evaluates the selector.

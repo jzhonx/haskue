@@ -95,7 +95,7 @@ treeCursorStructTest =
                 >>= insertTCScope selA ["b"] Set.empty
                 >>= insertTCScope selB ["c"] Set.empty
                 >>= insertTCLeafValue selC (Int 42)
-                >>= propTopTC
+                >>= propRootEvalTC
 
             let sva = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector]) tc
             liftIO $ assertEqual "struct a" holderA sva

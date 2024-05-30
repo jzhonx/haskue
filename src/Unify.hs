@@ -13,23 +13,37 @@ import Tree
 
 unify :: (EvalEnv m) => TreeNode -> TreeNode -> m TreeNode
 unify t1 t2 = case (t1, t2) of
-  (TNLeaf l1, TNLeaf l2) -> case (trfValue l1, trfValue l2) of
-    (Bottom _, _) -> return t1
-    (Top, _) -> return t2
-    (String x, String y) ->
-      return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "strings mismatch: %s != %s" x y
-    (Int x, Int y) ->
-      return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "ints mismatch: %d != %d" x y
-    (Bool x, Bool y) ->
-      return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "bools mismatch: %s != %s" (show x) (show y)
-    (Null, Null) -> return t1
-    (_, Top) -> unify t2 t1
-    (_, Bottom _) -> unify t2 t1
-    _ -> return $ mkTreeLeaf $ Bottom $ printf "values not unifiable: %s, %s" (show t1) (show t2)
-  (TNScope s1, TNScope s2) -> unifyStructs s1 s2
+  (TNLeaf l1, _) -> case t2 of
+    TNLeaf l2 -> case (trfValue l1, trfValue l2) of
+      (Bottom _, _) -> return t1
+      (Top, _) -> return t2
+      (String x, String y) ->
+        return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "strings mismatch: %s != %s" x y
+      (Int x, Int y) ->
+        return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "ints mismatch: %d != %d" x y
+      (Bool x, Bool y) ->
+        return $ if x == y then t1 else mkTreeLeaf $ Bottom $ printf "bools mismatch: %s != %s" (show x) (show y)
+      (Null, Null) -> return t1
+      (_, Top) -> unify t2 t1
+      (_, Bottom _) -> unify t2 t1
+      _ -> notUnifiable t1 t2
+    TNUnaryOp _ -> return $ mkTreeConstraint t1 t2
+    TNBinaryOp _ -> return $ mkTreeConstraint t1 t2
+    TNConstraint c2 -> do
+      u <- unify t1 (leafFromTNConst c2)
+      return $ mkTreeConstraint u t2
+    TNRefCycle c2 -> refCycleToConstraint t1 c2
+    _ -> notUnifiable t1 t2
   (TNDisj _, _) -> unifyDisjunctions t1 t2
+  (TNScope s1, _) -> case t2 of
+    TNScope s2 -> unifyStructs s1 s2
+    _ -> notUnifiable t1 t2
+  (_, TNLeaf _) -> unify t2 t1
   (_, TNDisj _) -> unifyDisjunctions t2 t1
-  _ -> return $ mkTreeLeaf $ Bottom $ printf "values not unifiable: %s, %s" (show t1) (show t2)
+  _ -> notUnifiable t1 t2
+  where
+    notUnifiable :: (EvalEnv m) => TreeNode -> TreeNode -> m TreeNode
+    notUnifiable x y = return $ mkTreeLeaf $ Bottom $ printf "values not unifiable: %s, %s" (show x) (show y)
 
 unifyStructs :: (EvalEnv m) => TNScope -> TNScope -> m TreeNode
 unifyStructs s1 s2 = do
