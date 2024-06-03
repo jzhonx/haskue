@@ -5,23 +5,24 @@ module Parser where
 import AST
 import Control.Monad.Except (MonadError, throwError)
 import Data.Maybe (fromJust)
-import Text.ParserCombinators.Parsec
-  ( Parser,
-    chainl1,
-    char,
-    digit,
-    many,
-    many1,
-    noneOf,
-    oneOf,
-    optionMaybe,
-    parse,
-    spaces,
-    string,
-    try,
-    (<?>),
-    (<|>),
-  )
+import Text.ParserCombinators.Parsec (
+  Parser,
+  chainl1,
+  char,
+  digit,
+  many,
+  many1,
+  noneOf,
+  oneOf,
+  optionMaybe,
+  parse,
+  spaces,
+  string,
+  try,
+  (<?>),
+  (<|>),
+ )
+import Prelude hiding (null)
 
 parseCUE :: (MonadError String m) => String -> m Expression
 parseCUE s = case parse expr "" s of
@@ -30,12 +31,12 @@ parseCUE s = case parse expr "" s of
 
 binopTable :: [(String, BinaryOp)]
 binopTable =
-  [ ("&", Unify),
-    ("|", Disjunction),
-    ("+", Add),
-    ("-", Sub),
-    ("*", Mul),
-    ("/", Div)
+  [ ("&", Unify)
+  , ("|", Disjunction)
+  , ("+", Add)
+  , ("-", Sub)
+  , ("*", Mul)
+  , ("/", Div)
   ]
 
 unaryOp :: Parser String
@@ -43,10 +44,10 @@ unaryOp = fmap (: []) (oneOf "+-!*")
 
 unaryOpTable :: [(String, UnaryOp)]
 unaryOpTable =
-  [ ("+", Plus),
-    ("-", Minus),
-    ("!", Not),
-    ("*", Star)
+  [ ("+", Plus)
+  , ("-", Minus)
+  , ("!", Not)
+  , ("*", Star)
   ]
 
 comment :: Parser ()
@@ -66,32 +67,32 @@ expr = do
   e <- prec1
   skipElements
   return e
-  where
-    binOp :: Parser Expression -> Parser (Expression -> Expression -> Expression) -> Parser Expression
-    binOp higher sep = do
-      skipElements
-      e <- chainl1 higher sep
-      skipElements
-      return e
+ where
+  binOp :: Parser Expression -> Parser (Expression -> Expression -> Expression) -> Parser Expression
+  binOp higher sep = do
+    skipElements
+    e <- chainl1 higher sep
+    skipElements
+    return e
 
-    precedence :: Parser String -> Parser (Expression -> Expression -> Expression)
-    precedence op = do
-      skipElements
-      s <- op
-      skipElements
-      return $ ExprBinaryOp (fromJust $ lookup s binopTable)
+  precedence :: Parser String -> Parser (Expression -> Expression -> Expression)
+  precedence op = do
+    skipElements
+    s <- op
+    skipElements
+    return $ ExprBinaryOp (fromJust $ lookup s binopTable)
 
-    prec7 :: Parser Expression
-    prec7 = binOp (ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
+  prec7 :: Parser Expression
+  prec7 = binOp (ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
 
-    prec6 :: Parser Expression
-    prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
+  prec6 :: Parser Expression
+  prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
 
-    prec2 :: Parser Expression
-    prec2 = binOp prec6 (precedence (string "&"))
+  prec2 :: Parser Expression
+  prec2 = binOp prec6 (precedence (string "&"))
 
-    prec1 :: Parser Expression
-    prec1 = binOp prec2 (precedence (string "|"))
+  prec1 :: Parser Expression
+  prec1 = binOp prec2 (precedence (string "|"))
 
 unaryExpr :: Parser UnaryExpr
 unaryExpr = do
@@ -111,41 +112,42 @@ primaryExpr = do
   e <- chainPrimExpr primOperand selector
   skipElements
   return e
-  where
-    primOperand = PrimExprOperand <$> operand
+ where
+  primOperand = PrimExprOperand <$> operand
 
-    selector :: Parser (PrimaryExpr -> PrimaryExpr)
-    selector = do
-      _ <- char '.'
-      sel <- (IDSelector <$> identifier) <|> (StringSelector <$> simpleStringLit)
-      return $ \pe -> PrimExprSelector pe sel
+  selector :: Parser (PrimaryExpr -> PrimaryExpr)
+  selector = do
+    _ <- char '.'
+    sel <- (IDSelector <$> identifier) <|> (StringSelector <$> simpleStringLit)
+    return $ \pe -> PrimExprSelector pe sel
 
 chainPrimExpr :: Parser PrimaryExpr -> Parser (PrimaryExpr -> PrimaryExpr) -> Parser PrimaryExpr
 chainPrimExpr p op = do
   x <- p
   rest x
-  where
-    rest x =
-      ( do
-          g <- op
-          rest (g x)
-      )
-        <|> return x
-        <?> "failed to parse chainPrimExpr"
+ where
+  rest x =
+    ( do
+        g <- op
+        rest (g x)
+    )
+      <|> return x
+      <?> "failed to parse chainPrimExpr"
 
 operand :: Parser Operand
 operand = do
   skipElements
   opd <-
-    OpLiteral <$> literal
-      <|> (OperandName . Identifier <$> identifier)
-      <|> ( do
-              _ <- char '('
-              e <- expr
-              _ <- char ')'
-              return $ OpExpression e
-          )
-      <?> "failed to parse operand"
+    OpLiteral
+      <$> literal
+        <|> (OperandName . Identifier <$> identifier)
+        <|> ( do
+                _ <- char '('
+                e <- expr
+                _ <- char ')'
+                return $ OpExpression e
+            )
+        <?> "failed to parse operand"
   skipElements
   return opd
 
@@ -155,11 +157,11 @@ literal = do
   lit <-
     parseInt
       <|> struct
-      <|> bool
-      <|> (StringLit . SimpleStringLit <$> simpleStringLit)
+      <|> try bool
+      <|> try (StringLit . SimpleStringLit <$> simpleStringLit)
       <|> try bottom
-      <|> top
-      <|> null'
+      <|> try top
+      <|> try null
   skipElements
   return lit
 
@@ -222,7 +224,7 @@ bottom = do
   _ <- string "_|_"
   return BottomLit
 
-null' :: Parser Literal
-null' = do
+null :: Parser Literal
+null = do
   _ <- string "null"
   return NullLit

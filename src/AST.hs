@@ -1,36 +1,36 @@
-module AST
-  ( Expression (..),
-    UnaryExpr (..),
-    PrimaryExpr (..),
-    Selector (..),
-    Operand (..),
-    Literal (..),
-    OperandName (..),
-    StringLit (..),
-    SimpleStringLit,
-    Label (..),
-    LabelExpr (..),
-    LabelName (..),
-    Identifer,
-    BinaryOp (..),
-    UnaryOp (..),
-    litCons,
-    idCons,
-    unaryOpCons,
-    binaryOpCons,
-    exprStr,
-    exprBld,
-    exprBldIdent,
-  )
+module AST (
+  Expression (..),
+  UnaryExpr (..),
+  PrimaryExpr (..),
+  Selector (..),
+  Operand (..),
+  Literal (..),
+  OperandName (..),
+  StringLit (..),
+  SimpleStringLit,
+  Label (..),
+  LabelExpr (..),
+  LabelName (..),
+  Identifer,
+  BinaryOp (..),
+  UnaryOp (..),
+  litCons,
+  idCons,
+  unaryOpCons,
+  binaryOpCons,
+  exprStr,
+  exprBld,
+  exprBldIdent,
+)
 where
 
-import Data.ByteString.Builder
-  ( Builder,
-    char7,
-    integerDec,
-    string7,
-    toLazyByteString,
-  )
+import Data.ByteString.Builder (
+  Builder,
+  char7,
+  integerDec,
+  string7,
+  toLazyByteString,
+ )
 
 data Expression
   = ExprUnaryExpr UnaryExpr
@@ -193,17 +193,17 @@ structBld ident lit =
         <> goFields lit
         <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
-  where
-    fieldBld (label, val) =
-      string7 (replicate ((ident + 1) * 2) ' ')
-        <> labelBld label
-        <> string7 ": "
-        <> exprBldIdent (ident + 1) val
-        <> char7 '\n'
-    goFields :: [(Label, Expression)] -> Builder
-    goFields [] = string7 ""
-    goFields (x : xs) =
-      fieldBld x <> goFields xs
+ where
+  fieldBld (label, val) =
+    string7 (replicate ((ident + 1) * 2) ' ')
+      <> labelBld label
+      <> string7 ": "
+      <> exprBldIdent (ident + 1) val
+      <> char7 '\n'
+  goFields :: [(Label, Expression)] -> Builder
+  goFields [] = string7 ""
+  goFields (x : xs) =
+    fieldBld x <> goFields xs
 
 labelBld :: Label -> Builder
 labelBld (Label e) = labelExprBld e
