@@ -76,8 +76,6 @@ evalLiteral lit path tc =
         v <- f lit
         insertTCLeafValue parSel v tc >>= propUpTCSel parSel
  where
-  -- leaveCurNode parSel "evalLiteral"
-
   f :: (EvalEnv m) => Literal -> m Value
   f (StringLit (SimpleStringLit s)) = return $ String s
   f (IntLit i) = return $ Int i
@@ -199,9 +197,6 @@ evalUnaryOp op e path tc =
         pure tc >>= insertTCUnaryOp parSel op (dispUnaryFunc op)
         >>= evalUnaryExpr e nextPath
         >>= propUpTCSel parSel
-
--- dump $ printf "leaving evalUnaryOp"
--- leaveCurNode parSel "evalUnaryOp"
 
 dispUnaryFunc :: (EvalEnv m) => UnaryOp -> Tree -> TreeCursor -> m TreeCursor
 dispUnaryFunc op t tc = do

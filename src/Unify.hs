@@ -85,7 +85,6 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
       -- disjunction.
       AST.Disjunction -> unifyOther dt2 dt1 parTC
       _ -> procOther
-    (_, TNRefCycle _) -> procOther
     (_, TNRefCycleVar) -> procOther
     (_, TNLink _) -> procOther
     _ -> notUnifiable dt1 dt2
@@ -114,7 +113,6 @@ unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   (TNBinaryOp _, _) -> evalOrDelay
   (TNConstraint c1, _) ->
     return $ substTreeNode (TNConstraint $ updateTNConstraintCnstr dt2 unify c1) (fst tc)
-  (TNRefCycle _, _) -> undefined
   -- According to the spec,
   -- A field value of the form r & v, where r evaluates to a reference cycle and v is a concrete value, evaluates to v.
   -- Unification is idempotent and unifying a value with itself ad infinitum, which is what the cycle represents,
@@ -149,15 +147,6 @@ unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
               (show t2)
               (showTreeCursor updatedTC)
           procLeftEvalRes (d1, fst x) dt2 updatedTC
-
--- let
---   tree = fst x
---   node = treeNode tree
--- case node of
---   TNScalar _ -> unifyWithDir (d1, tree) dt2 tc
---   TNDisj _ -> unifyWithDir (d1, tree) dt2 tc
---   TNScope _ -> unifyWithDir (d1, tree) dt2 tc
---   _ -> mkUnification dt1 dt2 (fst tc)
 
 procLeftEvalRes :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
@@ -323,11 +312,6 @@ treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
       node = TNDisj $ TreeDisj{trdDefault = Nothing, trdDisjuncts = _ds}
      in
       return $ mkTree node orig
-  -- (Just df, []) ->
-  --   let
-  --     node = TNDisj $ TreeDisj{trdDefault = Nothing, trdDisjuncts = _df}
-  --    in
-  --     return $ substTreeNode node (fst tc)
   (_df, _ds) ->
     let
       node = TNDisj $ TreeDisj{trdDefault = _df, trdDisjuncts = _ds}
