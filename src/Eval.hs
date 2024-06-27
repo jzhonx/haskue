@@ -221,25 +221,25 @@ evalBinary op e1 e2 path tc =
 dispBinFunc :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
 dispBinFunc op = case op of
   AST.Unify -> unify
-  _ -> calcNum op
+  _ -> regBin op
 
-calcNum :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
-calcNum op t1 t2 tc = do
-  node <- calcNumDir op (L, t1) (R, t2) tc
-  return (node, snd tc)
+regBin :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
+regBin op t1 t2 tc = do
+  node <- regBinDir op (L, t1) (R, t2) tc
+  return (substTreeNode (treeNode node) (fst tc), snd tc)
 
-calcNumDir :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-calcNumDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
+regBinDir :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+regBinDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
   dump $
-    printf ("calcNumDir: path: %s, %s: %s with %s: %s") (show $ pathFromTC tc) (show d1) (show t1) (show d2) (show t2)
+    printf ("regBinDir: path: %s, %s: %s with %s: %s") (show $ pathFromTC tc) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, treeNode t2) of
-    (TNAtom l1, _) -> calcNumLeftLeaf op (d1, l1) dt2 tc
-    (_, TNAtom l2) -> calcNumLeftLeaf op (d2, l2) dt1 tc
-    _ -> calcNumOther op dt1 dt2 tc
+    (TNAtom l1, _) -> regBinLeftAtom op (d1, l1) dt2 tc
+    (_, TNAtom l2) -> regBinLeftAtom op (d2, l2) dt1 tc
+    _ -> regBinOther op dt1 dt2 tc
 
-calcNumLeftLeaf :: (EvalEnv m) => BinaryOp -> (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-calcNumLeftLeaf op (d1, l1) (d2, t2) tc = do
-  f <- numOp op
+regBinLeftAtom :: (EvalEnv m) => BinaryOp -> (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+regBinLeftAtom op (d1, l1) (d2, t2) tc = do
+  f <- arithOp op
   case (trAmAtom l1, treeNode t2) of
     (Int i1, TNAtom (TreeAtom{trAmAtom = Int i2})) -> do
       let res =
@@ -247,18 +247,18 @@ calcNumLeftLeaf op (d1, l1) (d2, t2) tc = do
               then f i1 i2
               else f i2 i1
       dump $ printf "exec (%s %s %s), resulting to %s" (show op) (show i1) (show i2) (show res)
-      return $ mkTreeAtom (Int res) (treeOrig (fst tc))
-    _ -> calcNumOther op (d2, t2) (d1, mkTree (TNAtom l1) Nothing) tc
+      return $ mkTreeAtom (Int res) Nothing
+    _ -> regBinOther op (d2, t2) (d1, mkTree (TNAtom l1) Nothing) tc
 
-calcNumOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-calcNumOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
+regBinOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   (TNUnaryOp _, _) -> evalOrDelay
   (TNBinaryOp _, _) -> evalOrDelay
   (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay
-  (TNDisj TreeDisj{trdDefault = Just d}, _) -> calcNumDir op (d1, d) (d2, t2) tc
+  (TNDisj TreeDisj{trdDefault = Just d}, _) -> regBinDir op (d1, d) (d2, t2) tc
   (TNConstraint c, _) -> do
-    na <- calcNumLeftLeaf op (d1, trCnAtom c) (d2, t2) tc
+    na <- regBinLeftAtom op (d1, trCnAtom c) (d2, t2) tc
     case treeNode na of
       TNAtom atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (fst tc)
       v -> undefined
@@ -270,32 +270,33 @@ calcNumOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   evalOrDelay =
     let unevaledTC = mkSubTC (BinOpSelector d1) t1 tc
      in do
-          dump $ printf "calcNumOther: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
+          dump $ printf "regBinOther: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
           x <- evalTC unevaledTC
-          dump $ printf "calcNumOther: %s, is evaluated to:\n%s" (show t1) (show $ fst x)
+          dump $ printf "regBinOther: %s, is evaluated to:\n%s" (show t1) (show $ fst x)
           case treeNode (fst x) of
             TNAtom TreeAtom{trAmAtom = Top} -> delay
-            TNAtom l -> calcNumLeftLeaf op (d1, l) (d2, t2) tc
-            TNConstraint _ -> calcNumOther op (d1, fst x) (d2, t2) tc
-            TNDisj TreeDisj{trdDefault = Just d} -> calcNumDir op (d1, d) (d2, t2) tc
+            TNAtom l -> regBinLeftAtom op (d1, l) (d2, t2) tc
+            TNConstraint _ -> regBinOther op (d1, fst x) (d2, t2) tc
+            TNDisj TreeDisj{trdDefault = Just d} -> regBinDir op (d1, d) (d2, t2) tc
             _ -> delay
 
   delay :: (EvalEnv m) => m Tree
   delay =
-    let v = substTreeNode (TNBinaryOp $ mkTNBinaryOpDir op (calcNum op) (d1, t1) (d2, t2)) (fst tc)
+    let v = substTreeNode (TNBinaryOp $ mkTNBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
      in do
-          dump $ printf "calcNumOther: %s is incomplete, delaying to %s" (show t1) (show v)
+          dump $ printf "regBinOther: %s is incomplete, delaying to %s" (show t1) (show v)
           return v
 
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
 
-numOp :: (EvalEnv m, Integral a) => BinaryOp -> m (a -> a -> a)
-numOp AST.Add = return (+)
-numOp AST.Sub = return (-)
-numOp AST.Mul = return (*)
-numOp AST.Div = return div
-numOp op = throwError $ printf "unsupported binary operator: %s" (show op)
+arithOp :: (EvalEnv m, Integral a) => BinaryOp -> m (a -> a -> a)
+arithOp op = case op of
+  AST.Add -> return (+)
+  AST.Sub -> return (-)
+  AST.Mul -> return (*)
+  AST.Div -> return div
+  _ -> throwError $ printf "unsupported arithmetic operator: %s" (show op)
 
 data DisjItem = DisjDefault Tree | DisjRegular Tree
 

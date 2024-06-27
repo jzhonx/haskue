@@ -334,6 +334,11 @@ instance Eq TreeNode where
   (==) TNStub TNStub = True
   (==) (TNConstraint c1) (TNConstraint c2) = c1 == c2
   (==) TNRefCycleVar TNRefCycleVar = True
+  (==) (TNDisj dj1) n2@(TNAtom _) =
+    if isNothing (trdDefault dj1)
+      then False
+      else treeNode (fromJust $ trdDefault dj1) == n2
+  (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
   (==) _ _ = False
 
 instance ValueNode TreeNode where
@@ -976,12 +981,9 @@ evalTC tc = case treeNode (fst tc) of
       do
         dump $ printf "evalTC: constraint unify tc:\n%s" (showTreeCursor unifyTC)
         x <- evalTC unifyTC
-        let v = case treeNode (fst x) of
-              TNDisj dj -> if isJust (trdDefault dj) then fromJust (trdDefault dj) else fst x
-              _ -> fst x
-        if v == origAtom
+        if (fst x) == origAtom
           then return (origAtom, snd tc)
-          else throwError $ printf "evalTC: constraint not satisfied, %s != %s" (show v) (show origAtom)
+          else throwError $ printf "evalTC: constraint not satisfied, %s != %s" (show (fst x)) (show origAtom)
   TNLink l -> do
     dump $ printf "evalTC: evaluate link %s" (show $ trlTarget l)
     res <- followLink l tc
