@@ -189,7 +189,14 @@ instance Eq Value where
 
 vToE :: (MonadError String m) => Value -> m AST.Expression
 vToE Top = return $ AST.litCons AST.TopLit
-vToE (String s) = return $ AST.litCons (AST.StringLit (AST.SimpleStringLit s))
+vToE (String s) =
+  return $
+    AST.litCons
+      ( AST.StringLit
+          ( AST.SimpleStringLit
+              ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
+          )
+      )
 vToE (Int i) = return $ AST.litCons (AST.IntLit i)
 vToE (Bool b) = return $ AST.litCons (AST.BoolLit b)
 vToE Null = return $ AST.litCons AST.NullLit
@@ -385,107 +392,6 @@ instance ValueNode TreeNode where
     TNScalar s -> Just (trscValue s)
     TNConstraint c -> Just (trscValue $ trCnAtom c)
     _ -> Nothing
-
--- getOrigNode n = case n of
---   TNRoot r -> trRtOrig r
---   TNScope s ->
---     maybe
---       Nothing
---       (\a -> Just (TNScope $ s{trsSubs = a}))
---       (mapM getOrigNode (trsSubs s))
---   TNList l -> maybe Nothing (\a -> Just (TNList $ l{trLstSubs = a})) (mapM getOrigNode (trLstSubs l))
---   TNDisj d -> trdOrig d
---   TNUnaryOp op -> maybe Nothing (\a -> Just (TNUnaryOp $ op{truArg = a})) (getOrigNode (truArg op))
---   TNBinaryOp op ->
---     maybe
---       Nothing
---       (\(l, r) -> Just (TNBinaryOp $ op{trbArgL = l, trbArgR = r}))
---       (mapM getOrigNode (trbArgL op, trbArgR op))
---   TNLink _ -> Just n
---   TNScalar s -> trscOrig s
---   TNStub -> Nothing
---   TNConstraint c -> Just (trcOrigNode c)
---   TNRefCycle _ -> Nothing
---   TNRefCycleVar -> Nothing
--- setOrigNode n o =
---   if isJust (getOrigNode n)
---     then n
---     else case n of
---       TNRoot r -> TNRoot $ r{trRtOrig = Just o}
---       TNDisj d -> TNDisj $ d{trdOrig = Just o}
---       TNScalar s -> TNScalar $ s{trscOrig = Just o}
---       TNConstraint c -> TNConstraint $ c{trcOrigNode = o}
---       TNScope _ -> n
---       TNList _ -> n
---       TNStub -> n
---       TNLink _ -> n
---       TNUnaryOp _ -> n
---       TNBinaryOp _ -> n
---       TNRefCycle _ -> n
---       TNRefCycleVar -> n
-
--- instance BuildASTExpr TreeNode where
---   buildASTExpr n = case n of
---     TNScalar l -> buildASTExpr l
---     TNRoot r -> buildASTExpr r
---     TNScope s -> buildASTExpr s
---     TNList _ -> undefined
---     TNDisj d -> buildASTExpr d
---     TNLink l -> buildASTExpr l
---     TNUnaryOp op -> buildASTExpr op
---     TNBinaryOp op -> buildASTExpr op
---     TNStub -> AST.litCons AST.BottomLit
---     TNConstraint c -> buildASTExpr
---     TNRefCycle f -> buildASTExpr f
---     TNRefCycleVar -> AST.litCons AST.TopLit
-
--- mapTreeLeafNode :: (Tree -> Tree) -> Tree -> Tree
--- mapTreeLeafNode f n = case n of
---   TNRoot t -> TNRoot $ t{trRtSub = f (trRtSub t)}
---   TNScope s -> TNScope $ s{trsSubs = Map.map f (trsSubs s)}
---   TNList ts -> TNList $ ts{trLstSubs = map f (trLstSubs ts)}
---   TNDisj d -> TNDisj $ d{trdDefaults = map f (trdDefaults d), trdDisjuncts = map f (trdDisjuncts d)}
---   TNUnaryOp op -> TNUnaryOp $ op{truArg = f (truArg op)}
---   TNBinaryOp op -> TNBinaryOp $ op{trbArgL = f (trbArgL op), trbArgR = f (trbArgR op)}
---   TNLink _ -> f n
---   TNScalar _ -> f n
---   TNStub -> f n
---   TNConstraint _ -> f n
---   TNRefCycle _ -> f n
---   TNRefCycleVar -> f TNRefCycleVar
-
--- foldPostTree :: (Tree -> a -> a) -> a -> Tree -> a
--- foldPostTree f acc n = case n of
---   TNRoot sub ->
---     let nacc = foldPostTree f acc (trRtSub sub)
---      in f n nacc
---   TNScope s ->
---     let nacc = foldr (flip (foldPostTree f)) acc (Map.elems (trsSubs s))
---      in f n nacc
---   TNList ts ->
---     let nacc = foldr (flip (foldPostTree f)) acc (trLstSubs ts)
---      in f n nacc
---   TNDisj d ->
---     let nacc = foldr (flip (foldPostTree f)) acc (trdDefaults d ++ trdDisjuncts d)
---      in f n nacc
---   TNUnaryOp op ->
---     let nacc = foldPostTree f acc (truArg op)
---      in f n nacc
---   TNBinaryOp op ->
---     let racc = foldPostTree f acc (trbArgR op)
---         lacc = foldPostTree f racc (trbArgL op)
---      in f n lacc
---   TNConstraint c ->
---     let lacc = foldPostTree f acc (TNScalar $ trcAtom c)
---         oacc = foldPostTree f lacc (trcCnstr c)
---      in f n oacc
---   TNRefCycle rc ->
---     let nacc = foldPostTree f acc (trRcForm rc)
---      in f n nacc
---   TNLink _ -> f n acc
---   TNScalar _ -> f n acc
---   TNStub -> f n acc
---   TNRefCycleVar -> f n acc
 
 data TNRoot = TreeRoot
   { trRtSub :: Tree
@@ -708,11 +614,6 @@ instance BuildASTExpr TNDisj where
       then buildASTExpr $ fromJust (trdDefault dj)
       else foldr1 (\x y -> AST.ExprBinaryOp AST.Disjunction x y) (map buildASTExpr (trdDisjuncts dj))
 
--- let def = buildASTExpr (trdDefault dj)
---     disjuncts = map buildASTExpr (trdDisjuncts dj)
---     list = if isNothing def then disjuncts else def
---  in foldr1 (\x y -> AST.ExprBinaryOp AST.Disjunction x y) list
-
 mkTreeDisj :: Maybe Tree -> [Tree] -> Maybe Tree -> Tree
 mkTreeDisj m js = mkTree (TNDisj $ TreeDisj{trdDefault = m, trdDisjuncts = js})
 
@@ -768,35 +669,6 @@ instance Eq TNRefCycle where
 instance BuildASTExpr TNRefCycle where
   buildASTExpr rc = trRcOrigExpr rc
 
--- evalRefCycle :: (EvalEnv m) => TNRefCycle -> m Tree
--- evalRefCycle rc =
---   return $
---     if hasRefCycleVar (trRcForm rc)
---       then TNRefCycle rc
---       else trRcForm rc
---   where
---     hasRefCycleVar :: Tree -> Bool
---     hasRefCycleVar n = foldPostTree (\x acc -> acc || x == TNRefCycleVar) False n
---
--- mkTNRefCycle :: Path -> AST.Expression -> Tree -> TNRefCycle
-
--- substRefCycleVar :: (EvalEnv m) => Tree -> TNRefCycle -> m Tree
--- substRefCycleVar t rc =
---   let form =
---         mapTreeLeafNode
---           ( \case
---               TNRefCycleVar -> t
---               x -> x
---           )
---           (trRcForm rc)
---    in do
---         dump $
---           printf
---             "substRefCycleVar: replaced RefCycleVar with %s, evaluated to form:\n%s"
---             (show t)
---             (show form)
---         return form
-
 -- -- --
 
 emptyTNScope :: TNScope
@@ -806,9 +678,6 @@ emptyTNScope =
     , trsVars = Set.empty
     , trsSubs = Map.empty
     }
-
--- mkTreeList :: [Value] -> Tree
--- mkTreeList vs = TNList $ TreeList{trLstSubs = map mkTreeLeaf vs}
 
 {- | Insert a sub-tree to the tree node with the given selector.
 Returns the updated parent tree node that contains the newly inserted sub-tree.

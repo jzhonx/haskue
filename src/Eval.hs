@@ -239,12 +239,12 @@ calcNumDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
   dump $
     printf ("calcNumDir: path: %s, %s: %s with %s: %s") (show $ pathFromTC tc) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, treeNode t2) of
-    (TNScalar l1, _) -> calcNumLeaf op (d1, l1) dt2 tc
-    (_, TNScalar l2) -> calcNumLeaf op (d2, l2) dt1 tc
+    (TNScalar l1, _) -> calcNumLeftLeaf op (d1, l1) dt2 tc
+    (_, TNScalar l2) -> calcNumLeftLeaf op (d2, l2) dt1 tc
     _ -> calcNumOther op dt1 dt2 tc
 
-calcNumLeaf :: (EvalEnv m) => BinaryOp -> (BinOpDirect, TNScalar) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-calcNumLeaf op (d1, l1) (d2, t2) tc = do
+calcNumLeftLeaf :: (EvalEnv m) => BinaryOp -> (BinOpDirect, TNScalar) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+calcNumLeftLeaf op (d1, l1) (d2, t2) tc = do
   f <- numOp op
   case (trscValue l1, treeNode t2) of
     (Int i1, TNScalar (TreeScalar{trscValue = Int i2})) -> do
@@ -262,8 +262,9 @@ calcNumOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   (TNBinaryOp _, _) -> evalOrDelay
   (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay
+  (TNDisj TreeDisj{trdDefault = Just d}, _) -> calcNumDir op (d1, d) (d2, t2) tc
   (TNConstraint c, _) -> do
-    na <- calcNumLeaf op (d1, trCnAtom c) (d2, t2) tc
+    na <- calcNumLeftLeaf op (d1, trCnAtom c) (d2, t2) tc
     case treeNode na of
       TNScalar atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (fst tc)
       v -> undefined
@@ -280,8 +281,9 @@ calcNumOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
           dump $ printf "calcNumOther: %s, is evaluated to:\n%s" (show t1) (show $ fst x)
           case treeNode (fst x) of
             TNScalar TreeScalar{trscValue = Top} -> delay
-            TNScalar l -> calcNumLeaf op (d1, l) (d2, t2) tc
+            TNScalar l -> calcNumLeftLeaf op (d1, l) (d2, t2) tc
             TNConstraint _ -> calcNumOther op (d1, fst x) (d2, t2) tc
+            TNDisj TreeDisj{trdDefault = Just d} -> calcNumDir op (d1, d) (d2, t2) tc
             _ -> delay
 
   delay :: (EvalEnv m) => m Tree

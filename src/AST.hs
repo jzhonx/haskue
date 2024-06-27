@@ -21,6 +21,7 @@ module AST (
   exprStr,
   exprBld,
   exprBldIdent,
+  Quote (..),
 )
 where
 
@@ -114,6 +115,12 @@ instance Show UnaryOp where
   show Minus = "-"
   show Not = "!"
   show Star = "*"
+
+data Quote = SingleQuote | DoubleQuote deriving (Eq)
+
+instance Show Quote where
+  show SingleQuote = "'"
+  show DoubleQuote = "\""
 
 litCons :: Literal -> Expression
 litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral

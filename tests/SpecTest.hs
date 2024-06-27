@@ -259,6 +259,15 @@ newSimpleDisj d1 d2 = mkSimpleTree . TNDisj $ TreeDisj (mkDefault d1) (map mkSim
     x : [] -> Just $ mkSimpleTreeLeaf x
     xs -> Just $ newSimpleDisj [] xs
 
+newSimpleTreeDisj :: [Tree] -> [Tree] -> Tree
+newSimpleTreeDisj d1 d2 = mkSimpleTree . TNDisj $ TreeDisj (mkDefault d1) d2
+ where
+  mkDefault :: [Tree] -> Maybe Tree
+  mkDefault ts = case ts of
+    [] -> Nothing
+    x : [] -> Just x
+    xs -> Just $ newSimpleTreeDisj [] xs
+
 testDisj2 :: IO ()
 testDisj2 = do
   s <- readFile "tests/spec/disj2.cue"
@@ -285,6 +294,44 @@ testDisj2 = do
                 )
               ]
           )
+
+testDisj3 :: IO ()
+testDisj3 = do
+  s <- readFile "tests/spec/disj3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ( ["a" ++ (show i) | i <- [0 .. 2]]
+              ++ ["b" ++ (show i) | i <- [0 .. 1]]
+              ++ ["c" ++ (show i) | i <- [0 .. 3]]
+              ++ ["d" ++ (show i) | i <- [0 .. 0]]
+              ++ ["e" ++ (show i) | i <- [0 .. 4]]
+          )
+          ( [ ("a0", newSimpleDisj [] [String "tcp", String "udp"])
+            , ("a1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
+            , ("a2", mkSimpleTreeLeaf $ Int 4)
+            , ("b0", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+            , ("b1", newSimpleDisj [] [Int 1, Int 2, Int 3])
+            , ("c0", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
+            , ("c1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
+            , ("c2", newSimpleDisj [String "tcp"] [String "tcp"])
+            , ("c3", newSimpleDisj [] [String "tcp", String "udp"])
+            , ("d0", newSimpleDisj [Bool True] [Bool True, Bool False])
+            , ("e0", newSimpleTreeDisj [] [sa, sb])
+            , ("e1", newSimpleTreeDisj [sb] [sa, sb])
+            , ("e2", newSimpleTreeDisj [] [sa, sb])
+            , ("e3", newSimpleTreeDisj [] [sa, sba])
+            , ("e4", newSimpleTreeDisj [sb] [sa, sba, sab, sb])
+            ]
+          )
+ where
+  sa = newSimpleStruct ["a"] [("a", mkSimpleTreeLeaf $ Int 1)]
+  sb = newSimpleStruct ["b"] [("b", mkSimpleTreeLeaf $ Int 1)]
+  sba = newSimpleStruct ["b", "a"] [("a", mkSimpleTreeLeaf $ Int 1), ("b", mkSimpleTreeLeaf $ Int 1)]
+  sab = newSimpleStruct ["a", "b"] [("a", mkSimpleTreeLeaf $ Int 1), ("b", mkSimpleTreeLeaf $ Int 1)]
 
 testSelector1 :: IO ()
 testSelector1 = do
@@ -659,6 +706,7 @@ specTests =
     , testCase "binop2" testBinOp2
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
+    , testCase "disj3" testDisj3
     , testCase "vars1" testVars1
     , testCase "vars2" testVars2
     , testCase "vars3" testVars3
