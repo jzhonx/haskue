@@ -15,7 +15,7 @@ module Tree (
   TNUnaryOp (..),
   TreeCursor,
   Tree (..),
-  Value (..),
+  Atom (..),
   TNDisj (..),
   TNRoot (..),
   TNScalar (..),
@@ -38,7 +38,6 @@ module Tree (
   insertTCScope,
   insertTCUnaryOp,
   insertTCDisj,
-  mergeArgs,
   mkTreeLeaf,
   mkTreeDisj,
   mkTNConstraint,
@@ -99,7 +98,7 @@ import Text.Printf (printf)
 dump :: (MonadLogger m) => String -> m ()
 dump = logDebugN . pack
 
-data Value
+data Atom
   = Top
   | String String
   | Int Integer
@@ -153,17 +152,8 @@ instance MonadTrans EnvMaybe where
 newEvalEnvMaybe :: (EvalEnv m) => Maybe a -> EnvMaybe m a
 newEvalEnvMaybe = EnvMaybe . return
 
--- TODO: merge same keys handler
--- two embeded structs can have same keys
--- mergeStructValues :: StructValue -> StructValue -> StructValue
--- mergeStructValues (StructValue ols1 fields1 ids1 atoms1) (StructValue ols2 fields2 ids2 atoms2) =
---   StructValue (ols1 ++ ols2) (Map.union fields1 fields2) (Set.union ids1 ids2) (isAtom1 && isAtom2)
-
-mergeArgs :: [(Path, Value)] -> [(Path, Value)] -> [(Path, Value)]
-mergeArgs xs ys = Map.toList $ Map.fromList (xs ++ ys)
-
 -- | Show is only used for debugging.
-instance Show Value where
+instance Show Atom where
   show (String s) = s
   show (Int i) = show i
   show (Bool b) = show b
@@ -171,7 +161,7 @@ instance Show Value where
   show Null = "null"
   show (Bottom msg) = "_|_: " ++ msg
 
-instance Eq Value where
+instance Eq Atom where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Bool b1) (Bool b2) = b1 == b2
@@ -180,7 +170,7 @@ instance Eq Value where
   (==) Null Null = True
   (==) _ _ = False
 
-vToE :: (MonadError String m) => Value -> m AST.Expression
+vToE :: (MonadError String m) => Atom -> m AST.Expression
 vToE Top = return $ AST.litCons AST.TopLit
 vToE (String s) =
   return $
@@ -199,7 +189,7 @@ class ValueNode a where
   isValueNode :: a -> Bool
   isValueAtom :: a -> Bool
   isValueConcrete :: a -> Bool
-  getScalarValue :: a -> Maybe Value
+  getScalarValue :: a -> Maybe Atom
 
 class BuildASTExpr a where
   buildASTExpr :: a -> AST.Expression
@@ -339,7 +329,7 @@ data TreeNode
   | TNBinaryOp TNBinaryOp
   | -- | Unless the target is a scalar, the TNLink should not be pruned.
     TNLink TNLink
-  | -- | TNScalar contains an atom value. (could be scalar in the future)
+  | -- | TNScalar contains an atom value.
     TNScalar TNScalar
   | TNStub
   | TNConstraint TNConstraint
@@ -572,7 +562,7 @@ substLinkTC link tc = do
     _ -> return x
 
 data TNScalar = TreeScalar
-  { trscValue :: Value
+  { trscValue :: Atom
   }
 
 instance Show TNScalar where
@@ -584,7 +574,7 @@ instance Eq TNScalar where
 instance BuildASTExpr TNScalar where
   buildASTExpr (TreeScalar v) = fromRight (AST.litCons AST.BottomLit) (runExcept $ vToE v)
 
-mkTreeLeaf :: Value -> Maybe Tree -> Tree
+mkTreeLeaf :: Atom -> Maybe Tree -> Tree
 mkTreeLeaf v = mkTree (TNScalar $ TreeScalar{trscValue = v})
 
 isTreeBottom :: Tree -> Bool
@@ -1236,7 +1226,7 @@ insertTCDot sel dotSel ue tc = do
     _ -> throwError $ printf "insertTCDot: cannot insert link to non-link node:\n%s" (show tree)
   updateTCSub sel newSub tc
 
-insertTCLeafValue :: (EvalEnv m) => Selector -> Value -> TreeCursor -> m TreeCursor
+insertTCLeafValue :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
 insertTCLeafValue sel v tc =
   let sub = mkTreeLeaf v Nothing
    in do insertTCSub sel sub tc

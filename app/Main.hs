@@ -7,7 +7,7 @@ import Eval (runIO)
 import Parser (parseCUE)
 import System.Environment (getArgs)
 import System.IO (readFile, stdout)
-import Tree (Value (Int, String), buildASTExpr)
+import Tree
 
 main :: IO ()
 main = do

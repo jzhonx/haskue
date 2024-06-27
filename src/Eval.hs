@@ -76,7 +76,7 @@ evalLiteral lit path tc =
         v <- f lit
         insertTCLeafValue parSel v tc >>= propUpTCSel parSel
  where
-  f :: (EvalEnv m) => Literal -> m Value
+  f :: (EvalEnv m) => Literal -> m Atom
   f (StringLit (SimpleStringLit s)) = return $ String s
   f (IntLit i) = return $ Int i
   f (BoolLit b) = return $ Bool b

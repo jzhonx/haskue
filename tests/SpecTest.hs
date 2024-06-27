@@ -25,7 +25,7 @@ newStruct lbls subs =
 newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds)
 
-mkSimpleTreeLeaf :: Value -> Tree
+mkSimpleTreeLeaf :: Atom -> Tree
 mkSimpleTreeLeaf v = mkTreeLeaf v Nothing
 
 mkSimpleTree :: TreeNode -> Tree
@@ -250,10 +250,10 @@ testDisj1 = do
               ]
           )
 
-newSimpleDisj :: [Value] -> [Value] -> Tree
+newSimpleDisj :: [Atom] -> [Atom] -> Tree
 newSimpleDisj d1 d2 = mkSimpleTree . TNDisj $ TreeDisj (mkDefault d1) (map mkSimpleTreeLeaf d2)
  where
-  mkDefault :: [Value] -> Maybe Tree
+  mkDefault :: [Atom] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
     x : [] -> Just $ mkSimpleTreeLeaf x
