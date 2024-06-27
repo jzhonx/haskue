@@ -93,6 +93,7 @@ data BinaryOp
   | Sub
   | Mul
   | Div
+  | Equ
   deriving (Eq)
 
 instance Show BinaryOp where
@@ -102,6 +103,7 @@ instance Show BinaryOp where
   show Sub = "-"
   show Mul = "*"
   show Div = "/"
+  show Equ = "=="
 
 data UnaryOp
   = Plus

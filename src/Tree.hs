@@ -24,7 +24,6 @@ module Tree (
   TNBinaryOp (..),
   TNLink (..),
   TNConstraint (..),
-  TNRefCycle (..),
   Config (..),
   dump,
   mkTree,
@@ -56,7 +55,6 @@ module Tree (
   mkTNBinaryOp,
   evalTC,
   mkSubTC,
-  emptyEvalState,
   propUpTCSel,
   substLinkTC,
   mkTNBinaryOpDir,
@@ -69,13 +67,12 @@ where
 
 import qualified AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, runExcept, throwError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Logger (
   MonadLogger,
   logDebugN,
  )
 import Control.Monad.Reader (MonadReader, ask)
-import Control.Monad.State.Strict (MonadState)
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.ByteString.Builder (
   Builder,
@@ -85,7 +82,6 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.Either (fromRight)
 import Data.List (intercalate, (!?))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
@@ -105,14 +101,7 @@ data Atom
   | Null
   | Bottom String
 
-data EvalState = EvalState
-  { esSubstScopeStack :: [Path]
-  }
-
-emptyEvalState :: EvalState
-emptyEvalState = EvalState{esSubstScopeStack = []}
-
-type EvalEnv m = (MonadError String m, MonadLogger m, MonadReader Config m, MonadState EvalState m)
+type EvalEnv m = (MonadError String m, MonadLogger m, MonadReader Config m)
 
 data Config = Config
   { cfUnify :: forall m. (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
@@ -636,20 +625,6 @@ updateTNConstraintCnstr (d, t) unify c =
 updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
 
-data TNRefCycle = TreeRefCycle
-  { trRcPath :: Path
-  , trRcOrigExpr :: AST.Expression
-  -- ^ trRcOrigNode is the original node that later is replaced by trRcForm.
-  , trRcForm :: Tree
-  , trRcOrig :: Maybe Tree
-  }
-
-instance Eq TNRefCycle where
-  (==) (TreeRefCycle p1 _ f1 _) (TreeRefCycle p2 _ f2 _) = p1 == p2 && f1 == f2
-
-instance BuildASTExpr TNRefCycle where
-  buildASTExpr rc = trRcOrigExpr rc
-
 -- -- --
 
 emptyTNScope :: TNScope
@@ -1054,9 +1029,6 @@ followLink link tc = do
                       TNConstraint c -> do
                         dump $ printf "%s: substitutes to the atom value of the constraint" header
                         return $ Just (mkTree (TNAtom $ trCnAtom c) Nothing, snd tc)
-                      -- TNRefCycle rc -> do
-                      --   dump $ printf "%s substitutes to reference cycle. go to tree %s" header (showTreeType $ trRcOrigNode rc)
-                      --   followLink (trRcOrigNode rc, snd tc)
                       _ -> do
                         dump $ printf "%s: resolves to tree node:\n%s" header (show tarNode)
                         return $ Just substTC

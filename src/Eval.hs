@@ -16,7 +16,6 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State (evalStateT)
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Parser (parseCUE)
@@ -37,25 +36,20 @@ eval :: (MonadError String m, MonadLogger m) => Expression -> Path -> m TreeCurs
 eval expr path = do
   rootTC <-
     runReaderT
-      ( evalStateT
-          ( do
-              r <- evalExpr expr path initTC >>= propUpTCSel StartSelector
-              setOrigNodesTC r
-          )
-          emptyEvalState
+      ( ( do
+            r <- evalExpr expr path initTC >>= propUpTCSel StartSelector
+            dump $ printf "--- evaluated to rootTC: ---\n%s" (showTreeCursor r)
+            r2 <- setOrigNodesTC r
+            dump $ printf "--- start resolving links ---"
+            res <- evalTC r2
+            dump $ printf "--- resolved: ---\n%s" (showTreeCursor res)
+            return res
+        )
       )
       Config{cfUnify = unify, cfCreateCnstr = True}
-  dump $ printf "--- evaluated to rootTC: ---\n%s" (showTreeCursor rootTC)
-  dump $ printf "--- start resolving links ---"
-  resolved <-
-    runReaderT
-      (evalStateT (evalTC rootTC) emptyEvalState)
-      Config{cfUnify = unify, cfCreateCnstr = True}
-  dump $ printf "--- resolved: ---\n%s" (showTreeCursor resolved)
-  dump $ printf "--- start evaluating constraints ---"
   finalized <-
     runReaderT
-      (evalStateT (evalTC resolved) emptyEvalState)
+      (evalTC rootTC)
       Config{cfUnify = unify, cfCreateCnstr = False}
   dump $ printf "--- constraints evaluated: ---\n%s" (showTreeCursor finalized)
   return finalized
