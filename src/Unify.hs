@@ -10,7 +10,6 @@ import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isNothing)
 import qualified Data.Set as Set
 import Path (BinOpDirect (..), Selector (BinOpSelector, StringSelector))
 import Text.Printf (printf)

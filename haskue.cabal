@@ -29,7 +29,6 @@ library
         Unify,
         Tree,
         Path,
-        Transform,
     other-modules:
       Paths_haskue
     ghc-options: -Wall -Wpartial-fields
@@ -75,8 +74,6 @@ Test-Suite haskue-unit-test
   other-modules:
     SpecTest,
     TreeTest,
-    -- TransformTest,
-    -- EvalTest,
   build-depends:
         base ^>=4.19.0.0,
         tasty >= 0.7,

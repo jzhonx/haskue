@@ -35,7 +35,6 @@ module Tree (
   insertTCDot,
   insertTCLeafValue,
   insertTCVarLink,
-  -- insertTCList,
   insertTCScope,
   insertTCUnaryOp,
   insertTCDisj,
@@ -53,14 +52,12 @@ module Tree (
   isValueConcrete,
   buildASTExpr,
   emptyTNScope,
-  -- substRefCycleVar,
   updateTNConstraintCnstr,
   updateTNConstraintAtom,
   mkTNUnaryOp,
   mkTNBinaryOp,
   evalTC,
   mkSubTC,
-  -- propUpEvalTC,
   emptyEvalState,
   propUpTCSel,
   substLinkTC,
@@ -74,17 +71,13 @@ where
 
 import qualified AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, catchError, runExcept, throwError)
+import Control.Monad.Except (MonadError, runExcept, throwError)
 import Control.Monad.Logger (
   MonadLogger,
   logDebugN,
  )
-import Control.Monad.Reader (MonadReader, ask, asks, local)
-import Control.Monad.State.Strict (
-  MonadState,
-  gets,
-  modify,
- )
+import Control.Monad.Reader (MonadReader, ask)
+import Control.Monad.State.Strict (MonadState)
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.ByteString.Builder (
   Builder,
