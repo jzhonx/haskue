@@ -540,6 +540,37 @@ testCycles5 = do
       , ("z", mkSimpleTreeLeaf $ Int 3)
       ]
 
+testCycles6 :: IO ()
+testCycles6 = do
+  s <- readFile "tests/spec/cycles6.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newSimpleStruct
+          ["a", "b", "c"]
+          [ ("a", newSimpleTreeDisj [] [yzx, sy1])
+          , ("b", newSimpleTreeDisj [] [sx2, xyz])
+          , ("c", newSimpleTreeDisj [] [xzy, sz3])
+          ]
+ where
+  innerStructGen labels =
+    newSimpleStruct
+      labels
+      [ ("x", mkSimpleTreeLeaf $ Int 1)
+      , ("y", mkSimpleTreeLeaf $ Int 3)
+      , ("z", mkSimpleTreeLeaf $ Int 2)
+      ]
+
+  sy1 = newSimpleStruct ["y"] [("y", mkSimpleTreeLeaf $ Int 1)]
+  sx2 = newSimpleStruct ["x"] [("x", mkSimpleTreeLeaf $ Int 2)]
+  sz3 = newSimpleStruct ["z"] [("z", mkSimpleTreeLeaf $ Int 3)]
+
+  yzx = innerStructGen ["y", "z", "x"]
+  xzy = innerStructGen ["x", "z", "y"]
+  xyz = innerStructGen ["x", "y", "z"]
+
 testIncomplete :: IO ()
 testIncomplete = do
   s <- readFile "tests/spec/incomplete.cue"
@@ -717,6 +748,7 @@ specTests =
     , testCase "cycles3" testCycles3
     , testCase "cycles4" testCycles4
     , testCase "cycles5" testCycles5
+    , testCase "cycles6" testCycles6
     , testCase "incomplete" testIncomplete
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2

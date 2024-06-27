@@ -355,7 +355,7 @@ evalDisj e1 e2 path tc = do
           (_, ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
             evalDisjPair (DisjRegular t1) (DisjDefault t2)
           (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-        return (unode, snd x)
+        return (substTreeNode (treeNode unode) (fst x), snd x)
 
   evalSub :: (EvalEnv m) => Path.Selector -> Tree -> TreeCursor -> m Tree
   evalSub sel t x =
@@ -422,4 +422,4 @@ evalDisj e1 e2 path tc = do
         x : y : [] -> Just $ mkTreeDisj Nothing [x, y] Nothing
         _ -> Nothing
      in
-      return $ mkTreeDisj subTree (dedupAppend ds1 ds2) (treeOrig (fst tc))
+      return $ mkTreeDisj subTree (dedupAppend ds1 ds2) Nothing
