@@ -44,7 +44,6 @@ module Tree (
   pathFromTC,
   propRootEvalTC,
   searchTCVar,
-  vToE,
   showTreeCursor,
   isValueNode,
   isValueAtom,
@@ -170,20 +169,19 @@ instance Eq Atom where
   (==) Null Null = True
   (==) _ _ = False
 
-vToE :: (MonadError String m) => Atom -> m AST.Expression
-vToE Top = return $ AST.litCons AST.TopLit
-vToE (String s) =
-  return $
-    AST.litCons
-      ( AST.StringLit
-          ( AST.SimpleStringLit
-              ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
-          )
-      )
-vToE (Int i) = return $ AST.litCons (AST.IntLit i)
-vToE (Bool b) = return $ AST.litCons (AST.BoolLit b)
-vToE Null = return $ AST.litCons AST.NullLit
-vToE (Bottom _) = return $ AST.litCons AST.BottomLit
+aToE :: Atom -> AST.Expression
+aToE Top = AST.litCons AST.TopLit
+aToE (String s) =
+  AST.litCons
+    ( AST.StringLit
+        ( AST.SimpleStringLit
+            ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
+        )
+    )
+aToE (Int i) = AST.litCons (AST.IntLit i)
+aToE (Bool b) = AST.litCons (AST.BoolLit b)
+aToE Null = AST.litCons AST.NullLit
+aToE (Bottom _) = AST.litCons AST.BottomLit
 
 class ValueNode a where
   isValueNode :: a -> Bool
@@ -572,7 +570,7 @@ instance Eq TNScalar where
   (==) (TreeScalar v1) (TreeScalar v2) = v1 == v2
 
 instance BuildASTExpr TNScalar where
-  buildASTExpr (TreeScalar v) = fromRight (AST.litCons AST.BottomLit) (runExcept $ vToE v)
+  buildASTExpr (TreeScalar v) = (aToE v)
 
 mkTreeLeaf :: Atom -> Maybe Tree -> Tree
 mkTreeLeaf v = mkTree (TNScalar $ TreeScalar{trscValue = v})
@@ -1163,7 +1161,7 @@ insertTCSub sel sub tc@(par, cs) =
 updated value.
 -}
 updateTCSub :: (EvalEnv m) => Selector -> Tree -> TreeCursor -> m TreeCursor
-updateTCSub sel sub tc@(par, cs) =
+updateTCSub sel sub (par, cs) =
   let errMsg :: String
       errMsg =
         printf
