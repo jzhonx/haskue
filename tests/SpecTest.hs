@@ -25,8 +25,8 @@ newStruct lbls subs =
 newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds)
 
-mkSimpleTreeLeaf :: Atom -> Tree
-mkSimpleTreeLeaf v = mkTreeLeaf v Nothing
+mkSimpleTreeAtom :: Atom -> Tree
+mkSimpleTreeAtom v = mkTreeAtom v Nothing
 
 mkSimpleTree :: TreeNode -> Tree
 mkSimpleTree n = mkTree n Nothing
@@ -39,7 +39,7 @@ startEval s = runExceptT $ do
   tc <- runIO s
   case goDownTCSel StartSelector tc of
     Just u -> return $ fst u
-    Nothing -> return $ mkSimpleTree . TNRoot $ TreeRoot (mkSimpleTreeLeaf $ Bottom "No value")
+    Nothing -> return $ mkSimpleTree . TNRoot $ TreeRoot (mkSimpleTreeAtom $ Bottom "No value")
 
 assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do
@@ -56,7 +56,7 @@ testBottom = do
   case n of
     Left err -> assertFailure err
     Right y ->
-      y @?= (mkSimpleTreeLeaf $ Bottom "")
+      y @?= (mkSimpleTreeAtom $ Bottom "")
 
 testBasic :: IO ()
 testBasic = do
@@ -70,7 +70,7 @@ testBasic = do
           ["a", "b", "c", "d"]
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("a", Bool True)
                 , ("b", Bool False)
                 , ("c", Top)
@@ -90,7 +90,7 @@ testUnaryOp = do
           ["x", "y", "z"]
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("x", Int 1)
                 , ("y", Int (-1))
                 , ("z", Bool False)
@@ -109,7 +109,7 @@ testBinop = do
           (map (\i -> "x" ++ show i) [1 .. 9])
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("x1", Int 3)
                 , ("x2", Int 8)
                 , ("x3", Int 2)
@@ -134,7 +134,7 @@ testBinOp2 = do
           ["x1", "x2"]
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("x1", Int 7)
                 , ("x2", Int 7)
                 ]
@@ -152,7 +152,7 @@ testVars1 = do
           ["z", "x", "y"]
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("z", Int 1)
                 , ("x", Int 1)
                 , ("y", Int 1)
@@ -174,7 +174,7 @@ testVars2 = do
       ["a", "b", "c"]
       ( Map.fromList $
           map
-            (\(k, v) -> (k, mkSimpleTreeLeaf v))
+            (\(k, v) -> (k, mkSimpleTreeAtom v))
             [ ("a", Int 1)
             , ("b", Int 2)
             , ("c", Int 9)
@@ -185,7 +185,7 @@ testVars2 = do
       ["e", "f", "g"]
       ( Map.fromList $
           map
-            (\(k, v) -> (k, mkSimpleTreeLeaf v))
+            (\(k, v) -> (k, mkSimpleTreeAtom v))
             [ ("e", Int 3)
             , ("f", Int 4)
             , ("g", Int 9)
@@ -198,7 +198,7 @@ testVars2 = do
       ( Map.fromList
           [ ("x", structX)
           , ("y", structY)
-          , ("z", mkSimpleTreeLeaf $ Int 12)
+          , ("z", mkSimpleTreeAtom $ Int 12)
           ]
       )
 
@@ -218,7 +218,7 @@ testVars3 = do
       ["a", "b"]
       ( Map.fromList $
           map
-            (\(k, v) -> (k, mkSimpleTreeLeaf v))
+            (\(k, v) -> (k, mkSimpleTreeAtom v))
             [("a", Int 2), ("b", Int 2)]
       )
   structTop =
@@ -251,12 +251,12 @@ testDisj1 = do
           )
 
 newSimpleDisj :: [Atom] -> [Atom] -> Tree
-newSimpleDisj d1 d2 = mkSimpleTree . TNDisj $ TreeDisj (mkDefault d1) (map mkSimpleTreeLeaf d2)
+newSimpleDisj d1 d2 = mkSimpleTree . TNDisj $ TreeDisj (mkDefault d1) (map mkSimpleTreeAtom d2)
  where
   mkDefault :: [Atom] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
-    x : [] -> Just $ mkSimpleTreeLeaf x
+    x : [] -> Just $ mkSimpleTreeAtom x
     xs -> Just $ newSimpleDisj [] xs
 
 newSimpleTreeDisj :: [Tree] -> [Tree] -> Tree
@@ -287,9 +287,9 @@ testDisj2 = do
                       [ newStruct
                           ["y", "z"]
                           ( Map.fromList
-                              [("y", mkSimpleTreeLeaf $ Int 1), ("z", mkSimpleTreeLeaf $ Int 3)]
+                              [("y", mkSimpleTreeAtom $ Int 1), ("z", mkSimpleTreeAtom $ Int 3)]
                           )
-                      , newStruct ["y"] (Map.fromList [("y", mkSimpleTreeLeaf $ Int 2)])
+                      , newStruct ["y"] (Map.fromList [("y", mkSimpleTreeAtom $ Int 2)])
                       ]
                 )
               ]
@@ -312,7 +312,7 @@ testDisj3 = do
           )
           ( [ ("a0", newSimpleDisj [] [String "tcp", String "udp"])
             , ("a1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("a2", mkSimpleTreeLeaf $ Int 4)
+            , ("a2", mkSimpleTreeAtom $ Int 4)
             , ("b0", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
             , ("b1", newSimpleDisj [] [Int 1, Int 2, Int 3])
             , ("c0", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
@@ -328,10 +328,10 @@ testDisj3 = do
             ]
           )
  where
-  sa = newSimpleStruct ["a"] [("a", mkSimpleTreeLeaf $ Int 1)]
-  sb = newSimpleStruct ["b"] [("b", mkSimpleTreeLeaf $ Int 1)]
-  sba = newSimpleStruct ["b", "a"] [("a", mkSimpleTreeLeaf $ Int 1), ("b", mkSimpleTreeLeaf $ Int 1)]
-  sab = newSimpleStruct ["a", "b"] [("a", mkSimpleTreeLeaf $ Int 1), ("b", mkSimpleTreeLeaf $ Int 1)]
+  sa = newSimpleStruct ["a"] [("a", mkSimpleTreeAtom $ Int 1)]
+  sb = newSimpleStruct ["b"] [("b", mkSimpleTreeAtom $ Int 1)]
+  sba = newSimpleStruct ["b", "a"] [("a", mkSimpleTreeAtom $ Int 1), ("b", mkSimpleTreeAtom $ Int 1)]
+  sab = newSimpleStruct ["a", "b"] [("a", mkSimpleTreeAtom $ Int 1), ("b", mkSimpleTreeAtom $ Int 1)]
 
 testSelector1 :: IO ()
 testSelector1 = do
@@ -346,7 +346,7 @@ testSelector1 = do
       ["x", "y", "x-y"]
       ( Map.fromList $
           map
-            (\(k, v) -> (k, mkSimpleTreeLeaf v))
+            (\(k, v) -> (k, mkSimpleTreeAtom v))
             [ ("x", Int 1)
             , ("y", Int 3)
             , ("x-y", Int 4)
@@ -372,10 +372,10 @@ testSelector1 = do
       ["T", "a", "b", "c", "d", "e", "f"]
       ( Map.fromList
           [ ("T", structT)
-          , ("a", mkSimpleTreeLeaf $ Int 1)
-          , ("b", mkSimpleTreeLeaf $ Int 3)
+          , ("a", mkSimpleTreeAtom $ Int 1)
+          , ("b", mkSimpleTreeAtom $ Int 3)
           , ("c", pendValC)
-          , ("d", mkSimpleTreeLeaf $ Int 4)
+          , ("d", mkSimpleTreeAtom $ Int 4)
           , ("e", structE)
           , ("f", disjF)
           ]
@@ -393,7 +393,7 @@ testUnify1 = do
           ["a", "b", "d", "z"]
           ( Map.fromList $
               map
-                (\(k, v) -> (k, mkSimpleTreeLeaf v))
+                (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("a", Int 123)
                 , ("b", Int 456)
                 , ("d", String "hello")
@@ -438,7 +438,7 @@ testCycles2 = do
                         { trbRep = AST.Add
                         , trbOp = undefined
                         , trbArgL = mkSimpleLink $ pathFromList [StringSelector "b"]
-                        , trbArgR = mkSimpleTreeLeaf $ Int 100
+                        , trbArgR = mkSimpleTreeAtom $ Int 100
                         }
                 )
               ,
@@ -449,7 +449,7 @@ testCycles2 = do
                         { trbRep = AST.Sub
                         , trbOp = undefined
                         , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                        , trbArgR = mkSimpleTreeLeaf $ Int 100
+                        , trbArgR = mkSimpleTreeAtom $ Int 100
                         }
                 )
               ]
@@ -466,8 +466,8 @@ testCycles3 = do
         @?= newStruct
           ["b", "a"]
           ( Map.fromList $
-              [ ("a", mkSimpleTreeLeaf $ Int 200)
-              , ("b", mkSimpleTreeLeaf $ Int 100)
+              [ ("a", mkSimpleTreeAtom $ Int 200)
+              , ("b", mkSimpleTreeAtom $ Int 100)
               ]
           )
 
@@ -493,7 +493,7 @@ testCycles4 = do
                           { trbRep = AST.Add
                           , trbOp = undefined
                           , trbArgL = mkSimpleLink $ pathFromList [StringSelector "b"]
-                          , trbArgR = mkSimpleTreeLeaf $ Int 100
+                          , trbArgR = mkSimpleTreeAtom $ Int 100
                           }
                   )
                 ,
@@ -504,7 +504,7 @@ testCycles4 = do
                           { trbRep = AST.Sub
                           , trbOp = undefined
                           , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                          , trbArgR = mkSimpleTreeLeaf $ Int 100
+                          , trbArgR = mkSimpleTreeAtom $ Int 100
                           }
                   )
                 ]
@@ -513,7 +513,7 @@ testCycles4 = do
             ( "y"
             , newSimpleStruct
                 ["a", "b"]
-                [("a", mkSimpleTreeLeaf $ Int 200), ("b", mkSimpleTreeLeaf $ Int 100)]
+                [("a", mkSimpleTreeAtom $ Int 200), ("b", mkSimpleTreeAtom $ Int 100)]
             )
           ]
 
@@ -535,9 +535,9 @@ testCycles5 = do
   innerStructGen labels =
     newSimpleStruct
       labels
-      [ ("x", mkSimpleTreeLeaf $ Int 1)
-      , ("y", mkSimpleTreeLeaf $ Int 2)
-      , ("z", mkSimpleTreeLeaf $ Int 3)
+      [ ("x", mkSimpleTreeAtom $ Int 1)
+      , ("y", mkSimpleTreeAtom $ Int 2)
+      , ("z", mkSimpleTreeAtom $ Int 3)
       ]
 
 testCycles6 :: IO ()
@@ -558,14 +558,14 @@ testCycles6 = do
   innerStructGen labels =
     newSimpleStruct
       labels
-      [ ("x", mkSimpleTreeLeaf $ Int 1)
-      , ("y", mkSimpleTreeLeaf $ Int 3)
-      , ("z", mkSimpleTreeLeaf $ Int 2)
+      [ ("x", mkSimpleTreeAtom $ Int 1)
+      , ("y", mkSimpleTreeAtom $ Int 3)
+      , ("z", mkSimpleTreeAtom $ Int 2)
       ]
 
-  sy1 = newSimpleStruct ["y"] [("y", mkSimpleTreeLeaf $ Int 1)]
-  sx2 = newSimpleStruct ["x"] [("x", mkSimpleTreeLeaf $ Int 2)]
-  sz3 = newSimpleStruct ["z"] [("z", mkSimpleTreeLeaf $ Int 3)]
+  sy1 = newSimpleStruct ["y"] [("y", mkSimpleTreeAtom $ Int 1)]
+  sx2 = newSimpleStruct ["x"] [("x", mkSimpleTreeAtom $ Int 2)]
+  sz3 = newSimpleStruct ["z"] [("z", mkSimpleTreeAtom $ Int 3)]
 
   yzx = innerStructGen ["y", "z", "x"]
   xzy = innerStructGen ["x", "z", "y"]
@@ -582,7 +582,7 @@ testIncomplete = do
         @?= newStruct
           ["a", "b"]
           ( Map.fromList $
-              [ ("a", mkSimpleTreeLeaf Top)
+              [ ("a", mkSimpleTreeAtom Top)
               ,
                 ( "b"
                 , mkSimpleTree . TNBinaryOp $
@@ -590,7 +590,7 @@ testIncomplete = do
                       { trbRep = AST.Sub
                       , trbOp = undefined
                       , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                      , trbArgR = mkSimpleTreeLeaf $ Int 1
+                      , trbArgR = mkSimpleTreeAtom $ Int 1
                       }
                 )
               ]
@@ -610,8 +610,8 @@ testDup1 = do
             ( "z"
             , newSimpleStruct
                 ["y", "x"]
-                [ ("x", newSimpleStruct ["b"] [("b", mkSimpleTreeLeaf $ Int 4)])
-                , ("y", newSimpleStruct ["b"] [("b", mkSimpleTreeLeaf $ Int 4)])
+                [ ("x", newSimpleStruct ["b"] [("b", mkSimpleTreeAtom $ Int 4)])
+                , ("y", newSimpleStruct ["b"] [("b", mkSimpleTreeAtom $ Int 4)])
                 ]
             )
           ]
@@ -630,8 +630,8 @@ testDup2 = do
             ( "x"
             , newSimpleStruct
                 ["a", "c"]
-                [ ("a", mkSimpleTreeLeaf $ Int 1)
-                , ("c", mkSimpleTreeLeaf $ Int 2)
+                [ ("a", mkSimpleTreeAtom $ Int 1)
+                , ("c", mkSimpleTreeAtom $ Int 2)
                 ]
             )
           ]
@@ -650,9 +650,9 @@ testDup3 = do
             ( "x"
             , newSimpleStruct
                 ["a", "b", "c"]
-                [ ("a", mkSimpleTreeLeaf $ Int 1)
-                , ("b", mkSimpleTreeLeaf $ Int 2)
-                , ("c", mkSimpleTreeLeaf $ Int 2)
+                [ ("a", mkSimpleTreeAtom $ Int 1)
+                , ("b", mkSimpleTreeAtom $ Int 2)
+                , ("c", mkSimpleTreeAtom $ Int 2)
                 ]
             )
           ]
@@ -667,8 +667,8 @@ testRef1 = do
       val'
         @?= newSimpleStruct
           ["a", "b"]
-          [ ("a", mkSimpleTreeLeaf $ Int 4)
-          , ("b", mkSimpleTreeLeaf $ Int 4)
+          [ ("a", mkSimpleTreeAtom $ Int 4)
+          , ("b", mkSimpleTreeAtom $ Int 4)
           ]
 
 testRef2 :: IO ()
@@ -681,13 +681,13 @@ testRef2 = do
       val'
         @?= newSimpleStruct
           ["a", "x"]
-          [ ("a", mkSimpleTreeLeaf $ Int 1)
+          [ ("a", mkSimpleTreeAtom $ Int 1)
           ,
             ( "x"
             , newSimpleStruct
                 ["c", "d"]
-                [ ("c", mkSimpleTreeLeaf $ Int 1)
-                , ("d", mkSimpleTreeLeaf $ Top)
+                [ ("c", mkSimpleTreeAtom $ Int 1)
+                , ("d", mkSimpleTreeAtom $ Top)
                 ]
             )
           ]
@@ -706,8 +706,8 @@ testRef3 = do
             ( "x"
             , newSimpleStruct
                 ["a", "c"]
-                [ ("a", mkSimpleTreeLeaf $ Int 1)
-                , ("c", mkSimpleTreeLeaf $ Int 2)
+                [ ("a", mkSimpleTreeAtom $ Int 1)
+                , ("c", mkSimpleTreeAtom $ Int 2)
                 ]
             )
           ,
@@ -718,8 +718,8 @@ testRef3 = do
                   ( "y"
                   , newSimpleStruct
                       ["a", "c"]
-                      [ ("a", mkSimpleTreeLeaf $ Int 1)
-                      , ("c", mkSimpleTreeLeaf $ Int 2)
+                      [ ("a", mkSimpleTreeAtom $ Int 1)
+                      , ("c", mkSimpleTreeAtom $ Int 2)
                       ]
                   )
                 ]

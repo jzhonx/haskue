@@ -18,7 +18,7 @@ module Tree (
   Atom (..),
   TNDisj (..),
   TNRoot (..),
-  TNScalar (..),
+  TNAtom (..),
   TreeNode (..),
   TNScope (..),
   TNBinaryOp (..),
@@ -33,12 +33,12 @@ module Tree (
   goUpTC,
   insertTCBinaryOp,
   insertTCDot,
-  insertTCLeafValue,
+  insertTCAtom,
   insertTCVarLink,
   insertTCScope,
   insertTCUnaryOp,
   insertTCDisj,
-  mkTreeLeaf,
+  mkTreeAtom,
   mkTreeDisj,
   mkTNConstraint,
   pathFromTC,
@@ -203,7 +203,7 @@ instance Eq Tree where
 tnStrBldr :: Int -> Tree -> Builder
 tnStrBldr i t = case treeNode t of
   TNRoot sub -> content t i mempty [(string7 $ show StartSelector, (trRtSub sub))]
-  TNScalar leaf -> content t i (string7 (show $ trscValue leaf)) []
+  TNAtom leaf -> content t i (string7 (show $ trAmAtom leaf)) []
   TNStub -> content t i mempty []
   TNLink _ -> content t i mempty []
   TNScope s ->
@@ -229,7 +229,7 @@ tnStrBldr i t = case treeNode t of
       t
       i
       mempty
-      [ (string7 "Atom", (mkTree (TNScalar $ trCnAtom c) Nothing))
+      [ (string7 "Atom", (mkTree (TNAtom $ trCnAtom c) Nothing))
       , (string7 "Cond", trCnCnstr c)
       ]
   TNRefCycleVar -> content t i mempty []
@@ -268,7 +268,7 @@ showTreeIdent t i = LBS.unpack $ toLazyByteString $ tnStrBldr i t
 showTreeType :: Tree -> String
 showTreeType t = case treeNode t of
   TNRoot _ -> "Root"
-  TNScalar _ -> "Leaf"
+  TNAtom _ -> "Leaf"
   TNScope{} -> "Scope"
   TNList{} -> "List"
   TNUnaryOp{} -> "UnaryOp"
@@ -282,7 +282,7 @@ showTreeType t = case treeNode t of
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
   TNRoot _ -> "()"
-  TNScalar _ -> "v"
+  TNAtom _ -> "v"
   TNScope{} -> "{}"
   TNList{} -> "[]"
   TNUnaryOp o -> show $ truRep o
@@ -305,7 +305,7 @@ instance BuildASTExpr Tree where
     TNUnaryOp op -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr op
     TNBinaryOp op -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr op
     TNLink l -> buildASTExpr l
-    TNScalar s -> buildASTExpr s
+    TNAtom s -> buildASTExpr s
     TNStub -> AST.litCons AST.BottomLit
     TNConstraint _ -> buildASTExpr (fromJust $ treeOrig t)
     TNRefCycleVar -> AST.litCons AST.TopLit
@@ -327,8 +327,8 @@ data TreeNode
   | TNBinaryOp TNBinaryOp
   | -- | Unless the target is a scalar, the TNLink should not be pruned.
     TNLink TNLink
-  | -- | TNScalar contains an atom value.
-    TNScalar TNScalar
+  | -- | TNAtom contains an atom value.
+    TNAtom TNAtom
   | TNStub
   | TNConstraint TNConstraint
   | TNRefCycleVar
@@ -341,7 +341,7 @@ instance Eq TreeNode where
   (==) (TNUnaryOp o1) (TNUnaryOp o2) = o1 == o2
   (==) (TNBinaryOp o1) (TNBinaryOp o2) = o1 == o2
   (==) (TNLink l1) (TNLink l2) = l1 == l2
-  (==) (TNScalar l1) (TNScalar l2) = l1 == l2
+  (==) (TNAtom l1) (TNAtom l2) = l1 == l2
   (==) TNStub TNStub = True
   (==) (TNConstraint c1) (TNConstraint c2) = c1 == c2
   (==) TNRefCycleVar TNRefCycleVar = True
@@ -349,7 +349,7 @@ instance Eq TreeNode where
 
 instance ValueNode TreeNode where
   isValueNode n = case n of
-    TNScalar _ -> True
+    TNAtom _ -> True
     TNScope _ -> True
     TNList _ -> True
     TNDisj _ -> True
@@ -361,7 +361,7 @@ instance ValueNode TreeNode where
     TNBinaryOp _ -> False
     TNStub -> False
   isValueAtom n = case n of
-    TNScalar l -> case trscValue l of
+    TNAtom l -> case trAmAtom l of
       Top -> False
       Bottom _ -> False
       _ -> True
@@ -370,8 +370,8 @@ instance ValueNode TreeNode where
     TNScope scope -> isScopeConcrete scope
     _ -> isValueAtom n
   getScalarValue n = case n of
-    TNScalar s -> Just (trscValue s)
-    TNConstraint c -> Just (trscValue $ trCnAtom c)
+    TNAtom s -> Just (trAmAtom s)
+    TNConstraint c -> Just (trAmAtom $ trCnAtom c)
     _ -> Nothing
 
 data TNRoot = TreeRoot
@@ -559,24 +559,24 @@ substLinkTC link tc = do
             else return x
     _ -> return x
 
-data TNScalar = TreeScalar
-  { trscValue :: Atom
+data TNAtom = TreeAtom
+  { trAmAtom :: Atom
   }
 
-instance Show TNScalar where
-  show (TreeScalar v) = show v
+instance Show TNAtom where
+  show (TreeAtom v) = show v
 
-instance Eq TNScalar where
-  (==) (TreeScalar v1) (TreeScalar v2) = v1 == v2
+instance Eq TNAtom where
+  (==) (TreeAtom v1) (TreeAtom v2) = v1 == v2
 
-instance BuildASTExpr TNScalar where
-  buildASTExpr (TreeScalar v) = (aToE v)
+instance BuildASTExpr TNAtom where
+  buildASTExpr (TreeAtom v) = (aToE v)
 
-mkTreeLeaf :: Atom -> Maybe Tree -> Tree
-mkTreeLeaf v = mkTree (TNScalar $ TreeScalar{trscValue = v})
+mkTreeAtom :: Atom -> Maybe Tree -> Tree
+mkTreeAtom v = mkTree (TNAtom $ TreeAtom{trAmAtom = v})
 
 isTreeBottom :: Tree -> Bool
-isTreeBottom Tree{treeNode = TNScalar s} = case trscValue s of
+isTreeBottom Tree{treeNode = TNAtom s} = case trAmAtom s of
   Bottom _ -> True
   _ -> False
 isTreeBottom _ = False
@@ -600,8 +600,8 @@ mkTreeDisj m js = mkTree (TNDisj $ TreeDisj{trdDefault = m, trdDisjuncts = js})
 
 -- TNConstraint does not need to implement the BuildASTExpr.
 data TNConstraint = TreeConstraint
-  { trCnAtom :: TNScalar
-  , trCnOrigAtom :: TNScalar
+  { trCnAtom :: TNAtom
+  , trCnOrigAtom :: TNAtom
   -- ^ trCnOrigNode is the original atom value that was unified with other expression. Notice that the atom value can be
   -- changed by binary operations.
   , trCnCnstr :: Tree
@@ -612,7 +612,7 @@ instance Eq TNConstraint where
   (==) (TreeConstraint a1 o1 c1 _) (TreeConstraint a2 o2 c2 _) =
     a1 == a2 && c1 == c2 && o1 == o2
 
-mkTNConstraint :: TNScalar -> Tree -> (Tree -> Tree -> TreeCursor -> EvalMonad TreeCursor) -> TNConstraint
+mkTNConstraint :: TNAtom -> Tree -> (Tree -> Tree -> TreeCursor -> EvalMonad TreeCursor) -> TNConstraint
 mkTNConstraint atom cnstr unify =
   TreeConstraint
     { trCnAtom = atom
@@ -633,7 +633,7 @@ updateTNConstraintCnstr (d, t) unify c =
           else TNBinaryOp $ TreeBinaryOp{trbRep = AST.Unify, trbOp = unify, trbArgL = trCnCnstr c, trbArgR = t}
    in c{trCnCnstr = mkTree newBinOp Nothing}
 
-updateTNConstraintAtom :: TNScalar -> TNConstraint -> TNConstraint
+updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
 
 data TNRefCycle = TreeRefCycle
@@ -935,7 +935,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       >>= levelUp (BinOpSelector R)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
-  TNScalar _ -> return tc
+  TNAtom _ -> return tc
   TNConstraint _ -> return tc
   TNRefCycleVar -> return tc
   TNLink _ -> return tc
@@ -971,7 +971,7 @@ traverseTC f tc = case treeNode n of
   TNBinaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
-  TNScalar _ -> f tc
+  TNAtom _ -> f tc
   TNConstraint _ -> f tc
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
@@ -994,7 +994,7 @@ evalTC tc = case treeNode (fst tc) of
   TNBinaryOp op -> trbOp op (trbArgL op) (trbArgR op) tc
   TNConstraint c ->
     let
-      origAtom = mkTree (TNScalar $ trCnOrigAtom c) Nothing
+      origAtom = mkTree (TNAtom $ trCnOrigAtom c) Nothing
       op = mkTree (TNBinaryOp $ mkTNBinaryOp AST.Unify (trCnUnify c) origAtom (trCnCnstr c)) Nothing
       unifyTC = (op, snd tc)
      in
@@ -1018,7 +1018,7 @@ evalTC tc = case treeNode (fst tc) of
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
   TNRefCycleVar -> return tc
-  TNScalar _ -> return tc
+  TNAtom _ -> return tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
   TNRoot _ -> traverseSubNodes evalTC tc
@@ -1053,7 +1053,7 @@ followLink link tc = do
                         followLink newLink substTC
                       TNConstraint c -> do
                         dump $ printf "%s: substitutes to the atom value of the constraint" header
-                        return $ Just (mkTree (TNScalar $ trCnAtom c) Nothing, snd tc)
+                        return $ Just (mkTree (TNAtom $ trCnAtom c) Nothing, snd tc)
                       -- TNRefCycle rc -> do
                       --   dump $ printf "%s substitutes to reference cycle. go to tree %s" header (showTreeType $ trRcOrigNode rc)
                       --   followLink (trRcOrigNode rc, snd tc)
@@ -1224,9 +1224,9 @@ insertTCDot sel dotSel ue tc = do
     _ -> throwError $ printf "insertTCDot: cannot insert link to non-link node:\n%s" (show tree)
   updateTCSub sel newSub tc
 
-insertTCLeafValue :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
-insertTCLeafValue sel v tc =
-  let sub = mkTreeLeaf v Nothing
+insertTCAtom :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
+insertTCAtom sel v tc =
+  let sub = mkTreeAtom v Nothing
    in do insertTCSub sel sub tc
 
 insertTCVarLink :: (EvalEnv m) => Selector -> String -> AST.UnaryExpr -> TreeCursor -> m TreeCursor

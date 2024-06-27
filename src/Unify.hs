@@ -34,8 +34,8 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       (show d2)
       (show t2)
   res <- case (treeNode t1, treeNode t2) of
-    (TNScalar l1, _) -> unifyLeaf (d1, l1, t1) dt2 tc
-    (_, TNScalar l2) -> unifyLeaf (d2, l2, t2) dt1 tc
+    (TNAtom l1, _) -> unifyLeaf (d1, l1, t1) dt2 tc
+    (_, TNAtom l2) -> unifyLeaf (d2, l2, t2) dt1 tc
     (TNDisj dj1, _) -> unifyDisj (d1, dj1, t1) (d2, t2) tc
     (_, TNDisj dj2) -> do
       dump $ printf "unifying, sec: %s" (show t1)
@@ -49,29 +49,29 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
 {- |
 parTC points to the bin op node.
 -}
-unifyLeaf :: (EvalEnv m) => (BinOpDirect, TNScalar, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+unifyLeaf :: (EvalEnv m) => (BinOpDirect, TNAtom, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
-  case (trscValue l1, treeNode t2) of
-    (Bottom _, _) -> returnTree $ TNScalar l1
+  case (trAmAtom l1, treeNode t2) of
+    (Bottom _, _) -> returnTree $ TNAtom l1
     (Top, _) -> returnTree (treeNode t2)
-    (String x, TNScalar s) -> case trscValue s of
-      String y -> returnTree $ if x == y then TNScalar l1 else mismatch x y
+    (String x, TNAtom s) -> case trAmAtom s of
+      String y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Int x, TNScalar s) -> case trscValue s of
-      Int y -> returnTree $ if x == y then TNScalar l1 else mismatch x y
+    (Int x, TNAtom s) -> case trAmAtom s of
+      Int y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Bool x, TNScalar s) -> case trscValue s of
-      Bool y -> returnTree $ if x == y then TNScalar l1 else mismatch x y
+    (Bool x, TNAtom s) -> case trAmAtom s of
+      Bool y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Null, TNScalar s) -> case trscValue s of
-      Null -> returnTree $ TNScalar l1
+    (Null, TNAtom s) -> case trAmAtom s of
+      Null -> returnTree $ TNAtom l1
       _ -> notUnifiable dt1 dt2
     (_, TNConstraint c) ->
       if l1 == trCnAtom c
         then returnTree (TNConstraint c)
         else
           return $
-            mkTreeLeaf
+            mkTreeAtom
               (Bottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
               (treeOrig (fst parTC))
     (_, TNDisj dj2) -> do
@@ -94,7 +94,7 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
   returnTree n = return $ substTreeNode n (fst parTC)
 
   mismatch :: (Show a) => a -> a -> TreeNode
-  mismatch x y = TNScalar . TreeScalar $ Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
+  mismatch x y = TNAtom . TreeAtom $ Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
   procOther :: (EvalEnv m) => m Tree
   procOther = do
@@ -103,7 +103,7 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
       then mkCnstr (d1, l1) dt2 parTC
       else unifyOther dt2 dt1 parTC
 
-mkCnstr :: (EvalEnv m) => (BinOpDirect, TNScalar) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+mkCnstr :: (EvalEnv m) => (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 mkCnstr (_, l1) (_, t2) tc = return $ substTreeNode (TNConstraint $ mkTNConstraint l1 t2 unify) (fst tc)
 
 unifyOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
@@ -149,7 +149,7 @@ unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
 
 procLeftEvalRes :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
-  TNScalar _ -> unifyWithDir dt1 dt2 tc
+  TNAtom _ -> unifyWithDir dt1 dt2 tc
   TNDisj _ -> unifyWithDir dt1 dt2 tc
   TNScope _ -> unifyWithDir dt1 dt2 tc
   TNUnaryOp _ -> procDelay
@@ -158,7 +158,7 @@ procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
  where
   procDelay :: (EvalEnv m) => m Tree
   procDelay = case treeNode t2 of
-    TNScalar l2 -> mkCnstr (d2, l2) dt1 tc
+    TNAtom l2 -> mkCnstr (d2, l2) dt1 tc
     _ -> mkUnification dt1 dt2 (fst tc)
 
 -- | Unify two structs. The unification should take place in the pre order.
@@ -198,7 +198,7 @@ unifyStructs s1 s2 tc = do
 
   evalNode :: (EvalEnv m) => TreeCursor -> (String, Tree) -> m TreeCursor
   evalNode acc (key, node) = case treeNode (fst acc) of
-    (TNScalar (TreeScalar{trscValue = Bottom _})) -> return acc
+    (TNAtom (TreeAtom{trAmAtom = Bottom _})) -> return acc
     _ -> do
       u <- evalTC $ mkSubTC (StringSelector key) node acc
       v <- propUpTCSel (StringSelector key) u
@@ -231,7 +231,7 @@ notUnifiable :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m T
 notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
  where
   f :: (EvalEnv m) => Tree -> Tree -> m Tree
-  f x y = return $ mkTreeLeaf (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)) Nothing
+  f x y = return $ mkTreeAtom (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)) Nothing
 
 mkUnification :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> Tree -> m Tree
 mkUnification dt1 dt2 t = return $ substTreeNode (TNBinaryOp $ mkTNBinaryOpDir AST.Unify unify dt1 dt2) t
@@ -284,7 +284,7 @@ unifyDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
       TreeDisj{trdDefault = Nothing, trdDisjuncts = ds} -> do
         ds2 <- unifyOneToMany t2 ds
         treeFromNodes Nothing [ds2] origTree
-      -- let mismatch = mkTreeLeaf (Bottom $ printf "values mismatch: %s with %s" (show t1) (show ds)) Nothing
+      -- let mismatch = mkTreeAtom (Bottom $ printf "values mismatch: %s with %s" (show t1) (show ds)) Nothing
       -- maybe (return mismatch) return $ listToTree ds2 t2
       TreeDisj{trdDefault = Just df, trdDisjuncts = ds} -> do
         dump $ printf ("unifyDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)") (show t2) (show df) (show ds)
@@ -323,7 +323,7 @@ treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
     filter
       ( \x ->
           case treeNode x of
-            TNScalar (TreeScalar{trscValue = Bottom _}) -> False
+            TNAtom (TreeAtom{trAmAtom = Bottom _}) -> False
             _ -> True
       )
       (concat xs)
@@ -331,5 +331,5 @@ treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
   excludeDefault :: Maybe Tree -> Maybe Tree
   excludeDefault Nothing = Nothing
   excludeDefault (Just x) = case treeNode x of
-    TNScalar (TreeScalar{trscValue = Bottom _}) -> Nothing
+    TNAtom (TreeAtom{trAmAtom = Bottom _}) -> Nothing
     _ -> Just x
