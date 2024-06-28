@@ -140,6 +140,8 @@ instance MonadTrans EnvMaybe where
 newEvalEnvMaybe :: (EvalEnv m) => Maybe a -> EnvMaybe m a
 newEvalEnvMaybe = EnvMaybe . return
 
+-- TODO: move top out of Atom.
+
 -- | Show is only used for debugging.
 instance Show Atom where
   show (String s) = s
