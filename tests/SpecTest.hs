@@ -140,6 +140,41 @@ testBinOp2 = do
                 ]
           )
 
+testBinOpCmpEq :: IO ()
+testBinOpCmpEq = do
+  s <- readFile "tests/spec/binop_cmp_eq.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newSimpleStruct
+          ( ["i" ++ (show i) | i <- [0 .. 2]]
+              ++ ["b" ++ (show i) | i <- [0 .. 2]]
+              ++ ["s" ++ (show i) | i <- [0 .. 2]]
+              ++ ["n" ++ (show i) | i <- [0 .. 6]]
+          )
+          ( map
+              (\(k, v) -> (k, mkSimpleTreeAtom (Bool v)))
+              [ ("i0", False)
+              , ("i1", True)
+              , ("i2", False)
+              , ("b0", False)
+              , ("b1", True)
+              , ("b2", False)
+              , ("s0", False)
+              , ("s1", True)
+              , ("s2", False)
+              , ("n0", True)
+              , ("n1", False)
+              , ("n2", False)
+              , ("n3", False)
+              , ("n4", False)
+              , ("n5", False)
+              , ("n6", False)
+              ]
+          )
+
 testVars1 :: IO ()
 testVars1 = do
   s <- readFile "tests/spec/vars1.cue"
@@ -735,6 +770,7 @@ specTests =
     , testCase "unaryop" testUnaryOp
     , testCase "binop" testBinop
     , testCase "binop2" testBinOp2
+    , testCase "binop_cmp_eq" testBinOpCmpEq
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
