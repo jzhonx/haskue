@@ -94,6 +94,7 @@ data BinaryOp
   | Mul
   | Div
   | Equ
+  | NE
   deriving (Eq)
 
 instance Show BinaryOp where
@@ -104,6 +105,7 @@ instance Show BinaryOp where
   show Mul = "*"
   show Div = "/"
   show Equ = "=="
+  show NE = "!="
 
 data UnaryOp
   = Plus

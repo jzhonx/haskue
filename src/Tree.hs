@@ -409,7 +409,7 @@ instance BuildASTExpr TNScope where
                 else AST.LabelString label
           , buildASTExpr sub
           )
-     in AST.litCons $ AST.StructLit $ map processField (Map.toList (trsSubs s))
+     in AST.litCons $ AST.StructLit $ map processField [(l, trsSubs s Map.! l) | l <- trsOrdLabels s]
 
 insertScopeNode :: TNScope -> String -> Tree -> TNScope
 insertScopeNode s label sub =

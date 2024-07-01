@@ -277,8 +277,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
     | otherwise -> return $ mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
  where
   a1 = trAmAtom ta1
-  falseTree = mkTreeAtom (Bool False) Nothing
-  cmpOps = [(AST.Equ, (==))]
+  cmpOps = [(AST.Equ, (==)), (AST.NE, (/=))]
   intArithOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*)), (AST.Div, div)]
 
   uncmpAtoms :: Atom -> Atom -> Atom
@@ -286,9 +285,12 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
 
   cmpNull :: Atom -> Tree -> Tree
   cmpNull a t =
-    if a == Null
-      then falseTree
-      else mkTreeAtom (mismatch a t) Nothing
+    if
+      -- There is no way for a non-atom to be compared with a non-null atom.
+      | a /= Null -> mkTreeAtom (mismatch a t) Nothing
+      | op == AST.Equ -> mkTreeAtom (Bool False) Nothing
+      | op == AST.NE -> mkTreeAtom (Bool True) Nothing
+      | otherwise -> mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree
   mismatchArith x y = mkTreeAtom (mismatch x y) Nothing

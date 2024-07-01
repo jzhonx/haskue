@@ -38,6 +38,7 @@ binopTable =
   , ("*", Mul)
   , ("/", Div)
   , ("==", Equ)
+  , ("!=", NE)
   ]
 
 unaryOp :: Parser String
@@ -90,7 +91,7 @@ expr = do
   prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
 
   prec5 :: Parser Expression
-  prec5 = binOp prec6 (precedence (string "=="))
+  prec5 = binOp prec6 (precedence (string "==" <|> string "!="))
 
   prec2 :: Parser Expression
   prec2 = binOp prec5 (precedence (string "&"))
