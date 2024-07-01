@@ -14,6 +14,7 @@ module AST (
   Identifer,
   BinaryOp (..),
   UnaryOp (..),
+  RelOp (..),
   litCons,
   idCons,
   unaryOpCons,
@@ -86,6 +87,13 @@ data LabelName
 
 type Identifer = String
 
+data RelOp
+  = NE
+  deriving (Eq)
+
+instance Show RelOp where
+  show NE = "!="
+
 data BinaryOp
   = Unify
   | Disjunction
@@ -94,7 +102,7 @@ data BinaryOp
   | Mul
   | Div
   | Equ
-  | NE
+  | RelOp RelOp
   deriving (Eq)
 
 instance Show BinaryOp where
@@ -105,7 +113,7 @@ instance Show BinaryOp where
   show Mul = "*"
   show Div = "/"
   show Equ = "=="
-  show NE = "!="
+  show (RelOp op) = show op
 
 data UnaryOp
   = Plus

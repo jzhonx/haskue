@@ -38,7 +38,7 @@ binopTable =
   , ("*", Mul)
   , ("/", Div)
   , ("==", Equ)
-  , ("!=", NE)
+  , ("!=", RelOp NE)
   ]
 
 unaryOp :: Parser String
