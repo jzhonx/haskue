@@ -102,7 +102,7 @@ data BinaryOp
   | Mul
   | Div
   | Equ
-  | RelOp RelOp
+  | BinRelOp RelOp
   deriving (Eq)
 
 instance Show BinaryOp where
@@ -113,13 +113,14 @@ instance Show BinaryOp where
   show Mul = "*"
   show Div = "/"
   show Equ = "=="
-  show (RelOp op) = show op
+  show (BinRelOp op) = show op
 
 data UnaryOp
   = Plus
   | Minus
   | Not
   | Star
+  | UnaRelOp RelOp
   deriving (Eq)
 
 instance Show UnaryOp where
@@ -127,6 +128,7 @@ instance Show UnaryOp where
   show Minus = "-"
   show Not = "!"
   show Star = "*"
+  show (UnaRelOp op) = show op
 
 data Quote = SingleQuote | DoubleQuote deriving (Eq)
 

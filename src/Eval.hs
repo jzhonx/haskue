@@ -195,6 +195,7 @@ dispUnaryFunc op t tc = do
       (Plus, Int i) -> return $ mkTreeAtom (Int i) Nothing
       (Minus, Int i) -> return $ mkTreeAtom (Int (-i)) Nothing
       (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
+      (AST.UnaRelOp AST.NE, _) -> return $ mkTNBounds [mkBound t op] Nothing
       _ -> throwError $ printf "value %s cannot be used for %s" (show t) (show op)
     TNUnaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     TNBinaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
@@ -277,7 +278,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
     | otherwise -> return $ mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
  where
   a1 = trAmAtom ta1
-  cmpOps = [(AST.Equ, (==)), (AST.RelOp AST.NE, (/=))]
+  cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
   intArithOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*)), (AST.Div, div)]
 
   uncmpAtoms :: Atom -> Atom -> Atom
@@ -289,7 +290,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
       -- There is no way for a non-atom to be compared with a non-null atom.
       | a /= Null -> mkTreeAtom (mismatch a t) Nothing
       | op == AST.Equ -> mkTreeAtom (Bool False) Nothing
-      | op == AST.RelOp AST.NE -> mkTreeAtom (Bool True) Nothing
+      | op == AST.BinRelOp AST.NE -> mkTreeAtom (Bool True) Nothing
       | otherwise -> mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree

@@ -34,23 +34,23 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       (show d2)
       (show t2)
   res <- case (treeNode t1, treeNode t2) of
-    (TNAtom l1, _) -> unifyLeaf (d1, l1, t1) dt2 tc
-    (_, TNAtom l2) -> unifyLeaf (d2, l2, t2) dt1 tc
-    (TNDisj dj1, _) -> unifyDisj (d1, dj1, t1) (d2, t2) tc
+    (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2 tc
+    (_, TNAtom l2) -> unifyLeftAtom (d2, l2, t2) dt1 tc
+    (TNDisj dj1, _) -> unifyLeftDisj (d1, dj1, t1) (d2, t2) tc
     (_, TNDisj dj2) -> do
       dump $ printf "unifying, sec: %s" (show t1)
-      unifyDisj (d2, dj2, t2) (d1, t1) tc
+      unifyLeftDisj (d2, dj2, t2) (d1, t1) tc
     (TNScope s1, TNScope s2) -> unifyStructs s1 s2 tc
-    (TNScope _, _) -> unifyOther dt2 dt1 tc
-    _ -> unifyOther dt1 dt2 tc
+    (TNScope _, _) -> unifyLeftOther dt2 dt1 tc
+    _ -> unifyLeftOther dt1 dt2 tc
   dump $ printf ("unifying, path: %s:, res:\n%s") (show $ pathFromTC tc) (show res)
   return res
 
 {- |
 parTC points to the bin op node.
 -}
-unifyLeaf :: (EvalEnv m) => (BinOpDirect, TNAtom, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
+unifyLeftAtom :: (EvalEnv m) => (BinOpDirect, TNAtom, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
   case (trAmAtom l1, treeNode t2) of
     (Bottom _, _) -> returnTree $ TNAtom l1
     (Top, _) -> returnTree (treeNode t2)
@@ -66,6 +66,9 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
     (Null, TNAtom s) -> case trAmAtom s of
       Null -> returnTree $ TNAtom l1
       _ -> notUnifiable dt1 dt2
+    (_, TNBounds b) -> do
+      dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
+      returnTree $ TNAtom $ TreeAtom $ unifyAtomBounds (d1, (trAmAtom l1)) (d2, (trBdList b))
     (_, TNConstraint c) ->
       if l1 == trCnAtom c
         then returnTree (TNConstraint c)
@@ -75,14 +78,14 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
               (Bottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
               (treeOrig (fst parTC))
     (_, TNDisj dj2) -> do
-      dump $ printf "unifyLeaf: TNDisj %s, %s" (show t2) (show t1)
-      unifyDisj (d2, dj2, t2) (d1, t1) parTC
+      dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
+      unifyLeftDisj (d2, dj2, t2) (d1, t1) parTC
     (_, TNUnaryOp _) -> procOther
     (_, TNBinaryOp op) -> case trbRep op of
       -- Unifying an atom with a marked disjunction will not get the same atom. So we do not create a constraint.
       -- Another way is to add a field in Constraint to store whether the constraint is created from a marked
       -- disjunction.
-      AST.Disjunction -> unifyOther dt2 dt1 parTC
+      AST.Disjunction -> unifyLeftOther dt2 dt1 parTC
       _ -> procOther
     (_, TNRefCycleVar) -> procOther
     (_, TNLink _) -> procOther
@@ -101,13 +104,45 @@ unifyLeaf (d1, l1, t1) dt2@(d2, t2) parTC = do
     Config{cfCreateCnstr = cc} <- ask
     if cc
       then mkCnstr (d1, l1) dt2 parTC
-      else unifyOther dt2 dt1 parTC
+      else unifyLeftOther dt2 dt1 parTC
+
+-- The bounds must have evaluated atoms endpoints.
+unifyAtomBounds :: (BinOpDirect, Atom) -> (BinOpDirect, [Bound]) -> Atom
+unifyAtomBounds (d1, a1) (d2, bs) =
+  let
+    cs = map withBound bs
+   in
+    foldl (\_ x -> if x == a1 then a1 else x) a1 cs
+ where
+  withBound :: Bound -> Atom
+  withBound b = case treeNode (bdEp b) of
+    TNAtom a -> atomBound (bdOpRep b) (trAmAtom a)
+    _ -> Bottom "bound endpoint not evaluated"
+
+  intsCmpOps = [(AST.UnaRelOp AST.NE, (/=))]
+
+  atomBound :: AST.UnaryOp -> Atom -> Atom
+  atomBound op a2 = case (a1, a2) of
+    -- TODO: move the compare function to Bound itself.
+    (Int x, Int y) -> case lookup op intsCmpOps of
+      Just f ->
+        if dirApply f (d1, x) y
+          then a1
+          else Bottom $ printf "%s is not bounded by %s%s" (show a1) (show op) (show a2)
+      Nothing -> Bottom $ printf "unsupported unary op %s for %s" (show op) (show a1)
+    (String x, String y) -> undefined
+    (Bool x, Bool y) -> undefined
+    (Null, Null) -> undefined
+    _ -> Bottom $ printf "values %s and %s are not comparable" (show a1) (show a2)
+
+dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
+dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mkCnstr :: (EvalEnv m) => (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 mkCnstr (_, l1) (_, t2) tc = return $ substTreeNode (TNConstraint $ mkTNConstraint l1 t2 unify) (fst tc)
 
-unifyOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
+unifyLeftOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   (TNUnaryOp _, _) -> evalOrDelay
   (TNBinaryOp _, _) -> evalOrDelay
   (TNConstraint c1, _) ->
@@ -123,7 +158,7 @@ unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
     substTC1 <- substLinkTC l $ mkSubTC (BinOpSelector d1) t1 tc
     case treeNode (fst substTC1) of
       TNLink _ -> do
-        dump $ printf "unifyOther: TNLink %s, is still evaluated to TNLink %s" (show t1) (show $ fst substTC1)
+        dump $ printf "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s" (show t1) (show $ fst substTC1)
         mkUnification dt1 dt2 (fst tc)
       _ -> unifyWithDir (d1, fst substTC1) dt2 tc
   _ -> notUnifiable dt1 dt2
@@ -134,11 +169,11 @@ unifyOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
      in do
           x <- evalTC subTC
           dump $
-            printf "unifyOther, path: %s, %s is evaluated to %s" (show $ pathFromTC tc) (show t1) (show $ fst x)
+            printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show $ pathFromTC tc) (show t1) (show $ fst x)
           updatedTC <- propUpTCSel (BinOpSelector d1) x
           dump $
             printf
-              "unifyOther, path: %s, starts proc left results. %s: %s, %s: %s, tc:\n%s"
+              "unifyLeftOther, path: %s, starts proc left results. %s: %s, %s: %s, tc:\n%s"
               (show $ pathFromTC updatedTC)
               (show d1)
               (show $ fst x)
@@ -152,6 +187,7 @@ procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
   TNAtom _ -> unifyWithDir dt1 dt2 tc
   TNDisj _ -> unifyWithDir dt1 dt2 tc
   TNScope _ -> unifyWithDir dt1 dt2 tc
+  TNBounds _ -> unifyWithDir dt1 dt2 tc
   TNUnaryOp _ -> procDelay
   TNBinaryOp _ -> procDelay
   _ -> mkUnification dt1 dt2 (fst tc)
@@ -236,11 +272,11 @@ notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
 mkUnification :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> Tree -> m Tree
 mkUnification dt1 dt2 t = return $ substTreeNode (TNBinaryOp $ mkTNBinaryOpDir AST.Unify unify dt1 dt2) t
 
-unifyDisj :: (EvalEnv m) => (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
+unifyLeftDisj :: (EvalEnv m) => (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+unifyLeftDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
   dump $
     printf
-      ("unifyDisj: starts evaluation, path: %s, %s: %s, %s: %s")
+      ("unifyLeftDisj: starts evaluation, path: %s, %s: %s, %s: %s")
       (show $ pathFromTC tc)
       (show d1)
       (show t1)
@@ -251,7 +287,7 @@ unifyDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
   let t2 = fst evaledTC2
   dump $
     printf
-      ("unifyDisj: path: %s, after evaluation, %s: %s, %s: %s")
+      ("unifyLeftDisj: path: %s, after evaluation, %s: %s, %s: %s")
       (show $ pathFromTC tc)
       (show d1)
       (show t1)
@@ -265,19 +301,19 @@ unifyDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
         treeFromNodes Nothing ds origTree
       -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
       (TreeDisj{trdDefault = Just df1, trdDisjuncts = ds1}, TreeDisj{trdDefault = Nothing, trdDisjuncts = ds2}) -> do
-        dump $ printf ("unifyDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s") (show df1) (show ds1) (show ds2)
+        dump $ printf ("unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s") (show df1) (show ds1) (show ds2)
         dfs <- unifyOneToMany df1 ds2
         df <- treeFromNodes Nothing [dfs] Nothing
         ds <- mapM (`unifyOneToMany` ds2) ds1
         treeFromNodes (Just df) ds origTree
       -- this is also the U1 rule.
-      (TreeDisj{trdDefault = Nothing}, TreeDisj{}) -> unifyDisj (d2, dj2, t2) (d1, t1) tc
+      (TreeDisj{trdDefault = Nothing}, TreeDisj{}) -> unifyLeftDisj (d2, dj2, t2) (d1, t1) tc
       -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
       (TreeDisj{trdDefault = Just df1, trdDisjuncts = ds1}, TreeDisj{trdDefault = Just df2, trdDisjuncts = ds2}) -> do
-        dump $ printf ("unifyDisj: U2, df1: %s, ds1: %s, df2: %s, ds2: %s") (show df1) (show ds1) (show df2) (show ds2)
+        dump $ printf ("unifyLeftDisj: U2, df1: %s, ds1: %s, df2: %s, ds2: %s") (show df1) (show ds1) (show df2) (show ds2)
         df <- unifyToTree df1 df2 tc
         ds <- mapM (`unifyOneToMany` ds2) ds1
-        dump $ printf ("unifyDisj: U2, df: %s, ds: %s") (show df) (show ds)
+        dump $ printf ("unifyLeftDisj: U2, df: %s, ds: %s") (show df) (show ds)
         treeFromNodes (Just df) ds origTree
     -- this is the case for a disjunction unified with a value.
     _ -> case dj1 of
@@ -287,12 +323,12 @@ unifyDisj (d1, dj1, t1) (d2, unevaledT2) tc = do
       -- let mismatch = mkTreeAtom (Bottom $ printf "values mismatch: %s with %s" (show t1) (show ds)) Nothing
       -- maybe (return mismatch) return $ listToTree ds2 t2
       TreeDisj{trdDefault = Just df, trdDisjuncts = ds} -> do
-        dump $ printf ("unifyDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)") (show t2) (show df) (show ds)
+        dump $ printf ("unifyLeftDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)") (show t2) (show df) (show ds)
         df2 <- unifyToTree df t2 tc
         ds2 <- unifyOneToMany t2 ds
-        dump $ printf ("unifyDisj: U1, df2: %s, ds2: %s") (show df2) (show ds2)
+        dump $ printf ("unifyLeftDisj: U1, df2: %s, ds2: %s") (show df2) (show ds2)
         r <- treeFromNodes (Just df2) [ds2] origTree
-        dump $ printf ("unifyDisj: U1, result: %s") (show r)
+        dump $ printf ("unifyLeftDisj: U1, result: %s") (show r)
         return r
  where
   unifyOneToMany :: (EvalEnv m) => Tree -> [Tree] -> m [Tree]

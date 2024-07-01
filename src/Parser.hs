@@ -38,11 +38,11 @@ binopTable =
   , ("*", Mul)
   , ("/", Div)
   , ("==", Equ)
-  , ("!=", RelOp NE)
+  , ("!=", BinRelOp NE)
   ]
 
 unaryOp :: Parser String
-unaryOp = fmap (: []) (oneOf "+-!*")
+unaryOp = try (string "!=") <|> string "+" <|> string "-" <|> string "*" <|> string "!"
 
 unaryOpTable :: [(String, UnaryOp)]
 unaryOpTable =
@@ -50,6 +50,7 @@ unaryOpTable =
   , ("-", Minus)
   , ("!", Not)
   , ("*", Star)
+  , ("!=", UnaRelOp NE)
   ]
 
 comment :: Parser ()
@@ -102,9 +103,9 @@ expr = do
 unaryExpr :: Parser UnaryExpr
 unaryExpr = do
   skipElements
-  op' <- optionMaybe unaryOp
+  opM <- optionMaybe unaryOp
   skipElements
-  case op' of
+  case opM of
     Nothing -> UnaryExprPrimaryExpr <$> primaryExpr
     Just op -> do
       e <- unaryExpr
