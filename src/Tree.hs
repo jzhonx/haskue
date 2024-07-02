@@ -60,12 +60,12 @@ module Tree (
   propUpTCSel,
   substLinkTC,
   mkTNBinaryOpDir,
-  mkBound,
   mkTNBounds,
   isTreeBottom,
   getScalarValue,
   setOrigNodesTC,
   substTreeNode,
+  bdOpRep,
 )
 where
 
@@ -650,26 +650,61 @@ updateTNConstraintCnstr (d, t) unify c =
 updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
 
-data Bound = Bound
-  { bdEp :: Tree
-  , bdOpRep :: AST.UnaryOp
-  }
+data Bound
+  = BdNE Integer
+  | BdLT Integer
+  | BdLE Integer
+  | BdGT Integer
+  | BdGE Integer
+  deriving (Eq, Ord)
 
-instance Eq Bound where
-  (==) (Bound e1 r1) (Bound e2 r2) = e1 == e2 && r1 == r2
+bdOpRep :: Bound -> AST.UnaryOp
+bdOpRep b = AST.UnaRelOp $ case b of
+  BdNE _ -> AST.NE
+  BdLT _ -> AST.LT
+  BdLE _ -> AST.LE
+  BdGT _ -> AST.GT
+  BdGE _ -> AST.GE
+
+bpEpRep :: Bound -> AST.Literal
+bpEpRep b = case b of
+  BdNE v -> AST.IntLit v
+  BdLT v -> AST.IntLit v
+  BdLE v -> AST.IntLit v
+  BdGT v -> AST.IntLit v
+  BdGE v -> AST.IntLit v
+
+bdEpStrRep :: Bound -> String
+bdEpStrRep b = show $ case b of
+  BdNE v -> v
+  BdLT v -> v
+  BdLE v -> v
+  BdGT v -> v
+  BdGE v -> v
+
+instance Show Bound where
+  show b = printf "%s%s" (show $ bdOpRep b) (bdEpStrRep b)
+
+-- data Bound = Bound
+--   { bdEp :: Tree
+--   , bdOpRep :: AST.UnaryOp
+--   }
+
+-- instance Eq Bound where
+--   (==) (Bound e1 r1) (Bound e2 r2) = e1 == e2 && r1 == r2
 
 instance TreeRepBuilder Bound where
-  repTree i b = char7 '(' <> string7 (show $ bdOpRep b) <> char7 ' ' <> repTree (i + 1) (bdEp b) <> char7 ')'
+  repTree _ b = char7 '(' <> string7 (show b) <> char7 ')'
 
 instance BuildASTExpr Bound where
   buildASTExpr b =
     AST.ExprUnaryExpr $
       AST.UnaryExprUnaryOp
         (bdOpRep b)
-        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpExpression $ buildASTExpr (bdEp b))
+        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral $ bpEpRep b)
 
-mkBound :: Tree -> AST.UnaryOp -> Bound
-mkBound ep r = Bound{bdEp = ep, bdOpRep = r}
+-- mkBound :: Tree -> AST.UnaryOp -> Bound
+-- mkBound ep r = Bound{bdEp = ep, bdOpRep = r}
 
 data TNBounds = TreeBounds
   { trBdList :: [Bound]
@@ -710,12 +745,12 @@ insertSubTree parent sel sub =
             throwError errMsg
         ListSelector i -> case parentNode of
           TNList vs -> returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
-          TNBounds b ->
-            let
-              l = trBdList b
-              origBound = l !! i
-             in
-              returnTree $ TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = sub}] ++ drop (i + 1) l}
+          -- TNBounds b ->
+          --   let
+          --     l = trBdList b
+          --     origBound = l !! i
+          --    in
+          --     returnTree $ TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = sub}] ++ drop (i + 1) l}
           _ -> throwError errMsg
         UnaryOpSelector -> case parentNode of
           TNUnaryOp op -> returnTree $ TNUnaryOp $ op{truArg = sub}
@@ -759,9 +794,9 @@ goTreeSel sel t =
           _ -> Nothing
         ListSelector i -> case node of
           TNList vs -> (trLstSubs vs) !? i
-          TNBounds b -> do
-            l <- (trBdList b) !? i
-            return (bdEp l)
+          -- TNBounds b -> do
+          --   l <- (trBdList b) !? i
+          --   return (bdEp l)
           _ -> Nothing
         UnaryOpSelector -> case node of
           TNUnaryOp op -> Just (truArg op)
@@ -893,13 +928,13 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return (substTreeNode l parT, cs)
-    TNBounds b ->
-      let
-        l = trBdList b
-        origBound = l !! i
-        nl = TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = subT}] ++ drop (i + 1) l}
-       in
-        return (substTreeNode nl parT, cs)
+    -- TNBounds b ->
+    --   let
+    --     l = trBdList b
+    --     origBound = l !! i
+    --     nl = TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = subT}] ++ drop (i + 1) l}
+    --    in
+    --     return (substTreeNode nl parT, cs)
     _ -> throwError insertErrMsg
   UnaryOpSelector -> case parNode of
     TNUnaryOp op -> return (substTreeNode (TNUnaryOp $ op{truArg = subT}) parT, cs)
@@ -981,15 +1016,16 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       >>= getSubTC (BinOpSelector R)
       >>= f
       >>= levelUp (BinOpSelector R)
-  TNBounds b ->
-    let
-      goSub :: (EvalEnv m) => TreeCursor -> Selector -> m TreeCursor
-      goSub acc sel = getSubTC sel acc >>= f >>= levelUp sel
-     in
-      foldM goSub tc (map ListSelector [0 .. length (trBdList b) - 1])
+  -- TNBounds b ->
+  --   let
+  --     goSub :: (EvalEnv m) => TreeCursor -> Selector -> m TreeCursor
+  --     goSub acc sel = getSubTC sel acc >>= f >>= levelUp sel
+  --    in
+  --     foldM goSub tc (map ListSelector [0 .. length (trBdList b) - 1])
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
   TNAtom _ -> return tc
+  TNBounds _ -> return tc
   TNConstraint _ -> return tc
   TNRefCycleVar -> return tc
   TNLink _ -> return tc
@@ -1023,10 +1059,11 @@ traverseTC f tc = case treeNode n of
   TNDisj _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNUnaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNBinaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
-  TNBounds _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
   TNAtom _ -> f tc
+  TNBounds _ -> f tc
+  -- TNBounds _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNConstraint _ -> f tc
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
@@ -1071,7 +1108,8 @@ evalTC tc = case treeNode (fst tc) of
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
-  TNBounds _ -> traverseSubNodes evalTC tc
+  TNBounds _ -> return tc
+  -- TNBounds _ -> traverseSubNodes evalTC tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
   TNRoot _ -> traverseSubNodes evalTC tc

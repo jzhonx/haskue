@@ -33,6 +33,7 @@ import Data.ByteString.Builder (
   string7,
   toLazyByteString,
  )
+import Prelude hiding (GT, LT)
 
 data Expression
   = ExprUnaryExpr UnaryExpr
@@ -89,10 +90,18 @@ type Identifer = String
 
 data RelOp
   = NE
-  deriving (Eq)
+  | LT
+  | LE
+  | GT
+  | GE
+  deriving (Eq, Ord)
 
 instance Show RelOp where
   show NE = "!="
+  show LT = "<"
+  show LE = "<="
+  show GT = ">"
+  show GE = ">="
 
 data BinaryOp
   = Unify
@@ -103,7 +112,7 @@ data BinaryOp
   | Div
   | Equ
   | BinRelOp RelOp
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 instance Show BinaryOp where
   show Unify = "&"
@@ -121,7 +130,7 @@ data UnaryOp
   | Not
   | Star
   | UnaRelOp RelOp
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 instance Show UnaryOp where
   show Plus = "+"

@@ -195,8 +195,12 @@ dispUnaryFunc op t tc = do
       (Plus, Int i) -> return $ mkTreeAtom (Int i) Nothing
       (Minus, Int i) -> return $ mkTreeAtom (Int (-i)) Nothing
       (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
-      (AST.UnaRelOp AST.NE, _) -> return $ mkTNBounds [mkBound t op] Nothing
-      _ -> throwError $ printf "value %s cannot be used for %s" (show t) (show op)
+      (AST.UnaRelOp AST.NE, Int i) -> return $ mkTNBounds [BdNE i] Nothing
+      (AST.UnaRelOp AST.LT, Int i) -> return $ mkTNBounds [BdLT i] Nothing
+      (AST.UnaRelOp AST.LE, Int i) -> return $ mkTNBounds [BdLE i] Nothing
+      (AST.UnaRelOp AST.GT, Int i) -> return $ mkTNBounds [BdGT i] Nothing
+      (AST.UnaRelOp AST.GE, Int i) -> return $ mkTNBounds [BdGE i] Nothing
+      _ -> throwError $ printf "%s cannot be used for %s" (show t) (show op)
     TNUnaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     TNBinaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     _ -> throwError $ printf "value %s cannot be used for %s" (show t) (show op)

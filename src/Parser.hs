@@ -22,7 +22,7 @@ import Text.ParserCombinators.Parsec (
   (<?>),
   (<|>),
  )
-import Prelude hiding (null)
+import Prelude hiding (GT, LT, null)
 
 parseCUE :: (MonadError String m) => String -> m Expression
 parseCUE s = case parse expr "" s of
@@ -42,7 +42,16 @@ binopTable =
   ]
 
 unaryOp :: Parser String
-unaryOp = try (string "!=") <|> string "+" <|> string "-" <|> string "*" <|> string "!"
+unaryOp =
+  try (string "!=")
+    <|> try (string "<=")
+    <|> string "<"
+    <|> try (string ">=")
+    <|> string ">"
+    <|> string "+"
+    <|> string "-"
+    <|> string "*"
+    <|> string "!"
 
 unaryOpTable :: [(String, UnaryOp)]
 unaryOpTable =
@@ -51,6 +60,10 @@ unaryOpTable =
   , ("!", Not)
   , ("*", Star)
   , ("!=", UnaRelOp NE)
+  , ("<", UnaRelOp AST.LT)
+  , ("<=", UnaRelOp LE)
+  , (">", UnaRelOp AST.GT)
+  , (">=", UnaRelOp GE)
   ]
 
 comment :: Parser ()

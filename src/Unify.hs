@@ -6,7 +6,7 @@
 module Unify (unify) where
 
 import qualified AST
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import qualified Data.Map.Strict as Map
@@ -41,6 +41,9 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       dump $ printf "unifying, sec: %s" (show t1)
       unifyLeftDisj (d2, dj2, t2) (d1, t1) tc
     (TNScope s1, TNScope s2) -> unifyStructs s1 s2 tc
+    (TNBounds b1, TNBounds b2) -> case unifyBoundList (d1, (trBdList b1)) (d2, (trBdList b2)) of
+      Left err -> return $ mkTreeAtom (Bottom err) Nothing
+      Right bs -> return $ mkTNBounds bs Nothing
     (TNScope _, _) -> unifyLeftOther dt2 dt1 tc
     _ -> unifyLeftOther dt1 dt2 tc
   dump $ printf ("unifying, path: %s:, res:\n%s") (show $ pathFromTC tc) (show res)
@@ -106,7 +109,6 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
       then mkCnstr (d1, l1) dt2 parTC
       else unifyLeftOther dt2 dt1 parTC
 
--- The bounds must have evaluated atoms endpoints.
 unifyAtomBounds :: (BinOpDirect, Atom) -> (BinOpDirect, [Bound]) -> Atom
 unifyAtomBounds (d1, a1) (d2, bs) =
   let
@@ -115,31 +117,115 @@ unifyAtomBounds (d1, a1) (d2, bs) =
     foldl (\_ x -> if x == a1 then a1 else x) a1 cs
  where
   withBound :: Bound -> Atom
-  withBound b = case treeNode (bdEp b) of
-    TNAtom a -> atomBound (bdOpRep b) (trAmAtom a)
-    _ -> Bottom "bound endpoint not evaluated"
+  withBound b = case a1 of
+    Int x -> case b of
+      BdNE y -> cmp (/=) (d1, x) y b
+      BdLT y -> cmp (<) (d1, x) y b
+      BdLE y -> cmp (<=) (d1, x) y b
+      BdGT y -> cmp (>) (d1, x) y b
+      BdGE y -> cmp (>=) (d1, x) y b
+    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show b) (show a1)
 
-  intsCmpOps = [(AST.UnaRelOp AST.NE, (/=))]
-
-  atomBound :: AST.UnaryOp -> Atom -> Atom
-  atomBound op a2 = case (a1, a2) of
-    -- TODO: move the compare function to Bound itself.
-    (Int x, Int y) -> case lookup op intsCmpOps of
-      Just f ->
-        if dirApply f (d1, x) y
-          then a1
-          else Bottom $ printf "%s is not bounded by %s%s" (show a1) (show op) (show a2)
-      Nothing -> Bottom $ printf "unsupported unary op %s for %s" (show op) (show a1)
-    (String x, String y) -> undefined
-    (Bool x, Bool y) -> undefined
-    (Null, Null) -> undefined
-    _ -> Bottom $ printf "values %s and %s are not comparable" (show a1) (show a2)
+  cmp :: (a -> a -> Bool) -> (BinOpDirect, a) -> a -> Bound -> Atom
+  cmp f (d, x) y bound =
+    if dirApply f (d, x) y
+      then a1
+      else Bottom $ printf "%s is not bounded by %s" (show a1) (show bound)
 
 dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mkCnstr :: (EvalEnv m) => (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 mkCnstr (_, l1) (_, t2) tc = return $ substTreeNode (TNConstraint $ mkTNConstraint l1 t2 unify) (fst tc)
+
+unifyBoundList :: (BinOpDirect, [Bound]) -> (BinOpDirect, [Bound]) -> Either String [Bound]
+unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
+  ([], _) -> return bs2
+  (_, []) -> return bs1
+  _ -> do
+    nbm1 <- normalizedBoundMap bs1
+    nbm2 <- normalizedBoundMap bs2
+    let
+      bm = Map.unionWith (++) nbm1 nbm2
+      ordList =
+        fst $
+          foldr
+            ( \k (acc, s) ->
+                if Set.member k s
+                  then (acc, s)
+                  else (k : acc, Set.insert k s)
+            )
+            ([], Set.empty)
+            (map bdOpRep (bs1 ++ bs2))
+    return $ concat $ map (\k -> bm Map.! k) ordList
+
+normalizeBounds :: [Bound] -> Either String [Bound]
+normalizeBounds bs = do
+  normedBM <- forM bm narrowBounds
+  let flattened = map (\k -> normedBM Map.! k) ordList
+  return $ concat flattened
+ where
+  ordList = map bdOpRep bs
+  bm = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdOpRep b, [b])) bs)
+
+normalizedBoundMap :: [Bound] -> Either String (Map.Map AST.UnaryOp [Bound])
+normalizedBoundMap bs = forM bm narrowBounds
+ where
+  bm = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdOpRep b, [b])) bs)
+
+-- | Narrow the bounds to the smallest set of bounds for the same bound type.
+narrowBounds :: [Bound] -> Either String [Bound]
+narrowBounds xs = case xs of
+  [] -> return []
+  x : rs ->
+    let
+      f acc y =
+        if length acc == 1
+          then unifyBounds (L, head acc) (L, y)
+          else Left "bounds mismatch"
+     in
+      foldM f [x] rs
+
+unifyBounds :: (BinOpDirect, Bound) -> (BinOpDirect, Bound) -> Either String [Bound]
+unifyBounds db1@(d1, b1) db2@(d2, b2) = case b1 of
+  BdNE x -> case b2 of
+    BdNE y -> return $ if x == y then [b1] else newOrdBounds
+    BdLT y -> if x < y then Left conflict else return newOrdBounds
+    BdLE y -> if x <= y then Left conflict else return newOrdBounds
+    BdGT y -> if x > y then Left conflict else return newOrdBounds
+    BdGE y -> if x >= y then Left conflict else return newOrdBounds
+  BdLT x -> case b2 of
+    BdNE _ -> unifyBounds db2 db1
+    BdLT y -> return $ if x < y then [b1] else [b2]
+    BdLE y -> return $ if x <= y then [b1] else [b2]
+    BdGT y -> if x <= y then Left conflict else return newOrdBounds
+    BdGE y -> if x <= y then Left conflict else return newOrdBounds
+  BdLE x -> case b2 of
+    BdNE _ -> unifyBounds db2 db1
+    BdLT _ -> unifyBounds db2 db1
+    BdLE y -> return $ if x <= y then [b1] else [b2]
+    BdGT y -> if x <= y then Left conflict else return newOrdBounds
+    BdGE y -> if x < y then Left conflict else return newOrdBounds
+  BdGT x -> case b2 of
+    BdNE _ -> unifyBounds db2 db1
+    BdLT _ -> unifyBounds db2 db1
+    BdLE _ -> unifyBounds db2 db1
+    BdGT y -> return $ if x > y then [b1] else [b2]
+    BdGE y -> return $ if x >= y then [b1] else [b2]
+  BdGE x -> case b2 of
+    BdNE _ -> unifyBounds db2 db1
+    BdLT _ -> unifyBounds db2 db1
+    BdLE _ -> unifyBounds db2 db1
+    BdGT _ -> unifyBounds db2 db1
+    BdGE y -> return $ if x >= y then [b1] else [b2]
+ where
+  conflict :: String
+  conflict = printf "bounds %s and %s conflict" (show b1) (show b2)
+
+  newOrdBounds :: [Bound]
+  newOrdBounds = if d1 == L then [b1, b2] else [b2, b1]
+
+-- AST.UnaRelOp AST.LT -> if ep1 < ep2 then [b1] else [b2]
 
 unifyLeftOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
