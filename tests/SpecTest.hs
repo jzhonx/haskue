@@ -371,9 +371,9 @@ testDisj3 = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
-        @?= newSimpleStruct
+    Right v ->
+      cmpStructs v $
+        newSimpleStruct
           ( ["a" ++ (show i) | i <- [0 .. 2]]
               ++ ["b" ++ (show i) | i <- [0 .. 1]]
               ++ ["c" ++ (show i) | i <- [0 .. 3]]
@@ -829,3 +829,10 @@ specTests =
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
     ]
+
+cmpStructs :: Tree -> Tree -> IO ()
+cmpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
+  assertEqual "labels" (trsOrdLabels exp) (trsOrdLabels act)
+  assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
+  mapM_ (\(k, v) -> assertEqual k v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
+  mapM_ (\(k, v) -> assertEqual k (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
