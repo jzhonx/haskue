@@ -35,16 +35,16 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       (show t2)
   res <- case (treeNode t1, treeNode t2) of
     (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2 tc
+    -- Below is the earliest time to create a constraint
     (_, TNAtom l2) -> unifyLeftAtom (d2, l2, t2) dt1 tc
     (TNDisj dj1, _) -> unifyLeftDisj (d1, dj1, t1) (d2, t2) tc
     (_, TNDisj dj2) -> do
       dump $ printf "unifying, sec: %s" (show t1)
       unifyLeftDisj (d2, dj2, t2) (d1, t1) tc
-    (TNScope s1, TNScope s2) -> unifyStructs s1 s2 tc
+    (TNScope s1, _) -> unifyLeftStruct (d1, s1, t1) dt2 tc
     (TNBounds b1, TNBounds b2) -> case unifyBoundList (d1, (trBdList b1)) (d2, (trBdList b2)) of
       Left err -> return $ mkTreeAtom (Bottom err) Nothing
       Right bs -> return $ mkTNBounds bs Nothing
-    (TNScope _, _) -> unifyLeftOther dt2 dt1 tc
     _ -> unifyLeftOther dt1 dt2 tc
   dump $ printf ("unifying, path: %s:, res:\n%s") (show $ pathFromTC tc) (show res)
   return res
@@ -225,8 +225,6 @@ unifyBounds db1@(d1, b1) db2@(d2, b2) = case b1 of
   newOrdBounds :: [Bound]
   newOrdBounds = if d1 == L then [b1, b2] else [b2, b1]
 
--- AST.UnaRelOp AST.LT -> if ep1 < ep2 then [b1] else [b2]
-
 unifyLeftOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   (TNUnaryOp _, _) -> evalOrDelay
@@ -283,9 +281,13 @@ procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
     TNAtom l2 -> mkCnstr (d2, l2) dt1 tc
     _ -> mkUnification dt1 dt2 (fst tc)
 
--- | Unify two structs. The unification should take place in the pre order.
-unifyStructs :: (EvalEnv m) => TNScope -> TNScope -> TreeCursor -> m Tree
-unifyStructs s1 s2 tc = do
+unifyLeftStruct :: (EvalEnv m) => (BinOpDirect, TNScope, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
+unifyLeftStruct (d1, s1, t1) (d2, t2) tc = case treeNode t2 of
+  TNScope s2 -> unifyStructs (d1, s1) (d2, s2) tc
+  _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+
+unifyStructs :: (EvalEnv m) => (BinOpDirect, TNScope) -> (BinOpDirect, TNScope) -> TreeCursor -> m Tree
+unifyStructs (d1, s1) (d2, s2) tc = do
   let utc = (nodesToScope allNodes (fst tc), snd tc)
   dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (fst utc))
   u <- evalAllNodes utc
