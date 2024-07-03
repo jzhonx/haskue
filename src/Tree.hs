@@ -66,6 +66,7 @@ module Tree (
   setOrigNodesTC,
   substTreeNode,
   bdOpRep,
+  aToLiteral,
 )
 where
 
@@ -96,14 +97,6 @@ import Text.Printf (printf)
 
 dump :: (MonadLogger m) => String -> m ()
 dump = logDebugN . pack
-
-data Atom
-  = Top
-  | String String
-  | Int Integer
-  | Bool Bool
-  | Null
-  | Bottom String
 
 type EvalEnv m = (MonadError String m, MonadLogger m, MonadReader Config m)
 
@@ -145,6 +138,14 @@ newEvalEnvMaybe :: (EvalEnv m) => Maybe a -> EnvMaybe m a
 newEvalEnvMaybe = EnvMaybe . return
 
 -- TODO: move top out of Atom.
+data Atom
+  = Top
+  | String String
+  | Int Integer
+  | Bool Bool
+  | Null
+  | Bottom String
+  deriving (Ord)
 
 -- | Show is only used for debugging.
 instance Show Atom where
@@ -164,19 +165,17 @@ instance Eq Atom where
   (==) Null Null = True
   (==) _ _ = False
 
-aToE :: Atom -> AST.Expression
-aToE Top = AST.litCons AST.TopLit
-aToE (String s) =
-  AST.litCons
-    ( AST.StringLit
-        ( AST.SimpleStringLit
-            ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
-        )
-    )
-aToE (Int i) = AST.litCons (AST.IntLit i)
-aToE (Bool b) = AST.litCons (AST.BoolLit b)
-aToE Null = AST.litCons AST.NullLit
-aToE (Bottom _) = AST.litCons AST.BottomLit
+instance BuildASTExpr Atom where
+  buildASTExpr = AST.litCons . aToLiteral
+
+aToLiteral :: Atom -> AST.Literal
+aToLiteral a = case a of
+  Top -> AST.TopLit
+  String s -> AST.StringLit $ AST.SimpleStringLit ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
+  Int i -> AST.IntLit i
+  Bool b -> AST.BoolLit b
+  Null -> AST.NullLit
+  Bottom _ -> AST.BottomLit
 
 class ValueNode a where
   isValueNode :: a -> Bool
@@ -584,7 +583,7 @@ instance Eq TNAtom where
   (==) (TreeAtom v1) (TreeAtom v2) = v1 == v2
 
 instance BuildASTExpr TNAtom where
-  buildASTExpr (TreeAtom v) = (aToE v)
+  buildASTExpr (TreeAtom v) = buildASTExpr v
 
 mkTreeAtom :: Atom -> Maybe Tree -> Tree
 mkTreeAtom v = mkTree (TNAtom $ TreeAtom{trAmAtom = v})
@@ -651,7 +650,7 @@ updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
 
 data Bound
-  = BdNE Integer
+  = BdNE Atom
   | BdLT Integer
   | BdLE Integer
   | BdGT Integer
@@ -668,30 +667,22 @@ bdOpRep b = AST.UnaRelOp $ case b of
 
 bpEpRep :: Bound -> AST.Literal
 bpEpRep b = case b of
-  BdNE v -> AST.IntLit v
+  BdNE v -> aToLiteral v
   BdLT v -> AST.IntLit v
   BdLE v -> AST.IntLit v
   BdGT v -> AST.IntLit v
   BdGE v -> AST.IntLit v
 
 bdEpStrRep :: Bound -> String
-bdEpStrRep b = show $ case b of
-  BdNE v -> v
-  BdLT v -> v
-  BdLE v -> v
-  BdGT v -> v
-  BdGE v -> v
+bdEpStrRep b = case b of
+  BdNE v -> show v
+  BdLT v -> show v
+  BdLE v -> show v
+  BdGT v -> show v
+  BdGE v -> show v
 
 instance Show Bound where
   show b = printf "%s%s" (show $ bdOpRep b) (bdEpStrRep b)
-
--- data Bound = Bound
---   { bdEp :: Tree
---   , bdOpRep :: AST.UnaryOp
---   }
-
--- instance Eq Bound where
---   (==) (Bound e1 r1) (Bound e2 r2) = e1 == e2 && r1 == r2
 
 instance TreeRepBuilder Bound where
   repTree _ b = char7 '(' <> string7 (show b) <> char7 ')'

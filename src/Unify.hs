@@ -137,14 +137,17 @@ unifyAtomBounds (d1, a1) (d2, bs) =
     foldl (\_ x -> if x == a1 then a1 else x) a1 cs
  where
   withBound :: Bound -> Atom
-  withBound b = case a1 of
-    Int x -> case b of
-      BdNE y -> cmp (/=) (d1, x) y b
-      BdLT y -> cmp (<) (d1, x) y b
-      BdLE y -> cmp (<=) (d1, x) y b
-      BdGT y -> cmp (>) (d1, x) y b
-      BdGE y -> cmp (>=) (d1, x) y b
-    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show b) (show a1)
+  withBound b = case b of
+    BdNE y -> cmp (/=) (d1, a1) y b
+    BdLT y -> cmpLeftInt (<) (d1, a1) y b
+    BdLE y -> cmpLeftInt (<=) (d1, a1) y b
+    BdGT y -> cmpLeftInt (>) (d1, a1) y b
+    BdGE y -> cmpLeftInt (>=) (d1, a1) y b
+
+  cmpLeftInt :: (Integer -> Integer -> Bool) -> (BinOpDirect, Atom) -> Integer -> Bound -> Atom
+  cmpLeftInt f (d, a) y bound = case a of
+    Int x -> cmp f (d, x) y bound
+    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show bound) (show a1)
 
   cmp :: (a -> a -> Bool) -> (BinOpDirect, a) -> a -> Bound -> Atom
   cmp f (d, x) y bound =
@@ -205,37 +208,34 @@ narrowBounds xs = case xs of
       foldM f [x] rs
 
 unifyBounds :: (BinOpDirect, Bound) -> (BinOpDirect, Bound) -> Either String [Bound]
-unifyBounds db1@(d1, b1) db2@(d2, b2) = case b1 of
-  BdNE x -> case b2 of
-    BdNE y -> return $ if x == y then [b1] else newOrdBounds
-    BdLT y -> if x < y then Left conflict else return newOrdBounds
-    BdLE y -> if x <= y then Left conflict else return newOrdBounds
-    BdGT y -> if x > y then Left conflict else return newOrdBounds
-    BdGE y -> if x >= y then Left conflict else return newOrdBounds
+unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
+  BdNE a1 -> case b2 of
+    BdNE y -> return $ if a1 == y then [b1] else newOrdBounds
+    _ -> case a1 of
+      Int x -> case b2 of
+        BdLT y -> if x < y then Left conflict else return newOrdBounds
+        BdLE y -> if x <= y then Left conflict else return newOrdBounds
+        BdGT y -> if x > y then Left conflict else return newOrdBounds
+        BdGE y -> if x >= y then Left conflict else return newOrdBounds
+      _ -> Left conflict
   BdLT x -> case b2 of
-    BdNE _ -> unifyBounds db2 db1
     BdLT y -> return $ if x < y then [b1] else [b2]
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x <= y then Left conflict else return newOrdBounds
+    _ -> unifyBounds db2 db1
   BdLE x -> case b2 of
-    BdNE _ -> unifyBounds db2 db1
-    BdLT _ -> unifyBounds db2 db1
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x < y then Left conflict else return newOrdBounds
+    _ -> unifyBounds db2 db1
   BdGT x -> case b2 of
-    BdNE _ -> unifyBounds db2 db1
-    BdLT _ -> unifyBounds db2 db1
-    BdLE _ -> unifyBounds db2 db1
     BdGT y -> return $ if x > y then [b1] else [b2]
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    _ -> unifyBounds db2 db1
   BdGE x -> case b2 of
-    BdNE _ -> unifyBounds db2 db1
-    BdLT _ -> unifyBounds db2 db1
-    BdLE _ -> unifyBounds db2 db1
-    BdGT _ -> unifyBounds db2 db1
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    _ -> unifyBounds db2 db1
  where
   conflict :: String
   conflict = printf "bounds %s and %s conflict" (show b1) (show b2)

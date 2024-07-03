@@ -195,7 +195,7 @@ dispUnaryFunc op t tc = do
       (Plus, Int i) -> return $ mkTreeAtom (Int i) Nothing
       (Minus, Int i) -> return $ mkTreeAtom (Int (-i)) Nothing
       (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
-      (AST.UnaRelOp AST.NE, Int i) -> return $ mkTNBounds [BdNE i] Nothing
+      (AST.UnaRelOp AST.NE, a) -> return $ mkTNBounds [BdNE a] Nothing
       (AST.UnaRelOp AST.LT, Int i) -> return $ mkTNBounds [BdLT i] Nothing
       (AST.UnaRelOp AST.LE, Int i) -> return $ mkTNBounds [BdLE i] Nothing
       (AST.UnaRelOp AST.GT, Int i) -> return $ mkTNBounds [BdGT i] Nothing
