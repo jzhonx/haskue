@@ -145,6 +145,9 @@ unifyAtomBounds (d1, a1) (_, bs) =
     BdGE y -> cmpLeftInt (>=) (d1, a1) y b
     BdReMatch s -> cmpLeftString reMatch (d1, a1) s b
     BdReNotMatch s -> cmpLeftString reNotMatch (d1, a1) s b
+    BdBool -> case a1 of
+      Bool _ -> a1
+      _ -> Bottom $ printf "%s is not a boolean" (show a1)
     BdInt -> case a1 of
       Int _ -> a1
       _ -> Bottom $ printf "%s is not an integer" (show a1)
@@ -221,6 +224,9 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   BdNE a1 -> case b2 of
     BdNE y -> return $ if a1 == y then [b1] else newOrdBounds
     _ -> case a1 of
+      Bool _ -> case b2 of
+        BdBool -> return [b1]
+        _ -> Left conflict
       Int x -> case b2 of
         BdLT y -> if x < y then Left conflict else return newOrdBounds
         BdLE y -> if x <= y then Left conflict else return newOrdBounds
@@ -228,6 +234,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
         BdGE y -> if x >= y then Left conflict else return newOrdBounds
         BdReMatch _ -> Left conflict
         BdReNotMatch _ -> Left conflict
+        BdBool -> Left conflict
         BdInt -> return [b1]
         BdString -> Left conflict
       String _ -> case b2 of
@@ -242,6 +249,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     BdGE y -> if x <= y then Left conflict else return newOrdBounds
     BdReMatch _ -> Left conflict
     BdReNotMatch _ -> Left conflict
+    BdBool -> Left conflict
     BdInt -> return [b1]
     BdString -> Left conflict
     _ -> unifyBounds db2 db1
@@ -251,6 +259,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     BdGE y -> if x < y then Left conflict else return newOrdBounds
     BdReMatch _ -> Left conflict
     BdReNotMatch _ -> Left conflict
+    BdBool -> Left conflict
     BdInt -> return [b1]
     BdString -> Left conflict
     _ -> unifyBounds db2 db1
@@ -259,6 +268,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     BdGE y -> return $ if x >= y then [b1] else [b2]
     BdReMatch _ -> Left conflict
     BdReNotMatch _ -> Left conflict
+    BdBool -> Left conflict
     BdInt -> return [b1]
     BdString -> Left conflict
     _ -> unifyBounds db2 db1
@@ -266,20 +276,27 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     BdGE y -> return $ if x >= y then [b1] else [b2]
     BdReMatch _ -> Left conflict
     BdReNotMatch _ -> Left conflict
+    BdBool -> Left conflict
     BdInt -> return [b1]
     BdString -> Left conflict
     _ -> unifyBounds db2 db1
   BdReMatch s1 -> case b2 of
     BdReMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
     BdReNotMatch _ -> return [b1, b2]
+    BdBool -> Left conflict
     BdInt -> Left conflict
     BdString -> return [b1]
     _ -> unifyBounds db2 db1
   BdReNotMatch s1 -> case b2 of
     BdReNotMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
-    BdReMatch _ -> return [b1, b2]
+    BdBool -> Left conflict
     BdInt -> Left conflict
     BdString -> return [b1]
+    _ -> unifyBounds db2 db1
+  BdBool -> case b2 of
+    BdBool -> return [b1]
+    BdInt -> Left conflict
+    BdString -> Left conflict
     _ -> unifyBounds db2 db1
   BdInt -> case b2 of
     BdInt -> return [b1]

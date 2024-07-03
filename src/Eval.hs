@@ -125,7 +125,7 @@ evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr p
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
 builtinOpNameTable :: [(String, Bound)]
-builtinOpNameTable = [("int", BdInt), ("string", BdString)]
+builtinOpNameTable = [("bool", BdBool), ("int", BdInt), ("string", BdString)]
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalPrimExpr e@(PrimExprOperand op) path tc = case op of

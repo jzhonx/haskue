@@ -658,6 +658,7 @@ data Bound
   | BdGE Integer
   | BdReMatch String
   | BdReNotMatch String
+  | BdBool
   | BdInt
   | BdString
   deriving (Eq, Ord)
@@ -671,6 +672,7 @@ bdOpRep b = case b of
   BdGE _ -> show AST.GE
   BdReMatch _ -> show AST.ReMatch
   BdReNotMatch _ -> show AST.ReNotMatch
+  BdBool -> "bool"
   BdInt -> "int"
   BdString -> "string"
 
@@ -692,6 +694,7 @@ buildBoundASTExpr b = case b of
   BdGE v -> intOp AST.GE v
   BdReMatch s -> litOp AST.ReMatch (AST.StringLit $ AST.SimpleStringLit s)
   BdReNotMatch s -> litOp AST.ReNotMatch (AST.StringLit $ AST.SimpleStringLit s)
+  BdBool -> AST.idCons "bool"
   BdInt -> AST.idCons "int"
   BdString -> AST.idCons "string"
  where
