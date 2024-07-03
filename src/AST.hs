@@ -94,6 +94,8 @@ data RelOp
   | LE
   | GT
   | GE
+  | ReMatch
+  | ReNotMatch
   deriving (Eq, Ord)
 
 instance Show RelOp where
@@ -102,6 +104,8 @@ instance Show RelOp where
   show LE = "<="
   show GT = ">"
   show GE = ">="
+  show ReMatch = "=~"
+  show ReNotMatch = "!~"
 
 data BinaryOp
   = Unify

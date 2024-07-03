@@ -44,14 +44,16 @@ binopTable =
 unaryOp :: Parser String
 unaryOp =
   try (string "!=")
+    <|> try (string "!~")
+    <|> string "!"
     <|> try (string "<=")
     <|> string "<"
     <|> try (string ">=")
     <|> string ">"
+    <|> string "=~"
     <|> string "+"
     <|> string "-"
     <|> string "*"
-    <|> string "!"
 
 unaryOpTable :: [(String, UnaryOp)]
 unaryOpTable =
@@ -64,6 +66,8 @@ unaryOpTable =
   , ("<=", UnaRelOp LE)
   , (">", UnaRelOp AST.GT)
   , (">=", UnaRelOp GE)
+  , ("=~", UnaRelOp ReMatch)
+  , ("!~", UnaRelOp ReNotMatch)
   ]
 
 comment :: Parser ()

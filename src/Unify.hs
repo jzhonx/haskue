@@ -143,13 +143,23 @@ unifyAtomBounds (d1, a1) (_, bs) =
     BdLE y -> cmpLeftInt (<=) (d1, a1) y b
     BdGT y -> cmpLeftInt (>) (d1, a1) y b
     BdGE y -> cmpLeftInt (>=) (d1, a1) y b
+    BdReMatch s -> cmpLeftString reMatch (d1, a1) s b
+    BdReNotMatch s -> cmpLeftString reNotMatch (d1, a1) s b
     BdInt -> case a1 of
       Int _ -> a1
       _ -> Bottom $ printf "%s is not an integer" (show a1)
+    BdString -> case a1 of
+      String _ -> a1
+      _ -> Bottom $ printf "%s is not a string" (show a1)
 
   cmpLeftInt :: (Integer -> Integer -> Bool) -> (BinOpDirect, Atom) -> Integer -> Bound -> Atom
-  cmpLeftInt f (d, a) y bound = case a of
-    Int x -> cmp f (d, x) y bound
+  cmpLeftInt f (d, a) pattern bound = case a of
+    Int x -> cmp f (d, x) pattern bound
+    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show bound) (show a1)
+
+  cmpLeftString :: (String -> String -> Bool) -> (BinOpDirect, Atom) -> String -> Bound -> Atom
+  cmpLeftString f (d, a) y bound = case a of
+    String x -> cmp f (d, x) y bound
     _ -> Bottom $ printf "%s cannot be used to compare value %s" (show bound) (show a1)
 
   cmp :: (a -> a -> Bool) -> (BinOpDirect, a) -> a -> Bound -> Atom
@@ -157,6 +167,16 @@ unifyAtomBounds (d1, a1) (_, bs) =
     if dirApply f (d, x) y
       then a1
       else Bottom $ printf "%s is not bounded by %s" (show a1) (show bound)
+
+-- TODO: regex implementation
+-- Second argument is the pattern.
+reMatch :: String -> String -> Bool
+reMatch = (==)
+
+-- TODO: regex implementation
+-- Second argument is the pattern.
+reNotMatch :: String -> String -> Bool
+reNotMatch = (/=)
 
 unifyBoundList :: (BinOpDirect, [Bound]) -> (BinOpDirect, [Bound]) -> Either String [Bound]
 unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
@@ -206,32 +226,67 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
         BdLE y -> if x <= y then Left conflict else return newOrdBounds
         BdGT y -> if x > y then Left conflict else return newOrdBounds
         BdGE y -> if x >= y then Left conflict else return newOrdBounds
+        BdReMatch _ -> Left conflict
+        BdReNotMatch _ -> Left conflict
         BdInt -> return [b1]
+        BdString -> Left conflict
+      String _ -> case b2 of
+        BdReMatch _ -> return [b1, b2]
+        BdReNotMatch _ -> return [b1, b2]
+        _ -> Left conflict
       _ -> Left conflict
   BdLT x -> case b2 of
     BdLT y -> return $ if x < y then [b1] else [b2]
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x <= y then Left conflict else return newOrdBounds
+    BdReMatch _ -> Left conflict
+    BdReNotMatch _ -> Left conflict
     BdInt -> return [b1]
+    BdString -> Left conflict
     _ -> unifyBounds db2 db1
   BdLE x -> case b2 of
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x < y then Left conflict else return newOrdBounds
+    BdReMatch _ -> Left conflict
+    BdReNotMatch _ -> Left conflict
     BdInt -> return [b1]
+    BdString -> Left conflict
     _ -> unifyBounds db2 db1
   BdGT x -> case b2 of
     BdGT y -> return $ if x > y then [b1] else [b2]
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    BdReMatch _ -> Left conflict
+    BdReNotMatch _ -> Left conflict
     BdInt -> return [b1]
+    BdString -> Left conflict
     _ -> unifyBounds db2 db1
   BdGE x -> case b2 of
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    BdReMatch _ -> Left conflict
+    BdReNotMatch _ -> Left conflict
     BdInt -> return [b1]
+    BdString -> Left conflict
+    _ -> unifyBounds db2 db1
+  BdReMatch s1 -> case b2 of
+    BdReMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
+    BdReNotMatch _ -> return [b1, b2]
+    BdInt -> Left conflict
+    BdString -> return [b1]
+    _ -> unifyBounds db2 db1
+  BdReNotMatch s1 -> case b2 of
+    BdReNotMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
+    BdReMatch _ -> return [b1, b2]
+    BdInt -> Left conflict
+    BdString -> return [b1]
     _ -> unifyBounds db2 db1
   BdInt -> case b2 of
     BdInt -> return [b1]
+    BdString -> Left conflict
+    _ -> unifyBounds db2 db1
+  BdString -> case b2 of
+    BdString -> return [b1]
     _ -> unifyBounds db2 db1
  where
   conflict :: String

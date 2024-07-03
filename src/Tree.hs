@@ -656,7 +656,10 @@ data Bound
   | BdLE Integer
   | BdGT Integer
   | BdGE Integer
+  | BdReMatch String
+  | BdReNotMatch String
   | BdInt
+  | BdString
   deriving (Eq, Ord)
 
 bdOpRep :: Bound -> String
@@ -666,7 +669,10 @@ bdOpRep b = case b of
   BdLE _ -> show AST.LE
   BdGT _ -> show AST.GT
   BdGE _ -> show AST.GE
+  BdReMatch _ -> show AST.ReMatch
+  BdReNotMatch _ -> show AST.ReNotMatch
   BdInt -> "int"
+  BdString -> "string"
 
 instance Show Bound where
   show b = AST.exprStr $ buildASTExpr b
@@ -684,7 +690,10 @@ buildBoundASTExpr b = case b of
   BdLE v -> intOp AST.LE v
   BdGT v -> intOp AST.GT v
   BdGE v -> intOp AST.GE v
+  BdReMatch s -> litOp AST.ReMatch (AST.StringLit $ AST.SimpleStringLit s)
+  BdReNotMatch s -> litOp AST.ReNotMatch (AST.StringLit $ AST.SimpleStringLit s)
   BdInt -> AST.idCons "int"
+  BdString -> AST.idCons "string"
  where
   litOp :: AST.RelOp -> AST.Literal -> AST.Expression
   litOp op l =
@@ -699,9 +708,6 @@ buildBoundASTExpr b = case b of
       AST.UnaryExprUnaryOp
         (AST.UnaRelOp op)
         (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral . AST.IntLit $ i)
-
--- mkBound :: Tree -> AST.UnaryOp -> Bound
--- mkBound ep r = Bound{bdEp = ep, bdOpRep = r}
 
 data TNBounds = TreeBounds
   { trBdList :: [Bound]

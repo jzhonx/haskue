@@ -125,7 +125,7 @@ evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr p
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
 builtinOpNameTable :: [(String, Bound)]
-builtinOpNameTable = [("int", BdInt)]
+builtinOpNameTable = [("int", BdInt), ("string", BdString)]
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalPrimExpr e@(PrimExprOperand op) path tc = case op of
@@ -198,7 +198,7 @@ evalUnaryOp op e path tc =
 dispUnaryFunc :: (EvalEnv m) => UnaryOp -> Tree -> TreeCursor -> m TreeCursor
 dispUnaryFunc op t tc = do
   unode <- case treeNode t of
-    TNAtom s -> case (op, trAmAtom s) of
+    TNAtom ta -> case (op, trAmAtom ta) of
       (Plus, Int i) -> return $ mkTreeAtom (Int i) Nothing
       (Minus, Int i) -> return $ mkTreeAtom (Int (-i)) Nothing
       (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
@@ -207,6 +207,8 @@ dispUnaryFunc op t tc = do
       (AST.UnaRelOp AST.LE, Int i) -> return $ mkTNBounds [BdLE i] Nothing
       (AST.UnaRelOp AST.GT, Int i) -> return $ mkTNBounds [BdGT i] Nothing
       (AST.UnaRelOp AST.GE, Int i) -> return $ mkTNBounds [BdGE i] Nothing
+      (AST.UnaRelOp AST.ReMatch, String p) -> return $ mkTNBounds [BdReMatch p] Nothing
+      (AST.UnaRelOp AST.ReNotMatch, String p) -> return $ mkTNBounds [BdReNotMatch p] Nothing
       _ -> throwError $ printf "%s cannot be used for %s" (show t) (show op)
     TNUnaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     TNBinaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing

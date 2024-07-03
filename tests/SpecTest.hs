@@ -219,12 +219,14 @@ testBounds1 = do
     Right y ->
       y
         @?= newSimpleStruct
-          ( ["x" ++ (show i) | i <- [0 .. 1]]
+          ( ["x" ++ (show i) | i <- [0 .. 3]]
           )
           ( map
-              (\(k, v) -> (k, mkSimpleTreeAtom (Int v)))
-              [ ("x0", 2)
-              , ("x1", 2)
+              (\(k, v) -> (k, mkSimpleTreeAtom v))
+              [ ("x0", Int 2)
+              , ("x1", Int 2)
+              , ("x2", String "a")
+              , ("x3", String "a")
               ]
           )
 
