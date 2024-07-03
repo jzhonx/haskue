@@ -39,6 +39,7 @@ module Tree (
   insertTCScope,
   insertTCUnaryOp,
   insertTCDisj,
+  insertTCBound,
   mkTreeAtom,
   mkTreeDisj,
   mkTNConstraint,
@@ -655,44 +656,49 @@ data Bound
   | BdLE Integer
   | BdGT Integer
   | BdGE Integer
+  | BdInt
   deriving (Eq, Ord)
 
-bdOpRep :: Bound -> AST.UnaryOp
-bdOpRep b = AST.UnaRelOp $ case b of
-  BdNE _ -> AST.NE
-  BdLT _ -> AST.LT
-  BdLE _ -> AST.LE
-  BdGT _ -> AST.GT
-  BdGE _ -> AST.GE
-
-bpEpRep :: Bound -> AST.Literal
-bpEpRep b = case b of
-  BdNE v -> aToLiteral v
-  BdLT v -> AST.IntLit v
-  BdLE v -> AST.IntLit v
-  BdGT v -> AST.IntLit v
-  BdGE v -> AST.IntLit v
-
-bdEpStrRep :: Bound -> String
-bdEpStrRep b = case b of
-  BdNE v -> show v
-  BdLT v -> show v
-  BdLE v -> show v
-  BdGT v -> show v
-  BdGE v -> show v
+bdOpRep :: Bound -> String
+bdOpRep b = case b of
+  BdNE _ -> show AST.NE
+  BdLT _ -> show AST.LT
+  BdLE _ -> show AST.LE
+  BdGT _ -> show AST.GT
+  BdGE _ -> show AST.GE
+  BdInt -> "int"
 
 instance Show Bound where
-  show b = printf "%s%s" (show $ bdOpRep b) (bdEpStrRep b)
+  show b = AST.exprStr $ buildASTExpr b
 
 instance TreeRepBuilder Bound where
   repTree _ b = char7 '(' <> string7 (show b) <> char7 ')'
 
 instance BuildASTExpr Bound where
-  buildASTExpr b =
+  buildASTExpr b = buildBoundASTExpr b
+
+buildBoundASTExpr :: Bound -> AST.Expression
+buildBoundASTExpr b = case b of
+  BdNE a -> litOp AST.NE (aToLiteral a)
+  BdLT v -> intOp AST.LT v
+  BdLE v -> intOp AST.LE v
+  BdGT v -> intOp AST.GT v
+  BdGE v -> intOp AST.GE v
+  BdInt -> AST.idCons "int"
+ where
+  litOp :: AST.RelOp -> AST.Literal -> AST.Expression
+  litOp op l =
     AST.ExprUnaryExpr $
       AST.UnaryExprUnaryOp
-        (bdOpRep b)
-        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral $ bpEpRep b)
+        (AST.UnaRelOp op)
+        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral $ l)
+
+  intOp :: AST.RelOp -> Integer -> AST.Expression
+  intOp op i =
+    AST.ExprUnaryExpr $
+      AST.UnaryExprUnaryOp
+        (AST.UnaRelOp op)
+        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral . AST.IntLit $ i)
 
 -- mkBound :: Tree -> AST.UnaryOp -> Bound
 -- mkBound ep r = Bound{bdEp = ep, bdOpRep = r}
@@ -1318,3 +1324,8 @@ insertTCVarLink sel var e tc =
             dump $ printf "insertTCLink: link to %s, path: %s" (show tarPath) (show subPath)
             u <- insertTCSub sel sub tc
             return u
+
+insertTCBound :: (EvalEnv m) => Selector -> Bound -> TreeCursor -> m TreeCursor
+insertTCBound sel b tc =
+  let sub = mkTNBounds [b] Nothing
+   in insertTCSub sel sub tc

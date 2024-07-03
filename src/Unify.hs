@@ -130,7 +130,7 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
   _ -> notUnifiable (d1, t1) (d2, t2)
 
 unifyAtomBounds :: (BinOpDirect, Atom) -> (BinOpDirect, [Bound]) -> Atom
-unifyAtomBounds (d1, a1) (d2, bs) =
+unifyAtomBounds (d1, a1) (_, bs) =
   let
     cs = map withBound bs
    in
@@ -143,6 +143,9 @@ unifyAtomBounds (d1, a1) (d2, bs) =
     BdLE y -> cmpLeftInt (<=) (d1, a1) y b
     BdGT y -> cmpLeftInt (>) (d1, a1) y b
     BdGE y -> cmpLeftInt (>=) (d1, a1) y b
+    BdInt -> case a1 of
+      Int _ -> a1
+      _ -> Bottom $ printf "%s is not an integer" (show a1)
 
   cmpLeftInt :: (Integer -> Integer -> Bool) -> (BinOpDirect, Atom) -> Integer -> Bound -> Atom
   cmpLeftInt f (d, a) y bound = case a of
@@ -179,20 +182,6 @@ unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
       then mapM (\y -> oneToMany (ld2, y) (ld1, ts1)) ts2
       else mapM (\x -> oneToMany (ld1, x) (ld2, ts2)) ts1
 
--- normalizeBounds :: [Bound] -> Either String [Bound]
--- normalizeBounds bs = do
---   normedBM <- forM bm narrowBounds
---   let flattened = map (\k -> normedBM Map.! k) ordList
---   return $ concat flattened
---  where
---   ordList = map bdOpRep bs
---   bm = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdOpRep b, [b])) bs)
-
--- normalizedBoundMap :: [Bound] -> Either String (Map.Map AST.UnaryOp [Bound])
--- normalizedBoundMap bs = forM bm narrowBounds
---  where
---   bm = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdOpRep b, [b])) bs)
-
 -- | Narrow the bounds to the smallest set of bounds for the same bound type.
 narrowBounds :: [Bound] -> Either String [Bound]
 narrowBounds xs = case xs of
@@ -217,24 +206,32 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
         BdLE y -> if x <= y then Left conflict else return newOrdBounds
         BdGT y -> if x > y then Left conflict else return newOrdBounds
         BdGE y -> if x >= y then Left conflict else return newOrdBounds
+        BdInt -> return [b1]
       _ -> Left conflict
   BdLT x -> case b2 of
     BdLT y -> return $ if x < y then [b1] else [b2]
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x <= y then Left conflict else return newOrdBounds
+    BdInt -> return [b1]
     _ -> unifyBounds db2 db1
   BdLE x -> case b2 of
     BdLE y -> return $ if x <= y then [b1] else [b2]
     BdGT y -> if x <= y then Left conflict else return newOrdBounds
     BdGE y -> if x < y then Left conflict else return newOrdBounds
+    BdInt -> return [b1]
     _ -> unifyBounds db2 db1
   BdGT x -> case b2 of
     BdGT y -> return $ if x > y then [b1] else [b2]
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    BdInt -> return [b1]
     _ -> unifyBounds db2 db1
   BdGE x -> case b2 of
     BdGE y -> return $ if x >= y then [b1] else [b2]
+    BdInt -> return [b1]
+    _ -> unifyBounds db2 db1
+  BdInt -> case b2 of
+    BdInt -> return [b1]
     _ -> unifyBounds db2 db1
  where
   conflict :: String

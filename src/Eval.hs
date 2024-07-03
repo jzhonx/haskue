@@ -124,11 +124,18 @@ evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr path
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
+builtinOpNameTable :: [(String, Bound)]
+builtinOpNameTable = [("int", BdInt)]
+
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalPrimExpr e@(PrimExprOperand op) path tc = case op of
   OpLiteral lit -> evalLiteral lit path tc
   OpExpression expr -> evalExpr expr path tc
-  OperandName (Identifier ident) -> lookupVar e ident path tc
+  OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
+    Nothing -> lookupVar e ident path tc
+    Just b -> do
+      let parSel = fromJust $ lastSel path
+      pure tc >>= insertTCBound parSel b >>= propUpTCSel parSel
 evalPrimExpr e@(PrimExprSelector primExpr sel) path tc =
   do
     pure tc
