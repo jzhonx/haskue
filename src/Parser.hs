@@ -178,7 +178,8 @@ literal :: Parser Literal
 literal = do
   skipElements
   lit <-
-    parseInt
+    try floatLit
+      <|> intLit
       <|> struct
       <|> try bool
       <|> try (StringLit . SimpleStringLit <$> simpleStringLit)
@@ -227,10 +228,17 @@ simpleStringLit = do
   _ <- char '"'
   return s
 
-parseInt :: Parser Literal
-parseInt = do
+intLit :: Parser Literal
+intLit = do
   s <- many1 digit
   return $ IntLit (read s :: Integer)
+
+floatLit :: Parser Literal
+floatLit = do
+  i <- many1 digit
+  _ <- char '.'
+  f <- many1 digit
+  return $ FloatLit (read (i ++ "." ++ f) :: Double)
 
 bool :: Parser Literal
 bool = do

@@ -143,6 +143,7 @@ data Atom
   = Top
   | String String
   | Int Integer
+  | Float Double
   | Bool Bool
   | Null
   | Bottom String
@@ -152,6 +153,7 @@ data Atom
 instance Show Atom where
   show (String s) = s
   show (Int i) = show i
+  show (Float f) = show f
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
@@ -174,6 +176,7 @@ aToLiteral a = case a of
   Top -> AST.TopLit
   String s -> AST.StringLit $ AST.SimpleStringLit ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
   Int i -> AST.IntLit i
+  Float f -> AST.FloatLit f
   Bool b -> AST.BoolLit b
   Null -> AST.NullLit
   Bottom _ -> AST.BottomLit

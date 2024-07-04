@@ -64,6 +64,7 @@ data Operand
 data Literal
   = StringLit StringLit
   | IntLit Integer
+  | FloatLit Double
   | BoolLit Bool
   | TopLit
   | BottomLit
@@ -209,6 +210,7 @@ litBld :: Int -> Literal -> Builder
 litBld ident e = case e of
   StringLit s -> strLitBld s
   IntLit i -> integerDec i
+  FloatLit f -> string7 (show f)
   BoolLit b -> if b then string7 "true" else string7 "false"
   TopLit -> string7 "_"
   BottomLit -> string7 "_|_"

@@ -73,6 +73,7 @@ evalLiteral lit path tc =
   f :: (EvalEnv m) => Literal -> m Atom
   f (StringLit (SimpleStringLit s)) = return $ String s
   f (IntLit i) = return $ Int i
+  f (FloatLit a) = return $ Float a
   f (BoolLit b) = return $ Bool b
   f TopLit = return Top
   f BottomLit = return $ Bottom ""
