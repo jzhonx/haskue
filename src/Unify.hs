@@ -9,6 +9,7 @@ import qualified AST
 import Control.Monad (foldM, forM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
+import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Path (BinOpDirect (..), Selector (BinOpSelector, StringSelector))
@@ -137,39 +138,17 @@ unifyAtomBounds (d1, a1) (_, bs) =
     foldl (\_ x -> if x == a1 then a1 else x) a1 cs
  where
   withBound :: Bound -> Atom
-  withBound b = case b of
-    BdNE y -> cmp (/=) (d1, a1) y b
-    BdLT y -> cmpLeftInt (<) (d1, a1) y b
-    BdLE y -> cmpLeftInt (<=) (d1, a1) y b
-    BdGT y -> cmpLeftInt (>) (d1, a1) y b
-    BdGE y -> cmpLeftInt (>=) (d1, a1) y b
-    BdReMatch s -> cmpLeftString reMatch (d1, a1) s b
-    BdReNotMatch s -> cmpLeftString reNotMatch (d1, a1) s b
-    BdBool -> case a1 of
-      Bool _ -> a1
-      _ -> Bottom $ printf "%s is not a boolean" (show a1)
-    BdInt -> case a1 of
-      Int _ -> a1
-      _ -> Bottom $ printf "%s is not an integer" (show a1)
-    BdString -> case a1 of
-      String _ -> a1
-      _ -> Bottom $ printf "%s is not a string" (show a1)
-
-  cmpLeftInt :: (Integer -> Integer -> Bool) -> (BinOpDirect, Atom) -> Integer -> Bound -> Atom
-  cmpLeftInt f (d, a) pattern bound = case a of
-    Int x -> cmp f (d, x) pattern bound
-    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show bound) (show a1)
-
-  cmpLeftString :: (String -> String -> Bool) -> (BinOpDirect, Atom) -> String -> Bound -> Atom
-  cmpLeftString f (d, a) y bound = case a of
-    String x -> cmp f (d, x) y bound
-    _ -> Bottom $ printf "%s cannot be used to compare value %s" (show bound) (show a1)
-
-  cmp :: (a -> a -> Bool) -> (BinOpDirect, a) -> a -> Bound -> Atom
-  cmp f (d, x) y bound =
-    if dirApply f (d, x) y
-      then a1
-      else Bottom $ printf "%s is not bounded by %s" (show a1) (show bound)
+  withBound b =
+    let
+      r = unifyBounds (d1, BdIsAtom a1) (R, b)
+     in
+      case r of
+        Left s -> Bottom s
+        Right v -> case v of
+          x : [] -> case x of
+            BdIsAtom a -> a
+            _ -> Bottom $ printf "unexpected bounds unification result: %s" (show x)
+          _ -> Bottom $ printf "unexpected bounds unification result: %s" (show v)
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
@@ -187,7 +166,7 @@ unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
   (_, []) -> return bs1
   _ -> do
     bss <- manyToMany (d1, bs1) (d2, bs2)
-    let bsMap = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdOpRep b, [b])) (concat bss))
+    let bsMap = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdRep b, [b])) (concat bss))
     norm <- forM bsMap narrowBounds
     let m = Map.toList norm
     return $ concat $ map snd m
@@ -222,90 +201,127 @@ narrowBounds xs = case xs of
 unifyBounds :: (BinOpDirect, Bound) -> (BinOpDirect, Bound) -> Either String [Bound]
 unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   BdNE a1 -> case b2 of
-    BdNE y -> return $ if a1 == y then [b1] else newOrdBounds
-    _ -> case a1 of
-      Bool _ -> case b2 of
-        BdBool -> return [b1]
-        _ -> Left conflict
-      Int x -> case b2 of
-        BdLT y -> if x < y then Left conflict else return newOrdBounds
-        BdLE y -> if x <= y then Left conflict else return newOrdBounds
-        BdGT y -> if x > y then Left conflict else return newOrdBounds
-        BdGE y -> if x >= y then Left conflict else return newOrdBounds
-        BdReMatch _ -> Left conflict
-        BdReNotMatch _ -> Left conflict
-        BdBool -> Left conflict
-        BdInt -> return [b1]
-        BdString -> Left conflict
-      String _ -> case b2 of
-        BdReMatch _ -> return [b1, b2]
-        BdReNotMatch _ -> return [b1, b2]
-        _ -> Left conflict
-      _ -> Left conflict
-  BdLT x -> case b2 of
-    BdLT y -> return $ if x < y then [b1] else [b2]
-    BdLE y -> return $ if x <= y then [b1] else [b2]
-    BdGT y -> if x <= y then Left conflict else return newOrdBounds
-    BdGE y -> if x <= y then Left conflict else return newOrdBounds
-    BdReMatch _ -> Left conflict
-    BdReNotMatch _ -> Left conflict
-    BdBool -> Left conflict
-    BdInt -> return [b1]
-    BdString -> Left conflict
+    BdNE a2 -> return $ if a1 == a2 then [b1] else newOrdBounds
+    BdNumCmp c2 -> uNENumCmp a1 c2
+    BdStrMatch m2 -> uNEStrMatch a1 m2
+    BdType t2 -> uNEType a1 t2
+    BdIsAtom a2 -> if a1 == a2 then Left conflict else return [b2]
+  BdNumCmp c1 -> case b2 of
+    BdNumCmp c2 -> uNumCmpNumCmp c1 c2
+    BdStrMatch _ -> Left conflict
+    BdType t2 ->
+      if t2 `elem` [BdInt, BdFloat, BdNumber]
+        then return [b1]
+        else Left conflict
+    BdIsAtom a2 -> uNumCmpAtom c1 a2
     _ -> unifyBounds db2 db1
-  BdLE x -> case b2 of
-    BdLE y -> return $ if x <= y then [b1] else [b2]
-    BdGT y -> if x <= y then Left conflict else return newOrdBounds
-    BdGE y -> if x < y then Left conflict else return newOrdBounds
-    BdReMatch _ -> Left conflict
-    BdReNotMatch _ -> Left conflict
-    BdBool -> Left conflict
-    BdInt -> return [b1]
-    BdString -> Left conflict
+  BdStrMatch m1 -> case b2 of
+    BdStrMatch m2 -> case (m1, m2) of
+      (BdReMatch _, BdReMatch _) -> return $ if m1 == m2 then [b1] else newOrdBounds
+      (BdReNotMatch _, BdReNotMatch _) -> return $ if m1 == m2 then [b1] else newOrdBounds
+      _ -> return [b1, b2]
+    BdType t2 ->
+      if t2 `elem` [BdString]
+        then return [b1]
+        else Left conflict
+    BdIsAtom a2 -> uStrMatchAtom m1 a2
     _ -> unifyBounds db2 db1
-  BdGT x -> case b2 of
-    BdGT y -> return $ if x > y then [b1] else [b2]
-    BdGE y -> return $ if x >= y then [b1] else [b2]
-    BdReMatch _ -> Left conflict
-    BdReNotMatch _ -> Left conflict
-    BdBool -> Left conflict
-    BdInt -> return [b1]
-    BdString -> Left conflict
+  BdType t1 -> case b2 of
+    BdType t2 -> if t1 == t2 then return [b1] else Left conflict
+    BdIsAtom a2 -> uTypeAtom t1 a2
     _ -> unifyBounds db2 db1
-  BdGE x -> case b2 of
-    BdGE y -> return $ if x >= y then [b1] else [b2]
-    BdReMatch _ -> Left conflict
-    BdReNotMatch _ -> Left conflict
-    BdBool -> Left conflict
-    BdInt -> return [b1]
-    BdString -> Left conflict
-    _ -> unifyBounds db2 db1
-  BdReMatch s1 -> case b2 of
-    BdReMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
-    BdReNotMatch _ -> return [b1, b2]
-    BdBool -> Left conflict
-    BdInt -> Left conflict
-    BdString -> return [b1]
-    _ -> unifyBounds db2 db1
-  BdReNotMatch s1 -> case b2 of
-    BdReNotMatch s2 -> return $ if s1 == s2 then [b1] else newOrdBounds
-    BdBool -> Left conflict
-    BdInt -> Left conflict
-    BdString -> return [b1]
-    _ -> unifyBounds db2 db1
-  BdBool -> case b2 of
-    BdBool -> return [b1]
-    BdInt -> Left conflict
-    BdString -> Left conflict
-    _ -> unifyBounds db2 db1
-  BdInt -> case b2 of
-    BdInt -> return [b1]
-    BdString -> Left conflict
-    _ -> unifyBounds db2 db1
-  BdString -> case b2 of
-    BdString -> return [b1]
+  BdIsAtom a1 -> case b2 of
+    BdIsAtom a2 -> if a1 == a2 then return [b1] else Left conflict
     _ -> unifyBounds db2 db1
  where
+  uNENumCmp :: Atom -> BdNumCmp -> Either String [Bound]
+  uNENumCmp a1 (BdNumCmpCons o2 y) = do
+    x <- case a1 of
+      Int x -> return $ NumInt x
+      Float x -> return $ NumFloat x
+      _ -> Left conflict
+    case o2 of
+      BdLT -> if x < y then Left conflict else return newOrdBounds
+      BdLE -> if x <= y then Left conflict else return newOrdBounds
+      BdGT -> if x > y then Left conflict else return newOrdBounds
+      BdGE -> if x >= y then Left conflict else return newOrdBounds
+
+  uNEStrMatch :: Atom -> BdStrMatch -> Either String [Bound]
+  uNEStrMatch a1 m2 = do
+    _ <- case a1 of
+      String x -> return x
+      _ -> Left conflict
+    case m2 of
+      -- delay verification
+      BdReMatch _ -> return [b1, b2]
+      BdReNotMatch _ -> return [b1, b2]
+
+  uNEType :: Atom -> BdType -> Either String [Bound]
+  uNEType a1 t2 = case a1 of
+    Bool _ -> if BdBool == t2 then Left conflict else return newOrdBounds
+    Int _ -> if BdInt == t2 then Left conflict else return newOrdBounds
+    Float _ -> if BdFloat == t2 then Left conflict else return newOrdBounds
+    String _ -> if BdString == t2 then Left conflict else return newOrdBounds
+    -- TODO: null?
+    _ -> Left conflict
+
+  ncncGroup :: [([BdNumCmpOp], [(Number -> Number -> Bool)])]
+  ncncGroup =
+    [ ([BdLT, BdLE], [(<=), (>)])
+    , ([BdGT, BdGE], [(>=), (<)])
+    ]
+
+  uNumCmpNumCmp :: BdNumCmp -> BdNumCmp -> Either String [Bound]
+  uNumCmpNumCmp (BdNumCmpCons o1 n1) (BdNumCmpCons o2 n2) =
+    let
+      c1g = if o1 `elem` (fst (ncncGroup !! 0)) then ncncGroup !! 0 else ncncGroup !! 1
+      c1SameGCmp = (snd c1g) !! 0
+      c1OppGCmp = (snd c1g) !! 1
+      isSameGroup = o2 `elem` (fst c1g)
+      oppClosedEnds = sort [o1, o2] == [BdLE, BdGE]
+     in
+      if isSameGroup
+        then return $ if c1SameGCmp n1 n2 then [b1] else [b2]
+        else
+          if
+            | oppClosedEnds && n1 == n2 -> case n1 of
+                NumInt i -> return [BdIsAtom $ Int i]
+                NumFloat f -> return [BdIsAtom $ Float f]
+            | c1OppGCmp n1 n2 -> return newOrdBounds
+            | otherwise -> Left conflict
+
+  uNumCmpAtom :: BdNumCmp -> Atom -> Either String [Bound]
+  uNumCmpAtom (BdNumCmpCons o1 n1) a2 = do
+    x <- case a2 of
+      Int x -> return $ NumInt x
+      Float x -> return $ NumFloat x
+      _ -> Left conflict
+    let r = case o1 of
+          BdLT -> x < n1
+          BdLE -> x <= n1
+          BdGT -> x > n1
+          BdGE -> x >= n1
+    if r then return [b2] else Left conflict
+
+  uStrMatchAtom :: BdStrMatch -> Atom -> Either String [Bound]
+  uStrMatchAtom m1 a2 = case a2 of
+    String s2 ->
+      let r = case m1 of
+            BdReMatch p1 -> reMatch s2 p1
+            BdReNotMatch p1 -> reNotMatch s2 p1
+       in if r then return [b2] else Left conflict
+    _ -> Left conflict
+
+  uTypeAtom :: BdType -> Atom -> Either String [Bound]
+  uTypeAtom t1 a2 =
+    let r = case a2 of
+          Bool _ -> t1 == BdBool
+          Int _ -> BdInt `elem` [BdInt, BdNumber]
+          Float _ -> BdFloat `elem` [BdFloat, BdNumber]
+          String _ -> t1 == BdString
+          _ -> False
+     in if r then return [b2] else Left conflict
+
   conflict :: String
   conflict = printf "bounds %s and %s conflict" (show b1) (show b2)
 

@@ -103,22 +103,24 @@ testBinop = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
-        @?= newStruct
-          (map (\i -> "x" ++ show i) [1 .. 9])
+    Right v ->
+      cmpStructs
+        v
+        $ newStruct
+          (map (\i -> "x" ++ show i) [1 .. 10])
           ( Map.fromList $
               map
                 (\(k, v) -> (k, mkSimpleTreeAtom v))
                 [ ("x1", Int 3)
                 , ("x2", Int 8)
-                , ("x3", Int 2)
+                , ("x3", Float 2.0)
                 , ("x4", Int 5)
                 , ("x5", Int (-3))
                 , ("x6", Int 7)
-                , ("x7", Int 5)
+                , ("x7", Float 5.0)
                 , ("x8", Int 9)
                 , ("x9", Int 9)
+                , ("x10", Float 0.5)
                 ]
           )
 
@@ -150,6 +152,7 @@ testBinOpCmpEq = do
       y
         @?= newSimpleStruct
           ( ["i" ++ (show i) | i <- [0 .. 2]]
+              ++ ["f" ++ (show i) | i <- [0 .. 5]]
               ++ ["b" ++ (show i) | i <- [0 .. 2]]
               ++ ["s" ++ (show i) | i <- [0 .. 2]]
               ++ ["n" ++ (show i) | i <- [0 .. 6]]
@@ -159,6 +162,12 @@ testBinOpCmpEq = do
               [ ("i0", False)
               , ("i1", True)
               , ("i2", False)
+              , ("f0", False)
+              , ("f1", True)
+              , ("f2", False)
+              , ("f3", True)
+              , ("f4", True)
+              , ("f5", False)
               , ("b0", False)
               , ("b1", True)
               , ("b2", False)

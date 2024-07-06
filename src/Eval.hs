@@ -126,7 +126,7 @@ evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr p
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
 builtinOpNameTable :: [(String, Bound)]
-builtinOpNameTable = [("bool", BdBool), ("int", BdInt), ("string", BdString)]
+builtinOpNameTable = map (\b -> (show b, BdType b)) [minBound :: BdType .. maxBound :: BdType]
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalPrimExpr e@(PrimExprOperand op) path tc = case op of
@@ -200,21 +200,50 @@ dispUnaryFunc :: (EvalEnv m) => UnaryOp -> Tree -> TreeCursor -> m TreeCursor
 dispUnaryFunc op t tc = do
   unode <- case treeNode t of
     TNAtom ta -> case (op, trAmAtom ta) of
-      (Plus, Int i) -> return $ mkTreeAtom (Int i) Nothing
-      (Minus, Int i) -> return $ mkTreeAtom (Int (-i)) Nothing
+      (Plus, Int i) -> ia i id
+      (Plus, Float i) -> fa i id
+      (Minus, Int i) -> ia i negate
+      (Minus, Float i) -> fa i negate
       (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
-      (AST.UnaRelOp AST.NE, a) -> return $ mkTNBounds [BdNE a] Nothing
-      (AST.UnaRelOp AST.LT, Int i) -> return $ mkTNBounds [BdLT i] Nothing
-      (AST.UnaRelOp AST.LE, Int i) -> return $ mkTNBounds [BdLE i] Nothing
-      (AST.UnaRelOp AST.GT, Int i) -> return $ mkTNBounds [BdGT i] Nothing
-      (AST.UnaRelOp AST.GE, Int i) -> return $ mkTNBounds [BdGE i] Nothing
-      (AST.UnaRelOp AST.ReMatch, String p) -> return $ mkTNBounds [BdReMatch p] Nothing
-      (AST.UnaRelOp AST.ReNotMatch, String p) -> return $ mkTNBounds [BdReNotMatch p] Nothing
-      _ -> throwError $ printf "%s cannot be used for %s" (show t) (show op)
+      (AST.UnaRelOp uop, _) -> case (uop, trAmAtom ta) of
+        (AST.NE, a) -> mkb (BdNE a)
+        (AST.LT, Int i) -> mkib BdLT i
+        (AST.LT, Float f) -> mkfb BdLT f
+        (AST.LE, Int i) -> mkib BdLE i
+        (AST.LE, Float f) -> mkfb BdLE f
+        (AST.GT, Int i) -> mkib BdGT i
+        (AST.GT, Float f) -> mkfb BdGT f
+        (AST.GE, Int i) -> mkib BdGE i
+        (AST.GE, Float f) -> mkfb BdGE f
+        (AST.ReMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReMatch p] Nothing
+        (AST.ReNotMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReNotMatch p] Nothing
+        _ -> returnConflict
+      _ -> returnConflict
     TNUnaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     TNBinaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
-    _ -> throwError $ printf "value %s cannot be used for %s" (show t) (show op)
+    _ -> returnConflict
   return (unode, snd tc)
+ where
+  conflict :: Atom
+  conflict = Bottom $ printf "%s cannot be used for %s" (show t) (show op)
+
+  returnConflict :: (EvalEnv m) => m Tree
+  returnConflict = return $ mkTreeAtom conflict Nothing
+
+  ia :: (EvalEnv m) => Integer -> (Integer -> Integer) -> m Tree
+  ia a f = return $ mkTreeAtom (Int $ f a) Nothing
+
+  fa :: (EvalEnv m) => Double -> (Double -> Double) -> m Tree
+  fa a f = return $ mkTreeAtom (Float $ f a) Nothing
+
+  mkb :: (EvalEnv m) => Bound -> m Tree
+  mkb b = return $ mkTNBounds [b] Nothing
+
+  mkib :: (EvalEnv m) => BdNumCmpOp -> Integer -> m Tree
+  mkib uop i = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)] Nothing
+
+  mkfb :: (EvalEnv m) => BdNumCmpOp -> Double -> m Tree
+  mkfb uop f = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)] Nothing
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -265,6 +294,9 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
             r = case (a1, a2) of
               (String _, String _) -> Bool $ dirApply f (d1, a1) a2
               (Int _, Int _) -> Bool $ dirApply f (d1, a1) a2
+              (Int _, Float _) -> Bool $ dirApply f (d1, a1) a2
+              (Float _, Int _) -> Bool $ dirApply f (d1, a1) a2
+              (Float _, Float _) -> Bool $ dirApply f (d1, a1) a2
               (Bool _, Bool _) -> Bool $ dirApply f (d1, a1) a2
               (Bottom _, Bottom _) -> Bool $ dirApply f (d1, a1) a2
               (Null, _) -> Bool $ dirApply f (d1, a1) a2
@@ -276,12 +308,30 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
         TNList _ -> return $ cmpNull a1 t2
         TNDisj _ -> return $ cmpNull a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1) tc
-    | isJust (lookup op intArithOps) -> case treeNode t2 of
+    | op `elem` arithOps -> case treeNode t2 of
         TNAtom ta2 ->
           let
-            f = fromJust (lookup op intArithOps)
-            r = case (a1, trAmAtom ta2) of
-              (Int i1, Int i2) -> Int $ dirApply f (d1, i1) i2
+            r = case op of
+              AST.Add -> case (a1, trAmAtom ta2) of
+                (Int i1, Int i2) -> Int $ dirApply (+) (d1, i1) i2
+                (Int i1, Float i2) -> Float $ dirApply (+) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Float $ dirApply (+) (d1, i1) (fromIntegral i2)
+                _ -> mismatch a1 (trAmAtom ta2)
+              AST.Sub -> case (a1, trAmAtom ta2) of
+                (Int i1, Int i2) -> Int $ dirApply (-) (d1, i1) i2
+                (Int i1, Float i2) -> Float $ dirApply (-) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Float $ dirApply (-) (d1, i1) (fromIntegral i2)
+                _ -> mismatch a1 (trAmAtom ta2)
+              AST.Mul -> case (a1, trAmAtom ta2) of
+                (Int i1, Int i2) -> Int $ dirApply (*) (d1, i1) i2
+                (Int i1, Float i2) -> Float $ dirApply (*) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Float $ dirApply (*) (d1, i1) (fromIntegral i2)
+                _ -> mismatch a1 (trAmAtom ta2)
+              AST.Div -> case (a1, trAmAtom ta2) of
+                (Int i1, Int i2) -> Float $ dirApply (/) (d1, (fromIntegral i1)) (fromIntegral i2)
+                (Int i1, Float i2) -> Float $ dirApply (/) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Float $ dirApply (/) (d1, i1) (fromIntegral i2)
+                _ -> mismatch a1 (trAmAtom ta2)
               _ -> mismatch a1 (trAmAtom ta2)
            in
             return $ mkTreeAtom r Nothing
@@ -293,7 +343,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
  where
   a1 = trAmAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
-  intArithOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*)), (AST.Div, div)]
+  arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
   uncmpAtoms :: Atom -> Atom -> Atom
   uncmpAtoms x y = Bottom $ printf "%s and %s are not comparable" (show x) (show y)

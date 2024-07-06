@@ -27,6 +27,11 @@ module Tree (
   TNConstraint (..),
   Config (..),
   Bound (..),
+  Number (..),
+  BdNumCmp (..),
+  BdNumCmpOp (..),
+  BdStrMatch (..),
+  BdType (..),
   dump,
   mkTree,
   goDownTCPath,
@@ -66,7 +71,7 @@ module Tree (
   getScalarValue,
   setOrigNodesTC,
   substTreeNode,
-  bdOpRep,
+  bdRep,
   aToLiteral,
 )
 where
@@ -162,6 +167,9 @@ instance Show Atom where
 instance Eq Atom where
   (==) (String s1) (String s2) = s1 == s2
   (==) (Int i1) (Int i2) = i1 == i2
+  (==) (Int i1) (Float i2) = fromIntegral i1 == i2
+  (==) (Float i1) (Int i2) = i1 == fromIntegral i2
+  (==) (Float f1) (Float f2) = f1 == f2
   (==) (Bool b1) (Bool b2) = b1 == b2
   (==) (Bottom _) (Bottom _) = True
   (==) Top Top = True
@@ -653,31 +661,59 @@ updateTNConstraintCnstr (d, t) unify c =
 updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
 
+data Number = NumInt Integer | NumFloat Double
+  deriving (Eq)
+
+instance Ord Number where
+  compare (NumInt i1) (NumInt i2) = compare i1 i2
+  compare (NumFloat f1) (NumFloat f2) = compare f1 f2
+  compare (NumInt i) (NumFloat f) = compare (fromIntegral i) f
+  compare (NumFloat f) (NumInt i) = compare f (fromIntegral i)
+
+data BdNumCmpOp
+  = BdLT
+  | BdLE
+  | BdGT
+  | BdGE
+  deriving (Eq, Enum, Ord)
+
+instance Show BdNumCmpOp where
+  show o = show $ case o of
+    BdLT -> AST.LT
+    BdLE -> AST.LE
+    BdGT -> AST.GT
+    BdGE -> AST.GE
+
+data BdNumCmp = BdNumCmpCons BdNumCmpOp Number
+  deriving (Eq)
+
+data BdStrMatch
+  = BdReMatch String
+  | BdReNotMatch String
+  deriving (Eq)
+
+data BdType
+  = BdBool
+  | BdInt
+  | BdFloat
+  | BdNumber
+  | BdString
+  deriving (Eq, Enum, Bounded)
+
+instance Show BdType where
+  show BdBool = "bool"
+  show BdInt = "int"
+  show BdFloat = "float"
+  show BdNumber = "number"
+  show BdString = "string"
+
 data Bound
   = BdNE Atom
-  | BdLT Integer
-  | BdLE Integer
-  | BdGT Integer
-  | BdGE Integer
-  | BdReMatch String
-  | BdReNotMatch String
-  | BdBool
-  | BdInt
-  | BdString
-  deriving (Eq, Ord)
-
-bdOpRep :: Bound -> String
-bdOpRep b = case b of
-  BdNE _ -> show AST.NE
-  BdLT _ -> show AST.LT
-  BdLE _ -> show AST.LE
-  BdGT _ -> show AST.GT
-  BdGE _ -> show AST.GE
-  BdReMatch _ -> show AST.ReMatch
-  BdReNotMatch _ -> show AST.ReNotMatch
-  BdBool -> "bool"
-  BdInt -> "int"
-  BdString -> "string"
+  | BdNumCmp BdNumCmp
+  | BdStrMatch BdStrMatch
+  | BdType BdType
+  | BdIsAtom Atom -- helper type
+  deriving (Eq)
 
 instance Show Bound where
   show b = AST.exprStr $ buildASTExpr b
@@ -688,18 +724,29 @@ instance TreeRepBuilder Bound where
 instance BuildASTExpr Bound where
   buildASTExpr b = buildBoundASTExpr b
 
+bdRep :: Bound -> String
+bdRep b = case b of
+  BdNE _ -> show $ AST.NE
+  BdNumCmp (BdNumCmpCons o _) -> show o
+  BdStrMatch m -> case m of
+    BdReMatch _ -> show AST.ReMatch
+    BdReNotMatch _ -> show AST.ReNotMatch
+  BdType t -> show t
+  BdIsAtom _ -> "="
+
 buildBoundASTExpr :: Bound -> AST.Expression
 buildBoundASTExpr b = case b of
   BdNE a -> litOp AST.NE (aToLiteral a)
-  BdLT v -> intOp AST.LT v
-  BdLE v -> intOp AST.LE v
-  BdGT v -> intOp AST.GT v
-  BdGE v -> intOp AST.GE v
-  BdReMatch s -> litOp AST.ReMatch (AST.StringLit $ AST.SimpleStringLit s)
-  BdReNotMatch s -> litOp AST.ReNotMatch (AST.StringLit $ AST.SimpleStringLit s)
-  BdBool -> AST.idCons "bool"
-  BdInt -> AST.idCons "int"
-  BdString -> AST.idCons "string"
+  BdNumCmp (BdNumCmpCons o n) -> case o of
+    BdLT -> numOp AST.LT n
+    BdLE -> numOp AST.LE n
+    BdGT -> numOp AST.GT n
+    BdGE -> numOp AST.GE n
+  BdStrMatch m -> case m of
+    BdReMatch s -> litOp AST.ReMatch (AST.StringLit $ AST.SimpleStringLit s)
+    BdReNotMatch s -> litOp AST.ReNotMatch (AST.StringLit $ AST.SimpleStringLit s)
+  BdType t -> AST.idCons (show t)
+  BdIsAtom a -> AST.litCons (aToLiteral a)
  where
   litOp :: AST.RelOp -> AST.Literal -> AST.Expression
   litOp op l =
@@ -708,12 +755,15 @@ buildBoundASTExpr b = case b of
         (AST.UnaRelOp op)
         (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral $ l)
 
-  intOp :: AST.RelOp -> Integer -> AST.Expression
-  intOp op i =
+  numOp :: AST.RelOp -> Number -> AST.Expression
+  numOp op n =
     AST.ExprUnaryExpr $
       AST.UnaryExprUnaryOp
         (AST.UnaRelOp op)
-        (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral . AST.IntLit $ i)
+        ( AST.UnaryExprPrimaryExpr . AST.PrimExprOperand . AST.OpLiteral $ case n of
+            NumInt i -> AST.IntLit i
+            NumFloat f -> AST.FloatLit f
+        )
 
 data TNBounds = TreeBounds
   { trBdList :: [Bound]
@@ -754,12 +804,6 @@ insertSubTree parent sel sub =
             throwError errMsg
         ListSelector i -> case parentNode of
           TNList vs -> returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
-          -- TNBounds b ->
-          --   let
-          --     l = trBdList b
-          --     origBound = l !! i
-          --    in
-          --     returnTree $ TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = sub}] ++ drop (i + 1) l}
           _ -> throwError errMsg
         UnaryOpSelector -> case parentNode of
           TNUnaryOp op -> returnTree $ TNUnaryOp $ op{truArg = sub}
@@ -1025,12 +1069,6 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       >>= getSubTC (BinOpSelector R)
       >>= f
       >>= levelUp (BinOpSelector R)
-  -- TNBounds b ->
-  --   let
-  --     goSub :: (EvalEnv m) => TreeCursor -> Selector -> m TreeCursor
-  --     goSub acc sel = getSubTC sel acc >>= f >>= levelUp sel
-  --    in
-  --     foldM goSub tc (map ListSelector [0 .. length (trBdList b) - 1])
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> throwError $ printf "%s: TNList is not implemented" header
   TNAtom _ -> return tc
@@ -1118,7 +1156,6 @@ evalTC tc = case treeNode (fst tc) of
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
   TNBounds _ -> return tc
-  -- TNBounds _ -> traverseSubNodes evalTC tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
   TNRoot _ -> traverseSubNodes evalTC tc
