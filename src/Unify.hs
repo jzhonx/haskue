@@ -121,7 +121,20 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
     let res = unifyBoundList (d1, trBdList b1) (d2, trBdList b2)
     case res of
       Left err -> return $ mkTreeAtom (Bottom err) Nothing
-      Right bs -> return $ mkTNBounds bs Nothing
+      Right bs ->
+        let
+          r =
+            foldl
+              ( \acc x -> case x of
+                  BdIsAtom a -> (fst acc, Just a)
+                  _ -> (x : fst acc, snd acc)
+              )
+              ([], Nothing)
+              bs
+         in
+          case snd r of
+            Just a -> return $ mkTreeAtom a Nothing
+            Nothing -> return $ mkTNBounds (fst r) Nothing
   TNUnaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNBinaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc

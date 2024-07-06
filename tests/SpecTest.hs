@@ -241,6 +241,29 @@ testBounds1 = do
               ]
           )
 
+testBounds2 :: IO ()
+testBounds2 = do
+  s <- readFile "tests/spec/bounds2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newSimpleStruct
+          ( ["x" ++ (show i) | i <- [0 .. 6]]
+          )
+          ( map
+              (\(k, v) -> (k, mkSimpleTreeAtom v))
+              [ ("x0", Int 2)
+              , ("x1", Float 2.5)
+              , ("x2", Int 2)
+              , ("x3", Int 2)
+              , ("x4", Float 2.5)
+              , ("x5", Int 1)
+              , ("x6", Int 5)
+              ]
+          )
+
 testVars1 :: IO ()
 testVars1 = do
   s <- readFile "tests/spec/vars1.cue"
@@ -839,6 +862,7 @@ specTests =
     , testCase "binop_cmp_eq" testBinOpCmpEq
     , testCase "binop_cmp_ne" testBinOpCmpNE
     , testCase "bounds1" testBounds1
+    , testCase "bounds2" testBounds2
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
