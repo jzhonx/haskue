@@ -16,7 +16,7 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
-import Data.Maybe (fromJust, isJust)
+import Data.Maybe (catMaybes, fromJust, isJust)
 import qualified Data.Set as Set
 import Parser (parseCUE)
 import Path
@@ -81,45 +81,57 @@ evalLiteral lit path tc =
   f _ = throwError $ printf "literal %s is not possible" (show lit)
 
 -- | The struct is guaranteed to have unique labels by transform.
-evalStructLit :: (EvalEnv m) => [(Label, Expression)] -> Path -> TreeCursor -> m TreeCursor
-evalStructLit lit path tc =
-  let labels = map evalLabel lit
-      dedupLabels =
-        snd $
-          foldr
-            ( \l (s, acc) -> if l `Set.member` s then (s, acc) else (Set.insert l s, l : acc)
-            )
-            (Set.empty, [])
-            labels
-
-      fetchVarLabel :: Label -> Maybe String
-      fetchVarLabel (Label (LabelName (LabelID var))) = Just var
-      fetchVarLabel _ = Nothing
-
-      getVarLabels :: [(Label, Expression)] -> [String]
-      getVarLabels xs = map (\(l, _) -> fromJust (fetchVarLabel l)) (filter (\(l, _) -> isJust (fetchVarLabel l)) xs)
-
-      idSet = Set.fromList (getVarLabels lit)
-      parSel = fromJust $ lastSel path
-   in do
-        -- create a new block since we are entering a new struct.
-        u <- insertTCScope parSel dedupLabels idSet tc
-        v <- foldM evalField u (zipWith (\name (_, e) -> (name, e)) labels lit) >>= propUpTCSel parSel
-        return v
+evalStructLit :: (EvalEnv m) => [Declaration] -> Path -> TreeCursor -> m TreeCursor
+evalStructLit decls path tc = do
+  -- create a new block since we are entering a new struct.
+  u <- insertTCScope parSel dedupLabels idSet tc
+  v <- foldM evalField u decls >>= propUpTCSel parSel
+  return v
  where
-  evalLabel (Label (LabelName ln), _) = case ln of
-    LabelID ident -> ident
-    LabelString ls -> ls
+  parSel = fromJust $ lastSel path
 
   -- evalField evaluates a field in a struct.
-  evalField :: (EvalEnv m) => TreeCursor -> (String, Expression) -> m TreeCursor
-  evalField x (name, e) =
-    let fieldPath = appendSel (Path.StringSelector name) path
-     in do
+  evalField :: (EvalEnv m) => TreeCursor -> Declaration -> m TreeCursor
+  evalField _ (Embedding _) = throwError "unsupported embedding"
+  evalField x (FieldDecl fd) = case fd of
+    Field label e ->
+      let
+        name = fromJust $ fetchLabel label
+        fieldPath = appendSel (Path.StringSelector name) path
+       in
+        do
           -- dump $ printf "evalField starts: path: %s, expr: %s" (show fieldPath) (show e)
           u <- evalExpr e fieldPath x
           -- dump $ printf "evalField done: path: %s, tree node:\n%s" (show fieldPath) (show $ fst u)
           return u
+
+  labels :: [String]
+  labels = catMaybes $ map (evalLabel fetchLabel) decls
+
+  idSet = Set.fromList (catMaybes $ map (evalLabel fetchVarLabel) decls)
+
+  dedupLabels =
+    snd $
+      foldr
+        ( \l (s, acc) -> if l `Set.member` s then (s, acc) else (Set.insert l s, l : acc)
+        )
+        (Set.empty, [])
+        labels
+
+  evalLabel :: (Label -> Maybe String) -> Declaration -> Maybe String
+  evalLabel f decl = case decl of
+    FieldDecl fd -> case fd of
+      Field label _ -> f label
+    _ -> Nothing
+
+  fetchLabel :: Label -> Maybe String
+  fetchLabel (Label (LabelName label)) = case label of
+    LabelID ident -> Just ident
+    LabelString ls -> Just ls
+
+  fetchVarLabel :: Label -> Maybe String
+  fetchVarLabel (Label (LabelName (LabelID var))) = Just var
+  fetchVarLabel _ = Nothing
 
 evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr path

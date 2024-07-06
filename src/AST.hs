@@ -15,6 +15,8 @@ module AST (
   StringLit (..),
   UnaryExpr (..),
   UnaryOp (..),
+  Declaration (..),
+  FieldDecl (..),
   litCons,
   idCons,
   unaryOpCons,
@@ -69,8 +71,18 @@ data Literal
   | TopLit
   | BottomLit
   | NullLit
-  | StructLit [(Label, Expression)]
+  | StructLit [Declaration]
   deriving (Eq, Show)
+
+data Declaration
+  = FieldDecl FieldDecl
+  | Embedding Expression
+  deriving (Eq, Show)
+
+data FieldDecl = Field Label Expression
+  deriving (Eq, Show)
+
+--  | FieldNested Label FieldDecl
 
 newtype OperandName = Identifier Identifer deriving (Eq, Show)
 
@@ -220,7 +232,7 @@ litBld ident e = case e of
 strLitBld :: StringLit -> Builder
 strLitBld (SimpleStringLit s) = string7 s
 
-structBld :: Int -> [(Label, Expression)] -> Builder
+structBld :: Int -> [Declaration] -> Builder
 structBld ident lit =
   if null lit
     then string7 "{}"
@@ -230,16 +242,30 @@ structBld ident lit =
         <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
  where
-  fieldBld (label, val) =
-    string7 (replicate ((ident + 1) * 2) ' ')
-      <> labelBld label
-      <> string7 ": "
-      <> exprBldIdent (ident + 1) val
-      <> char7 '\n'
-  goFields :: [(Label, Expression)] -> Builder
+  -- fieldBld (label, val) =
+  --   string7 (replicate ((ident + 1) * 2) ' ')
+  --     <> labelBld label
+  --     <> string7 ": "
+  --     <> exprBldIdent (ident + 1) val
+  --     <> char7 '\n'
+  goFields :: [Declaration] -> Builder
   goFields [] = string7 ""
   goFields (x : xs) =
-    fieldBld x <> goFields xs
+    string7 (replicate ((ident + 1) * 2) ' ')
+      <> declBld 0 x
+      <> char7 '\n'
+      <> goFields xs
+
+declBld :: Int -> Declaration -> Builder
+declBld i e = case e of
+  FieldDecl f -> fieldDeclBld i f
+  Embedding eb -> exprBldIdent i eb
+
+fieldDeclBld :: Int -> FieldDecl -> Builder
+fieldDeclBld ident e = case e of
+  Field l fe -> labelBld l <> string7 ": " <> exprBldIdent (ident + 1) fe
+
+-- FieldNested l f -> labelBld l <> string7 ": " <> structBld (ident + 1) [FieldDecl f]
 
 labelBld :: Label -> Builder
 labelBld (Label e) = labelExprBld e

@@ -430,14 +430,16 @@ instance Eq TNScope where
 
 instance BuildASTExpr TNScope where
   buildASTExpr s =
-    let processField :: (String, Tree) -> (AST.Label, AST.Expression)
+    let processField :: (String, Tree) -> AST.Declaration
         processField (label, sub) =
-          ( AST.Label . AST.LabelName $
-              if Set.member label (trsVars s)
-                then AST.LabelID label
-                else AST.LabelString label
-          , buildASTExpr sub
-          )
+          AST.FieldDecl $
+            AST.Field
+              ( AST.Label . AST.LabelName $
+                  if Set.member label (trsVars s)
+                    then AST.LabelID label
+                    else AST.LabelString label
+              )
+              (buildASTExpr sub)
      in AST.litCons $ AST.StructLit $ map processField [(l, trsSubs s Map.! l) | l <- trsOrdLabels s]
 
 insertScopeNode :: TNScope -> String -> Tree -> TNScope

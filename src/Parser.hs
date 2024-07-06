@@ -193,10 +193,30 @@ struct :: Parser Literal
 struct = do
   skipElements
   _ <- char '{'
-  fields <- many field
+  decls <- many decl
   _ <- char '}'
   skipElements
-  return $ StructLit fields
+  return $ StructLit decls
+
+decl :: Parser Declaration
+decl = do
+  skipElements
+  d <- field
+  skipElements
+  return $ FieldDecl d
+
+-- chainDecl :: Parser Declaration -> Parser (Declaration -> Declaration) -> Parser Declaration
+-- chainDecl p op = do
+--   x <- p
+--   rest x
+--  where
+--   rest x =
+--     ( do
+--         g <- op
+--         rest (g x)
+--     )
+--       <|> return x
+--       <?> "failed to parse chainDecl"
 
 labelName :: Parser String
 labelName = undefined
@@ -210,7 +230,7 @@ identifier = do
   rest <- many (letter <|> digit)
   return $ firstChar : rest
 
-field :: Parser (Label, Expression)
+field :: Parser FieldDecl
 field = do
   skipElements
   ln <- (LabelID <$> identifier) <|> (LabelString <$> simpleStringLit)
@@ -219,7 +239,7 @@ field = do
   skipElements
   e <- expr
   skipElements
-  return ((Label . LabelName) ln, e)
+  return $ Field ((Label . LabelName) ln) e
 
 simpleStringLit :: Parser SimpleStringLit
 simpleStringLit = do
