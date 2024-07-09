@@ -13,13 +13,16 @@ import Text.Parsec (
   digit,
   eof,
   getState,
+  lookAhead,
   many,
   many1,
   newline,
   noneOf,
   oneOf,
   optionMaybe,
+  optional,
   parse,
+  parserTraced,
   runParser,
   satisfy,
   setState,
@@ -27,9 +30,11 @@ import Text.Parsec (
   skipMany1,
   string,
   try,
+  unexpected,
   (<?>),
   (<|>),
  )
+import Text.Printf (printf)
 import Prelude hiding (GT, LT, null)
 
 data ParseState = ParseState
@@ -55,6 +60,7 @@ data TokenType
   | TokenRBrace
   | TokenDot
   | TokenColon
+  | TokenComma
   deriving (Show, Eq, Enum)
 
 type TokAttr a = (a, TokenType)
@@ -67,7 +73,7 @@ modLexemeRes :: (a -> b) -> LexemeRes a -> LexemeRes b
 modLexemeRes f (a, b, c) = (f a, b, c)
 
 parseCUE :: (MonadError String m) => String -> m Expression
-parseCUE s = case runParser expr () "" s of
+parseCUE s = case runParser entry () "" s of
   Left err -> throwError $ show err
   Right res -> return $ getLexeme res
 
@@ -115,8 +121,10 @@ unaryOpTable =
   , ("!~", UnaRelOp ReNotMatch)
   ]
 
-skipElements :: Parser ()
-skipElements = undefined
+entry :: Parser (LexemeRes Expression)
+entry = do
+  _ <- skippable
+  expr
 
 expr :: Parser (LexemeRes Expression)
 expr = prec1
@@ -197,13 +205,12 @@ operand = do
   opd <-
     (modLexemeRes OpLiteral <$> literal)
       <|> (modLexemeRes (OperandName . Identifier) <$> identifier)
-      <|> lexeme
-        ( do
-            _ <- lexeme $ (,TokenLParen) <$> char '('
-            (e, _, _) <- expr
-            _ <- lexeme $ (,TokenRParen) <$> char ')'
-            return $ (OpExpression e, TokenRParen)
-        )
+      <|> ( do
+              _ <- lexeme $ (,TokenLParen) <$> char '('
+              (e, _, _) <- expr
+              (_, _, nl) <- lexeme $ (,TokenRParen) <$> char ')'
+              return $ (OpExpression e, TokenRParen, nl)
+          )
       <?> "failed to parse operand"
   return opd
 
@@ -230,12 +237,49 @@ letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
 struct :: Parser (LexemeRes Literal)
 struct = do
   _ <- lexeme $ (,TokenLBrace) <$> char '{'
-  decls <- many decl
-  (_, _, nl) <- lexeme $ (,TokenRBrace) <$> char '}'
+  decls <- many $ do
+    (r, tok, nl) <- decl
+    rbraceMaybe <- lookAhead $ optionMaybe rbrace
+    case rbraceMaybe of
+      Just _ -> return (r, tok, nl)
+      Nothing -> do
+        _ <- comma tok nl
+        return (r, tok, nl)
+  (_, _, nl) <- rbrace
   let
     ds :: [Declaration]
     ds = map (\x -> getLexeme x) decls
   return (StructLit ds, TokenRBrace, nl)
+
+rbrace :: Parser (LexemeRes Char)
+rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace")
+
+comma :: TokenType -> Bool -> Parser (LexemeRes ())
+comma tok nl = do
+  commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
+  case commaMaybe of
+    Just _ -> return ((), tok, nl)
+    -- According to the cuelang spec, a comma is added to the last token of a line if the token is
+    -- - an identifier, keyword, or bottom
+    -- - a number or string literal, including an interpolation
+    -- - one of the characters ), ], }, or ?
+    -- - an ellipsis ...
+    Nothing ->
+      if nl
+        && tok
+          `elem` [ TokenIdentifier
+                 , TokenTop -- Top is indentifier
+                 , TokenNull -- Null is indentifier
+                 , TokenBottom
+                 , TokenInt
+                 , TokenFloat
+                 , TokenBool
+                 , TokenString
+                 , TokenRBrace
+                 , TokenRParen
+                 ]
+        then return ((), tok, nl)
+        else unexpected "failed to parse comma"
 
 decl :: Parser (LexemeRes Declaration)
 decl = do
@@ -299,13 +343,13 @@ null = do
 
 spaces :: Parser Bool
 spaces = do
-  isnl <-
+  nls <-
     many1
       ( (char ' ' >> return False)
           <|> (char '\t' >> return False)
           <|> (char '\n' >> return True)
       )
-  return $ any (== True) isnl
+  return $ any (== True) nls
 
 lineComment :: Parser ()
 lineComment = do
@@ -320,5 +364,5 @@ skippable = do
 lexeme :: Parser (TokAttr a) -> Parser (LexemeRes a)
 lexeme p = do
   (x, ltok) <- p
-  hasnl <- skippable
+  hasnl <- skippable <?> "failed to parse white spaces and comments"
   return (x, ltok, hasnl)
