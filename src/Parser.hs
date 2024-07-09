@@ -11,30 +11,21 @@ import Text.Parsec (
   chainl1,
   char,
   digit,
-  eof,
-  getState,
   lookAhead,
   many,
   many1,
-  newline,
   noneOf,
   oneOf,
   optionMaybe,
-  optional,
-  parse,
-  parserTraced,
   runParser,
   satisfy,
-  setState,
   skipMany,
-  skipMany1,
   string,
   try,
   unexpected,
   (<?>),
   (<|>),
  )
-import Text.Printf (printf)
 import Prelude hiding (GT, LT, null)
 
 data ParseState = ParseState
