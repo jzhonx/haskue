@@ -67,6 +67,7 @@ evalExpr (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
 
 evalLiteral :: (EvalEnv m) => Literal -> Path -> TreeCursor -> m TreeCursor
 evalLiteral (StructLit s) path tc = evalStructLit s path tc
+evalLiteral (ListLit l) path tc = evalListLit l path tc
 evalLiteral lit path tc =
   let parSel = fromJust $ lastSel path
    in do
@@ -81,7 +82,7 @@ evalLiteral lit path tc =
   f TopLit = return Top
   f BottomLit = return $ Bottom ""
   f NullLit = return Null
-  f _ = throwError $ printf "literal %s is not possible" (show lit)
+  f _ = throwError $ printf "literal %s is not supported" (show lit)
 
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> Path -> TreeCursor -> m TreeCursor
@@ -155,6 +156,23 @@ evalStructLit decls path tc = do
   fetchVarLabel :: Label -> Maybe String
   fetchVarLabel (Label (LabelName (LabelID var))) = Just var
   fetchVarLabel _ = Nothing
+
+evalListLit :: (EvalEnv m) => AST.ElementList -> Path -> TreeCursor -> m TreeCursor
+evalListLit (AST.EmbeddingList es) path tc =
+  let
+    parSel = fromJust $ lastSel path
+    ies = zip [0 ..] es
+   in
+    do
+      u <- insertTCList parSel (length es) tc
+      foldM evalElement u ies >>= propUpTCSel parSel
+ where
+  evalElement :: (EvalEnv m) => TreeCursor -> (Int, AST.Embedding) -> m TreeCursor
+  evalElement x (i, e) =
+    let
+      listPath = appendSel (Path.ListSelector i) path
+     in
+      evalExpr e listPath x
 
 evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \path -> evalPrimExpr primExpr path

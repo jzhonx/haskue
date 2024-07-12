@@ -45,6 +45,8 @@ data TokenType
   | TokenRParen
   | TokenLBrace
   | TokenRBrace
+  | TokenLSquare
+  | TokenRSquare
   | TokenDot
   | TokenColon
   | TokenComma
@@ -211,6 +213,7 @@ literal =
     <|> try (litLexeme TokenTop top)
     <|> try (litLexeme TokenNull null)
     <|> struct
+    <|> list
 
 identifier :: Parser (Lexeme String)
 identifier = lexeme $ do
@@ -241,6 +244,25 @@ struct = do
 rbrace :: Parser (Lexeme Char)
 rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace")
 
+list :: Parser (Lexeme Literal)
+list = do
+  _ <- lexeme $ (,TokenLSquare) <$> char '['
+  elements <- many $ do
+    (r, tok, nl) <- expr
+    rsquareMaybe <- lookAhead $ optionMaybe rsquare
+    case rsquareMaybe of
+      Just _ -> return (r, tok, nl)
+      Nothing -> do
+        _ <- comma tok nl
+        return (r, tok, nl)
+  (_, _, nl) <- rsquare
+  let es :: [Embedding]
+      es = map (\x -> getLexeme x) elements
+  return (ListLit (EmbeddingList es), TokenRSquare, nl)
+
+rsquare :: Parser (Lexeme Char)
+rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
+
 comma :: TokenType -> Bool -> Parser (Lexeme ())
 comma tok nl = do
   commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
@@ -264,6 +286,7 @@ comma tok nl = do
                  , TokenString
                  , TokenRBrace
                  , TokenRParen
+                 , TokenRSquare
                  ]
         then return ((), tok, nl)
         else unexpected "failed to parse comma"

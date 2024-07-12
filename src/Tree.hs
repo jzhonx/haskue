@@ -10,28 +10,29 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Tree (
-  EvalEnv,
-  EvalMonad,
-  TNUnaryOp (..),
-  TreeCursor,
-  Tree (..),
   Atom (..),
-  TNDisj (..),
-  TNRoot (..),
-  TNAtom (..),
-  TreeNode (..),
-  TNScope (..),
-  TNBinaryOp (..),
-  TNLink (..),
-  TNBounds (..),
-  TNConstraint (..),
-  Config (..),
-  Bound (..),
-  Number (..),
   BdNumCmp (..),
   BdNumCmpOp (..),
   BdStrMatch (..),
   BdType (..),
+  Bound (..),
+  Config (..),
+  EvalEnv,
+  EvalMonad,
+  Number (..),
+  TNAtom (..),
+  TNBinaryOp (..),
+  TNBounds (..),
+  TNConstraint (..),
+  TNDisj (..),
+  TNLink (..),
+  TNList (..),
+  TNRoot (..),
+  TNScope (..),
+  TNUnaryOp (..),
+  Tree (..),
+  TreeCursor,
+  TreeNode (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -41,13 +42,16 @@ module Tree (
   getScalarValue,
   goDownTCPath,
   goDownTCSel,
+  goDownTCSelErr,
   goUpTC,
   insertTCAtom,
   insertTCBinaryOp,
   insertTCBound,
   insertTCDisj,
   insertTCDot,
+  insertTCList,
   insertTCScope,
+  insertTCSub,
   insertTCUnaryOp,
   insertTCVarLink,
   isTreeBottom,
@@ -74,8 +78,6 @@ module Tree (
   updateTCSub,
   updateTNConstraintAtom,
   updateTNConstraintCnstr,
-  goDownTCSelErr,
-  insertTCSub,
 )
 where
 
@@ -420,7 +422,8 @@ instance Eq TNList where
   (==) l1 l2 = trLstSubs l1 == trLstSubs l2
 
 instance BuildASTExpr TNList where
-  buildASTExpr l = undefined
+  buildASTExpr l =
+    AST.litCons . AST.ListLit . AST.EmbeddingList $ map buildASTExpr (trLstSubs l)
 
 data TNScope = TreeScope
   { trsOrdLabels :: [String]
@@ -852,9 +855,6 @@ goTreeSel sel t =
           _ -> Nothing
         ListSelector i -> case node of
           TNList vs -> (trLstSubs vs) !? i
-          -- TNBounds b -> do
-          --   l <- (trBdList b) !? i
-          --   return (bdEp l)
           _ -> Nothing
         UnaryOpSelector -> case node of
           TNUnaryOp op -> Just (truArg op)
@@ -976,23 +976,12 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
       else case parNode of
         TNRoot t -> return (substTreeNode (TNRoot t{trRtSub = subT}) parT, [])
         _ -> throwError "propUpTC: root is not TNRoot"
-  StringSelector s -> do
-    case treeNode subT of
-      TNRoot _ -> throwError "propUpTC: cannot propagate to root"
-      TNList{} -> throwError "unimplemented"
-      _ -> updateParScope parT s subT
+  StringSelector s -> updateParScope parT s subT
   ListSelector i -> case parNode of
     TNList vs ->
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return (substTreeNode l parT, cs)
-    -- TNBounds b ->
-    --   let
-    --     l = trBdList b
-    --     origBound = l !! i
-    --     nl = TNBounds $ b{trBdList = take i l ++ [origBound{bdEp = subT}] ++ drop (i + 1) l}
-    --    in
-    --     return (substTreeNode nl parT, cs)
     _ -> throwError insertErrMsg
   UnaryOpSelector -> case parNode of
     TNUnaryOp op -> return (substTreeNode (TNUnaryOp $ op{truArg = subT}) parT, cs)
@@ -1046,6 +1035,7 @@ propUpTCSel sel tc@(_, (s, _) : _) =
     then propUpTC tc
     else propUpTC tc >>= propUpTCSel sel
 
+-- | Traverse all the sub nodes of the tree.
 traverseSubNodes :: (EvalEnv m) => (TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
 traverseSubNodes f tc = case treeNode (fst tc) of
   TNRoot _ -> getSubTC StartSelector tc >>= f >>= levelUp StartSelector
@@ -1075,7 +1065,15 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       >>= f
       >>= levelUp (BinOpSelector R)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
-  TNList _ -> throwError $ printf "%s: TNList is not implemented" header
+  TNList l ->
+    let
+      goSub :: (EvalEnv m) => TreeCursor -> Int -> m TreeCursor
+      goSub acc i =
+        if isTreeBottom (fst acc)
+          then return acc
+          else getSubTC (ListSelector i) acc >>= f >>= levelUp (ListSelector i)
+     in
+      foldM goSub tc [0 .. length (trLstSubs l) - 1]
   TNAtom _ -> return tc
   TNBounds _ -> return tc
   TNConstraint _ -> return tc
@@ -1112,7 +1110,7 @@ traverseTC f tc = case treeNode n of
   TNUnaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNBinaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
-  TNList _ -> throwError $ printf "%s: TNList is not implemented" header
+  TNList _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNAtom _ -> f tc
   TNBounds _ -> f tc
   -- TNBounds _ -> f tc >>= traverseSubNodes (traverseTC f)
@@ -1157,7 +1155,7 @@ evalTC tc = case treeNode (fst tc) of
         u <- evalTC tarTC
         return (fst u, snd tc)
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
-  TNList _ -> throwError $ printf "%s: TNList is not implemented" header
+  TNList _ -> traverseSubNodes evalTC tc
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
   TNBounds _ -> return tc
@@ -1383,3 +1381,11 @@ insertTCBound :: (EvalEnv m) => Selector -> Bound -> TreeCursor -> m TreeCursor
 insertTCBound sel b tc =
   let sub = mkTNBounds [b] Nothing
    in insertTCSub sel sub tc
+
+insertTCList :: (EvalEnv m) => Selector -> Int -> TreeCursor -> m TreeCursor
+insertTCList sel n tc =
+  let
+    subs = replicate n (mkTree TNStub Nothing)
+    l = mkTree (TNList $ TreeList{trLstSubs = subs}) Nothing
+   in
+    insertTCSub sel l tc

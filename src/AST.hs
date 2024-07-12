@@ -17,6 +17,8 @@ module AST (
   UnaryOp (..),
   Declaration (..),
   FieldDecl (..),
+  Embedding,
+  ElementList (..),
   litCons,
   idCons,
   unaryOpCons,
@@ -72,17 +74,22 @@ data Literal
   | BottomLit
   | NullLit
   | StructLit [Declaration]
+  | ListLit ElementList
   deriving (Eq, Show)
+
+type Embedding = Expression
 
 data Declaration
   = FieldDecl FieldDecl
-  | Embedding Expression
+  | Embedding Embedding
   deriving (Eq, Show)
 
 data FieldDecl = Field Label Expression
   deriving (Eq, Show)
 
 --  | FieldNested Label FieldDecl
+--
+data ElementList = EmbeddingList [Embedding] deriving (Eq, Show)
 
 newtype OperandName = Identifier Identifer deriving (Eq, Show)
 
@@ -228,6 +235,7 @@ litBld ident e = case e of
   BottomLit -> string7 "_|_"
   NullLit -> string7 "null"
   StructLit l -> structBld ident l
+  ListLit l -> listBld l
 
 strLitBld :: StringLit -> Builder
 strLitBld (SimpleStringLit s) = string7 s
@@ -242,12 +250,6 @@ structBld ident lit =
         <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
  where
-  -- fieldBld (label, val) =
-  --   string7 (replicate ((ident + 1) * 2) ' ')
-  --     <> labelBld label
-  --     <> string7 ": "
-  --     <> exprBldIdent (ident + 1) val
-  --     <> char7 '\n'
   goFields :: [Declaration] -> Builder
   goFields [] = string7 ""
   goFields (x : xs) =
@@ -264,6 +266,14 @@ declBld i e = case e of
 fieldDeclBld :: Int -> FieldDecl -> Builder
 fieldDeclBld ident e = case e of
   Field l fe -> labelBld l <> string7 ": " <> exprBldIdent (ident + 1) fe
+
+listBld :: ElementList -> Builder
+listBld (EmbeddingList l) = string7 "[" <> goList l
+ where
+  goList :: [Embedding] -> Builder
+  goList [] = string7 "]"
+  goList [x] = exprBldIdent 0 x <> string7 "]"
+  goList (x : xs) = exprBldIdent 0 x <> string7 ", " <> goList xs
 
 -- FieldNested l f -> labelBld l <> string7 ": " <> structBld (ident + 1) [FieldDecl f]
 
