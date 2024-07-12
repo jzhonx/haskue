@@ -850,6 +850,30 @@ testRef3 = do
             )
           ]
 
+testStruct1 :: IO ()
+testStruct1 = do
+  s <- readFile "tests/spec/struct1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newSimpleStruct
+          ["s1"]
+          [ ("s1", s1)
+          ]
+ where
+  s1 =
+    newSimpleStruct
+      ["a", "b", "c"]
+      ( map
+          (\(k, v) -> (k, mkSimpleTreeAtom v))
+          [ ("a", Int 1)
+          , ("b", Int 2)
+          , ("c", Int 3)
+          ]
+      )
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -884,6 +908,7 @@ specTests =
     , testCase "ref1" testRef1
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
+    , testCase "struct1" testStruct1
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

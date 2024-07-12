@@ -57,7 +57,10 @@ eval expr path = do
   initTC :: TreeCursor
   initTC = (mkTree (TNRoot $ TreeRoot (mkTreeAtom Top Nothing)) Nothing, [])
 
--- | evalExpr and all expr* should return the same level tree cursor.
+{- | evalExpr and all expr* should return the same level tree cursor.
+Every eval* function should return a tree cursor that is at the same level as the input tree cursor.
+For example, if the path of the input tree cursor is /a/b, then the output tree cursor should also have /a/b.
+-}
 evalExpr :: (EvalEnv m) => Expression -> Path -> TreeCursor -> m TreeCursor
 evalExpr (ExprUnaryExpr e) = evalUnaryExpr e
 evalExpr (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
@@ -84,26 +87,46 @@ evalLiteral lit path tc =
 evalStructLit :: (EvalEnv m) => [Declaration] -> Path -> TreeCursor -> m TreeCursor
 evalStructLit decls path tc = do
   -- create a new block since we are entering a new struct.
+  -- It inserts all the field labels to the current scope.
   u <- insertTCScope parSel dedupLabels idSet tc
-  v <- foldM evalField u decls >>= propUpTCSel parSel
+  v <- foldM evalDecl u decls >>= propUpTCSel parSel
   return v
  where
   parSel = fromJust $ lastSel path
 
-  -- evalField evaluates a field in a struct.
-  evalField :: (EvalEnv m) => TreeCursor -> Declaration -> m TreeCursor
-  evalField _ (Embedding _) = throwError "unsupported embedding"
-  evalField x (FieldDecl fd) = case fd of
+  -- evalField evaluates a declaration in a struct.
+  evalDecl :: (EvalEnv m) => TreeCursor -> Declaration -> m TreeCursor
+  evalDecl x (Embedding e) =
+    do
+      -- go up to the parent node.
+      par <- propUpTCSel parSel x
+      -- Replace the original node with a binary op node, with the left side being the original node and the right side
+      -- being a stub.
+      updateTCSub
+        parSel
+        ( mkTree
+            ( TNBinaryOp $
+                TreeBinaryOp
+                  { trbRep = AST.Unify
+                  , trbOp = unify
+                  , trbArgL = (fst x)
+                  , trbArgR = mkTree TNStub Nothing
+                  }
+            )
+            Nothing
+        )
+        par
+      -- evaluate the embedding expression.
+      >>= evalExpr e (appendSel (BinOpSelector R) path)
+      -- go back to the original node.
+      >>= goDownTCSelErr (BinOpSelector L) "cannot go back to original struct"
+  evalDecl x (FieldDecl fd) = case fd of
     Field label e ->
       let
         name = fromJust $ fetchLabel label
         fieldPath = appendSel (Path.StringSelector name) path
        in
-        do
-          -- dump $ printf "evalField starts: path: %s, expr: %s" (show fieldPath) (show e)
-          u <- evalExpr e fieldPath x
-          -- dump $ printf "evalField done: path: %s, tree node:\n%s" (show fieldPath) (show $ fst u)
-          return u
+        evalExpr e fieldPath x
 
   labels :: [String]
   labels = catMaybes $ map (evalLabel fetchLabel) decls

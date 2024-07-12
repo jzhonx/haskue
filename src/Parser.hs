@@ -28,10 +28,6 @@ import Text.Parsec (
  )
 import Prelude hiding (GT, LT, null)
 
-data ParseState = ParseState
-  {
-  }
-
 type Parser a = Parsec String () a
 
 data TokenType
@@ -55,12 +51,12 @@ data TokenType
   deriving (Show, Eq, Enum)
 
 type TokAttr a = (a, TokenType)
-type LexemeRes a = (a, TokenType, Bool)
+type Lexeme a = (a, TokenType, Bool)
 
-getLexeme :: LexemeRes a -> a
+getLexeme :: Lexeme a -> a
 getLexeme (a, _, _) = a
 
-modLexemeRes :: (a -> b) -> LexemeRes a -> LexemeRes b
+modLexemeRes :: (a -> b) -> Lexeme a -> Lexeme b
 modLexemeRes f (a, b, c) = (f a, b, c)
 
 parseCUE :: (MonadError String m) => String -> m Expression
@@ -80,7 +76,7 @@ binopTable =
   , ("!=", BinRelOp NE)
   ]
 
-unaryOp :: Parser (LexemeRes String)
+unaryOp :: Parser (Lexeme String)
 unaryOp =
   lexeme $
     (,TokenUnaryOp)
@@ -112,21 +108,21 @@ unaryOpTable =
   , ("!~", UnaRelOp ReNotMatch)
   ]
 
-entry :: Parser (LexemeRes Expression)
+entry :: Parser (Lexeme Expression)
 entry = do
   _ <- skippable
   expr
 
-expr :: Parser (LexemeRes Expression)
+expr :: Parser (Lexeme Expression)
 expr = prec1
  where
   binOp ::
-    Parser (LexemeRes Expression) ->
-    Parser ((LexemeRes Expression) -> (LexemeRes Expression) -> (LexemeRes Expression)) ->
-    Parser (LexemeRes Expression)
+    Parser (Lexeme Expression) ->
+    Parser ((Lexeme Expression) -> (Lexeme Expression) -> (Lexeme Expression)) ->
+    Parser (Lexeme Expression)
   binOp higher sep = chainl1 higher sep
 
-  precedence :: Parser String -> Parser ((LexemeRes Expression) -> (LexemeRes Expression) -> (LexemeRes Expression))
+  precedence :: Parser String -> Parser ((Lexeme Expression) -> (Lexeme Expression) -> (Lexeme Expression))
   precedence op = do
     (s, _, _) <- lexeme (binOpAdapt op)
     let _op = fromJust $ lookup s binopTable
@@ -136,22 +132,22 @@ expr = prec1
   binOpAdapt :: Parser String -> Parser (TokAttr String)
   binOpAdapt op = (,TokenBinOp) <$> op
 
-  prec7 :: Parser (LexemeRes Expression)
+  prec7 :: Parser (Lexeme Expression)
   prec7 = binOp (modLexemeRes ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
 
-  prec6 :: Parser (LexemeRes Expression)
+  prec6 :: Parser (Lexeme Expression)
   prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
 
-  prec5 :: Parser (LexemeRes Expression)
+  prec5 :: Parser (Lexeme Expression)
   prec5 = binOp prec6 (precedence (string "==" <|> string "!="))
 
-  prec2 :: Parser (LexemeRes Expression)
+  prec2 :: Parser (Lexeme Expression)
   prec2 = binOp prec5 (precedence (string "&"))
 
-  prec1 :: Parser (LexemeRes Expression)
+  prec1 :: Parser (Lexeme Expression)
   prec1 = binOp prec2 (precedence (string "|"))
 
-unaryExpr :: Parser (LexemeRes UnaryExpr)
+unaryExpr :: Parser (Lexeme UnaryExpr)
 unaryExpr = do
   opM <- optionMaybe unaryOp
   case opM of
@@ -161,13 +157,13 @@ unaryExpr = do
       let ue = UnaryExprUnaryOp (fromJust $ lookup op unaryOpTable) e
       return (ue, tok, nl)
 
-primaryExpr :: Parser (LexemeRes PrimaryExpr)
+primaryExpr :: Parser (Lexeme PrimaryExpr)
 primaryExpr = chainPrimExpr primOperand selector
  where
-  primOperand :: Parser (LexemeRes PrimaryExpr)
+  primOperand :: Parser (Lexeme PrimaryExpr)
   primOperand = modLexemeRes PrimExprOperand <$> operand
 
-  selector :: Parser ((LexemeRes PrimaryExpr) -> (LexemeRes PrimaryExpr))
+  selector :: Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr))
   selector = do
     _ <- lexeme $ (,TokenDot) <$> char '.'
     (sel, tok, nl) <-
@@ -176,9 +172,9 @@ primaryExpr = chainPrimExpr primOperand selector
     return $ \(pe, _, _) -> (PrimExprSelector pe sel, tok, nl)
 
 chainPrimExpr ::
-  Parser (LexemeRes PrimaryExpr) ->
-  Parser ((LexemeRes PrimaryExpr) -> (LexemeRes PrimaryExpr)) ->
-  Parser (LexemeRes PrimaryExpr)
+  Parser (Lexeme PrimaryExpr) ->
+  Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr)) ->
+  Parser (Lexeme PrimaryExpr)
 chainPrimExpr p op = do
   x <- p
   rest x
@@ -191,7 +187,7 @@ chainPrimExpr p op = do
       <|> return x
       <?> "failed to parse chainPrimExpr"
 
-operand :: Parser (LexemeRes Operand)
+operand :: Parser (Lexeme Operand)
 operand = do
   opd <-
     (modLexemeRes OpLiteral <$> literal)
@@ -205,7 +201,7 @@ operand = do
       <?> "failed to parse operand"
   return opd
 
-literal :: Parser (LexemeRes Literal)
+literal :: Parser (Lexeme Literal)
 literal =
   try (litLexeme TokenFloat floatLit)
     <|> (litLexeme TokenInt intLit)
@@ -216,7 +212,7 @@ literal =
     <|> try (litLexeme TokenNull null)
     <|> struct
 
-identifier :: Parser (LexemeRes String)
+identifier :: Parser (Lexeme String)
 identifier = lexeme $ do
   firstChar <- letter
   rest <- many (letter <|> digit)
@@ -225,7 +221,7 @@ identifier = lexeme $ do
 letter :: Parser Char
 letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
 
-struct :: Parser (LexemeRes Literal)
+struct :: Parser (Lexeme Literal)
 struct = do
   _ <- lexeme $ (,TokenLBrace) <$> char '{'
   decls <- many $ do
@@ -242,10 +238,10 @@ struct = do
     ds = map (\x -> getLexeme x) decls
   return (StructLit ds, TokenRBrace, nl)
 
-rbrace :: Parser (LexemeRes Char)
+rbrace :: Parser (Lexeme Char)
 rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace")
 
-comma :: TokenType -> Bool -> Parser (LexemeRes ())
+comma :: TokenType -> Bool -> Parser (Lexeme ())
 comma tok nl = do
   commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
   case commaMaybe of
@@ -272,15 +268,15 @@ comma tok nl = do
         then return ((), tok, nl)
         else unexpected "failed to parse comma"
 
-decl :: Parser (LexemeRes Declaration)
-decl = do
-  (d, tok, nl) <- field
-  return (FieldDecl d, tok, nl)
+decl :: Parser (Lexeme Declaration)
+decl =
+  (modLexemeRes FieldDecl <$> field)
+    <|> (modLexemeRes Embedding <$> expr)
 
 labelName :: Parser String
 labelName = undefined
 
-field :: Parser (LexemeRes FieldDecl)
+field :: Parser (Lexeme FieldDecl)
 field = do
   (ln, _, _) <-
     (modLexemeRes LabelID <$> identifier) <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
@@ -288,7 +284,7 @@ field = do
   (e, tok, nl) <- expr
   return (Field ((Label . LabelName) ln) e, tok, nl)
 
-litLexeme :: TokenType -> Parser a -> Parser (LexemeRes a)
+litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
 litLexeme t p = lexeme $ do
   lit <- p
   return (lit, t)
@@ -352,7 +348,7 @@ skippable = do
   hasnls <- many (spaces <|> (lineComment >> return False))
   return $ any (== True) hasnls
 
-lexeme :: Parser (TokAttr a) -> Parser (LexemeRes a)
+lexeme :: Parser (TokAttr a) -> Parser (Lexeme a)
 lexeme p = do
   (x, ltok) <- p
   hasnl <- skippable <?> "failed to parse white spaces and comments"
