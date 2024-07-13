@@ -828,7 +828,7 @@ insertSubTree parent sel sub =
           TNScope parScope -> returnTree $ TNScope $ parScope{trsSubs = Map.insert s sub (trsSubs parScope)}
           _ ->
             throwError errMsg
-        ListSelector i -> case parentNode of
+        IndexSelector i -> case parentNode of
           TNList vs -> returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
           _ -> throwError errMsg
         UnaryOpSelector -> case parentNode of
@@ -871,7 +871,7 @@ goTreeSel sel t =
         StringSelector s -> case node of
           TNScope scope -> Map.lookup s (trsSubs scope)
           _ -> Nothing
-        ListSelector i -> case node of
+        IndexSelector i -> case node of
           TNList vs -> (trLstSubs vs) !? i
           _ -> Nothing
         UnaryOpSelector -> case node of
@@ -990,7 +990,7 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
         TNRoot t -> return (substTreeNode (TNRoot t{trRtSub = subT}) parT, [])
         _ -> throwError "propUpTC: root is not TNRoot"
   StringSelector s -> updateParScope parT s subT
-  ListSelector i -> case parNode of
+  IndexSelector i -> case parNode of
     TNList vs ->
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
@@ -1084,7 +1084,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       goSub acc i =
         if isTreeBottom (fst acc)
           then return acc
-          else getSubTC (ListSelector i) acc >>= f >>= levelUp (ListSelector i)
+          else getSubTC (IndexSelector i) acc >>= f >>= levelUp (IndexSelector i)
      in
       foldM goSub tc [0 .. length (trLstSubs l) - 1]
   TNFunc fn ->
@@ -1093,7 +1093,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       goSub acc i =
         if isTreeBottom (fst acc)
           then return acc
-          else getSubTC (ListSelector i) acc >>= f >>= levelUp (ListSelector i)
+          else getSubTC (IndexSelector i) acc >>= f >>= levelUp (IndexSelector i)
      in
       foldM goSub tc [0 .. length (trfArgs fn) - 1]
   TNAtom _ -> return tc

@@ -170,7 +170,7 @@ evalListLit (AST.EmbeddingList es) path tc =
   evalElement :: (EvalEnv m) => TreeCursor -> (Int, AST.Embedding) -> m TreeCursor
   evalElement x (i, e) =
     let
-      listPath = appendSel (Path.ListSelector i) path
+      listPath = appendSel (Path.IndexSelector i) path
      in
       evalExpr e listPath x
 

@@ -8,7 +8,7 @@ import qualified Data.Set as Set
 data Selector
   = StartSelector
   | StringSelector String
-  | ListSelector Int
+  | IndexSelector Int
   | UnaryOpSelector
   | BinOpSelector BinOpDirect
   | DisjDefaultSelector
@@ -19,7 +19,7 @@ data Selector
 instance Show Selector where
   show StartSelector = "/"
   show (StringSelector s) = s
-  show (ListSelector i) = show i
+  show (IndexSelector i) = show i
   show UnaryOpSelector = "u"
   show (BinOpSelector d) = show d
   show (DisjDefaultSelector) = "d*"
