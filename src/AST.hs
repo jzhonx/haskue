@@ -1,7 +1,12 @@
 module AST (
   BinaryOp (..),
+  Declaration (..),
+  ElementList (..),
+  Embedding,
   Expression (..),
+  FieldDecl (..),
   Identifer,
+  Index (..),
   Label (..),
   LabelExpr (..),
   LabelName (..),
@@ -15,10 +20,6 @@ module AST (
   StringLit (..),
   UnaryExpr (..),
   UnaryOp (..),
-  Declaration (..),
-  FieldDecl (..),
-  Embedding,
-  ElementList (..),
   litCons,
   idCons,
   unaryOpCons,
@@ -52,12 +53,15 @@ data UnaryExpr
 data PrimaryExpr
   = PrimExprOperand Operand
   | PrimExprSelector PrimaryExpr Selector
+  | PrimExprIndex PrimaryExpr Index
   deriving (Eq, Show)
 
 data Selector
   = IDSelector Identifer
   | StringSelector SimpleStringLit
   deriving (Eq, Show)
+
+newtype Index = Index Expression deriving (Eq, Show)
 
 data Operand
   = OpLiteral Literal
@@ -209,6 +213,7 @@ primBld :: Int -> PrimaryExpr -> Builder
 primBld ident e = case e of
   PrimExprOperand op -> opBld ident op
   PrimExprSelector pe sel -> primBld ident pe <> string7 "." <> selBld sel
+  PrimExprIndex pe (Index ie) -> primBld ident pe <> string7 "[" <> exprBldIdent ident ie <> string7 "]"
 
 selBld :: Selector -> Builder
 selBld e = case e of

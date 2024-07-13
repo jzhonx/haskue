@@ -1361,6 +1361,16 @@ insertTCDot sel dotSel ue tc = do
     _ -> throwError $ printf "insertTCDot: cannot insert link to non-link node:\n%s" (show tree)
   updateTCSub sel newSub tc
 
+insertTCIndex ::
+  (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
+insertTCIndex sel dotSel ue tc = do
+  curSub <- goDownTCSelErr sel "insertTCIndex: cannot get sub cursor" tc
+  let tree = fst curSub
+  newSub <- case treeNode tree of
+    TNLink link -> return $ mkTree (TNLink $ link{trlTarget = appendSel dotSel (trlTarget link), trlExpr = ue}) Nothing
+    _ -> throwError $ printf "insertTCIndex: cannot insert link to non-link node:\n%s" (show tree)
+  updateTCSub sel newSub tc
+
 insertTCAtom :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
 insertTCAtom sel v tc =
   let sub = mkTreeAtom v Nothing
@@ -1373,9 +1383,8 @@ insertTCVarLink sel var e tc =
       tarPath = Path [tarSel]
    in let sub = mkTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e}) Nothing
        in do
-            dump $ printf "insertTCLink: link to %s, path: %s" (show tarPath) (show subPath)
-            u <- insertTCSub sel sub tc
-            return u
+            dump $ printf "insertTCVarLink: link to %s, path: %s" (show tarPath) (show subPath)
+            insertTCSub sel sub tc
 
 insertTCBound :: (EvalEnv m) => Selector -> Bound -> TreeCursor -> m TreeCursor
 insertTCBound sel b tc =

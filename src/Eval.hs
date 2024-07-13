@@ -191,41 +191,43 @@ evalPrimExpr e@(PrimExprOperand op) path tc = case op of
       let parSel = fromJust $ lastSel path
       pure tc >>= insertTCBound parSel b >>= propUpTCSel parSel
 evalPrimExpr e@(PrimExprSelector primExpr sel) path tc =
-  do
-    pure tc
-    >>= evalPrimExpr primExpr path
+  evalPrimExpr primExpr path tc
     >>= evalSelector e sel path
+evalPrimExpr e@(PrimExprIndex primExpr index) path tc = undefined
 
 {- | Looks up the variable denoted by the name in the current scope or the parent scopes.
-If the variable is not atom, a new pending value is created and returned. The reason is that if the referenced
-var was updated with a new value, the pending value should be updated with the value.
+If the variable is not atom, a new pending value is created and returned. The reason is that if the referenced var was
+updated with a new value, the pending value should be updated with the value.
 Parameters:
-var denotes the variable name.
-exprPath is the path to the current expression that contains the selector.
-For example,
-{ a: b: x+y }
-If the name is "y", and the exprPath is "a.b".
+- var denotes the variable name.
+- path is the path to the current expression that contains the selector.
+For example, { a: b: x+y }
+If the name is "y", and the path is "a.b".
 -}
 lookupVar :: (EvalEnv m) => PrimaryExpr -> String -> Path -> TreeCursor -> m TreeCursor
 lookupVar e var path tc =
-  let parSel = fromJust $ lastSel path
-   in do
-        dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
-        res <- searchTCVar (Path.StringSelector var) tc
-        case res of
-          Nothing -> throwError $ printf "variable %s is not found, path: %s" var (show path)
-          Just _ ->
-            pure tc >>= insertTCVarLink parSel var (UnaryExprPrimaryExpr e) >>= propUpTCSel parSel
+  let
+    parSel = fromJust $ lastSel path
+    notFound = Bottom $ printf "variable %s is not found, path: %s" var (show path)
+   in
+    do
+      dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
+      res <- searchTCVar (Path.StringSelector var) tc
+      case res of
+        Nothing ->
+          return
+            (substTreeNode (TNAtom . TreeAtom $ notFound) (fst tc), snd tc)
+        Just _ ->
+          insertTCVarLink parSel var (UnaryExprPrimaryExpr e) tc
+            >>= propUpTCSel parSel
 
 {- | Evaluates the selector.
 Parameters:
-pe is the primary expression.
-sel is the selector.
-soPair is the path and the value of struct like object.
-path is the path to the current expression that contains the selector.
-For example,
-{ a: b: x.y }
-If the field is "y", and the exprPath is "a.b", expr is "x.y", the structPath is "x".
+- pe is the primary expression.
+- sel is the selector.
+- path is the path to the current expression that contains the selector.
+For example, { a: b: x.y }
+If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x".
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Path -> TreeCursor -> m TreeCursor
@@ -235,7 +237,18 @@ evalSelector pe astSel path tc =
         IDSelector ident -> ident
         AST.StringSelector str -> str
    in do
-        pure tc >>= insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) >>= propUpTCSel parSel
+        insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
+        >>= propUpTCSel parSel
+
+-- evalIndex ::
+--   (EvalEnv m) => PrimaryExpr -> AST.Index -> Path -> TreeCursor -> m TreeCursor
+-- evalIndex pe (AST.Index e) path tc =
+--   let parSel = fromJust $ lastSel path
+--    in do
+--         -- evaluate the index expression.
+--         u <- evalExpr e (appendSel (Path.UnaryOpSelector) path) tc
+--         insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
+--           >>= propUpTCSel parSel
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
