@@ -251,6 +251,9 @@ tnStrBldr i t = case treeNode t of
       ]
   TNBounds b -> content t i mempty (map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trBdList b)))
   TNRefCycleVar -> content t i mempty emptyTreeFields
+  TNFunc f ->
+    let args = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trfArgs f))
+     in content t i (string7 $ trfName f) args
  where
   emptyTreeFields :: [(Builder, Tree)]
   emptyTreeFields = []
@@ -299,6 +302,7 @@ showTreeType t = case treeNode t of
   TNStub -> "Stub"
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
+  TNFunc{} -> "Func"
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
@@ -314,6 +318,7 @@ showTreeSymbol t = case treeNode t of
   TNStub -> "Stub"
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
+  TNFunc{} -> "f()"
 
 instance Show Tree where
   show tree = showTreeIdent tree 0
@@ -332,6 +337,7 @@ instance BuildASTExpr Tree where
     TNStub -> AST.litCons AST.BottomLit
     TNConstraint _ -> buildASTExpr (fromJust $ treeOrig t)
     TNRefCycleVar -> AST.litCons AST.TopLit
+    TNFunc f -> buildASTExpr f
 
 mkTree :: TreeNode -> Maybe Tree -> Tree
 mkTree n m = Tree n m
@@ -356,6 +362,7 @@ data TreeNode
   | TNStub
   | TNConstraint TNConstraint
   | TNRefCycleVar
+  | TNFunc TNFunc
 
 instance Eq TreeNode where
   (==) (TNRoot t1) (TNRoot t2) = t1 == t2
@@ -390,6 +397,7 @@ instance ValueNode TreeNode where
     TNUnaryOp _ -> False
     TNBinaryOp _ -> False
     TNStub -> False
+    TNFunc _ -> False
   isValueAtom n = case n of
     TNAtom l -> case trAmAtom l of
       Top -> False
@@ -784,6 +792,16 @@ instance BuildASTExpr TNBounds where
 mkTNBounds :: [Bound] -> Maybe Tree -> Tree
 mkTNBounds bs = mkTree (TNBounds $ TreeBounds{trBdList = bs})
 
+data TNFunc = TreeFunc
+  { trfName :: String
+  , trfExpr :: AST.Expression
+  , trfArgs :: [Tree]
+  , trfFunc :: forall m. (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
+  }
+
+instance BuildASTExpr TNFunc where
+  buildASTExpr = trfExpr
+
 -- -- --
 
 emptyTNScope :: TNScope
@@ -927,11 +945,6 @@ goDownTCPath (Path sels) tc = go (reverse sels) tc
     nextCur <- goDownTCSel x cursor
     go xs nextCur
 
-goDownTCPathErr :: (MonadError String m) => Path -> String -> TreeCursor -> m TreeCursor
-goDownTCPathErr p msg tc = case goDownTCPath p tc of
-  Just c -> return c
-  Nothing -> throwError msg
-
 {- | Go down the TreeCursor with the given selector and return the new cursor.
 It handles the case when the current node is a disjunction node.
 -}
@@ -1074,6 +1087,15 @@ traverseSubNodes f tc = case treeNode (fst tc) of
           else getSubTC (ListSelector i) acc >>= f >>= levelUp (ListSelector i)
      in
       foldM goSub tc [0 .. length (trLstSubs l) - 1]
+  TNFunc fn ->
+    let
+      goSub :: (EvalEnv m) => TreeCursor -> Int -> m TreeCursor
+      goSub acc i =
+        if isTreeBottom (fst acc)
+          then return acc
+          else getSubTC (ListSelector i) acc >>= f >>= levelUp (ListSelector i)
+     in
+      foldM goSub tc [0 .. length (trfArgs fn) - 1]
   TNAtom _ -> return tc
   TNBounds _ -> return tc
   TNConstraint _ -> return tc
@@ -1109,14 +1131,14 @@ traverseTC f tc = case treeNode n of
   TNDisj _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNUnaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNBinaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
-  TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
+  TNFunc _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNList _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNAtom _ -> f tc
   TNBounds _ -> f tc
-  -- TNBounds _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNConstraint _ -> f tc
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
+  TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
  where
   n = fst tc
   header = "traverseTC"
@@ -1134,6 +1156,7 @@ evalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 evalTC tc = case treeNode (fst tc) of
   TNUnaryOp op -> truOp op (truArg op) tc
   TNBinaryOp op -> trbOp op (trbArgL op) (trbArgR op) tc
+  TNFunc fn -> trfFunc fn (trfArgs fn) tc
   TNConstraint c ->
     let
       origAtom = mkTree (TNAtom $ trCnOrigAtom c) Nothing
@@ -1214,24 +1237,6 @@ It returns the root block.
 propRootEvalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 propRootEvalTC (t, []) = return (t, [])
 propRootEvalTC tc = propUpEvalTC tc >>= propRootEvalTC
-
--- | Go from the current cursor to the root and then go down to the path.
-goTCPathErr :: (EvalEnv m) => Path -> TreeCursor -> m TreeCursor
-goTCPathErr p tc = go relSels tc
- where
-  errMsg :: String
-  errMsg = printf "goEvalTCPathErr: path %s not found" (show p)
-
-  -- TODO: canonicalize path
-  relSels :: [Selector]
-  relSels = reverse $ getPath $ relPath (pathFromTC tc) p
-
-  go :: (EvalEnv m) => [Selector] -> TreeCursor -> m TreeCursor
-  go [] cursor = return cursor
-  go (x : xs) cursor = case x of
-    ParentSelector -> propUpTC cursor >>= go xs
-    -- evalTC here is wasteful. TODO: evalTC once
-    _ -> pure cursor >>= evalTC >>= goDownTCSelErr x errMsg >>= go xs
 
 {- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 The cursor will also be propagated to the parent block.
