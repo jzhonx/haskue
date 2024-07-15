@@ -106,21 +106,16 @@ evalStructLit decls path tc = do
       updateTCSub
         parSel
         ( mkTree
-            ( TNBinaryOp $
-                TreeBinaryOp
-                  { trbRep = AST.Unify
-                  , trbOp = unify
-                  , trbArgL = (fst x)
-                  , trbArgR = mkTree TNStub Nothing
-                  }
+            ( TNFunc $
+                mkTNBinaryOp AST.Unify unify (fst x) (mkTree TNStub Nothing)
             )
             Nothing
         )
         par
       -- evaluate the embedding expression.
-      >>= evalExpr e (appendSel (BinOpSelector R) path)
+      >>= evalExpr e (appendSel binOpRightSelector path)
       -- go back to the original node.
-      >>= goDownTCSelErr (BinOpSelector L) "cannot go back to original struct"
+      >>= goDownTCSelErr binOpLeftSelector "cannot go back to original struct"
   evalDecl x (FieldDecl fd) = case fd of
     Field label e ->
       let
@@ -170,7 +165,7 @@ evalListLit (AST.EmbeddingList es) path tc =
   evalElement :: (EvalEnv m) => TreeCursor -> (Int, AST.Embedding) -> m TreeCursor
   evalElement x (i, e) =
     let
-      listPath = appendSel (Path.IndexSelector i) path
+      listPath = appendSel (Path.FuncArgSelector i) path
      in
       evalExpr e listPath x
 
@@ -288,7 +283,6 @@ dispUnaryFunc op t tc = do
       _ -> returnConflict
     -- The unary op is operating on a non-atom.
     TNFunc _ -> return $ mkTree (TNFunc $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
-    TNBinaryOp _ -> return $ mkTree (TNFunc $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     _ -> returnConflict
   return (unode, snd tc)
  where
@@ -322,8 +316,8 @@ evalBinary op e1 e2 path tc =
   let parSel = fromJust $ lastSel path
    in pure tc
         >>= insertTCBinaryOp parSel op (dispBinFunc op)
-        >>= (evalExpr e1 $ appendSel (BinOpSelector L) path)
-        >>= (evalExpr e2 $ appendSel (BinOpSelector R) path)
+        >>= (evalExpr e1 $ appendSel binOpLeftSelector path)
+        >>= (evalExpr e2 $ appendSel binOpRightSelector path)
         >>= propUpTCSel parSel
 
 dispBinFunc :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
@@ -351,7 +345,7 @@ regBinDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
 
 regBinLeftAtom :: (EvalEnv m) => BinaryOp -> (BinOpDirect, TNAtom, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
-  dump $ printf "regBinLeftAtom: %s %s %s" (show ta1) (show op) (show t2)
+  dump $ printf "regBinLeftAtom: %s (%s: %s) (%s)" (show op) (show d1) (show ta1) (show t2)
   if
     | isJust (lookup op cmpOps) -> case treeNode t2 of
         TNAtom ta2 ->
@@ -451,7 +445,6 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) tc = case dj1 of
 regBinOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   (TNFunc _, _) -> evalOrDelay
-  (TNBinaryOp _, _) -> evalOrDelay
   (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay
   (TNConstraint c, _) -> do
@@ -465,7 +458,7 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   -- returns a delayed evaluation.
   evalOrDelay :: (EvalEnv m) => m Tree
   evalOrDelay =
-    let unevaledTC = mkSubTC (BinOpSelector d1) t1 tc
+    let unevaledTC = mkSubTC (toBinOpSelector d1) t1 tc
      in do
           dump $ printf "regBinOther: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
           x <- evalTC unevaledTC
@@ -481,7 +474,7 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
 
   delay :: (EvalEnv m) => m Tree
   delay =
-    let v = substTreeNode (TNBinaryOp $ mkTNBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
+    let v = substTreeNode (TNFunc $ mkTNBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
      in do
           dump $ printf "regBinOther: %s is incomplete, delaying to %s" (show t1) (show v)
           return v
@@ -501,33 +494,33 @@ evalDisj e1 e2 path tc = do
   v <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) ->
       pure u
-        >>= evalUnaryExpr se1 (appendSel (BinOpSelector L) path)
-        >>= evalUnaryExpr se2 (appendSel (BinOpSelector R) path)
+        >>= evalUnaryExpr se1 (appendSel binOpLeftSelector path)
+        >>= evalUnaryExpr se2 (appendSel binOpRightSelector path)
         >>= propUpTCSel parSel
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), _) ->
       pure u
-        >>= evalUnaryExpr se1 (appendSel (BinOpSelector L) path)
-        >>= evalExpr e2 (appendSel (BinOpSelector R) path)
+        >>= evalUnaryExpr se1 (appendSel binOpLeftSelector path)
+        >>= evalExpr e2 (appendSel binOpRightSelector path)
         >>= propUpTCSel parSel
     (_, ExprUnaryExpr (UnaryExprUnaryOp Star se2)) ->
       pure u
-        >>= evalExpr e1 (appendSel (BinOpSelector L) path)
-        >>= evalUnaryExpr se2 (appendSel (BinOpSelector R) path)
+        >>= evalExpr e1 (appendSel binOpLeftSelector path)
+        >>= evalUnaryExpr se2 (appendSel binOpRightSelector path)
         >>= propUpTCSel parSel
     (_, _) ->
       pure u
-        >>= evalExpr e1 (appendSel (BinOpSelector L) path)
-        >>= evalExpr e2 (appendSel (BinOpSelector R) path)
+        >>= evalExpr e1 (appendSel binOpLeftSelector path)
+        >>= evalExpr e2 (appendSel binOpRightSelector path)
         >>= propUpTCSel parSel
-  dump $ printf "evalDisj: tree:\n%s" (show $ fst v)
+  dump $ printf "evalDisj: path: %s, tree:\n%s" (show $ pathFromTC tc) (show $ fst v)
   return v
  where
   parSel = fromJust $ lastSel path
 
   evalDisjAdapt :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
   evalDisjAdapt unt1 unt2 x = do
-    t1 <- evalSub (BinOpSelector L) unt1 x
-    t2 <- evalSub (BinOpSelector R) unt2 x
+    t1 <- evalSub binOpLeftSelector unt1 x
+    t2 <- evalSub binOpRightSelector unt2 x
     if not (isValueNode (treeNode t1)) || not (isValueNode (treeNode t2))
       then do
         dump $ printf "evalDisjAdapt: %s, %s are not value nodes" (show t1) (show t2)
@@ -549,7 +542,7 @@ evalDisj e1 e2 path tc = do
      in do
           dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
           u <- evalTC unevaledTC
-          dump $ printf "evalDisj: %s, is evaluated to:\n%s" (show t) (show $ fst u)
+          dump $ printf "evalDisj: path: %s, %s, is evaluated to:\n%s" (show $ pathFromTC u) (show t) (show $ fst u)
           return $ fst u
 
   -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.

@@ -358,9 +358,9 @@ testDisj1 = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
-        @?= newStruct
+    Right v ->
+      cmpStructs v $
+        newStruct
           (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
           ( Map.fromList
               [ ("x1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
@@ -558,24 +558,22 @@ testCycles2 = do
               [
                 ( "a"
                 , mkSimpleTree $
-                    TNBinaryOp $
-                      TreeBinaryOp
-                        { trbRep = AST.Add
-                        , trbOp = undefined
-                        , trbArgL = mkSimpleLink $ pathFromList [StringSelector "b"]
-                        , trbArgR = mkSimpleTreeAtom $ Int 100
-                        }
+                    TNFunc $
+                      mkTNBinaryOp
+                        AST.Add
+                        undefined
+                        (mkSimpleLink $ pathFromList [StringSelector "b"])
+                        (mkSimpleTreeAtom $ Int 100)
                 )
               ,
                 ( "b"
                 , mkSimpleTree $
-                    TNBinaryOp $
-                      TreeBinaryOp
-                        { trbRep = AST.Sub
-                        , trbOp = undefined
-                        , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                        , trbArgR = mkSimpleTreeAtom $ Int 100
-                        }
+                    TNFunc $
+                      mkTNBinaryOp
+                        AST.Sub
+                        undefined
+                        (mkSimpleLink $ pathFromList [StringSelector "a"])
+                        (mkSimpleTreeAtom $ Int 100)
                 )
               ]
           )
@@ -613,24 +611,22 @@ testCycles4 = do
                 [
                   ( "a"
                   , mkSimpleTree $
-                      TNBinaryOp $
-                        TreeBinaryOp
-                          { trbRep = AST.Add
-                          , trbOp = undefined
-                          , trbArgL = mkSimpleLink $ pathFromList [StringSelector "b"]
-                          , trbArgR = mkSimpleTreeAtom $ Int 100
-                          }
+                      TNFunc $
+                        mkTNBinaryOp
+                          AST.Add
+                          undefined
+                          (mkSimpleLink $ pathFromList [StringSelector "b"])
+                          (mkSimpleTreeAtom $ Int 100)
                   )
                 ,
                   ( "b"
                   , mkSimpleTree $
-                      TNBinaryOp $
-                        TreeBinaryOp
-                          { trbRep = AST.Sub
-                          , trbOp = undefined
-                          , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                          , trbArgR = mkSimpleTreeAtom $ Int 100
-                          }
+                      TNFunc $
+                        mkTNBinaryOp
+                          AST.Sub
+                          undefined
+                          (mkSimpleLink $ pathFromList [StringSelector "a"])
+                          (mkSimpleTreeAtom $ Int 100)
                   )
                 ]
             )
@@ -710,13 +706,12 @@ testIncomplete = do
               [ ("a", mkSimpleTreeAtom Top)
               ,
                 ( "b"
-                , mkSimpleTree . TNBinaryOp $
-                    TreeBinaryOp
-                      { trbRep = AST.Sub
-                      , trbOp = undefined
-                      , trbArgL = mkSimpleLink $ pathFromList [StringSelector "a"]
-                      , trbArgR = mkSimpleTreeAtom $ Int 1
-                      }
+                , mkSimpleTree . TNFunc $
+                    mkTNBinaryOp
+                      AST.Sub
+                      undefined
+                      (mkSimpleLink $ pathFromList [StringSelector "a"])
+                      (mkSimpleTreeAtom $ Int 1)
                 )
               ]
           )

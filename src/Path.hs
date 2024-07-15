@@ -8,10 +8,11 @@ import qualified Data.Set as Set
 data Selector
   = StartSelector
   | StringSelector String
-  | IndexSelector Int
+  | -- | IndexSelector Int
+    FuncArgSelector Int
   | -- | UnaryOpSelector
-    BinOpSelector BinOpDirect
-  | DisjDefaultSelector
+    -- BinOpSelector BinOpDirect
+    DisjDefaultSelector
   | DisjDisjunctSelector Int
   | ParentSelector
   deriving (Eq, Ord)
@@ -19,15 +20,26 @@ data Selector
 instance Show Selector where
   show StartSelector = "/"
   show (StringSelector s) = s
-  show (IndexSelector i) = show i
+  -- show (IndexSelector i) = show i
+  show (FuncArgSelector i) = "a" ++ show i
   -- show UnaryOpSelector = "u"
-  show (BinOpSelector d) = show d
+  -- show (BinOpSelector d) = show d
   show (DisjDefaultSelector) = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
 
 unaryOpSelector :: Selector
-unaryOpSelector = IndexSelector 0
+unaryOpSelector = FuncArgSelector 0
+
+binOpLeftSelector :: Selector
+binOpLeftSelector = FuncArgSelector 0
+
+binOpRightSelector :: Selector
+binOpRightSelector = FuncArgSelector 1
+
+toBinOpSelector :: BinOpDirect -> Selector
+toBinOpSelector L = binOpLeftSelector
+toBinOpSelector R = binOpRightSelector
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -74,7 +86,8 @@ canonicalizePath (Path xs) = Path $ filter (not . isOperator) xs
  where
   isOperator :: Selector -> Bool
   -- isOperator UnaryOpSelector = True
-  isOperator (BinOpSelector _) = True
+  -- isOperator (BinOpSelector _) = True
+  isOperator (FuncArgSelector _) = True
   isOperator _ = False
 
 -- | Get the tail path of a path, excluding the head selector.
