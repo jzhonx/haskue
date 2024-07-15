@@ -8,11 +8,10 @@ import qualified Data.Set as Set
 data Selector
   = StartSelector
   | StringSelector String
-  | -- | IndexSelector Int
+  | IndexSelector Int
+  | -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
     FuncArgSelector Int
-  | -- | UnaryOpSelector
-    -- BinOpSelector BinOpDirect
-    DisjDefaultSelector
+  | DisjDefaultSelector
   | DisjDisjunctSelector Int
   | ParentSelector
   deriving (Eq, Ord)
@@ -20,7 +19,7 @@ data Selector
 instance Show Selector where
   show StartSelector = "/"
   show (StringSelector s) = s
-  -- show (IndexSelector i) = show i
+  show (IndexSelector i) = show i
   show (FuncArgSelector i) = "a" ++ show i
   -- show UnaryOpSelector = "u"
   -- show (BinOpSelector d) = show d

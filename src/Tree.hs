@@ -834,8 +834,10 @@ insertSubTree parent sel sub =
           TNScope parScope -> returnTree $ TNScope $ parScope{trsSubs = Map.insert s sub (trsSubs parScope)}
           _ ->
             throwError errMsg
-        FuncArgSelector i -> case parentNode of
+        IndexSelector i -> case parentNode of
           TNList vs -> returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
+          _ -> throwError errMsg
+        FuncArgSelector i -> case parentNode of
           TNFunc fn -> returnTree $ TNFunc $ fn{trfnArgs = take i (trfnArgs fn) ++ [sub] ++ drop (i + 1) (trfnArgs fn)}
           _ -> throwError errMsg
         DisjDefaultSelector -> case parentNode of
@@ -870,8 +872,10 @@ goTreeSel sel t =
         StringSelector s -> case node of
           TNScope scope -> Map.lookup s (trsSubs scope)
           _ -> Nothing
-        FuncArgSelector i -> case node of
+        IndexSelector i -> case node of
           TNList vs -> (trLstSubs vs) !? i
+          _ -> Nothing
+        FuncArgSelector i -> case node of
           TNFunc fn -> (trfnArgs fn) !? i
           _ -> Nothing
         DisjDefaultSelector -> case node of
@@ -982,11 +986,13 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
         TNRoot t -> return (substTreeNode (TNRoot t{trRtSub = subT}) parT, [])
         _ -> throwError "propUpTC: root is not TNRoot"
   StringSelector s -> updateParScope parT s subT
-  FuncArgSelector i -> case parNode of
+  IndexSelector i -> case parNode of
     TNList vs ->
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return (substTreeNode l parT, cs)
+    _ -> throwError insertErrMsg
+  FuncArgSelector i -> case parNode of
     TNFunc fn ->
       let args = trfnArgs fn
           l = TNFunc $ fn{trfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
@@ -1062,7 +1068,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       goSub acc i =
         if isTreeBottom (fst acc)
           then return acc
-          else getSubTC (FuncArgSelector i) acc >>= f >>= levelUp (FuncArgSelector i)
+          else getSubTC (IndexSelector i) acc >>= f >>= levelUp (IndexSelector i)
      in
       foldM goSub tc [0 .. length (trLstSubs l) - 1]
   TNFunc fn ->
