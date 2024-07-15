@@ -79,7 +79,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
       unifyLeftDisj (d2, dj2, t2) (d1, t1) parTC
-    (_, TNUnaryOp _) -> procOther
+    (_, TNFunc _) -> procOther
     (_, TNBinaryOp op) -> case trbRep op of
       -- Unifying an atom with a marked disjunction will not get the same atom. So we do not create a constraint.
       -- Another way is to add a field in Constraint to store whether the constraint is created from a marked
@@ -135,7 +135,7 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
           case snd r of
             Just a -> return $ mkTreeAtom a Nothing
             Nothing -> return $ mkTNBounds (fst r) Nothing
-  TNUnaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+  TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNBinaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1) tc
@@ -343,7 +343,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 
 unifyLeftOther :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
-  (TNUnaryOp _, _) -> evalOrDelay
+  (TNFunc _, _) -> evalOrDelay
   (TNBinaryOp _, _) -> evalOrDelay
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
   -- containing an atom or a bottom.
@@ -388,7 +388,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
 
 procLeftEvalRes :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
-  TNUnaryOp _ -> procDelay
+  TNFunc _ -> procDelay
   TNBinaryOp _ -> procDelay
   TNLink _ -> mkUnification dt1 dt2
   _ -> unifyWithDir dt1 dt2 tc
@@ -481,7 +481,7 @@ mkUnification dt1 dt2 = return $ mkTree (TNBinaryOp $ mkTNBinaryOpDir AST.Unify 
 unifyLeftDisj :: (EvalEnv m) => (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
   case treeNode t2 of
-    TNUnaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+    TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1) tc
     TNBinaryOp _ -> unifyLeftOther (d2, t2) (d1, t1) tc
     TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc
     TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1) tc

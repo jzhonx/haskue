@@ -29,7 +29,8 @@ module Tree (
   TNList (..),
   TNRoot (..),
   TNScope (..),
-  TNUnaryOp (..),
+  TNFunc (..),
+  -- TNUnaryOp (..),
   Tree (..),
   TreeCursor,
   TreeNode (..),
@@ -67,6 +68,7 @@ module Tree (
   mkTree,
   mkTreeAtom,
   mkTreeDisj,
+  mkTNFunc,
   pathFromTC,
   propRootEvalTC,
   propUpTCSel,
@@ -234,7 +236,7 @@ tnStrBldr i t = case treeNode t of
   TNList vs ->
     let fields = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trLstSubs vs))
      in content t i mempty fields
-  TNUnaryOp op -> content t i mempty [(string7 (show UnaryOpSelector), truArg op)]
+  -- TNUnaryOp op -> content t i mempty [(string7 (show UnaryOpSelector), truArg op)]
   TNBinaryOp op ->
     content t i mempty [(string7 (show L), trbArgL op), (string7 (show R), trbArgR op)]
   TNDisj d ->
@@ -252,8 +254,8 @@ tnStrBldr i t = case treeNode t of
   TNBounds b -> content t i mempty (map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trBdList b)))
   TNRefCycleVar -> content t i mempty emptyTreeFields
   TNFunc f ->
-    let args = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trfArgs f))
-     in content t i (string7 $ trfName f) args
+    let args = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trfnArgs f))
+     in content t i (string7 $ trfnName f) args
  where
   emptyTreeFields :: [(Builder, Tree)]
   emptyTreeFields = []
@@ -295,7 +297,7 @@ showTreeType t = case treeNode t of
   TNBounds _ -> "Bounds"
   TNScope{} -> "Scope"
   TNList{} -> "List"
-  TNUnaryOp{} -> "UnaryOp"
+  -- TNUnaryOp{} -> "UnaryOp"
   TNBinaryOp{} -> "BinaryOp"
   TNLink{} -> "Link"
   TNDisj{} -> "Disj"
@@ -311,14 +313,14 @@ showTreeSymbol t = case treeNode t of
   TNBounds _ -> "b"
   TNScope{} -> "{}"
   TNList{} -> "[]"
-  TNUnaryOp o -> show $ truRep o
+  -- TNUnaryOp o -> show $ truRep o
   TNBinaryOp o -> show $ trbRep o
   TNLink l -> printf "-> %s" (show $ trlTarget l)
   TNDisj{} -> "dj"
-  TNStub -> "Stub"
+  TNStub -> "_|_"
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
-  TNFunc{} -> "f()"
+  TNFunc{} -> "fn"
 
 instance Show Tree where
   show tree = showTreeIdent tree 0
@@ -329,7 +331,7 @@ instance BuildASTExpr Tree where
     TNScope s -> buildASTExpr s
     TNList l -> buildASTExpr l
     TNDisj d -> buildASTExpr d
-    TNUnaryOp op -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr op
+    -- TNUnaryOp op -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr op
     TNBinaryOp op -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr op
     TNLink l -> buildASTExpr l
     TNAtom s -> buildASTExpr s
@@ -352,8 +354,8 @@ data TreeNode
     TNScope TNScope
   | TNList TNList
   | TNDisj TNDisj
-  | TNUnaryOp TNUnaryOp
-  | TNBinaryOp TNBinaryOp
+  | -- | TNUnaryOp TNUnaryOp
+    TNBinaryOp TNBinaryOp
   | -- | Unless the target is a scalar, the TNLink should not be pruned.
     TNLink TNLink
   | -- | TNAtom contains an atom value.
@@ -369,7 +371,7 @@ instance Eq TreeNode where
   (==) (TNScope s1) (TNScope s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
-  (==) (TNUnaryOp o1) (TNUnaryOp o2) = o1 == o2
+  -- (==) (TNUnaryOp o1) (TNUnaryOp o2) = o1 == o2
   (==) (TNBinaryOp o1) (TNBinaryOp o2) = o1 == o2
   (==) (TNLink l1) (TNLink l2) = l1 == l2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
@@ -394,7 +396,7 @@ instance ValueNode TreeNode where
     TNRefCycleVar -> False
     TNRoot _ -> False
     TNLink _ -> False
-    TNUnaryOp _ -> False
+    -- TNUnaryOp _ -> False
     TNBinaryOp _ -> False
     TNStub -> False
     TNFunc _ -> False
@@ -483,14 +485,6 @@ instance BuildASTExpr TNUnaryOp where
 
 instance Eq TNUnaryOp where
   (==) o1 o2 = (truRep o1 == truRep o2) && (truArg o1 == truArg o2)
-
-mkTNUnaryOp :: AST.UnaryOp -> (Tree -> TreeCursor -> EvalMonad TreeCursor) -> Tree -> TNUnaryOp
-mkTNUnaryOp rep op n =
-  TreeUnaryOp
-    { truOp = op
-    , truArg = n
-    , truRep = rep
-    }
 
 data TNBinaryOp = TreeBinaryOp
   { trbRep :: AST.BinaryOp
@@ -792,15 +786,58 @@ instance BuildASTExpr TNBounds where
 mkTNBounds :: [Bound] -> Maybe Tree -> Tree
 mkTNBounds bs = mkTree (TNBounds $ TreeBounds{trBdList = bs})
 
+data FuncType = UnaryOpFunc | BinaryOpFunc | DisjFunc | Function
+  deriving (Eq, Enum)
+
 data TNFunc = TreeFunc
-  { trfName :: String
-  , trfExpr :: AST.Expression
-  , trfArgs :: [Tree]
-  , trfFunc :: forall m. (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
+  { trfnName :: String
+  , trfnType :: FuncType
+  , trfnExpr :: AST.Expression
+  , trfnArgs :: [Tree]
+  , trfnFunc :: forall m. (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
   }
 
 instance BuildASTExpr TNFunc where
-  buildASTExpr = trfExpr
+  buildASTExpr = trfnExpr
+
+instance Eq TNFunc where
+  (==) f1 f2 = trfnName f1 == trfnName f2 && trfnArgs f1 == trfnArgs f2
+
+mkTNFunc ::
+  String -> FuncType -> AST.Expression -> ([Tree] -> TreeCursor -> EvalMonad TreeCursor) -> [Tree] -> TNFunc
+mkTNFunc name typ expr f args =
+  TreeFunc
+    { trfnFunc = f
+    , trfnType = typ
+    , trfnName = name
+    , trfnExpr = expr
+    , trfnArgs = args
+    }
+
+mkTNUnaryOp :: AST.UnaryOp -> (Tree -> TreeCursor -> EvalMonad TreeCursor) -> Tree -> TNFunc
+mkTNUnaryOp op f n =
+  TreeFunc
+    { trfnFunc = g
+    , trfnType = UnaryOpFunc
+    , trfnName = show op
+    , trfnExpr = buildUnaryExpr
+    , trfnArgs = [n]
+    }
+ where
+  g :: [Tree] -> TreeCursor -> EvalMonad TreeCursor
+  g (x : []) = f x
+  g _ = \_ -> throwError "mkTNUnaryOp: invalid number of arguments"
+
+  buildUnaryExpr :: AST.Expression
+  buildUnaryExpr =
+    let e = buildASTExpr n
+     in case e of
+          (AST.ExprUnaryExpr ue) -> AST.ExprUnaryExpr $ AST.UnaryExprUnaryOp op ue
+          _ ->
+            AST.ExprUnaryExpr $
+              AST.UnaryExprUnaryOp
+                op
+                (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
 
 -- -- --
 
@@ -830,10 +867,11 @@ insertSubTree parent sel sub =
             throwError errMsg
         IndexSelector i -> case parentNode of
           TNList vs -> returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
+          TNFunc fn -> returnTree $ TNFunc $ fn{trfnArgs = take i (trfnArgs fn) ++ [sub] ++ drop (i + 1) (trfnArgs fn)}
           _ -> throwError errMsg
-        UnaryOpSelector -> case parentNode of
-          TNUnaryOp op -> returnTree $ TNUnaryOp $ op{truArg = sub}
-          _ -> throwError errMsg
+        -- UnaryOpSelector -> case parentNode of
+        -- TNUnaryOp op -> returnTree $ TNUnaryOp $ op{truArg = sub}
+        -- _ -> throwError errMsg
         BinOpSelector dr -> case parentNode of
           TNBinaryOp op -> case dr of
             L -> returnTree $ TNBinaryOp $ op{trbArgL = sub}
@@ -873,10 +911,11 @@ goTreeSel sel t =
           _ -> Nothing
         IndexSelector i -> case node of
           TNList vs -> (trLstSubs vs) !? i
+          TNFunc fn -> (trfnArgs fn) !? i
           _ -> Nothing
-        UnaryOpSelector -> case node of
-          TNUnaryOp op -> Just (truArg op)
-          _ -> Nothing
+        -- UnaryOpSelector -> case node of
+        -- TNUnaryOp op -> Just (truArg op)
+        -- _ -> Nothing
         BinOpSelector dr -> case node of
           TNBinaryOp op -> case dr of
             L -> Just (trbArgL op)
@@ -995,10 +1034,14 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return (substTreeNode l parT, cs)
+    TNFunc fn ->
+      let args = trfnArgs fn
+          l = TNFunc $ fn{trfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
+       in return (substTreeNode l parT, cs)
     _ -> throwError insertErrMsg
-  UnaryOpSelector -> case parNode of
-    TNUnaryOp op -> return (substTreeNode (TNUnaryOp $ op{truArg = subT}) parT, cs)
-    _ -> throwError insertErrMsg
+  -- UnaryOpSelector -> case parNode of
+  -- TNUnaryOp op -> return (substTreeNode (TNUnaryOp $ op{truArg = subT}) parT, cs)
+  -- _ -> throwError insertErrMsg
   BinOpSelector dr -> case dr of
     L -> case parNode of
       TNBinaryOp op -> return (substTreeNode (TNBinaryOp $ op{trbArgL = subT}) parT, cs)
@@ -1069,7 +1112,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       do
         utc <- maybe (return tc) (\_ -> goSub tc DisjDefaultSelector) (trdDefault d)
         foldM goSub utc (map DisjDisjunctSelector [0 .. length (trdDisjuncts d) - 1])
-  TNUnaryOp _ -> getSubTC UnaryOpSelector tc >>= f >>= levelUp UnaryOpSelector
+  -- TNUnaryOp _ -> getSubTC UnaryOpSelector tc >>= f >>= levelUp UnaryOpSelector
   TNBinaryOp _ ->
     getSubTC (BinOpSelector L) tc
       >>= f
@@ -1095,7 +1138,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
           then return acc
           else getSubTC (IndexSelector i) acc >>= f >>= levelUp (IndexSelector i)
      in
-      foldM goSub tc [0 .. length (trfArgs fn) - 1]
+      foldM goSub tc [0 .. length (trfnArgs fn) - 1]
   TNAtom _ -> return tc
   TNBounds _ -> return tc
   TNConstraint _ -> return tc
@@ -1129,7 +1172,7 @@ traverseTC f tc = case treeNode n of
   TNRoot _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNScope _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNDisj _ -> f tc >>= traverseSubNodes (traverseTC f)
-  TNUnaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
+  -- TNUnaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNBinaryOp _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNFunc _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNList _ -> f tc >>= traverseSubNodes (traverseTC f)
@@ -1154,9 +1197,9 @@ setOrigNodesTC = traverseTC f
 
 evalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 evalTC tc = case treeNode (fst tc) of
-  TNUnaryOp op -> truOp op (truArg op) tc
+  -- TNUnaryOp op -> truOp op (truArg op) tc
   TNBinaryOp op -> trbOp op (trbArgL op) (trbArgR op) tc
-  TNFunc fn -> trfFunc fn (trfArgs fn) tc
+  TNFunc fn -> trfnFunc fn (trfnArgs fn) tc
   TNConstraint c ->
     let
       origAtom = mkTree (TNAtom $ trCnOrigAtom c) Nothing
@@ -1333,10 +1376,22 @@ insertTCScope sel labels vars tc =
 
 -- | Insert a unary operator that works for scalar values.
 insertTCUnaryOp ::
-  (EvalEnv m) => Selector -> AST.UnaryOp -> (Tree -> TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
-insertTCUnaryOp sel rep f tc =
-  let sub = mkTree (TNUnaryOp $ mkTNUnaryOp rep f (mkTree TNStub Nothing)) Nothing
-   in insertTCSub sel sub tc
+  (EvalEnv m) =>
+  Selector ->
+  AST.UnaryOp ->
+  AST.Expression ->
+  (Tree -> TreeCursor -> EvalMonad TreeCursor) ->
+  TreeCursor ->
+  m TreeCursor
+insertTCUnaryOp sel rep expr f tc =
+  let
+    g :: (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
+    g (t : []) = f t
+    g _ = \_ -> throwError "insertTCUnaryOp: wrong number of arguments"
+    sub = mkTree (TNFunc $ mkTNFunc (show rep) UnaryOpFunc expr g []) Nothing
+   in
+    -- let sub = mkTree (TNUnaryOp $ mkTNUnaryOp rep f (mkTree TNStub Nothing)) Nothing
+    insertTCSub sel sub tc
 
 -- | Insert a binary operator that works for scalar values.
 insertTCBinaryOp ::
@@ -1366,15 +1421,15 @@ insertTCDot sel dotSel ue tc = do
     _ -> throwError $ printf "insertTCDot: cannot insert link to non-link node:\n%s" (show tree)
   updateTCSub sel newSub tc
 
-insertTCIndex ::
-  (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
-insertTCIndex sel dotSel ue tc = do
-  curSub <- goDownTCSelErr sel "insertTCIndex: cannot get sub cursor" tc
-  let tree = fst curSub
-  newSub <- case treeNode tree of
-    TNLink link -> return $ mkTree (TNLink $ link{trlTarget = appendSel dotSel (trlTarget link), trlExpr = ue}) Nothing
-    _ -> throwError $ printf "insertTCIndex: cannot insert link to non-link node:\n%s" (show tree)
-  updateTCSub sel newSub tc
+-- insertTCIndex ::
+--   (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
+-- insertTCIndex sel dotSel ue tc = do
+--   curSub <- goDownTCSelErr sel "insertTCIndex: cannot get sub cursor" tc
+--   let tree = fst curSub
+--   newSub <- case treeNode tree of
+--     TNLink link -> return $ mkTree (TNLink $ link{trlTarget = appendSel dotSel (trlTarget link), trlExpr = ue}) Nothing
+--     _ -> throwError $ printf "cannot index %s" (show tree)
+--   updateTCSub sel newSub tc
 
 insertTCAtom :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
 insertTCAtom sel v tc =

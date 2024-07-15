@@ -9,8 +9,8 @@ data Selector
   = StartSelector
   | StringSelector String
   | IndexSelector Int
-  | UnaryOpSelector
-  | BinOpSelector BinOpDirect
+  | -- | UnaryOpSelector
+    BinOpSelector BinOpDirect
   | DisjDefaultSelector
   | DisjDisjunctSelector Int
   | ParentSelector
@@ -20,11 +20,14 @@ instance Show Selector where
   show StartSelector = "/"
   show (StringSelector s) = s
   show (IndexSelector i) = show i
-  show UnaryOpSelector = "u"
+  -- show UnaryOpSelector = "u"
   show (BinOpSelector d) = show d
   show (DisjDefaultSelector) = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
+
+unaryOpSelector :: Selector
+unaryOpSelector = IndexSelector 0
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -70,7 +73,7 @@ canonicalizePath :: Path -> Path
 canonicalizePath (Path xs) = Path $ filter (not . isOperator) xs
  where
   isOperator :: Selector -> Bool
-  isOperator UnaryOpSelector = True
+  -- isOperator UnaryOpSelector = True
   isOperator (BinOpSelector _) = True
   isOperator _ = False
 

@@ -256,9 +256,10 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> Path -> TreeCursor -> m TreeCursor
 evalUnaryOp op e path tc =
   let parSel = fromJust $ lastSel path
-      nextPath = appendSel UnaryOpSelector path
+      nextPath = appendSel Path.unaryOpSelector path
+      expr = AST.ExprUnaryExpr (AST.UnaryExprUnaryOp op e)
    in do
-        pure tc >>= insertTCUnaryOp parSel op (dispUnaryFunc op)
+        pure tc >>= insertTCUnaryOp parSel op expr (dispUnaryFunc op)
         >>= evalUnaryExpr e nextPath
         >>= propUpTCSel parSel
 
@@ -285,8 +286,9 @@ dispUnaryFunc op t tc = do
         (AST.ReNotMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReNotMatch p] Nothing
         _ -> returnConflict
       _ -> returnConflict
-    TNUnaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
-    TNBinaryOp _ -> return $ mkTree (TNUnaryOp $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
+    -- The unary op is operating on a non-atom.
+    TNFunc _ -> return $ mkTree (TNFunc $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
+    TNBinaryOp _ -> return $ mkTree (TNFunc $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
     _ -> returnConflict
   return (unode, snd tc)
  where
@@ -448,7 +450,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) tc = case dj1 of
 
 regBinOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
-  (TNUnaryOp _, _) -> evalOrDelay
+  (TNFunc _, _) -> evalOrDelay
   (TNBinaryOp _, _) -> evalOrDelay
   (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay

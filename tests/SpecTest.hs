@@ -12,6 +12,7 @@ import Path
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
+import Text.Printf (printf)
 import Tree
 
 newStruct :: [String] -> Map.Map String Tree -> Tree
@@ -917,3 +918,4 @@ cmpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
   assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
   mapM_ (\(k, v) -> assertEqual k v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
   mapM_ (\(k, v) -> assertEqual k (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
+cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
