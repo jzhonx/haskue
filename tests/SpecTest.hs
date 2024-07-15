@@ -559,7 +559,7 @@ testCycles2 = do
                 ( "a"
                 , mkSimpleTree $
                     TNFunc $
-                      mkTNBinaryOp
+                      mkBinaryOp
                         AST.Add
                         undefined
                         (mkSimpleLink $ pathFromList [StringSelector "b"])
@@ -569,7 +569,7 @@ testCycles2 = do
                 ( "b"
                 , mkSimpleTree $
                     TNFunc $
-                      mkTNBinaryOp
+                      mkBinaryOp
                         AST.Sub
                         undefined
                         (mkSimpleLink $ pathFromList [StringSelector "a"])
@@ -612,7 +612,7 @@ testCycles4 = do
                   ( "a"
                   , mkSimpleTree $
                       TNFunc $
-                        mkTNBinaryOp
+                        mkBinaryOp
                           AST.Add
                           undefined
                           (mkSimpleLink $ pathFromList [StringSelector "b"])
@@ -622,7 +622,7 @@ testCycles4 = do
                   ( "b"
                   , mkSimpleTree $
                       TNFunc $
-                        mkTNBinaryOp
+                        mkBinaryOp
                           AST.Sub
                           undefined
                           (mkSimpleLink $ pathFromList [StringSelector "a"])
@@ -707,7 +707,7 @@ testIncomplete = do
               ,
                 ( "b"
                 , mkSimpleTree . TNFunc $
-                    mkTNBinaryOp
+                    mkBinaryOp
                       AST.Sub
                       undefined
                       (mkSimpleLink $ pathFromList [StringSelector "a"])

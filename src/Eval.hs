@@ -107,7 +107,7 @@ evalStructLit decls path tc = do
         parSel
         ( mkTree
             ( TNFunc $
-                mkTNBinaryOp AST.Unify unify (fst x) (mkTree TNStub Nothing)
+                mkBinaryOp AST.Unify unify (fst x) (mkTree TNStub Nothing)
             )
             Nothing
         )
@@ -282,7 +282,7 @@ dispUnaryFunc op t tc = do
         _ -> returnConflict
       _ -> returnConflict
     -- The unary op is operating on a non-atom.
-    TNFunc _ -> return $ mkTree (TNFunc $ mkTNUnaryOp op (dispUnaryFunc op) t) Nothing
+    TNFunc _ -> return $ mkTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t) Nothing
     _ -> returnConflict
   return (unode, snd tc)
  where
@@ -474,7 +474,7 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
 
   delay :: (EvalEnv m) => m Tree
   delay =
-    let v = substTreeNode (TNFunc $ mkTNBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
+    let v = substTreeNode (TNFunc $ mkBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
      in do
           dump $ printf "regBinOther: %s is incomplete, delaying to %s" (show t1) (show v)
           return v

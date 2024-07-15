@@ -420,7 +420,7 @@ unifyStructs (d1, s1) (d2, s2) tc = do
         ( \key acc ->
             let t1 = fields1 Map.! key
                 t2 = fields2 Map.! key
-                unifyOp = mkTree (TNFunc $ mkTNBinaryOp AST.Unify unify t1 t2) Nothing -- No original node exists yet
+                unifyOp = mkTree (TNFunc $ mkBinaryOp AST.Unify unify t1 t2) Nothing -- No original node exists yet
              in (key, unifyOp) : acc
         )
         []
@@ -472,7 +472,7 @@ notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
   f x y = return $ mkTreeAtom (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)) Nothing
 
 mkUnification :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
-mkUnification dt1 dt2 = return $ mkTree (TNFunc $ mkTNBinaryOpDir AST.Unify unify dt1 dt2) Nothing
+mkUnification dt1 dt2 = return $ mkTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2) Nothing
 
 unifyLeftDisj :: (EvalEnv m) => (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
