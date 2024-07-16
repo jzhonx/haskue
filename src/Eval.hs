@@ -55,7 +55,7 @@ eval expr path = do
   return finalized
  where
   initTC :: TreeCursor
-  initTC = (mkTree (TNRoot $ TreeRoot (mkTreeAtom Top Nothing)) Nothing, [])
+  initTC = (mkNewTree (TNRoot $ TreeRoot (mkTreeAtom Top)), [])
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 Every eval* function should return a tree cursor that is at the same level as the input tree cursor.
@@ -105,11 +105,10 @@ evalStructLit decls path tc = do
       -- being a stub.
       updateTCSub
         parSel
-        ( mkTree
+        ( mkNewTree
             ( TNFunc $
-                mkBinaryOp AST.Unify unify (fst x) (mkTree TNStub Nothing)
+                mkBinaryOp AST.Unify unify (fst x) (mkNewTree TNStub)
             )
-            Nothing
         )
         par
       -- evaluate the embedding expression.
@@ -253,9 +252,8 @@ evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> Path -> TreeCursor -> m Tr
 evalUnaryOp op e path tc =
   let parSel = fromJust $ lastSel path
       nextPath = appendSel Path.unaryOpSelector path
-      expr = AST.ExprUnaryExpr (AST.UnaryExprUnaryOp op e)
    in do
-        pure tc >>= insertTCUnaryOp parSel op expr (dispUnaryFunc op)
+        pure tc >>= insertTCUnaryOp parSel op (dispUnaryFunc op)
         >>= evalUnaryExpr e nextPath
         >>= propUpTCSel parSel
 
@@ -267,7 +265,7 @@ dispUnaryFunc op t tc = do
       (Plus, Float i) -> fa i id
       (Minus, Int i) -> ia i negate
       (Minus, Float i) -> fa i negate
-      (Not, Bool b) -> return $ mkTreeAtom (Bool (not b)) Nothing
+      (Not, Bool b) -> return $ mkTreeAtom (Bool (not b))
       (AST.UnaRelOp uop, _) -> case (uop, trAmAtom ta) of
         (AST.NE, a) -> mkb (BdNE a)
         (AST.LT, Int i) -> mkib BdLT i
@@ -278,12 +276,12 @@ dispUnaryFunc op t tc = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReMatch p] Nothing
-        (AST.ReNotMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReNotMatch p] Nothing
+        (AST.ReMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReMatch p]
+        (AST.ReNotMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReNotMatch p]
         _ -> returnConflict
       _ -> returnConflict
     -- The unary op is operating on a non-atom.
-    TNFunc _ -> return $ mkTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t) Nothing
+    TNFunc _ -> return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
     _ -> returnConflict
   return (unode, snd tc)
  where
@@ -291,22 +289,22 @@ dispUnaryFunc op t tc = do
   conflict = Bottom $ printf "%s cannot be used for %s" (show t) (show op)
 
   returnConflict :: (EvalEnv m) => m Tree
-  returnConflict = return $ mkTreeAtom conflict Nothing
+  returnConflict = return $ mkTreeAtom conflict
 
   ia :: (EvalEnv m) => Integer -> (Integer -> Integer) -> m Tree
-  ia a f = return $ mkTreeAtom (Int $ f a) Nothing
+  ia a f = return $ mkTreeAtom (Int $ f a)
 
   fa :: (EvalEnv m) => Double -> (Double -> Double) -> m Tree
-  fa a f = return $ mkTreeAtom (Float $ f a) Nothing
+  fa a f = return $ mkTreeAtom (Float $ f a)
 
   mkb :: (EvalEnv m) => Bound -> m Tree
-  mkb b = return $ mkTNBounds [b] Nothing
+  mkb b = return $ mkTNBounds [b]
 
   mkib :: (EvalEnv m) => BdNumCmpOp -> Integer -> m Tree
-  mkib uop i = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)] Nothing
+  mkib uop i = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
 
   mkfb :: (EvalEnv m) => BdNumCmpOp -> Double -> m Tree
-  mkfb uop f = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)] Nothing
+  mkfb uop f = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -366,7 +364,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
               (_, Null) -> Bool $ dirApply f (d2, a2) a1
               _ -> uncmpAtoms a1 a2
            in
-            return $ mkTreeAtom r Nothing
+            return $ mkTreeAtom r
         TNScope _ -> return $ cmpNull a1 t2
         TNList _ -> return $ cmpNull a1 t2
         TNDisj _ -> return $ cmpNull a1 t2
@@ -397,12 +395,12 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
                 _ -> mismatch a1 (trAmAtom ta2)
               _ -> mismatch a1 (trAmAtom ta2)
            in
-            return $ mkTreeAtom r Nothing
+            return $ mkTreeAtom r
         TNScope _ -> return $ mismatchArith a1 t2
         TNList _ -> return $ mismatchArith a1 t2
         TNDisj _ -> return $ mismatchArith a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1) tc
-    | otherwise -> return $ mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
+    | otherwise -> return $ mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op))
  where
   a1 = trAmAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
@@ -415,13 +413,13 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
   cmpNull a t =
     if
       -- There is no way for a non-atom to be compared with a non-null atom.
-      | a /= Null -> mkTreeAtom (mismatch a t) Nothing
-      | op == AST.Equ -> mkTreeAtom (Bool False) Nothing
-      | op == AST.BinRelOp AST.NE -> mkTreeAtom (Bool True) Nothing
-      | otherwise -> mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op)) Nothing
+      | a /= Null -> mkTreeAtom (mismatch a t)
+      | op == AST.Equ -> mkTreeAtom (Bool False)
+      | op == AST.BinRelOp AST.NE -> mkTreeAtom (Bool True)
+      | otherwise -> mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op))
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree
-  mismatchArith x y = mkTreeAtom (mismatch x y) Nothing
+  mismatchArith x y = mkTreeAtom (mismatch x y)
 
 dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
@@ -433,7 +431,7 @@ regBinLeftScope ::
   (EvalEnv m) => BinaryOp -> (BinOpDirect, TNScope, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinLeftScope op (d1, _, t1) (d2, t2) tc = case treeNode t2 of
   TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1) tc
-  _ -> return (mkTreeAtom (mismatch t1 t2) Nothing)
+  _ -> return (mkTreeAtom (mismatch t1 t2))
 
 regBinLeftDisj ::
   (EvalEnv m) => BinaryOp -> (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
@@ -441,7 +439,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) tc = case dj1 of
   TreeDisj{trdDefault = Just d} -> regBinDir op (d1, d) (d2, t2) tc
   _ -> case treeNode t2 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1) tc
-    _ -> return (mkTreeAtom (mismatch t1 t2) Nothing)
+    _ -> return (mkTreeAtom (mismatch t1 t2))
 
 regBinOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
@@ -449,11 +447,11 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay
   (TNConstraint c, _) -> do
-    na <- regBinDir op (d1, mkTree (TNAtom $ trCnAtom c) Nothing) (d2, t2) tc
+    na <- regBinDir op (d1, mkNewTree (TNAtom $ trCnAtom c)) (d2, t2) tc
     case treeNode na of
       TNAtom atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (fst tc)
       _ -> undefined
-  _ -> return (mkTreeAtom (Bottom mismatchErr) Nothing)
+  _ -> return (mkTreeAtom (Bottom mismatchErr))
  where
   -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
   -- returns a delayed evaluation.
@@ -599,7 +597,7 @@ evalDisj e1 e2 path tc = do
       subTree :: Maybe Tree
       subTree = case map fromJust (filter isJust [df1, df2]) of
         x : [] -> Just x
-        x : y : [] -> Just $ mkTreeDisj Nothing [x, y] Nothing
+        x : y : [] -> Just $ mkTreeDisj Nothing [x, y]
         _ -> Nothing
      in
-      return $ mkTreeDisj subTree (dedupAppend ds1 ds2) Nothing
+      return $ mkTreeDisj subTree (dedupAppend ds1 ds2)

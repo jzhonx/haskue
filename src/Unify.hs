@@ -73,8 +73,8 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
         then returnTree (TNConstraint c)
         else
           return $
-            mkTreeAtom
-              (Bottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
+            Tree
+              (TNAtom . TreeAtom $ Bottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
               (treeOrig (fst parTC))
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
@@ -92,7 +92,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
   dt1 = (d1, t1)
 
   returnTree :: (EvalEnv m) => TreeNode -> m Tree
-  returnTree n = return $ mkTree n Nothing
+  returnTree n = return $ mkNewTree n
 
   mismatch :: (Show a) => a -> a -> TreeNode
   mismatch x y = TNAtom . TreeAtom $ Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
@@ -108,18 +108,18 @@ dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mkCnstr :: (EvalEnv m) => (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> m Tree
-mkCnstr (_, l1) (_, t2) = return $ mkTree (TNConstraint $ mkTNConstraint l1 t2 unify) Nothing
+mkCnstr (_, l1) (_, t2) = return $ mkNewTree (TNConstraint $ mkTNConstraint l1 t2 unify)
 
 unifyLeftBound :: (EvalEnv m) => (BinOpDirect, TNBounds, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
   TNAtom ta2 -> do
     dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-    return $ mkTreeAtom (unifyAtomBounds (d2, (trAmAtom ta2)) (d1, trBdList b1)) Nothing
+    return $ mkTreeAtom (unifyAtomBounds (d2, (trAmAtom ta2)) (d1, trBdList b1))
   TNBounds b2 -> do
     dump $ printf "unifyBoundList: %s, %s" (show t1) (show t2)
     let res = unifyBoundList (d1, trBdList b1) (d2, trBdList b2)
     case res of
-      Left err -> return $ mkTreeAtom (Bottom err) Nothing
+      Left err -> return $ mkTreeAtom (Bottom err)
       Right bs ->
         let
           r =
@@ -132,8 +132,8 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
               bs
          in
           case snd r of
-            Just a -> return $ mkTreeAtom a Nothing
-            Nothing -> return $ mkTNBounds (fst r) Nothing
+            Just a -> return $ mkTreeAtom a
+            Nothing -> return $ mkTNBounds (fst r)
   TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1) tc
@@ -345,7 +345,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
   -- containing an atom or a bottom.
   (TNConstraint c1, _) -> do
-    na <- unifyWithDir (d1, mkTree (TNAtom $ trCnAtom c1) Nothing) dt2 tc
+    na <- unifyWithDir (d1, mkNewTree (TNAtom $ trCnAtom c1)) dt2 tc
     case treeNode na of
       TNAtom TreeAtom{trAmAtom = Bottom _} -> return na
       _ -> return t1
@@ -400,7 +400,7 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) tc = case treeNode t2 of
   _ -> unifyLeftOther (d2, t2) (d1, t1) tc
 
 unifyStructs :: (EvalEnv m) => (BinOpDirect, TNScope) -> (BinOpDirect, TNScope) -> TreeCursor -> m Tree
-unifyStructs (d1, s1) (d2, s2) tc = do
+unifyStructs (_, s1) (_, s2) tc = do
   let utc = (nodesToScope allNodes, snd tc)
   dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (fst utc))
   u <- evalAllNodes utc
@@ -420,7 +420,7 @@ unifyStructs (d1, s1) (d2, s2) tc = do
         ( \key acc ->
             let t1 = fields1 Map.! key
                 t2 = fields2 Map.! key
-                unifyOp = mkTree (TNFunc $ mkBinaryOp AST.Unify unify t1 t2) Nothing -- No original node exists yet
+                unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify t1 t2) -- No original node exists yet
              in (key, unifyOp) : acc
         )
         []
@@ -449,7 +449,7 @@ unifyStructs (d1, s1) (d2, s2) tc = do
 
   nodesToScope :: [(String, Tree)] -> Tree
   nodesToScope nodes =
-    mkTree
+    mkNewTree
       ( TNScope $
           TreeScope
             { trsOrdLabels = map fst nodes
@@ -457,7 +457,6 @@ unifyStructs (d1, s1) (d2, s2) tc = do
             , trsSubs = Map.fromList nodes
             }
       )
-      Nothing
 
 mkNodeWithDir ::
   (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> (Tree -> Tree -> m Tree) -> m Tree
@@ -469,10 +468,10 @@ notUnifiable :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m T
 notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
  where
   f :: (EvalEnv m) => Tree -> Tree -> m Tree
-  f x y = return $ mkTreeAtom (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)) Nothing
+  f x y = return $ mkTreeAtom (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y))
 
 mkUnification :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
-mkUnification dt1 dt2 = return $ mkTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2) Nothing
+mkUnification dt1 dt2 = return $ mkNewTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2)
 
 unifyLeftDisj :: (EvalEnv m) => (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
@@ -540,17 +539,17 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> Maybe Tree -> m Tree
 treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
   (_, []) -> throwError $ "empty disjuncts"
-  (Nothing, _d : []) -> return $ mkTree (treeNode _d) orig
+  (Nothing, _d : []) -> return $ Tree (treeNode _d) orig
   (Nothing, _ds) ->
     let
       node = TNDisj $ TreeDisj{trdDefault = Nothing, trdDisjuncts = _ds}
      in
-      return $ mkTree node orig
+      return $ Tree node orig
   (_df, _ds) ->
     let
       node = TNDisj $ TreeDisj{trdDefault = _df, trdDisjuncts = _ds}
      in
-      return $ mkTree node orig
+      return $ Tree node orig
  where
   -- concat the disjuncts and exclude the disjuncts with Bottom values.
   concatExclude :: [[Tree]] -> [Tree]

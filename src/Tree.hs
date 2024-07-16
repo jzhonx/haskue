@@ -65,7 +65,7 @@ module Tree (
   mkTNBounds,
   mkTNConstraint,
   mkUnaryOp,
-  mkTree,
+  mkNewTree,
   mkTreeAtom,
   mkTreeDisj,
   mkTNFunc,
@@ -245,7 +245,7 @@ tnStrBldr i t = case treeNode t of
       t
       i
       mempty
-      [ (string7 "Atom", (mkTree (TNAtom $ trCnAtom c) Nothing))
+      [ (string7 "Atom", (mkNewTree (TNAtom $ trCnAtom c)))
       , (string7 "Cond", trCnCnstr c)
       ]
   TNBounds b -> content t i mempty (map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trBdList b)))
@@ -332,8 +332,8 @@ instance BuildASTExpr Tree where
     TNRefCycleVar -> AST.litCons AST.TopLit
     TNFunc fn -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr fn
 
-mkTree :: TreeNode -> Maybe Tree -> Tree
-mkTree n m = Tree n m
+mkNewTree :: TreeNode -> Tree
+mkNewTree n = Tree n Nothing
 
 substTreeNode :: TreeNode -> Tree -> Tree
 substTreeNode n t = t{treeNode = n}
@@ -543,8 +543,8 @@ instance Eq TNAtom where
 instance BuildASTExpr TNAtom where
   buildASTExpr (TreeAtom v) = buildASTExpr v
 
-mkTreeAtom :: Atom -> Maybe Tree -> Tree
-mkTreeAtom v = mkTree (TNAtom $ TreeAtom{trAmAtom = v})
+mkTreeAtom :: Atom -> Tree
+mkTreeAtom v = mkNewTree (TNAtom $ TreeAtom{trAmAtom = v})
 
 isTreeBottom :: Tree -> Bool
 isTreeBottom Tree{treeNode = TNAtom s} = case trAmAtom s of
@@ -566,8 +566,8 @@ instance BuildASTExpr TNDisj where
       then buildASTExpr $ fromJust (trdDefault dj)
       else foldr1 (\x y -> AST.ExprBinaryOp AST.Disjunction x y) (map buildASTExpr (trdDisjuncts dj))
 
-mkTreeDisj :: Maybe Tree -> [Tree] -> Maybe Tree -> Tree
-mkTreeDisj m js = mkTree (TNDisj $ TreeDisj{trdDefault = m, trdDisjuncts = js})
+mkTreeDisj :: Maybe Tree -> [Tree] -> Tree
+mkTreeDisj m js = mkNewTree (TNDisj $ TreeDisj{trdDefault = m, trdDisjuncts = js})
 
 -- TNConstraint does not need to implement the BuildASTExpr.
 data TNConstraint = TreeConstraint
@@ -602,7 +602,7 @@ updateTNConstraintCnstr (d, t) unify c =
         if d == L
           then TNFunc $ mkBinaryOp AST.Unify unify t (trCnCnstr c)
           else TNFunc $ mkBinaryOp AST.Unify unify (trCnCnstr c) t
-   in c{trCnCnstr = mkTree newBinOp Nothing}
+   in c{trCnCnstr = mkNewTree newBinOp}
 
 updateTNConstraintAtom :: TNAtom -> TNConstraint -> TNConstraint
 updateTNConstraintAtom atom c = c{trCnAtom = atom}
@@ -719,8 +719,8 @@ data TNBounds = TreeBounds
 instance BuildASTExpr TNBounds where
   buildASTExpr b = foldr1 (\x y -> AST.ExprBinaryOp AST.Unify x y) (map buildASTExpr (trBdList b))
 
-mkTNBounds :: [Bound] -> Maybe Tree -> Tree
-mkTNBounds bs = mkTree (TNBounds $ TreeBounds{trBdList = bs})
+mkTNBounds :: [Bound] -> Tree
+mkTNBounds bs = mkNewTree (TNBounds $ TreeBounds{trBdList = bs})
 
 data FuncType = UnaryOpFunc | BinaryOpFunc | DisjFunc | Function
   deriving (Eq, Enum)
@@ -859,7 +859,7 @@ insertSubTree parent sel sub =
       (show parent)
 
   returnTree :: (EvalEnv m) => TreeNode -> m Tree
-  returnTree x = return (mkTree x (treeOrig parent))
+  returnTree x = return (Tree x (treeOrig parent))
 
 -- step down the tree with the given selector.
 -- This should only be used by TreeCursor.
@@ -1140,8 +1140,8 @@ evalTC tc = case treeNode (fst tc) of
   TNFunc fn -> trfnFunc fn (trfnArgs fn) tc
   TNConstraint c ->
     let
-      origAtom = mkTree (TNAtom $ trCnOrigAtom c) Nothing
-      op = mkTree (TNFunc $ mkBinaryOp AST.Unify (trCnUnify c) origAtom (trCnCnstr c)) Nothing
+      origAtom = mkNewTree (TNAtom $ trCnOrigAtom c)
+      op = mkNewTree (TNFunc $ mkBinaryOp AST.Unify (trCnUnify c) origAtom (trCnCnstr c))
       unifyTC = (op, snd tc)
      in
       do
@@ -1186,7 +1186,7 @@ followLink link tc = do
                     header
                     (show $ pathFromTC tc)
                     (show $ pathFromTC tarTC)
-                return $ Just (mkTree TNRefCycleVar Nothing, snd tc)
+                return $ Just (mkNewTree TNRefCycleVar, snd tc)
             | isPrefix tarAbsPath selfAbsPath ->
                 throwError $
                   printf
@@ -1202,7 +1202,7 @@ followLink link tc = do
                         followLink newLink substTC
                       TNConstraint c -> do
                         dump $ printf "%s: substitutes to the atom value of the constraint" header
-                        return $ Just (mkTree (TNAtom $ trCnAtom c) Nothing, snd tc)
+                        return $ Just (mkNewTree (TNAtom $ trCnAtom c), snd tc)
                       _ -> do
                         dump $ printf "%s: resolves to tree node:\n%s" header (show tarNode)
                         return $ Just substTC
@@ -1256,10 +1256,10 @@ insertTCSub sel sub tc@(par, cs) =
         ( \extSub -> do
             Config{cfUnify = unify} <- ask
             let newSub =
-                  mkTree
+                  -- It is still expanding the expressions.
+                  mkNewTree
                     ( TNFunc $ mkBinaryOp AST.Unify unify extSub sub
                     )
-                    Nothing -- It is still expanding the expressions.
             upar <- insertSubTree par sel newSub
             maybe (throwError errMsg) return $ goDownTCSel sel (upar, cs) >>= goDownTCSel binOpRightSelector
         )
@@ -1299,15 +1299,14 @@ updateTCSub sel sub (par, cs) = do
 insertTCScope :: (EvalEnv m) => Selector -> [String] -> Set.Set String -> TreeCursor -> m TreeCursor
 insertTCScope sel labels vars tc =
   let sub =
-        mkTree
+        mkNewTree
           ( TNScope $
               TreeScope
                 { trsOrdLabels = labels
                 , trsVars = vars
-                , trsSubs = Map.fromList [(l, mkTree TNStub Nothing) | l <- labels]
+                , trsSubs = Map.fromList [(l, mkNewTree TNStub) | l <- labels]
                 }
           )
-          Nothing
    in insertTCSub sel sub tc
 
 -- | Insert a unary operator that works for scalar values.
@@ -1315,13 +1314,12 @@ insertTCUnaryOp ::
   (EvalEnv m) =>
   Selector ->
   AST.UnaryOp ->
-  AST.Expression ->
   (Tree -> TreeCursor -> EvalMonad TreeCursor) ->
   TreeCursor ->
   m TreeCursor
-insertTCUnaryOp sel op expr f tc = insertTCSub sel sub tc
+insertTCUnaryOp sel op f tc = insertTCSub sel sub tc
  where
-  sub = mkTree (TNFunc $ mkUnaryOp op f (mkTree TNStub Nothing)) Nothing
+  sub = mkNewTree (TNFunc $ mkUnaryOp op f (mkNewTree TNStub))
 
 -- | Insert a binary operator that works for scalar values.
 insertTCBinaryOp ::
@@ -1332,13 +1330,13 @@ insertTCBinaryOp ::
   TreeCursor ->
   m TreeCursor
 insertTCBinaryOp sel rep f tc =
-  let sub = mkTree (TNFunc $ mkBinaryOp rep f (mkTree TNStub Nothing) (mkTree TNStub Nothing)) Nothing
+  let sub = mkNewTree (TNFunc $ mkBinaryOp rep f (mkNewTree TNStub) (mkNewTree TNStub))
    in insertTCSub sel sub tc
 
 insertTCDisj ::
   (EvalEnv m) => Selector -> (Tree -> Tree -> TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
 insertTCDisj sel f tc =
-  let sub = mkTree (TNFunc $ mkBinaryOp AST.Disjunction f (mkTree TNStub Nothing) (mkTree TNStub Nothing)) Nothing
+  let sub = mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction f (mkNewTree TNStub) (mkNewTree TNStub))
    in insertTCSub sel sub tc
 
 index :: (EvalEnv m) => Selector -> AST.UnaryExpr -> Tree -> m Tree
@@ -1349,29 +1347,27 @@ index sel ue t = case treeNode t of
       Just sub -> return sub
       Nothing ->
         return $
-          mkTree
+          mkNewTree
             ( TNFunc $
                 mkTNFunc "index" Function constFunc (\_ -> AST.ExprUnaryExpr ue) [t]
             )
-            Nothing
     _ -> throwError "invalid selector"
   TNList list -> case sel of
     IndexSelector i ->
       return $
         if i < length (trLstSubs list)
           then trLstSubs list !! i
-          else mkTreeAtom (Bottom $ "index out of bound: " ++ show i) Nothing
+          else mkTreeAtom (Bottom $ "index out of bound: " ++ show i)
     _ -> throwError "invalid list selector"
   TNLink link ->
     return $
-      mkTree
+      mkNewTree
         ( TNLink $
             link
               { trlTarget = appendSel sel (trlTarget link)
               , trlExpr = ue
               }
         )
-        Nothing
   _ -> throwError insertErr
  where
   insertErr = printf "insertTCDot: cannot insert link to:\n%s" (show t)
@@ -1396,7 +1392,7 @@ insertTCIndex sel ue tc = do
  where
   subGen :: Tree -> Tree
   subGen tree =
-    mkTree
+    mkNewTree
       ( TNFunc $
           mkTNFunc
             "index"
@@ -1406,9 +1402,8 @@ insertTCIndex sel ue tc = do
                 return (t, snd utc)
             )
             (\_ -> AST.ExprUnaryExpr ue)
-            [tree, mkTree TNStub Nothing]
+            [tree, mkNewTree TNStub]
       )
-      Nothing
 
   selFromAtom :: (EvalEnv m) => TNAtom -> m Selector
   selFromAtom a = case trAmAtom a of
@@ -1417,7 +1412,7 @@ insertTCIndex sel ue tc = do
     _ -> throwError "insertTCIndex: invalid selector"
 
   invalidSelector :: Tree
-  invalidSelector = mkTreeAtom (Bottom "invalid selector") Nothing
+  invalidSelector = mkTreeAtom (Bottom "invalid selector")
 
   indexTree :: (EvalEnv m) => Tree -> Tree -> m Tree
   indexTree tree x =
@@ -1433,7 +1428,7 @@ insertTCIndex sel ue tc = do
         index idxsel ue tree
       TNFunc _ ->
         return $
-          mkTree
+          mkNewTree
             ( TNFunc $
                 mkTNFunc
                   "index"
@@ -1445,12 +1440,11 @@ insertTCIndex sel ue tc = do
                   (\_ -> AST.ExprUnaryExpr ue)
                   [tree, x]
             )
-            Nothing
       _ -> return invalidSelector
 
 insertTCAtom :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
 insertTCAtom sel v tc =
-  let sub = mkTreeAtom v Nothing
+  let sub = mkTreeAtom v
    in do insertTCSub sel sub tc
 
 -- | Insert a variable link to the tree cursor.
@@ -1462,17 +1456,17 @@ insertTCVarLink sel var e tc = do
   subPath = appendSel sel (pathFromTC tc)
   tarSel = StringSelector var
   tarPath = Path [tarSel]
-  sub = mkTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e}) Nothing
+  sub = mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e})
 
 insertTCBound :: (EvalEnv m) => Selector -> Bound -> TreeCursor -> m TreeCursor
 insertTCBound sel b tc =
-  let sub = mkTNBounds [b] Nothing
+  let sub = mkTNBounds [b]
    in insertTCSub sel sub tc
 
 insertTCList :: (EvalEnv m) => Selector -> Int -> TreeCursor -> m TreeCursor
 insertTCList sel n tc =
   let
-    subs = replicate n (mkTree TNStub Nothing)
-    l = mkTree (TNList $ TreeList{trLstSubs = subs}) Nothing
+    subs = replicate n (mkNewTree TNStub)
+    l = mkNewTree (TNList $ TreeList{trLstSubs = subs})
    in
     insertTCSub sel l tc
