@@ -54,6 +54,7 @@ module Tree (
   insertTCSub,
   insertTCUnaryOp,
   insertTCVarLink,
+  insertTCIndex,
   isTreeBottom,
   isValueAtom,
   isValueConcrete,
@@ -1282,18 +1283,17 @@ insertTCSub sel sub tc@(par, cs) =
 updated value.
 -}
 updateTCSub :: (EvalEnv m) => Selector -> Tree -> TreeCursor -> m TreeCursor
-updateTCSub sel sub (par, cs) =
-  let errMsg :: String
-      errMsg =
-        printf
-          "updateTCSub: cannot insert sub. selector %s, par type: %s, sub:\n%s"
-          (show sel)
-          (showTreeType par)
-          (show sub)
-   in do
-        u <- insertSubTree par sel sub
-        -- dump $ printf "updateTCSub: sel: %s, tc:\n%s \nparent node:\n%s" (show sel) (showTreeCursor tc) (show u)
-        goDownTCSelErr sel errMsg (u, cs)
+updateTCSub sel sub (par, cs) = do
+  u <- insertSubTree par sel sub
+  goDownTCSelErr sel errMsg (u, cs)
+ where
+  errMsg :: String
+  errMsg =
+    printf
+      "updateTCSub: cannot insert sub. selector %s, par type: %s, sub:\n%s"
+      (show sel)
+      (showTreeType par)
+      (show sub)
 
 -- | Insert a list of labels the tree and return the new cursor that contains the newly inserted value.
 insertTCScope :: (EvalEnv m) => Selector -> [String] -> Set.Set String -> TreeCursor -> m TreeCursor
@@ -1319,11 +1319,9 @@ insertTCUnaryOp ::
   (Tree -> TreeCursor -> EvalMonad TreeCursor) ->
   TreeCursor ->
   m TreeCursor
-insertTCUnaryOp sel op expr f tc =
-  let
-    sub = mkTree (TNFunc $ mkUnaryOp op f (mkTree TNStub Nothing)) Nothing
-   in
-    insertTCSub sel sub tc
+insertTCUnaryOp sel op expr f tc = insertTCSub sel sub tc
+ where
+  sub = mkTree (TNFunc $ mkUnaryOp op f (mkTree TNStub Nothing)) Nothing
 
 -- | Insert a binary operator that works for scalar values.
 insertTCBinaryOp ::
@@ -1388,15 +1386,67 @@ insertTCDot sel dotSel ue tc = do
   target <- index dotSel ue (fst curTC)
   updateTCSub sel target tc
 
--- insertTCIndex ::
---   (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
--- insertTCIndex sel dotSel ue tc = do
---   curSub <- goDownTCSelErr sel "insertTCIndex: cannot get sub cursor" tc
---   let tree = fst curSub
---   newSub <- case treeNode tree of
---     TNLink link -> return $ mkTree (TNLink $ link{trlTarget = appendSel dotSel (trlTarget link), trlExpr = ue}) Nothing
---     _ -> throwError $ printf "cannot index %s" (show tree)
---   updateTCSub sel newSub tc
+insertTCIndex ::
+  (EvalEnv m) => Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
+insertTCIndex sel ue tc = do
+  curTC <- goDownTCSelErr sel "insertTCIndex: cannot get sub cursor" tc
+  let sub = subGen (fst curTC)
+  dump $ printf "insertTCIndex: index func evaluated to %s" (show sub)
+  updateTCSub sel sub tc
+ where
+  subGen :: Tree -> Tree
+  subGen tree =
+    mkTree
+      ( TNFunc $
+          mkTNFunc
+            "index"
+            Function
+            ( \ts utc -> do
+                t <- indexTree (ts !! 0) (ts !! 1)
+                return (t, snd utc)
+            )
+            (\_ -> AST.ExprUnaryExpr ue)
+            [tree, mkTree TNStub Nothing]
+      )
+      Nothing
+
+  selFromAtom :: (EvalEnv m) => TNAtom -> m Selector
+  selFromAtom a = case trAmAtom a of
+    (String s) -> return $ StringSelector s
+    (Int i) -> return $ IndexSelector $ fromIntegral i
+    _ -> throwError "insertTCIndex: invalid selector"
+
+  invalidSelector :: Tree
+  invalidSelector = mkTreeAtom (Bottom "invalid selector") Nothing
+
+  indexTree :: (EvalEnv m) => Tree -> Tree -> m Tree
+  indexTree tree x =
+    case treeNode x of
+      TNAtom ta -> do
+        idxsel <- selFromAtom ta
+        index idxsel ue tree
+      TNDisj dj -> case trdDefault dj of
+        Just df -> indexTree tree df
+        Nothing -> return invalidSelector
+      TNConstraint c -> do
+        idxsel <- selFromAtom (trCnOrigAtom c)
+        index idxsel ue tree
+      TNFunc _ ->
+        return $
+          mkTree
+            ( TNFunc $
+                mkTNFunc
+                  "index"
+                  Function
+                  ( \ts ntc -> do
+                      ut <- indexTree (ts !! 0) (ts !! 1)
+                      return (ut, snd ntc)
+                  )
+                  (\_ -> AST.ExprUnaryExpr ue)
+                  [tree, x]
+            )
+            Nothing
+      _ -> return invalidSelector
 
 insertTCAtom :: (EvalEnv m) => Selector -> Atom -> TreeCursor -> m TreeCursor
 insertTCAtom sel v tc =

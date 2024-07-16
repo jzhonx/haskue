@@ -188,8 +188,9 @@ evalPrimExpr e@(PrimExprOperand op) path tc = case op of
 evalPrimExpr e@(PrimExprSelector primExpr sel) path tc =
   evalPrimExpr primExpr path tc
     >>= evalSelector e sel path
-
--- evalPrimExpr e@(PrimExprIndex primExpr index) path tc = evalIndex
+evalPrimExpr e@(PrimExprIndex primExpr index) path tc =
+  evalPrimExpr primExpr path tc
+    >>= evalIndex e index path
 
 {- | Looks up the variable denoted by the name in the current scope or the parent scopes.
 If the variable is not atom, a new pending value is created and returned. The reason is that if the referenced var was
@@ -233,15 +234,17 @@ evalSelector pe astSel path tc =
    in insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
         >>= propUpTCSel parSel
 
--- evalIndex ::
---   (EvalEnv m) => PrimaryExpr -> AST.Index -> Path -> TreeCursor -> m TreeCursor
--- evalIndex pe (AST.Index e) path tc =
---   let parSel = fromJust $ lastSel path
---    in do
---         -- evaluate the index expression.
---         u <- evalExpr e (appendSel (Path.unaryOpSelector) path) tc
---         insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
---           >>= propUpTCSel parSel
+evalIndex ::
+  (EvalEnv m) => PrimaryExpr -> AST.Index -> Path -> TreeCursor -> m TreeCursor
+evalIndex pe (AST.Index e) path tc = do
+  dump $ printf "evalIndex: path: %s, index: %s" (show path) (show e)
+  -- evaluate the index expression.
+  u <- insertTCIndex parSel (UnaryExprPrimaryExpr pe) tc
+  dump $ printf "evalIndex: path: %s, evaluated to: %s" (show path) (show (fst u))
+  evalExpr e (appendSel (Path.FuncArgSelector 1) path) u
+    >>= propUpTCSel parSel
+ where
+  parSel = fromJust $ lastSel path
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
