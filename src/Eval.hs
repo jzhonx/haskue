@@ -188,7 +188,8 @@ evalPrimExpr e@(PrimExprOperand op) path tc = case op of
 evalPrimExpr e@(PrimExprSelector primExpr sel) path tc =
   evalPrimExpr primExpr path tc
     >>= evalSelector e sel path
-evalPrimExpr e@(PrimExprIndex primExpr index) path tc = undefined
+
+-- evalPrimExpr e@(PrimExprIndex primExpr index) path tc = evalIndex
 
 {- | Looks up the variable denoted by the name in the current scope or the parent scopes.
 If the variable is not atom, a new pending value is created and returned. The reason is that if the referenced var was
@@ -200,21 +201,19 @@ For example, { a: b: x+y }
 If the name is "y", and the path is "a.b".
 -}
 lookupVar :: (EvalEnv m) => PrimaryExpr -> String -> Path -> TreeCursor -> m TreeCursor
-lookupVar e var path tc =
-  let
-    parSel = fromJust $ lastSel path
-    notFound = Bottom $ printf "variable %s is not found, path: %s" var (show path)
-   in
-    do
-      dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
-      res <- searchTCVar (Path.StringSelector var) tc
-      case res of
-        Nothing ->
-          return
-            (substTreeNode (TNAtom . TreeAtom $ notFound) (fst tc), snd tc)
-        Just _ ->
-          insertTCVarLink parSel var (UnaryExprPrimaryExpr e) tc
-            >>= propUpTCSel parSel
+lookupVar e var path tc = do
+  dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
+  res <- searchTCVar (Path.StringSelector var) tc
+  case res of
+    Nothing ->
+      return
+        (substTreeNode (TNAtom . TreeAtom $ notFound) (fst tc), snd tc)
+    Just _ ->
+      insertTCVarLink parSel var (UnaryExprPrimaryExpr e) tc
+        >>= propUpTCSel parSel
+ where
+  parSel = fromJust $ lastSel path
+  notFound = Bottom $ printf "variable %s is not found, path: %s" var (show path)
 
 {- | Evaluates the selector.
 Parameters:
@@ -231,8 +230,7 @@ evalSelector pe astSel path tc =
       sel = case astSel of
         IDSelector ident -> ident
         AST.StringSelector str -> str
-   in do
-        insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
+   in insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
         >>= propUpTCSel parSel
 
 -- evalIndex ::
@@ -241,7 +239,7 @@ evalSelector pe astSel path tc =
 --   let parSel = fromJust $ lastSel path
 --    in do
 --         -- evaluate the index expression.
---         u <- evalExpr e (appendSel (Path.UnaryOpSelector) path) tc
+--         u <- evalExpr e (appendSel (Path.unaryOpSelector) path) tc
 --         insertTCDot parSel (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
 --           >>= propUpTCSel parSel
 

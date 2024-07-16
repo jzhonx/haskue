@@ -1323,7 +1323,6 @@ insertTCUnaryOp sel op expr f tc =
   let
     sub = mkTree (TNFunc $ mkUnaryOp op f (mkTree TNStub Nothing)) Nothing
    in
-    -- let sub = mkTree (TNUnaryOp $ mkTNUnaryOp rep f (mkTree TNStub Nothing)) Nothing
     insertTCSub sel sub tc
 
 -- | Insert a binary operator that works for scalar values.
@@ -1344,15 +1343,50 @@ insertTCDisj sel f tc =
   let sub = mkTree (TNFunc $ mkBinaryOp AST.Disjunction f (mkTree TNStub Nothing) (mkTree TNStub Nothing)) Nothing
    in insertTCSub sel sub tc
 
+index :: (EvalEnv m) => Selector -> AST.UnaryExpr -> Tree -> m Tree
+index sel ue t = case treeNode t of
+  -- The tree is an evaluated, final scope, which could be formed by an in-place expression, like ({}).a.
+  TNScope scope -> case sel of
+    StringSelector s -> case Map.lookup s (trsSubs scope) of
+      Just sub -> return sub
+      Nothing ->
+        return $
+          mkTree
+            ( TNFunc $
+                mkTNFunc "index" Function constFunc (\_ -> AST.ExprUnaryExpr ue) [t]
+            )
+            Nothing
+    _ -> throwError "invalid selector"
+  TNList list -> case sel of
+    IndexSelector i ->
+      return $
+        if i < length (trLstSubs list)
+          then trLstSubs list !! i
+          else mkTreeAtom (Bottom $ "index out of bound: " ++ show i) Nothing
+    _ -> throwError "invalid list selector"
+  TNLink link ->
+    return $
+      mkTree
+        ( TNLink $
+            link
+              { trlTarget = appendSel sel (trlTarget link)
+              , trlExpr = ue
+              }
+        )
+        Nothing
+  _ -> throwError insertErr
+ where
+  insertErr = printf "insertTCDot: cannot insert link to:\n%s" (show t)
+
+  constFunc :: (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
+  constFunc _ = return
+
 insertTCDot ::
   (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
 insertTCDot sel dotSel ue tc = do
-  curSub <- goDownTCSelErr sel "insertTCDot: cannot get sub cursor" tc
-  let tree = fst curSub
-  newSub <- case treeNode tree of
-    TNLink link -> return $ mkTree (TNLink $ link{trlTarget = appendSel dotSel (trlTarget link), trlExpr = ue}) Nothing
-    _ -> throwError $ printf "insertTCDot: cannot insert link to non-link node:\n%s" (show tree)
-  updateTCSub sel newSub tc
+  curTC <- goDownTCSelErr sel "insertTCDot: cannot get sub cursor" tc
+  target <- index dotSel ue (fst curTC)
+  updateTCSub sel target tc
 
 -- insertTCIndex ::
 --   (EvalEnv m) => Selector -> Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
@@ -1369,15 +1403,16 @@ insertTCAtom sel v tc =
   let sub = mkTreeAtom v Nothing
    in do insertTCSub sel sub tc
 
+-- | Insert a variable link to the tree cursor.
 insertTCVarLink :: (EvalEnv m) => Selector -> String -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
-insertTCVarLink sel var e tc =
-  let subPath = appendSel sel (pathFromTC tc)
-      tarSel = StringSelector var
-      tarPath = Path [tarSel]
-   in let sub = mkTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e}) Nothing
-       in do
-            dump $ printf "insertTCVarLink: link to %s, path: %s" (show tarPath) (show subPath)
-            insertTCSub sel sub tc
+insertTCVarLink sel var e tc = do
+  dump $ printf "insertTCVarLink: link to %s, path: %s" (show tarPath) (show subPath)
+  insertTCSub sel sub tc
+ where
+  subPath = appendSel sel (pathFromTC tc)
+  tarSel = StringSelector var
+  tarPath = Path [tarSel]
+  sub = mkTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e}) Nothing
 
 insertTCBound :: (EvalEnv m) => Selector -> Bound -> TreeCursor -> m TreeCursor
 insertTCBound sel b tc =

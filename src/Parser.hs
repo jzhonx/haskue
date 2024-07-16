@@ -160,7 +160,7 @@ unaryExpr = do
       return (ue, tok, nl)
 
 primaryExpr :: Parser (Lexeme PrimaryExpr)
-primaryExpr = chainPrimExpr primOperand selector
+primaryExpr = chainPrimExpr primOperand (selector <|> index)
  where
   primOperand :: Parser (Lexeme PrimaryExpr)
   primOperand = modLexemeRes PrimExprOperand <$> operand
@@ -172,6 +172,13 @@ primaryExpr = chainPrimExpr primOperand selector
       (modLexemeRes IDSelector <$> identifier)
         <|> (modLexemeRes StringSelector <$> (litLexeme TokenString simpleStringLit))
     return $ \(pe, _, _) -> (PrimExprSelector pe sel, tok, nl)
+
+  index :: Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr))
+  index = do
+    _ <- lexeme $ (,TokenLSquare) <$> char '['
+    (e, _, _) <- expr
+    (_, tok, nl) <- lexeme $ (,TokenRSquare) <$> char ']'
+    return $ \(pe, _, _) -> (PrimExprIndex pe (Index e), tok, nl)
 
 chainPrimExpr ::
   Parser (Lexeme PrimaryExpr) ->
