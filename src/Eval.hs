@@ -113,30 +113,23 @@ evalStructLit decls parSel tc = do
     Field ls e -> evalFdLabels ls e x
 
   evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> TreeCursor -> m TreeCursor
-  evalFdLabels lbls e x = do
-    dump $ printf "evalFdLabels: path: %s, labels: %s" (show $ pathFromTC x) (show lbls)
+  evalFdLabels lbls e x =
     case lbls of
       [] -> throwError "empty labels"
       l1 : [] ->
         let
           name = fromJust $ strFrom l1
          in
-          do
-            dump $ printf "evalFdLabels: innermost name: %s, e: %s, tc:\n%s" name (show e) (showTreeCursor x)
-            r <- evalExpr e (Path.StringSelector name) x
-            dump $ printf "evalFdLabels: innermost name: %s, evaluated to:\n%s" name (showTreeCursor r)
-            return r
+          evalExpr e (Path.StringSelector name) x
       l1 : l2 : rs ->
         let
           name = fromJust $ strFrom l1
           newScopeSel = (Path.StringSelector name)
           newScopeKey = fromJust $ strFrom l2
          in
-          do
-            dump $ printf "evalFdLabels: name: %s, newScopeSel: %s" name (show newScopeSel)
-            u <- insertTCScope newScopeSel [newScopeKey] (Set.fromList [newScopeKey]) x
-            dump $ printf "evalFdLabels: name: %s, newScopeSel: %s, u:\n%s" name (show newScopeSel) (showTreeCursor u)
-            evalFdLabels (l2 : rs) e u >>= propUpTCSel newScopeSel
+          insertTCScope newScopeSel [newScopeKey] (Set.fromList [newScopeKey]) x
+            >>= evalFdLabels (l2 : rs) e
+            >>= propUpTCSel newScopeSel
 
   evalFstLabel :: (Label -> Maybe String) -> Declaration -> Maybe String
   evalFstLabel f decl = case decl of
