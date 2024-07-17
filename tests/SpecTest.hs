@@ -864,6 +864,35 @@ testStruct1 = do
           ]
       )
 
+testStruct2 :: IO ()
+testStruct2 = do
+  s <- readFile "tests/spec/struct2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newSimpleStruct
+          ["a"]
+          [("a", a)]
+ where
+  a =
+    newSimpleStruct
+      ["b", "c"]
+      [ ("b", ab)
+      , ("c", mkTreeAtom $ Int 42)
+      ]
+  ab =
+    newSimpleStruct
+      ["c", "d"]
+      [ ("c", abc)
+      , ("d", mkTreeAtom $ Int 12)
+      ]
+  abc =
+    newSimpleStruct
+      ["d"]
+      [("d", mkTreeAtom $ Int 123)]
+
 testList1 :: IO ()
 testList1 = do
   s <- readFile "tests/spec/list1.cue"
@@ -936,6 +965,7 @@ specTests =
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
     , testCase "struct1" testStruct1
+    , testCase "struct2" testStruct2
     , testCase "list1" testList1
     , testCase "index1" testIndex1
     ]

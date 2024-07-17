@@ -300,19 +300,28 @@ comma tok nl = do
 
 decl :: Parser (Lexeme Declaration)
 decl =
-  (modLexemeRes FieldDecl <$> field)
-    <|> (modLexemeRes Embedding <$> expr)
+  (modLexemeRes FieldDecl <$> field) <|> (modLexemeRes Embedding <$> expr)
 
 labelName :: Parser String
 labelName = undefined
 
 field :: Parser (Lexeme FieldDecl)
 field = do
-  (ln, _, _) <-
-    (modLexemeRes LabelID <$> identifier) <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
-  _ <- lexeme $ (,TokenColon) <$> char ':'
+  lnx <- label
+  otherxs <- many (try label)
   (e, tok, nl) <- expr
-  return (Field ((Label . LabelName) ln) e, tok, nl)
+  let
+    ln = getLexeme lnx
+    otherLns = map (\x -> getLexeme x) otherxs
+  return (Field (ln : otherLns) e, tok, nl)
+ where
+  label :: Parser (Lexeme Label)
+  label = do
+    (ln, _, _) <-
+      (modLexemeRes LabelID <$> identifier)
+        <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
+    (_, tok, nl) <- lexeme $ (,TokenColon) <$> char ':'
+    return ((Label . LabelName) ln, tok, nl)
 
 litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
 litLexeme t p = lexeme $ do

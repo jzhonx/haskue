@@ -436,11 +436,11 @@ instance BuildASTExpr TNScope where
         processField (label, sub) =
           AST.FieldDecl $
             AST.Field
-              ( AST.Label . AST.LabelName $
+              [ AST.Label . AST.LabelName $
                   if Set.member label (trsVars s)
                     then AST.LabelID label
                     else AST.LabelString label
-              )
+              ]
               (buildASTExpr sub)
      in AST.litCons $ AST.StructLit $ map processField [(l, trsSubs s Map.! l) | l <- trsOrdLabels s]
 
