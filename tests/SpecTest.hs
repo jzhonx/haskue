@@ -919,13 +919,14 @@ testIndex1 = do
  where
   exp =
     newSimpleStruct
-      ["x1", "x2", "x3", "x4", "z"]
+      ["x1", "x2", "x3", "x4", "x5", "z"]
       ( map
           (\(k, v) -> (k, mkTreeAtom v))
           [ ("x1", Int 14)
           , ("x2", Int 4)
           , ("x3", Int 9)
           , ("x4", Int 3)
+          , ("x5", Int 1)
           , ("z", Int 4)
           ]
       )

@@ -1378,6 +1378,21 @@ index sel ue t = case treeNode t of
     if isJust (trdDefault dj)
       then index sel ue (fromJust (trdDefault dj))
       else throwError insertErr
+  TNFunc _ ->
+    return $
+      mkNewTree
+        ( TNFunc $
+            mkTNFunc
+              "index"
+              Function
+              ( \ts tc -> do
+                  utc <- evalTC (mkSubTC unaryOpSelector (ts !! 0) tc)
+                  r <- index sel ue (fst utc)
+                  return (r, snd tc)
+              )
+              (\_ -> AST.ExprUnaryExpr ue)
+              [t]
+        )
   _ -> throwError insertErr
  where
   insertErr = printf "index: cannot index %s with sel: %s" (show t) (show sel)
