@@ -239,9 +239,9 @@ evalIndex pe (AST.Index e) path tc = do
   dump $ printf "evalIndex: path: %s, index: %s" (show path) (show e)
   -- evaluate the index expression.
   u <- insertTCIndex parSel (UnaryExprPrimaryExpr pe) tc
-  dump $ printf "evalIndex: path: %s, evaluated to: %s" (show path) (show (fst u))
-  evalExpr e (appendSel (Path.FuncArgSelector 1) path) u
-    >>= propUpTCSel parSel
+  r <- evalExpr e (appendSel (Path.FuncArgSelector 1) path) u >>= propUpTCSel parSel
+  dump $ printf "evalIndex: path: %s, evaluated to: %s" (show path) (show (fst r))
+  return r
  where
   parSel = fromJust $ lastSel path
 
@@ -520,20 +520,23 @@ evalDisj e1 e2 path tc = do
   evalDisjAdapt unt1 unt2 x = do
     t1 <- evalSub binOpLeftSelector unt1 x
     t2 <- evalSub binOpRightSelector unt2 x
-    if not (isValueNode (treeNode t1)) || not (isValueNode (treeNode t2))
-      then do
-        dump $ printf "evalDisjAdapt: %s, %s are not value nodes" (show t1) (show t2)
-        return x
-      else do
-        unode <- case (e1, e2) of
-          (ExprUnaryExpr (UnaryExprUnaryOp Star _), ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
-            evalDisjPair (DisjDefault t1) (DisjDefault t2)
-          (ExprUnaryExpr (UnaryExprUnaryOp Star _), _) ->
-            evalDisjPair (DisjDefault t1) (DisjRegular t2)
-          (_, ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
-            evalDisjPair (DisjRegular t1) (DisjDefault t2)
-          (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-        return (substTreeNode (treeNode unode) (fst x), snd x)
+    u <-
+      if not (isValueNode (treeNode t1)) || not (isValueNode (treeNode t2))
+        then do
+          dump $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
+          return x
+        else do
+          unode <- case (e1, e2) of
+            (ExprUnaryExpr (UnaryExprUnaryOp Star _), ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
+              evalDisjPair (DisjDefault t1) (DisjDefault t2)
+            (ExprUnaryExpr (UnaryExprUnaryOp Star _), _) ->
+              evalDisjPair (DisjDefault t1) (DisjRegular t2)
+            (_, ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
+              evalDisjPair (DisjRegular t1) (DisjDefault t2)
+            (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
+          return (substTreeNode (treeNode unode) (fst x), snd x)
+    dump $ printf "evalDisjAdapt: evaluated to %s" (show $ fst u)
+    return u
 
   evalSub :: (EvalEnv m) => Path.Selector -> Tree -> TreeCursor -> m Tree
   evalSub sel t x =

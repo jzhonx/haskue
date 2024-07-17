@@ -864,6 +864,43 @@ testStruct1 = do
           ]
       )
 
+testList1 :: IO ()
+testList1 = do
+  s <- readFile "tests/spec/list1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newSimpleStruct
+      ["x0", "x1"]
+      ( [ ("x0", mkNewTree . TNList $ TreeList (map mkTreeAtom [Int 1, Int 4, Int 9]))
+        , ("x1", mkNewTree . TNList $ TreeList (map mkTreeAtom [Float 1.0, Bool True, String "hello"]))
+        ]
+      )
+
+testIndex1 :: IO ()
+testIndex1 = do
+  s <- readFile "tests/spec/index1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpExpStructs y exp
+ where
+  exp =
+    newSimpleStruct
+      ["x1", "x2", "x3", "x4", "z"]
+      ( map
+          (\(k, v) -> (k, mkTreeAtom v))
+          [ ("x1", Int 14)
+          , ("x2", Int 4)
+          , ("x3", Int 9)
+          , ("x4", Int 3)
+          , ("z", Int 4)
+          ]
+      )
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -899,6 +936,8 @@ specTests =
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
     , testCase "struct1" testStruct1
+    , testCase "list1" testList1
+    , testCase "index1" testIndex1
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()
@@ -908,3 +947,13 @@ cmpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
   mapM_ (\(k, v) -> assertEqual k v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
   mapM_ (\(k, v) -> assertEqual k (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
 cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
+
+cmpExpStructs :: Tree -> Tree -> IO ()
+cmpExpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
+  mapM_ cmp (Map.toList $ trsSubs exp)
+ where
+  cmp (k, v) =
+    if k `Map.member` trsSubs act
+      then assertEqual k v (trsSubs act Map.! k)
+      else assertFailure $ printf "Field %s not found" k
+cmpExpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)

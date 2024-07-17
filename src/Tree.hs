@@ -376,7 +376,7 @@ instance Eq TreeNode where
 instance ValueNode TreeNode where
   isValueNode n = case n of
     TNAtom _ -> True
-    TNBounds _ -> False
+    TNBounds _ -> True
     TNScope _ -> True
     TNList _ -> True
     TNDisj _ -> True
@@ -979,7 +979,7 @@ The structure of the tree is not changed.
 -}
 propUpTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 propUpTC (t, []) = return (t, [])
-propUpTC (subT, (sel, parT) : cs) = case sel of
+propUpTC tc@(subT, (sel, parT) : cs) = case sel of
   StartSelector ->
     if length cs > 0
       then throwError "StartSelector is not the first selector in the path"
@@ -1022,14 +1022,13 @@ propUpTC (subT, (sel, parT) : cs) = case sel of
         else let newParNode = insertScopeNode parScope label newSub in return (substTreeNode (TNScope newParNode) parT, cs)
     _ -> throwError insertErrMsg
 
-  -- TODO: insertParList
-
   insertErrMsg :: String
   insertErrMsg =
     printf
-      "propUpTC: cannot insert child %s to parent %s, selector: %s, child:\n%s\nparent:\n%s"
+      "propUpTC: cannot insert child %s to parent %s, path: %s, selector: %s, child:\n%s\nparent:\n%s"
       (showTreeType subT)
       (showTreeType parT)
+      (show $ pathFromTC tc)
       (show sel)
       (show subT)
       (show parT)
@@ -1137,7 +1136,9 @@ setOrigNodesTC = traverseTC f
 
 evalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 evalTC tc = case treeNode (fst tc) of
-  TNFunc fn -> trfnFunc fn (trfnArgs fn) tc
+  TNFunc fn -> do
+    dump $ printf "evalTC: path: %s, evaluate function" (show $ pathFromTC tc)
+    trfnFunc fn (trfnArgs fn) tc
   TNConstraint c ->
     let
       origAtom = mkNewTree (TNAtom $ trCnOrigAtom c)
@@ -1151,7 +1152,8 @@ evalTC tc = case treeNode (fst tc) of
           then return (origAtom, snd tc)
           else throwError $ printf "evalTC: constraint not satisfied, %s != %s" (show (fst x)) (show origAtom)
   TNLink l -> do
-    dump $ printf "evalTC: evaluate link %s" (show $ trlTarget l)
+    dump $
+      printf "evalTC: path: %s, evaluate link %s" (show $ pathFromTC tc) (show $ trlTarget l)
     res <- followLink l tc
     case res of
       Nothing -> return tc
@@ -1231,8 +1233,12 @@ searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
 searchTCVar sel@(StringSelector var) tc = case treeNode (fst tc) of
   TNScope scope -> case Map.lookup var (trsSubs scope) of
     Just node -> return $ Just (node, (StringSelector var, fst tc) : snd tc)
-    Nothing -> propUpTC tc >>= searchTCVar sel
-  _ -> propUpTC tc >>= searchTCVar sel
+    Nothing -> goUp tc
+  _ -> goUp tc
+ where
+  goUp :: (EvalEnv m) => TreeCursor -> m (Maybe TreeCursor)
+  goUp (_, []) = return Nothing
+  goUp utc = propUpTC utc >>= searchTCVar sel
 searchTCVar _ _ = return Nothing
 
 -- | Search the tree cursor up to the root and return the tree cursor that points to the path.
@@ -1368,9 +1374,13 @@ index sel ue t = case treeNode t of
               , trlExpr = ue
               }
         )
+  TNDisj dj ->
+    if isJust (trdDefault dj)
+      then index sel ue (fromJust (trdDefault dj))
+      else throwError insertErr
   _ -> throwError insertErr
  where
-  insertErr = printf "insertTCDot: cannot insert link to:\n%s" (show t)
+  insertErr = printf "index: cannot index %s with sel: %s" (show t) (show sel)
 
   constFunc :: (EvalEnv m) => [Tree] -> TreeCursor -> m TreeCursor
   constFunc _ = return
@@ -1398,7 +1408,9 @@ insertTCIndex sel ue tc = do
             "index"
             Function
             ( \ts utc -> do
-                t <- indexTree (ts !! 0) (ts !! 1)
+                ltc <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) utc)
+                rtc <- evalTC (mkSubTC (FuncArgSelector 1) (ts !! 1) utc)
+                t <- indexTree (fst ltc) (fst rtc)
                 return (t, snd utc)
             )
             (\_ -> AST.ExprUnaryExpr ue)
@@ -1433,9 +1445,11 @@ insertTCIndex sel ue tc = do
                 mkTNFunc
                   "index"
                   Function
-                  ( \ts ntc -> do
-                      ut <- indexTree (ts !! 0) (ts !! 1)
-                      return (ut, snd ntc)
+                  ( \ts utc -> do
+                      ltc <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) utc)
+                      rtc <- evalTC (mkSubTC (FuncArgSelector 1) (ts !! 1) utc)
+                      t <- indexTree (fst ltc) (fst rtc)
+                      return (t, snd utc)
                   )
                   (\_ -> AST.ExprUnaryExpr ue)
                   [tree, x]
@@ -1464,9 +1478,7 @@ insertTCBound sel b tc =
    in insertTCSub sel sub tc
 
 insertTCList :: (EvalEnv m) => Selector -> Int -> TreeCursor -> m TreeCursor
-insertTCList sel n tc =
-  let
-    subs = replicate n (mkNewTree TNStub)
-    l = mkNewTree (TNList $ TreeList{trLstSubs = subs})
-   in
-    insertTCSub sel l tc
+insertTCList sel n tc = insertTCSub sel l tc
+ where
+  subs = replicate n (mkNewTree TNStub)
+  l = mkNewTree (TNList $ TreeList{trLstSubs = subs})
