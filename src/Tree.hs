@@ -234,10 +234,14 @@ tnStrBldr i t = case treeNode t of
             <> string7 (intercalate ", " (trsOrdLabels s))
             <> char7 ']'
         label k =
-          string7 k <> case lbAttrType (trsAttrs s Map.! k) of
-            SLRegular -> mempty
-            SLRequired -> string7 "!"
-            SLOptional -> string7 "?"
+          string7 k
+            <> case lbAttrType (trsAttrs s Map.! k) of
+              SLRegular -> mempty
+              SLRequired -> string7 "!"
+              SLOptional -> string7 "?"
+            <> if lbAttrIsVar (trsAttrs s Map.! k)
+              then string7 ",v"
+              else mempty
         fields = map (\k -> (label k, (trsSubs s) Map.! k)) (trsOrdLabels s)
      in content t i ordLabels fields
   TNList vs ->
@@ -378,6 +382,7 @@ instance Eq TreeNode where
       else treeNode (fromJust $ trdDefault dj1) == n2
   (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
   (==) (TNFunc f1) (TNFunc f2) = f1 == f2
+  (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) _ _ = False
 
 instance ValueNode TreeNode where
@@ -432,10 +437,10 @@ data LabelAttr = LabelAttr
   { lbAttrType :: ScopeLabelType
   , lbAttrIsVar :: Bool
   }
-  deriving (Show)
+  deriving (Show, Eq)
 
 defaultLabelAttr :: LabelAttr
-defaultLabelAttr = LabelAttr SLRegular False
+defaultLabelAttr = LabelAttr SLRegular True
 
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
@@ -454,7 +459,7 @@ data TNScope = TreeScope
   }
 
 instance Eq TNScope where
-  (==) s1 s2 = trsOrdLabels s1 == trsOrdLabels s2 && trsSubs s1 == trsSubs s2
+  (==) s1 s2 = trsOrdLabels s1 == trsOrdLabels s2 && trsSubs s1 == trsSubs s2 && trsAttrs s1 == trsAttrs s2
 
 instance BuildASTExpr TNScope where
   buildASTExpr s =

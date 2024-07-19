@@ -15,24 +15,22 @@ import Test.Tasty.HUnit
 import Text.Printf (printf)
 import Tree
 
-emptyTNScope :: TNScope
-emptyTNScope =
-  TreeScope
-    { trsOrdLabels = []
-    , trsSubs = Map.empty
-    , trsAttrs = Map.empty
-    }
-
-newStruct :: [String] -> Map.Map String Tree -> Tree
-newStruct lbls subs =
+newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
+newStruct lbls ow subs =
   mkNewTree . TNScope $
-    emptyTNScope
-      { trsSubs = subs
+    TreeScope
+      { trsSubs = Map.fromList subs
       , trsOrdLabels = lbls
+      , trsAttrs = Map.fromList $ map attrWrite lbls
       }
+ where
+  attrWrite :: String -> (String, LabelAttr)
+  attrWrite s = case lookup s ow of
+    Just v -> (s, v)
+    Nothing -> (s, defaultLabelAttr)
 
 newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
-newSimpleStruct lbls fds = newStruct lbls (Map.fromList fds)
+newSimpleStruct lbls subs = newStruct lbls [] subs
 
 mkSimpleLink :: Path -> Tree
 mkSimpleLink p = mkNewTree $ TNLink $ TreeLink{trlTarget = p, trlExpr = undefined}
@@ -69,16 +67,15 @@ testBasic = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["a", "b", "c", "d"]
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("a", Bool True)
-                , ("b", Bool False)
-                , ("c", Top)
-                , ("d", Null)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("a", Bool True)
+              , ("b", Bool False)
+              , ("c", Top)
+              , ("d", Null)
+              ]
           )
 
 testUnaryOp :: IO ()
@@ -89,15 +86,14 @@ testUnaryOp = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["x", "y", "z"]
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("x", Int 1)
-                , ("y", Int (-1))
-                , ("z", Bool False)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("x", Int 1)
+              , ("y", Int (-1))
+              , ("z", Bool False)
+              ]
           )
 
 testBinop :: IO ()
@@ -109,22 +105,21 @@ testBinop = do
     Right v ->
       cmpStructs
         v
-        $ newStruct
+        $ newSimpleStruct
           (map (\i -> "x" ++ show i) [1 .. 10])
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("x1", Int 3)
-                , ("x2", Int 8)
-                , ("x3", Float 2.0)
-                , ("x4", Int 5)
-                , ("x5", Int (-3))
-                , ("x6", Int 7)
-                , ("x7", Float 5.0)
-                , ("x8", Int 9)
-                , ("x9", Int 9)
-                , ("x10", Float 0.5)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("x1", Int 3)
+              , ("x2", Int 8)
+              , ("x3", Float 2.0)
+              , ("x4", Int 5)
+              , ("x5", Int (-3))
+              , ("x6", Int 7)
+              , ("x7", Float 5.0)
+              , ("x8", Int 9)
+              , ("x9", Int 9)
+              , ("x10", Float 0.5)
+              ]
           )
 
 testBinOp2 :: IO ()
@@ -135,14 +130,13 @@ testBinOp2 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newStruct
+        @?= newSimpleStruct
           ["x1", "x2"]
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("x1", Int 7)
-                , ("x2", Int 7)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("x1", Int 7)
+              , ("x2", Int 7)
+              ]
           )
 
 testBinOpCmpEq :: IO ()
@@ -275,15 +269,14 @@ testVars1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["z", "x", "y"]
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("z", Int 1)
-                , ("x", Int 1)
-                , ("y", Int 1)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("z", Int 1)
+              , ("x", Int 1)
+              , ("y", Int 1)
+              ]
           )
 
 testVars2 :: IO ()
@@ -297,36 +290,33 @@ testVars2 = do
         @?= structTop
  where
   structX =
-    newStruct
+    newSimpleStruct
       ["a", "b", "c"]
-      ( Map.fromList $
-          map
-            (\(k, v) -> (k, mkTreeAtom v))
-            [ ("a", Int 1)
-            , ("b", Int 2)
-            , ("c", Int 9)
-            ]
+      ( map
+          (\(k, v) -> (k, mkTreeAtom v))
+          [ ("a", Int 1)
+          , ("b", Int 2)
+          , ("c", Int 9)
+          ]
       )
   structY =
-    newStruct
+    newSimpleStruct
       ["e", "f", "g"]
-      ( Map.fromList $
-          map
-            (\(k, v) -> (k, mkTreeAtom v))
-            [ ("e", Int 3)
-            , ("f", Int 4)
-            , ("g", Int 9)
-            ]
+      ( map
+          (\(k, v) -> (k, mkTreeAtom v))
+          [ ("e", Int 3)
+          , ("f", Int 4)
+          , ("g", Int 9)
+          ]
       )
 
   structTop =
-    newStruct
+    newSimpleStruct
       ["x", "y", "z"]
-      ( Map.fromList
-          [ ("x", structX)
-          , ("y", structY)
-          , ("z", mkTreeAtom $ Int 12)
-          ]
+      ( [ ("x", structX)
+        , ("y", structY)
+        , ("z", mkTreeAtom $ Int 12)
+        ]
       )
 
 testVars3 :: IO ()
@@ -341,18 +331,16 @@ testVars3 = do
   return ()
  where
   structX =
-    newStruct
+    newSimpleStruct
       ["a", "b"]
-      ( Map.fromList $
-          map
-            (\(k, v) -> (k, mkTreeAtom v))
-            [("a", Int 2), ("b", Int 2)]
+      ( map
+          (\(k, v) -> (k, mkTreeAtom v))
+          [("a", Int 2), ("b", Int 2)]
       )
   structTop =
-    newStruct
+    newSimpleStruct
       ["x"]
-      ( Map.fromList [("x", structX)]
-      )
+      [("x", structX)]
 
 testDisj1 :: IO ()
 testDisj1 = do
@@ -362,20 +350,18 @@ testDisj1 = do
     Left err -> assertFailure err
     Right v ->
       cmpStructs v $
-        newStruct
+        newSimpleStruct
           (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
-          ( Map.fromList
-              [ ("x1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
-              , ("x2", newSimpleDisj [Int 1] [Int 1, Int 2, Int 3])
-              , ("x3", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-              , ("x4", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
-              , ("x5", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-              , ("x6", newSimpleDisj [] [Int 1, Int 2])
-              , ("y0", newSimpleDisj [] [Int 1, Int 2, Int 3])
-              , ("y1", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
-              , ("y2", newSimpleDisj [Int 3] [Int 1, Int 2, Int 3])
-              ]
-          )
+          [ ("x1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("x2", newSimpleDisj [Int 1] [Int 1, Int 2, Int 3])
+          , ("x3", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x4", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("x5", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x6", newSimpleDisj [] [Int 1, Int 2])
+          , ("y0", newSimpleDisj [] [Int 1, Int 2, Int 3])
+          , ("y1", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("y2", newSimpleDisj [Int 3] [Int 1, Int 2, Int 3])
+          ]
 
 newSimpleDisj :: [Atom] -> [Atom] -> Tree
 newSimpleDisj d1 d2 = mkNewTree . TNDisj $ TreeDisj (mkDefault d1) (map mkTreeAtom d2)
@@ -403,24 +389,20 @@ testDisj2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["x"]
-          ( Map.fromList
-              [
-                ( "x"
-                , mkNewTree . TNDisj $
-                    TreeDisj
-                      Nothing
-                      [ newStruct
-                          ["y", "z"]
-                          ( Map.fromList
-                              [("y", mkTreeAtom $ Int 1), ("z", mkTreeAtom $ Int 3)]
-                          )
-                      , newStruct ["y"] (Map.fromList [("y", mkTreeAtom $ Int 2)])
-                      ]
-                )
-              ]
-          )
+          [
+            ( "x"
+            , mkNewTree . TNDisj $
+                TreeDisj
+                  Nothing
+                  [ newSimpleStruct
+                      ["y", "z"]
+                      [("y", mkTreeAtom $ Int 1), ("z", mkTreeAtom $ Int 3)]
+                  , newSimpleStruct ["y"] ([("y", mkTreeAtom $ Int 2)])
+                  ]
+            )
+          ]
 
 testDisj3 :: IO ()
 testDisj3 = do
@@ -471,13 +453,13 @@ testSelector1 = do
   structT =
     newStruct
       ["x", "y", "x-y"]
-      ( Map.fromList $
-          map
-            (\(k, v) -> (k, mkTreeAtom v))
-            [ ("x", Int 1)
-            , ("y", Int 3)
-            , ("x-y", Int 4)
-            ]
+      [("x-y", LabelAttr SLRegular False)]
+      ( map
+          (\(k, v) -> (k, mkTreeAtom v))
+          [ ("x", Int 1)
+          , ("y", Int 3)
+          , ("x-y", Int 4)
+          ]
       )
   fieldEDefault = newSimpleStruct ["a"] [("a", newSimpleDisj [Int 4] [Int 3, Int 4])]
   structE =
@@ -495,18 +477,16 @@ testSelector1 = do
   pathF = Path [StringSelector "f"]
   disjF = newSimpleDisj [Int 4] [Int 3, Int 4]
   expStruct =
-    newStruct
+    newSimpleStruct
       ["T", "a", "b", "c", "d", "e", "f"]
-      ( Map.fromList
-          [ ("T", structT)
-          , ("a", mkTreeAtom $ Int 1)
-          , ("b", mkTreeAtom $ Int 3)
-          , ("c", pendValC)
-          , ("d", mkTreeAtom $ Int 4)
-          , ("e", structE)
-          , ("f", disjF)
-          ]
-      )
+      [ ("T", structT)
+      , ("a", mkTreeAtom $ Int 1)
+      , ("b", mkTreeAtom $ Int 3)
+      , ("c", pendValC)
+      , ("d", mkTreeAtom $ Int 4)
+      , ("e", structE)
+      , ("f", disjF)
+      ]
 
 testUnify1 :: IO ()
 testUnify1 = do
@@ -516,16 +496,15 @@ testUnify1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["a", "b", "d", "z"]
-          ( Map.fromList $
-              map
-                (\(k, v) -> (k, mkTreeAtom v))
-                [ ("a", Int 123)
-                , ("b", Int 456)
-                , ("d", String "hello")
-                , ("z", Int 4321)
-                ]
+          ( map
+              (\(k, v) -> (k, mkTreeAtom v))
+              [ ("a", Int 123)
+              , ("b", Int 456)
+              , ("d", String "hello")
+              , ("z", Int 4321)
+              ]
           )
 
 testCycles1 :: IO ()
@@ -536,15 +515,13 @@ testCycles1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["x", "b", "c", "d"]
-          ( Map.fromList $
-              [ ("x", mkNewTree TNRefCycleVar)
-              , ("b", mkNewTree TNRefCycleVar)
-              , ("c", mkNewTree TNRefCycleVar)
-              , ("d", mkNewTree TNRefCycleVar)
-              ]
-          )
+          [ ("x", mkNewTree TNRefCycleVar)
+          , ("b", mkNewTree TNRefCycleVar)
+          , ("c", mkNewTree TNRefCycleVar)
+          , ("d", mkNewTree TNRefCycleVar)
+          ]
 
 testCycles2 :: IO ()
 testCycles2 = do
@@ -554,31 +531,29 @@ testCycles2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["a", "b"]
-          ( Map.fromList $
-              [
-                ( "a"
-                , mkNewTree $
-                    TNFunc $
-                      mkBinaryOp
-                        AST.Add
-                        undefined
-                        (mkSimpleLink $ pathFromList [StringSelector "b"])
-                        (mkTreeAtom $ Int 100)
-                )
-              ,
-                ( "b"
-                , mkNewTree $
-                    TNFunc $
-                      mkBinaryOp
-                        AST.Sub
-                        undefined
-                        (mkSimpleLink $ pathFromList [StringSelector "a"])
-                        (mkTreeAtom $ Int 100)
-                )
-              ]
-          )
+          [
+            ( "a"
+            , mkNewTree $
+                TNFunc $
+                  mkBinaryOp
+                    AST.Add
+                    undefined
+                    (mkSimpleLink $ pathFromList [StringSelector "b"])
+                    (mkTreeAtom $ Int 100)
+            )
+          ,
+            ( "b"
+            , mkNewTree $
+                TNFunc $
+                  mkBinaryOp
+                    AST.Sub
+                    undefined
+                    (mkSimpleLink $ pathFromList [StringSelector "a"])
+                    (mkTreeAtom $ Int 100)
+            )
+          ]
 
 testCycles3 :: IO ()
 testCycles3 = do
@@ -588,13 +563,11 @@ testCycles3 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["b", "a"]
-          ( Map.fromList $
-              [ ("a", mkTreeAtom $ Int 200)
-              , ("b", mkTreeAtom $ Int 100)
-              ]
-          )
+          [ ("a", mkTreeAtom $ Int 200)
+          , ("b", mkTreeAtom $ Int 100)
+          ]
 
 testCycles4 :: IO ()
 testCycles4 = do
@@ -702,21 +675,19 @@ testIncomplete = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newStruct
+        @?= newSimpleStruct
           ["a", "b"]
-          ( Map.fromList $
-              [ ("a", mkTreeAtom Top)
-              ,
-                ( "b"
-                , mkNewTree . TNFunc $
-                    mkBinaryOp
-                      AST.Sub
-                      undefined
-                      (mkSimpleLink $ pathFromList [StringSelector "a"])
-                      (mkTreeAtom $ Int 1)
-                )
-              ]
-          )
+          [ ("a", mkTreeAtom Top)
+          ,
+            ( "b"
+            , mkNewTree . TNFunc $
+                mkBinaryOp
+                  AST.Sub
+                  undefined
+                  (mkSimpleLink $ pathFromList [StringSelector "a"])
+                  (mkTreeAtom $ Int 1)
+            )
+          ]
 
 testDup1 :: IO ()
 testDup1 = do
@@ -901,6 +872,33 @@ testStruct2 = do
       ["d"]
       [("d", mkTreeAtom $ Int 123)]
 
+testStruct3 :: IO ()
+testStruct3 = do
+  s <- readFile "tests/spec/struct3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  sGen :: Tree -> Tree
+  sGen t = newSimpleStruct ["f"] [("f", t)]
+
+  sGen2 :: Tree -> LabelAttr -> Tree
+  sGen2 t la = newStruct ["f"] [("f", la)] [("f", t)]
+
+  exp =
+    newSimpleStruct
+      (map (\i -> "x" ++ show i) [0 .. 7])
+      [ ("x0", sGen $ mkTreeAtom $ Int 3)
+      , ("x1", sGen $ mkTreeAtom $ Int 3)
+      , ("x2", sGen $ mkTNBounds [BdType BdInt])
+      , ("x3", sGen2 (mkTNBounds [BdNumCmp $ BdNumCmpCons BdLT (NumInt 1)]) (LabelAttr SLRequired True))
+      , ("x4", sGen $ mkTNBounds [BdNumCmp $ BdNumCmpCons BdLE (NumInt 3)])
+      , ("x5", sGen $ mkTreeAtom $ Int 3)
+      , ("x6", sGen $ mkTreeAtom $ Int 3)
+      , ("x7", sGen $ mkTreeAtom $ Int 3)
+      ]
+
 testList1 :: IO ()
 testList1 = do
   s <- readFile "tests/spec/list1.cue"
@@ -975,6 +973,7 @@ specTests =
     , testCase "ref3" testRef3
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
+    , testCase "struct3" testStruct3
     , testCase "list1" testList1
     , testCase "index1" testIndex1
     ]
