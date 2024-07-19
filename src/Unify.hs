@@ -104,8 +104,8 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
       then mkCnstr (d1, l1) dt2
       else unifyLeftOther dt2 dt1 parTC
 
-dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
-dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
+-- dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
+-- dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mkCnstr :: (EvalEnv m) => (BinOpDirect, TNAtom) -> (BinOpDirect, Tree) -> m Tree
 mkCnstr (_, l1) (_, t2) = return $ mkNewTree (TNConstraint $ mkTNConstraint l1 t2 unify)
@@ -204,7 +204,7 @@ narrowBounds xs = case xs of
     let
       f acc y =
         if length acc == 1
-          then unifyBounds (L, head acc) (R, y)
+          then unifyBounds (L, acc !! 0) (R, y)
           else Left "bounds mismatch"
      in
       foldM f [x] rs
@@ -410,31 +410,37 @@ unifyStructs (_, s1) (_, s2) tc = do
   fields2 = trsSubs s2
   l1Set = Map.keysSet fields1
   l2Set = Map.keysSet fields2
-  interLabels = Set.intersection l1Set l2Set
-  disjFields1 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) fields1
-  disjFields2 = Map.filterWithKey (\k _ -> Set.notMember k interLabels) fields2
+  interKeys = Set.intersection l1Set l2Set
+  disjKeys1 = Set.difference l1Set interKeys
+  disjKeys2 = Set.difference l2Set interKeys
 
-  interNodes :: [(String, Tree)]
+  interNodes :: [(String, LabelAttr, Tree)]
   interNodes =
     ( Set.foldr
         ( \key acc ->
             let t1 = fields1 Map.! key
                 t2 = fields2 Map.! key
+                a1 = (trsAttrs s1) Map.! key
+                a2 = (trsAttrs s2) Map.! key
+                ua = mergeAttrs a1 a2
                 unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify t1 t2) -- No original node exists yet
-             in (key, unifyOp) : acc
+             in (key, ua, unifyOp) : acc
         )
         []
-        interLabels
+        interKeys
     )
 
-  allNodes :: [(String, Tree)]
-  allNodes = interNodes ++ Map.toList disjFields1 ++ Map.toList disjFields2
+  withAttr :: TNScope -> Set.Set String -> [(String, LabelAttr, Tree)]
+  withAttr s keys = map (\key -> (key, (trsAttrs s) Map.! key, (trsSubs s) Map.! key)) (Set.toList keys)
+
+  allNodes :: [(String, LabelAttr, Tree)]
+  allNodes = interNodes ++ (withAttr s1 disjKeys1) ++ (withAttr s2 disjKeys2)
 
   evalAllNodes :: (EvalEnv m) => TreeCursor -> m TreeCursor
   evalAllNodes x = foldM evalNode x allNodes
 
-  evalNode :: (EvalEnv m) => TreeCursor -> (String, Tree) -> m TreeCursor
-  evalNode acc (key, node) = case treeNode (fst acc) of
+  evalNode :: (EvalEnv m) => TreeCursor -> (String, LabelAttr, Tree) -> m TreeCursor
+  evalNode acc (key, _, node) = case treeNode (fst acc) of
     (TNAtom (TreeAtom{trAmAtom = Bottom _})) -> return acc
     _ -> do
       u <- evalTC $ mkSubTC (StringSelector key) node acc
@@ -447,14 +453,14 @@ unifyStructs (_, s1) (_, s2) tc = do
           (show (fst v))
       return v
 
-  nodesToScope :: [(String, Tree)] -> Tree
+  nodesToScope :: [(String, LabelAttr, Tree)] -> Tree
   nodesToScope nodes =
     mkNewTree
       ( TNScope $
           TreeScope
-            { trsOrdLabels = map fst nodes
-            , trsVars = Set.empty
-            , trsSubs = Map.fromList nodes
+            { trsOrdLabels = map (\(k, _, _) -> k) nodes
+            , trsSubs = Map.fromList $ map (\(k, _, n) -> (k, n)) nodes
+            , trsAttrs = Map.fromList $ map (\(k, a, _) -> (k, a)) nodes
             }
       )
 

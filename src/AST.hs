@@ -102,7 +102,11 @@ type SimpleStringLit = String
 
 newtype Label = Label LabelExpr deriving (Eq, Ord, Show)
 
-newtype LabelExpr = LabelName LabelName deriving (Eq, Ord, Show)
+data LabelExpr
+  = RegularLabel LabelName
+  | OptionalLabel LabelName
+  | RequiredLabel LabelName
+  deriving (Eq, Ord, Show)
 
 data LabelName
   = LabelID Identifer
@@ -285,7 +289,10 @@ labelBld :: Label -> Builder
 labelBld (Label e) = labelExprBld e
 
 labelExprBld :: LabelExpr -> Builder
-labelExprBld (LabelName e) = labelNameBld e
+labelExprBld e = case e of
+  RegularLabel ln -> labelNameBld ln
+  OptionalLabel ln -> labelNameBld ln <> string7 "?"
+  RequiredLabel ln -> labelNameBld ln <> string7 "!"
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case e of

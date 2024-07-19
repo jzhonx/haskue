@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
 module Parser where
@@ -50,6 +51,8 @@ data TokenType
   | TokenDot
   | TokenColon
   | TokenComma
+  | TokenExclamation
+  | TokenQuestionMark
   deriving (Show, Eq, Enum)
 
 type TokAttr a = (a, TokenType)
@@ -294,6 +297,7 @@ comma tok nl = do
                  , TokenRBrace
                  , TokenRParen
                  , TokenRSquare
+                 , TokenQuestionMark
                  ]
         then return ((), tok, nl)
         else unexpected "failed to parse comma"
@@ -301,9 +305,6 @@ comma tok nl = do
 decl :: Parser (Lexeme Declaration)
 decl =
   (modLexemeRes FieldDecl <$> field) <|> (modLexemeRes Embedding <$> expr)
-
-labelName :: Parser String
-labelName = undefined
 
 field :: Parser (Lexeme FieldDecl)
 field = do
@@ -317,11 +318,30 @@ field = do
  where
   label :: Parser (Lexeme Label)
   label = do
-    (ln, _, _) <-
-      (modLexemeRes LabelID <$> identifier)
-        <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
+    (le, _, _) <- labelExpr
     (_, tok, nl) <- lexeme $ (,TokenColon) <$> char ':'
-    return ((Label . LabelName) ln, tok, nl)
+    return (Label le, tok, nl)
+
+labelExpr :: Parser (Lexeme LabelExpr)
+labelExpr = do
+  lnlem <- labelName
+  optionMaybe (questionMark <|> exclamation) >>= \case
+    Just (_, tok, nl) ->
+      if tok == TokenQuestionMark
+        then return (OptionalLabel $ getLexeme lnlem, tok, nl)
+        else return (RequiredLabel $ getLexeme lnlem, tok, nl)
+    Nothing -> return $ modLexemeRes RegularLabel lnlem
+
+questionMark :: Parser (Lexeme Char)
+questionMark = lexeme $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
+
+exclamation :: Parser (Lexeme Char)
+exclamation = lexeme $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !")
+
+labelName :: Parser (Lexeme LabelName)
+labelName =
+  (modLexemeRes LabelID <$> identifier)
+    <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
 
 litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
 litLexeme t p = lexeme $ do

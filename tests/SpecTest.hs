@@ -15,6 +15,14 @@ import Test.Tasty.HUnit
 import Text.Printf (printf)
 import Tree
 
+emptyTNScope :: TNScope
+emptyTNScope =
+  TreeScope
+    { trsOrdLabels = []
+    , trsSubs = Map.empty
+    , trsAttrs = Map.empty
+    }
+
 newStruct :: [String] -> Map.Map String Tree -> Tree
 newStruct lbls subs =
   mkNewTree . TNScope $
