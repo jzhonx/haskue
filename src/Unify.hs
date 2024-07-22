@@ -35,6 +35,8 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       (show d2)
       (show t2)
   res <- case (treeNode t1, treeNode t2) of
+    (TNBottom _, _) -> return t1
+    (_, TNBottom _) -> return t2
     (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2 tc
     -- Below is the earliest time to create a constraint
     (_, TNAtom l2) -> unifyLeftAtom (d2, l2, t2) dt1 tc
@@ -51,7 +53,6 @@ parTC points to the bin op node.
 unifyLeftAtom :: (EvalEnv m) => (BinOpDirect, TNAtom, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
   case (trAmAtom l1, treeNode t2) of
-    (Bottom _, _) -> returnTree $ TNAtom l1
     (Top, _) -> returnTree (treeNode t2)
     (String x, TNAtom s) -> case trAmAtom s of
       String y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
@@ -67,14 +68,14 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
       _ -> notUnifiable dt1 dt2
     (_, TNBounds b) -> do
       dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-      returnTree $ TNAtom $ TreeAtom $ unifyAtomBounds (d1, (trAmAtom l1)) (d2, (trBdList b))
+      return $ unifyAtomBounds (d1, (trAmAtom l1)) (d2, (trBdList b))
     (_, TNConstraint c) ->
       if l1 == trCnAtom c
         then returnTree (TNConstraint c)
         else
           return $
             Tree
-              (TNAtom . TreeAtom $ Bottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
+              (TNBottom $ TreeBottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
               (treeOrig (fst parTC))
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
@@ -95,7 +96,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
   returnTree n = return $ mkNewTree n
 
   mismatch :: (Show a) => a -> a -> TreeNode
-  mismatch x y = TNAtom . TreeAtom $ Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
+  mismatch x y = TNBottom . TreeBottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
   procOther :: (EvalEnv m) => m Tree
   procOther = do
@@ -114,12 +115,12 @@ unifyLeftBound :: (EvalEnv m) => (BinOpDirect, TNBounds, Tree) -> (BinOpDirect, 
 unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
   TNAtom ta2 -> do
     dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-    return $ mkTreeAtom (unifyAtomBounds (d2, (trAmAtom ta2)) (d1, trBdList b1))
+    return $ unifyAtomBounds (d2, (trAmAtom ta2)) (d1, trBdList b1)
   TNBounds b2 -> do
     dump $ printf "unifyBoundList: %s, %s" (show t1) (show t2)
     let res = unifyBoundList (d1, trBdList b1) (d2, trBdList b2)
     case res of
-      Left err -> return $ mkTreeAtom (Bottom err)
+      Left err -> return $ mkBottom err
       Right bs ->
         let
           r =
@@ -141,25 +142,26 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
   TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1) tc
   _ -> notUnifiable (d1, t1) (d2, t2)
 
-unifyAtomBounds :: (BinOpDirect, Atom) -> (BinOpDirect, [Bound]) -> Atom
+unifyAtomBounds :: (BinOpDirect, Atom) -> (BinOpDirect, [Bound]) -> Tree
 unifyAtomBounds (d1, a1) (_, bs) =
   let
     cs = map withBound bs
+    ta1 = mkTreeAtom a1
    in
-    foldl (\_ x -> if x == a1 then a1 else x) a1 cs
+    foldl (\_ x -> if x == ta1 then ta1 else x) (mkTreeAtom a1) cs
  where
-  withBound :: Bound -> Atom
+  withBound :: Bound -> Tree
   withBound b =
     let
       r = unifyBounds (d1, BdIsAtom a1) (R, b)
      in
       case r of
-        Left s -> Bottom s
+        Left s -> mkBottom s
         Right v -> case v of
           x : [] -> case x of
-            BdIsAtom a -> a
-            _ -> Bottom $ printf "unexpected bounds unification result: %s" (show x)
-          _ -> Bottom $ printf "unexpected bounds unification result: %s" (show v)
+            BdIsAtom a -> mkNewTree $ TNAtom $ TreeAtom a
+            _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show x)
+          _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show v)
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
@@ -347,7 +349,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   (TNConstraint c1, _) -> do
     na <- unifyWithDir (d1, mkNewTree (TNAtom $ trCnAtom c1)) dt2 tc
     case treeNode na of
-      TNAtom TreeAtom{trAmAtom = Bottom _} -> return na
+      TNBottom _ -> return na
       _ -> return t1
   -- According to the spec,
   -- A field value of the form r & v, where r evaluates to a reference cycle and v is a concrete value, evaluates to v.
@@ -441,7 +443,7 @@ unifyStructs (_, s1) (_, s2) tc = do
 
   evalNode :: (EvalEnv m) => TreeCursor -> (String, LabelAttr, Tree) -> m TreeCursor
   evalNode acc (key, _, node) = case treeNode (fst acc) of
-    (TNAtom (TreeAtom{trAmAtom = Bottom _})) -> return acc
+    (TNBottom _) -> return acc
     _ -> do
       u <- evalTC $ mkSubTC (StringSelector key) node acc
       v <- propUpTCSel (StringSelector key) u
@@ -474,7 +476,7 @@ notUnifiable :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m T
 notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
  where
   f :: (EvalEnv m) => Tree -> Tree -> m Tree
-  f x y = return $ mkTreeAtom (Bottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y))
+  f x y = return $ mkBottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
 mkUnification :: (EvalEnv m) => (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
 mkUnification dt1 dt2 = return $ mkNewTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2)
@@ -563,7 +565,7 @@ treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
     filter
       ( \x ->
           case treeNode x of
-            TNAtom (TreeAtom{trAmAtom = Bottom _}) -> False
+            TNBottom _ -> False
             _ -> True
       )
       (concat xs)
@@ -571,5 +573,5 @@ treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
   excludeDefault :: Maybe Tree -> Maybe Tree
   excludeDefault Nothing = Nothing
   excludeDefault (Just x) = case treeNode x of
-    TNAtom (TreeAtom{trAmAtom = Bottom _}) -> Nothing
+    TNBottom _ -> Nothing
     _ -> Just x

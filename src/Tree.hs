@@ -30,6 +30,7 @@ module Tree (
   TNList (..),
   TNRoot (..),
   TNScope (..),
+  TNBottom (..),
   Tree (..),
   TreeCursor,
   TreeNode (..),
@@ -42,7 +43,6 @@ module Tree (
   dump,
   evalTC,
   extendTC,
-  extendTCAtom,
   extendTCBinaryOp,
   extendTCBound,
   extendTCDisj,
@@ -52,6 +52,7 @@ module Tree (
   extendTCScope,
   extendTCUnaryOp,
   extendTCVarLink,
+  extendTCUnify,
   getScalarValue,
   goDownTCPath,
   goDownTCSel,
@@ -71,6 +72,7 @@ module Tree (
   mkTNFunc,
   mkTreeAtom,
   mkTreeDisj,
+  mkBottom,
   mkUnaryOp,
   pathFromTC,
   propRootEvalTC,
@@ -160,7 +162,6 @@ data Atom
   | Float Double
   | Bool Bool
   | Null
-  | Bottom String
   deriving (Ord)
 
 -- | Show is only used for debugging.
@@ -171,7 +172,6 @@ instance Show Atom where
   show (Bool b) = show b
   show Top = "_"
   show Null = "null"
-  show (Bottom msg) = "_|_: " ++ msg
 
 instance Eq Atom where
   (==) (String s1) (String s2) = s1 == s2
@@ -180,7 +180,6 @@ instance Eq Atom where
   (==) (Float i1) (Int i2) = i1 == fromIntegral i2
   (==) (Float f1) (Float f2) = f1 == f2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) (Bottom _) (Bottom _) = True
   (==) Top Top = True
   (==) Null Null = True
   (==) _ _ = False
@@ -196,7 +195,6 @@ aToLiteral a = case a of
   Float f -> AST.FloatLit f
   Bool b -> AST.BoolLit b
   Null -> AST.NullLit
-  Bottom _ -> AST.BottomLit
 
 class ValueNode a where
   isValueNode :: a -> Bool
@@ -264,9 +262,11 @@ tnStrBldr i t = case treeNode t of
   TNFunc f ->
     let args = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trfnArgs f))
      in content t i (string7 $ trfnName f) args
+  TNBottom b -> content t i (string7 $ show b) emptyTreeFields
  where
   emptyTreeFields :: [(Builder, Tree)]
   emptyTreeFields = []
+
   content :: (TreeRepBuilder a) => Tree -> Int -> Builder -> [(Builder, a)] -> Builder
   content tree j meta fields =
     char7 '('
@@ -311,6 +311,7 @@ showTreeType t = case treeNode t of
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "Func"
+  TNBottom _ -> "Bottom"
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
@@ -325,6 +326,7 @@ showTreeSymbol t = case treeNode t of
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "fn"
+  TNBottom _ -> "_|_"
 
 instance Show Tree where
   show tree = showTreeIdent tree 0
@@ -342,6 +344,7 @@ instance BuildASTExpr Tree where
     TNConstraint _ -> buildASTExpr (fromJust $ treeOrig t)
     TNRefCycleVar -> AST.litCons AST.TopLit
     TNFunc fn -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr fn
+    TNBottom _ -> AST.litCons AST.BottomLit
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree n Nothing
@@ -365,6 +368,7 @@ data TreeNode
   | TNConstraint TNConstraint
   | TNRefCycleVar
   | TNFunc TNFunc
+  | TNBottom TNBottom
 
 instance Eq TreeNode where
   (==) (TNRoot t1) (TNRoot t2) = t1 == t2
@@ -383,6 +387,7 @@ instance Eq TreeNode where
   (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
   (==) (TNFunc f1) (TNFunc f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
+  (==) (TNBottom _) (TNBottom _) = True
   (==) _ _ = False
 
 instance ValueNode TreeNode where
@@ -398,10 +403,10 @@ instance ValueNode TreeNode where
     TNLink _ -> False
     TNStub -> False
     TNFunc _ -> False
+    TNBottom _ -> True
   isValueAtom n = case n of
     TNAtom l -> case trAmAtom l of
       Top -> False
-      Bottom _ -> False
       _ -> True
     _ -> False
   isValueConcrete n = case n of
@@ -597,9 +602,7 @@ mkTreeAtom :: Atom -> Tree
 mkTreeAtom v = mkNewTree (TNAtom $ TreeAtom{trAmAtom = v})
 
 isTreeBottom :: Tree -> Bool
-isTreeBottom Tree{treeNode = TNAtom s} = case trAmAtom s of
-  Bottom _ -> True
-  _ -> False
+isTreeBottom (Tree (TNBottom _) _) = True
 isTreeBottom _ = False
 
 data TNDisj = TreeDisj
@@ -858,6 +861,22 @@ mkBinaryOpDir rep op (d1, t1) (_, t2) =
   case d1 of
     L -> mkBinaryOp rep op t1 t2
     R -> mkBinaryOp rep op t2 t1
+
+data TNBottom = TreeBottom
+  { trBmMsg :: String
+  }
+
+instance Eq TNBottom where
+  (==) _ _ = True
+
+instance BuildASTExpr TNBottom where
+  buildASTExpr _ = AST.litCons $ AST.BottomLit
+
+instance Show TNBottom where
+  show (TreeBottom m) = m
+
+mkBottom :: String -> Tree
+mkBottom msg = mkNewTree (TNBottom $ TreeBottom{trBmMsg = msg})
 
 -- -- --
 
@@ -1137,6 +1156,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
   TNConstraint _ -> return tc
   TNRefCycleVar -> return tc
   TNLink _ -> return tc
+  TNBottom _ -> return tc
  where
   header = "traverseSubNodes"
 
@@ -1172,6 +1192,7 @@ traverseTC f tc = case treeNode n of
   TNConstraint _ -> f tc
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
+  TNBottom _ -> f tc
   TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
  where
   n = fst tc
@@ -1217,6 +1238,7 @@ evalTC tc = case treeNode (fst tc) of
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
   TNBounds _ -> return tc
+  TNBottom _ -> return tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
   TNRoot _ -> traverseSubNodes evalTC tc
@@ -1428,7 +1450,7 @@ index sel ue t = case treeNode t of
       return $
         if i < length (trLstSubs list)
           then trLstSubs list !! i
-          else mkTreeAtom (Bottom $ "index out of bound: " ++ show i)
+          else mkBottom $ "index out of bound: " ++ show i
     _ -> throwError "invalid list selector"
   TNLink link ->
     return $
@@ -1504,7 +1526,7 @@ extendTCIndex lb@(ExtendTCLabel sel _) ue tc = do
     _ -> throwError "extendTCIndex: invalid selector"
 
   invalidSelector :: Tree
-  invalidSelector = mkTreeAtom (Bottom "invalid selector")
+  invalidSelector = mkNewTree (TNBottom $ TreeBottom "invalid selector")
 
   indexTree :: (EvalEnv m) => Tree -> Tree -> m Tree
   indexTree tree x =
@@ -1535,11 +1557,6 @@ extendTCIndex lb@(ExtendTCLabel sel _) ue tc = do
                   [tree, x]
             )
       _ -> return invalidSelector
-
-extendTCAtom :: (EvalEnv m) => ExtendTCLabel -> Atom -> TreeCursor -> m TreeCursor
-extendTCAtom lb v tc =
-  let sub = mkTreeAtom v
-   in do extendTCUnify lb sub tc
 
 -- | Insert a variable link to the tree cursor.
 extendTCVarLink :: (EvalEnv m) => ExtendTCLabel -> String -> AST.UnaryExpr -> TreeCursor -> m TreeCursor

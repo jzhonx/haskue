@@ -40,7 +40,7 @@ startEval s = runExceptT $ do
   tc <- runIO s
   case goDownTCSel StartSelector tc of
     Just u -> return $ fst u
-    Nothing -> return $ mkNewTree . TNRoot $ TreeRoot (mkTreeAtom $ Bottom "No value")
+    Nothing -> return $ mkNewTree . TNRoot $ TreeRoot (mkBottom "No value")
 
 assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do
@@ -57,7 +57,7 @@ testBottom = do
   case n of
     Left err -> assertFailure err
     Right y ->
-      y @?= (mkTreeAtom $ Bottom "")
+      y @?= (mkBottom "")
 
 testBasic :: IO ()
 testBasic = do

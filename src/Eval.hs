@@ -69,18 +69,16 @@ evalLiteral :: (EvalEnv m) => Literal -> ExtendTCLabel -> TreeCursor -> m TreeCu
 evalLiteral (StructLit s) lb tc = evalStructLit s lb tc
 evalLiteral (ListLit l) lb tc = evalListLit l lb tc
 evalLiteral lit lb tc = do
-  v <- f lit
-  extendTCAtom lb v tc >>= propUpTCSel (exlSelector lb)
+  extendTCUnify lb v tc >>= propUpTCSel (exlSelector lb)
  where
-  f :: (EvalEnv m) => Literal -> m Atom
-  f (StringLit (SimpleStringLit s)) = return $ String s
-  f (IntLit i) = return $ Int i
-  f (FloatLit a) = return $ Float a
-  f (BoolLit b) = return $ Bool b
-  f TopLit = return Top
-  f BottomLit = return $ Bottom ""
-  f NullLit = return Null
-  f _ = throwError $ printf "literal %s is not supported" (show lit)
+  v = case lit of
+    StringLit (SimpleStringLit s) -> mkTreeAtom $ String s
+    IntLit i -> mkTreeAtom $ Int i
+    FloatLit a -> mkTreeAtom $ Float a
+    BoolLit b -> mkTreeAtom $ Bool b
+    NullLit -> mkTreeAtom $ Null
+    TopLit -> mkTreeAtom $ Top
+    BottomLit -> mkBottom ""
 
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> ExtendTCLabel -> TreeCursor -> m TreeCursor
@@ -225,13 +223,13 @@ lookupVar e var lb tc = do
   case res of
     Nothing ->
       return
-        (substTreeNode (TNAtom . TreeAtom $ notFound) (fst tc), snd tc)
+        (substTreeNode (treeNode notFound) (fst tc), snd tc)
     Just _ ->
       extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
         >>= propUpTCSel (exlSelector lb)
  where
   path = appendSel (exlSelector lb) (pathFromTC tc)
-  notFound = Bottom $ printf "variable %s is not found, path: %s" var (show path)
+  notFound = mkBottom $ printf "variable %s is not found, path: %s" var (show path)
 
 {- | Evaluates the selector.
 Parameters:
@@ -302,11 +300,11 @@ dispUnaryFunc op t tc = do
     _ -> returnConflict
   return (unode, snd tc)
  where
-  conflict :: Atom
-  conflict = Bottom $ printf "%s cannot be used for %s" (show t) (show op)
+  conflict :: Tree
+  conflict = mkBottom $ printf "%s cannot be used for %s" (show t) (show op)
 
   returnConflict :: (EvalEnv m) => m Tree
-  returnConflict = return $ mkTreeAtom conflict
+  returnConflict = return conflict
 
   ia :: (EvalEnv m) => Integer -> (Integer -> Integer) -> m Tree
   ia a f = return $ mkTreeAtom (Int $ f a)
@@ -350,6 +348,8 @@ regBinDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
   dump $
     printf ("regBinDir: path: %s, %s: %s with %s: %s") (show $ pathFromTC tc) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, treeNode t2) of
+    (TNBottom _, _) -> return t1
+    (_, TNBottom _) -> return t2
     (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) dt2 tc
     (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) dt1 tc
     (TNScope s1, _) -> regBinLeftScope op (d1, s1, t1) dt2 tc
@@ -369,18 +369,19 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
             f :: (Atom -> Atom -> Bool)
             f = fromJust (lookup op cmpOps)
             r = case (a1, a2) of
-              (String _, String _) -> Bool $ dirApply f (d1, a1) a2
-              (Int _, Int _) -> Bool $ dirApply f (d1, a1) a2
-              (Int _, Float _) -> Bool $ dirApply f (d1, a1) a2
-              (Float _, Int _) -> Bool $ dirApply f (d1, a1) a2
-              (Float _, Float _) -> Bool $ dirApply f (d1, a1) a2
-              (Bool _, Bool _) -> Bool $ dirApply f (d1, a1) a2
-              (Bottom _, Bottom _) -> Bool $ dirApply f (d1, a1) a2
-              (Null, _) -> Bool $ dirApply f (d1, a1) a2
-              (_, Null) -> Bool $ dirApply f (d2, a2) a1
-              _ -> uncmpAtoms a1 a2
+              (String _, String _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Int _, Int _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Int _, Float _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Float _, Int _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Float _, Float _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Bool _, Bool _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (Null, _) -> Right . Bool $ dirApply f (d1, a1) a2
+              (_, Null) -> Right . Bool $ dirApply f (d2, a2) a1
+              _ -> Left $ uncmpAtoms a1 a2
            in
-            return $ mkTreeAtom r
+            case r of
+              Right b -> return $ mkTreeAtom b
+              Left err -> return err
         TNScope _ -> return $ cmpNull a1 t2
         TNList _ -> return $ cmpNull a1 t2
         TNDisj _ -> return $ cmpNull a1 t2
@@ -390,64 +391,66 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) tc = do
           let
             r = case op of
               AST.Add -> case (a1, trAmAtom ta2) of
-                (Int i1, Int i2) -> Int $ dirApply (+) (d1, i1) i2
-                (Int i1, Float i2) -> Float $ dirApply (+) (d1, fromIntegral i1) i2
-                (Float i1, Int i2) -> Float $ dirApply (+) (d1, i1) (fromIntegral i2)
-                _ -> mismatch a1 (trAmAtom ta2)
+                (Int i1, Int i2) -> Right . Int $ dirApply (+) (d1, i1) i2
+                (Int i1, Float i2) -> Right . Float $ dirApply (+) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Right . Float $ dirApply (+) (d1, i1) (fromIntegral i2)
+                _ -> Left $ mismatch a1 (trAmAtom ta2)
               AST.Sub -> case (a1, trAmAtom ta2) of
-                (Int i1, Int i2) -> Int $ dirApply (-) (d1, i1) i2
-                (Int i1, Float i2) -> Float $ dirApply (-) (d1, fromIntegral i1) i2
-                (Float i1, Int i2) -> Float $ dirApply (-) (d1, i1) (fromIntegral i2)
-                _ -> mismatch a1 (trAmAtom ta2)
+                (Int i1, Int i2) -> Right . Int $ dirApply (-) (d1, i1) i2
+                (Int i1, Float i2) -> Right . Float $ dirApply (-) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Right . Float $ dirApply (-) (d1, i1) (fromIntegral i2)
+                _ -> Left $ mismatch a1 (trAmAtom ta2)
               AST.Mul -> case (a1, trAmAtom ta2) of
-                (Int i1, Int i2) -> Int $ dirApply (*) (d1, i1) i2
-                (Int i1, Float i2) -> Float $ dirApply (*) (d1, fromIntegral i1) i2
-                (Float i1, Int i2) -> Float $ dirApply (*) (d1, i1) (fromIntegral i2)
-                _ -> mismatch a1 (trAmAtom ta2)
+                (Int i1, Int i2) -> Right . Int $ dirApply (*) (d1, i1) i2
+                (Int i1, Float i2) -> Right . Float $ dirApply (*) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Right . Float $ dirApply (*) (d1, i1) (fromIntegral i2)
+                _ -> Left $ mismatch a1 (trAmAtom ta2)
               AST.Div -> case (a1, trAmAtom ta2) of
-                (Int i1, Int i2) -> Float $ dirApply (/) (d1, (fromIntegral i1)) (fromIntegral i2)
-                (Int i1, Float i2) -> Float $ dirApply (/) (d1, fromIntegral i1) i2
-                (Float i1, Int i2) -> Float $ dirApply (/) (d1, i1) (fromIntegral i2)
-                _ -> mismatch a1 (trAmAtom ta2)
-              _ -> mismatch a1 (trAmAtom ta2)
+                (Int i1, Int i2) -> Right . Float $ dirApply (/) (d1, (fromIntegral i1)) (fromIntegral i2)
+                (Int i1, Float i2) -> Right . Float $ dirApply (/) (d1, fromIntegral i1) i2
+                (Float i1, Int i2) -> Right . Float $ dirApply (/) (d1, i1) (fromIntegral i2)
+                _ -> Left $ mismatch a1 (trAmAtom ta2)
+              _ -> Left $ mismatch a1 (trAmAtom ta2)
            in
-            return $ mkTreeAtom r
+            case r of
+              Right b -> return $ mkTreeAtom b
+              Left err -> return err
         TNScope _ -> return $ mismatchArith a1 t2
         TNList _ -> return $ mismatchArith a1 t2
         TNDisj _ -> return $ mismatchArith a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1) tc
-    | otherwise -> return $ mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op))
+    | otherwise -> return $ mkBottom $ printf "operator %s is not supported" (show op)
  where
   a1 = trAmAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
   arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
-  uncmpAtoms :: Atom -> Atom -> Atom
-  uncmpAtoms x y = Bottom $ printf "%s and %s are not comparable" (show x) (show y)
+  uncmpAtoms :: Atom -> Atom -> Tree
+  uncmpAtoms x y = mkBottom $ printf "%s and %s are not comparable" (show x) (show y)
 
   cmpNull :: Atom -> Tree -> Tree
   cmpNull a t =
     if
       -- There is no way for a non-atom to be compared with a non-null atom.
-      | a /= Null -> mkTreeAtom (mismatch a t)
+      | a /= Null -> mismatch a t
       | op == AST.Equ -> mkTreeAtom (Bool False)
       | op == AST.BinRelOp AST.NE -> mkTreeAtom (Bool True)
-      | otherwise -> mkTreeAtom (Bottom $ printf "operator %s is not supported" (show op))
+      | otherwise -> mkBottom $ printf "operator %s is not supported" (show op)
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree
-  mismatchArith x y = mkTreeAtom (mismatch x y)
+  mismatchArith x y = mismatch x y
 
 dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
-mismatch :: (Show a, Show b) => a -> b -> Atom
-mismatch x y = Bottom $ printf "%s can not be used with %s and %s" (show x) (show y)
+mismatch :: (Show a, Show b) => a -> b -> Tree
+mismatch x y = mkBottom $ printf "%s can not be used with %s and %s" (show x) (show y)
 
 regBinLeftScope ::
   (EvalEnv m) => BinaryOp -> (BinOpDirect, TNScope, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinLeftScope op (d1, _, t1) (d2, t2) tc = case treeNode t2 of
   TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1) tc
-  _ -> return (mkTreeAtom (mismatch t1 t2))
+  _ -> return (mismatch t1 t2)
 
 regBinLeftDisj ::
   (EvalEnv m) => BinaryOp -> (BinOpDirect, TNDisj, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
@@ -455,7 +458,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) tc = case dj1 of
   TreeDisj{trdDefault = Just d} -> regBinDir op (d1, d) (d2, t2) tc
   _ -> case treeNode t2 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1) tc
-    _ -> return (mkTreeAtom (mismatch t1 t2))
+    _ -> return (mismatch t1 t2)
 
 regBinOther :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
@@ -467,7 +470,7 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
     case treeNode na of
       TNAtom atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (fst tc)
       _ -> undefined
-  _ -> return (mkTreeAtom (Bottom mismatchErr))
+  _ -> return (mkBottom mismatchErr)
  where
   -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
   -- returns a delayed evaluation.
