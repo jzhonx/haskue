@@ -16,6 +16,7 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
+import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, isJust)
 import qualified Data.Set as Set
 import Parser (parseCUE)
@@ -30,21 +31,24 @@ runIO s = runStderrLoggingT $ runStr s
 runStr :: (MonadError String m, MonadLogger m) => String -> m TreeCursor
 runStr s = do
   parsedE <- parseCUE s
-  eval parsedE (ExtendTCLabel Path.StartSelector defaultLabelAttr)
+  eval parsedE
 
-eval :: (MonadError String m, MonadLogger m) => Expression -> ExtendTCLabel -> m TreeCursor
-eval expr lb = do
+-- (ExtendTCLabel Path.StartSelector defaultLabelAttr)
+
+eval :: (MonadError String m, MonadLogger m) => Expression -> m TreeCursor
+eval expr = do
   rootTC <-
     runReaderT
-      ( ( do
-            r <- evalExpr expr lb initTC >>= propUpTCSel (exlSelector lb)
-            dump $ printf "--- evaluated to rootTC: ---\n%s" (showTreeCursor r)
-            r2 <- setOrigNodesTC r
-            dump $ printf "--- start resolving links ---"
-            res <- evalTC r2
-            dump $ printf "--- resolved: ---\n%s" (showTreeCursor res)
-            return res
-        )
+      ( do
+          root <- evalExpr expr
+          -- >>= propUpTCSel (exlSelector lb)
+          dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
+          let rootTC = (mkNewTree (TNRoot $ TreeRoot root), [])
+          r2 <- setOrigNodesTC rootTC
+          dump $ printf "--- start resolving links ---"
+          res <- evalTC r2
+          dump $ printf "--- resolved: ---\n%s" (showTreeCursor res)
+          return res
       )
       Config{cfUnify = unify, cfCreateCnstr = True}
   finalized <-
@@ -55,22 +59,26 @@ eval expr lb = do
   return finalized
  where
   initTC :: TreeCursor
-  initTC = (mkNewTree (TNRoot $ TreeRoot (mkTreeAtom Top)), [])
+  initTC = (mkNewTree (TNRoot $ TreeRoot mkStub), [])
 
 {- | evalExpr and all expr* should return the same level tree cursor.
+The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
+level deeper with the label as the key.
 Every eval* function should return a tree cursor that is at the same level as the input tree cursor.
-For example, if the path of the input tree cursor is /a/b, then the output tree cursor should also have /a/b.
+For example, if the path of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
+tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: (EvalEnv m) => Expression -> ExtendTCLabel -> TreeCursor -> m TreeCursor
+evalExpr :: (EvalEnv m) => Expression -> m Tree
 evalExpr (ExprUnaryExpr e) = evalUnaryExpr e
 evalExpr (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
 
-evalLiteral :: (EvalEnv m) => Literal -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalLiteral (StructLit s) lb tc = evalStructLit s lb tc
-evalLiteral (ListLit l) lb tc = evalListLit l lb tc
-evalLiteral lit lb tc = do
-  extendTCUnify lb v tc >>= propUpTCSel (exlSelector lb)
+evalLiteral :: (EvalEnv m) => Literal -> m Tree
+evalLiteral (StructLit s) = evalStructLit s
+evalLiteral (ListLit l) = evalListLit l
+evalLiteral lit = return v
  where
+  -- >>= propUpTCSel (exlSelector lb)
+
   v = case lit of
     StringLit (SimpleStringLit s) -> mkTreeAtom $ String s
     IntLit i -> mkTreeAtom $ Int i
@@ -81,85 +89,149 @@ evalLiteral lit lb tc = do
     BottomLit -> mkBottom ""
 
 -- | The struct is guaranteed to have unique labels by transform.
-evalStructLit :: (EvalEnv m) => [Declaration] -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalStructLit decls lb tc = do
+evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
+evalStructLit decls = do
+  -- slabels <- staticLabels
   -- create a new block since we are entering a new struct.
-  -- It inserts all the field labels to the current scope.
-  u <- extendTCScope lb dedupLabels tc
-  v <- foldM evalDecl u decls >>= propUpTCSel (exlSelector lb)
-  -- dump $ printf "evalStructLit: evaluated to:\n%s" (show (fst v))
+  -- It inserts all the static labels to the current scope so that lookup can find them.
+  -- u <- updateTCScope (dedupLabels slabels) tc
+  -- dump $ printf "evalStructLit: path: %s, evaluated to: %s" (show (pathFromTC u)) (show (fst u))
+  (scope, ts) <- foldM evalDecl (emptyTNScope, []) decls
+  let v =
+        if null ts
+          then mkNewTree (TNScope scope)
+          else
+            foldl (\acc t -> mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify acc t)) (mkNewTree (TNScope scope)) ts
   return v
  where
-  parSel = exlSelector lb
-  --  Evaluates a declaration in a struct.
-  evalDecl :: (EvalEnv m) => TreeCursor -> Declaration -> m TreeCursor
-  evalDecl x (Embedding e) =
-    do
-      -- go up to the parent node.
-      par <- propUpTCSel parSel x
-      -- Replace the original node with a binary op node, with the left side being the original node and the right side
-      -- being a stub.
-      extendTC
-        lb
-        ( mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (fst x) (mkNewTree TNStub))
-        )
-        par
-      -- evaluate the embedding expression.
-      >>= evalExpr e (ExtendTCLabel binOpRightSelector defaultLabelAttr)
-      -- go back to the original node.
-      >>= goDownTCSelErr binOpLeftSelector "cannot go back to original struct"
-  evalDecl x (FieldDecl fd) = case fd of
-    Field ls e -> evalFdLabels ls e x
+  -- >>= propUpTCSel (exlSelector lb)
+  -- dump $ printf "evalStructLit: evaluated to:\n%s" (show (fst v))
 
-  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> TreeCursor -> m TreeCursor
-  evalFdLabels lbls e x =
+  --  Evaluates a declaration in a struct.
+  evalDecl :: (EvalEnv m) => (TNScope, [Tree]) -> Declaration -> m (TNScope, [Tree])
+  evalDecl acc (Embedding e) =
+    do
+      v <- evalExpr e
+      return (fst acc, v : snd acc)
+  -- -- Replace the original node with a binary op node, with the left side being the original node and the right side
+  -- -- being a stub.
+  -- replaceTCTip
+  --   ( mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (fst x) mkStub)
+  --   )
+  --   x
+  -- >>= goDownTCSelErr binOpRightSelector
+  -- -- evaluate the embedding expression.
+  -- >>=
+  -- -- go back to the original node.
+  -- >>= propUpTCSel binOpRightSelector
+  -- >>= goDownTCSelErr binOpLeftSelector
+  evalDecl (scope, ts) (FieldDecl fd) = case fd of
+    Field ls e -> do
+      (sel, attr, t) <- evalFdLabels ls e
+      let
+        extSubMaybe = Map.lookup sel (trsSubs scope)
+        newSub =
+          if isJust extSubMaybe
+            then mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (fromJust extSubMaybe) t)
+            else t
+        newAttr =
+          if isJust extSubMaybe
+            then mergeAttrs attr ((trsAttrs scope) Map.! sel)
+            else attr
+        newScope = insertScopeSub scope sel (Just newAttr) newSub
+      return (newScope, ts)
+
+  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (ScopeSelector, LabelAttr, Tree)
+  evalFdLabels lbls e =
     case lbls of
       [] -> throwError "empty labels"
       l1 : [] ->
         let
-          sl = slFrom l1
-          key = nameFrom $ fst sl
-          attr = LabelAttr{lbAttrType = snd sl, lbAttrIsVar = isVar $ fst sl}
+          (lb1, attr1) = slFrom l1
+          attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
          in
-          evalExpr e (ExtendTCLabel (Path.StringSelector key) attr) x
+          do
+            dump $ printf "evalFdLabels: lb1: %s" (show lb1)
+            key <- sselFrom lb1
+            dump $
+              printf "evalFdLabels: key: %s, e: %s" (show key) (show e)
+            sub <- evalExpr e
+            return (key, attr, sub)
       l1 : l2 : rs ->
-        let
-          key = nameFrom $ fst $ slFrom l1
-          nsSel = (Path.StringSelector key)
-          nsLabel = let (a, b) = (slFrom l2) in (nameFrom a, LabelAttr{lbAttrType = b, lbAttrIsVar = isVar a})
-          nsExtSel = ExtendTCLabel nsSel (snd nsLabel)
-         in
-          extendTCScope nsExtSel [nsLabel] x
-            >>= evalFdLabels (l2 : rs) e
-            >>= propUpTCSel nsSel
+        do
+          let
+            (lb1, attr1) = slFrom l1
+            attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
+          key <- sselFrom lb1
+          (key2, attr2, sub2) <- evalFdLabels (l2 : rs) e
+          let sub = mkScope [key2] [(key2, attr2, sub2)]
+          return (key, attr, sub)
+  -- let (lbName2, lbAttr2) = (slFrom l2)
+  -- l2Sel <- sselFrom lbName2
 
-  evalFstLabel :: (Label -> Maybe (String, LabelAttr)) -> Declaration -> Maybe (String, LabelAttr)
-  evalFstLabel f decl = case decl of
+  -- let
+  --   nsLabel = (l2Sel, LabelAttr{lbAttrType = lbAttr2, lbAttrIsVar = isVar lbName2})
+  --   nsExtSel = ExtendTCLabel (Path.ScopeSelector nsSel) (snd nsLabel)
+  -- extendTCScope nsExtSel [nsLabel] x
+  --   >>= evalFdLabels (l2 : rs) e
+  --   >>= propUpTCSel (Path.ScopeSelector nsSel)
+
+  isLNStatic :: LabelName -> Bool
+  isLNStatic (LabelNameExpr _) = False
+  isLNStatic _ = True
+
+  sselFrom :: (EvalEnv m) => LabelName -> m Path.ScopeSelector
+  sselFrom (LabelID ident) = return $ Path.StringSelector ident
+  sselFrom (LabelString ls) = return $ Path.StringSelector ls
+  sselFrom (LabelNameExpr e) =
+    -- let
+    --   leLabel = ExtendTCLabel (Path.ScopeSelector $ Path.DynamicSelector 0 e) defaultLabelAttr
+    --  in
+    do
+      -- Use the current label as the label for the expression.
+      -- utc <-
+      -- >>= goDownTCSelErr (exlSelector leLabel) "failed to get label name from expression"
+      t <- evalExpr e
+      case treeNode t of
+        TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
+        _ -> throwError $ printf "label name expression is not a string, %s" (show t)
+
+  firstField ::
+    (EvalEnv m) =>
+    (Label -> m (Maybe (ScopeSelector, LabelAttr))) ->
+    Declaration ->
+    m (Maybe (ScopeSelector, LabelAttr))
+  firstField f decl = case decl of
     FieldDecl fd -> case fd of
       Field ls _ -> f (ls !! 0)
-    _ -> Nothing
+    _ -> return Nothing
 
-  labels :: [(String, LabelAttr)]
-  labels =
-    catMaybes $
-      map
-        ( evalFstLabel
-            ( \fstlb ->
-                let
-                  (a, b) = (slFrom fstlb)
-                 in
-                  Just (nameFrom a, LabelAttr{lbAttrType = b, lbAttrIsVar = isVar a})
-            )
-        )
-        decls
+  -- staticLabels :: (EvalEnv m) => m [(ScopeSelector, LabelAttr)]
+  -- staticLabels =
+  --   let
+  --     evalLabel :: (EvalEnv m) => Label -> m (Maybe (ScopeSelector, LabelAttr))
+  --     evalLabel fstlb =
+  --       let
+  --         (a, b) = (slFrom fstlb)
+  --        in
+  --         if isLNStatic a
+  --           then do
+  --             key <- sselFrom a tc
+  --             return $ Just (key, LabelAttr{lbAttrType = b, lbAttrIsVar = isVar a})
+  --           else return Nothing
+  --    in
+  --     do
+  --       xs <- mapM (firstField evalLabel) decls
+  --       return $ catMaybes xs
 
-  dedupLabels =
-    snd $
-      foldr
-        ( \l (s, acc) -> if (fst l) `Set.member` s then (s, acc) else (Set.insert (fst l) s, l : acc)
-        )
-        (Set.empty, [])
-        labels
+  -- dedupLabels :: [(ScopeSelector, LabelAttr)] -> [(ScopeSelector, LabelAttr)]
+  -- dedupLabels lbs =
+  --   snd $
+  --     foldr
+  --       ( \l (s, acc) -> if (fst l) `Set.member` s then (s, acc) else (Set.insert (fst l) s, l : acc)
+  --       )
+  --       (Set.empty, [])
+  --       lbs
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of
@@ -168,44 +240,56 @@ evalStructLit decls lb tc = do
       OptionalLabel ln -> (ln, SLOptional)
       RequiredLabel ln -> (ln, SLRequired)
 
-  nameFrom :: LabelName -> String
-  nameFrom (LabelID ident) = ident
-  nameFrom (LabelString ls) = ls
-
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True
   isVar _ = False
 
-evalListLit :: (EvalEnv m) => AST.ElementList -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalListLit (AST.EmbeddingList es) lb tc = do
-  u <- extendTCList lb (length es) tc
-  foldM evalElement u ies >>= propUpTCSel (exlSelector lb)
- where
-  ies = zip [0 ..] es
+evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree
+evalListLit (AST.EmbeddingList es) = do
+  -- u <- updateTCList (length es) tc
+  -- foldM evalElement u ies >>= propUpTCSel (exlSelector lb)
+  xs <- mapM evalExpr es
+  return $ mkList xs
 
-  evalElement :: (EvalEnv m) => TreeCursor -> (Int, AST.Embedding) -> m TreeCursor
-  evalElement x (i, e) = evalExpr e (ExtendTCLabel (Path.IndexSelector i) defaultLabelAttr) x
+-- where
+--  ies = zip [0 ..] es
+--
+--  evalElement :: (EvalEnv m) => (Int, AST.Embedding) -> m Tree
+--  evalElement (i, e) = evalExpr
 
-evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = \lb -> evalPrimExpr primExpr lb
+evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> m Tree
+evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
 builtinOpNameTable :: [(String, Bound)]
 builtinOpNameTable = map (\b -> (show b, BdType b)) [minBound :: BdType .. maxBound :: BdType]
 
-evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalPrimExpr e@(PrimExprOperand op) lb tc = case op of
-  OpLiteral lit -> evalLiteral lit lb tc
-  OpExpression expr -> evalExpr expr lb tc
+evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> m Tree
+evalPrimExpr e@(PrimExprOperand op) = case op of
+  OpLiteral lit -> evalLiteral lit
+  OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing -> lookupVar e ident lb tc
-    Just b -> pure tc >>= extendTCBound lb b >>= propUpTCSel (exlSelector lb)
-evalPrimExpr e@(PrimExprSelector primExpr sel) lb tc =
-  evalPrimExpr primExpr lb tc
-    >>= evalSelector e sel lb
-evalPrimExpr e@(PrimExprIndex primExpr index) lb tc =
-  evalPrimExpr primExpr lb tc
-    >>= evalIndex e index lb
+    Nothing -> mkLookupVar e ident
+    Just b -> return $ mkBounds [b]
+-- pure tc >>= extendTCBound lb b >>= propUpTCSel (exlSelector lb)
+evalPrimExpr e@(PrimExprSelector primExpr sel) = do
+  p <- evalPrimExpr primExpr
+  evalSelector e sel p
+evalPrimExpr e@(PrimExprIndex primExpr index) =
+  do
+    p <- evalPrimExpr primExpr
+    evalIndex e index p
+
+mkLookupVar :: (EvalEnv m) => PrimaryExpr -> String -> m Tree
+mkLookupVar pe var =
+  return . mkNewTree . TNFunc $
+    TreeFunc
+      { trfnName = "lookupVar"
+      , trfnType = Function
+      , trfnArgs = [mkTreeAtom $ String var]
+      , trfnExprGen = \_ -> AST.ExprUnaryExpr . AST.UnaryExprPrimaryExpr $ pe
+      , trfnFunc = lookupVar var (AST.UnaryExprPrimaryExpr pe)
+      }
 
 {- | Looks up the variable denoted by the name in the current scope or the parent scopes.
 If the variable is not atom, a new pending value is created and returned. The reason is that if the referenced var was
@@ -216,20 +300,42 @@ Parameters:
 For example, { a: b: x+y }
 If the name is "y", and the path is "a.b".
 -}
-lookupVar :: (EvalEnv m) => PrimaryExpr -> String -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-lookupVar e var lb tc = do
+lookupVar :: (EvalEnv m) => String -> AST.UnaryExpr -> [Tree] -> TreeCursor -> m TreeCursor
+lookupVar var e _ tc = do
   dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
-  res <- searchTCVar (Path.StringSelector var) tc
+  res <- searchTCVar (Path.ScopeSelector $ Path.StringSelector var) tc
   case res of
     Nothing ->
       return
-        (substTreeNode (treeNode notFound) (fst tc), snd tc)
+        (substTreeNode (treeNode $ notFound) (fst tc), snd tc)
     Just _ ->
-      extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
-        >>= propUpTCSel (exlSelector lb)
+      let
+        tarSel = Path.ScopeSelector $ Path.StringSelector var
+        tarPath = Path [tarSel]
+        link = mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e})
+       in
+        evalTC $ replaceTCTip link tc
  where
-  path = appendSel (exlSelector lb) (pathFromTC tc)
+  -- extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
+
+  path = pathFromTC tc
   notFound = mkBottom $ printf "variable %s is not found, path: %s" var (show path)
+
+-- lookupVar :: (EvalEnv m) => PrimaryExpr -> String -> m Tree
+-- lookupVar pe var =
+--  where
+-- do
+-- dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
+-- res <- searchTCVar (Path.ScopeSelector $ Path.StringSelector var) tc
+-- case res of
+--   Nothing ->
+--     return
+--       (substTreeNode (treeNode notFound) (fst tc), snd tc)
+--   Just _ ->
+--     extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
+--       >>= propUpTCSel (exlSelector lb)
+
+-- path = appendSel (exlSelector lb) (pathFromTC tc)
 
 {- | Evaluates the selector.
 Parameters:
@@ -240,37 +346,41 @@ For example, { a: b: x.y }
 If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x".
 -}
 evalSelector ::
-  (EvalEnv m) => PrimaryExpr -> AST.Selector -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalSelector pe astSel lb tc =
-  extendTCDot lb (Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
-    >>= propUpTCSel (exlSelector lb)
+  (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
+evalSelector pe astSel t =
+  indexBySel (Path.ScopeSelector $ Path.StringSelector sel) (UnaryExprPrimaryExpr pe) t
  where
+  -- extendTCDot lb (Path.ScopeSelector $ Path.StringSelector sel) (UnaryExprPrimaryExpr pe) tc
+  --   >>= propUpTCSel (exlSelector lb)
   sel = case astSel of
     IDSelector ident -> ident
     AST.StringSelector str -> str
 
 evalIndex ::
-  (EvalEnv m) => PrimaryExpr -> AST.Index -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalIndex pe (AST.Index e) lb tc = do
-  dump $ printf "evalIndex: path: %s, index: %s" (show path) (show e)
-  -- evaluate the index expression.
-  u <- extendTCIndex lb (UnaryExprPrimaryExpr pe) tc
-  r <- evalExpr e (ExtendTCLabel (Path.FuncArgSelector 1) defaultLabelAttr) u >>= propUpTCSel parSel
-  dump $ printf "evalIndex: path: %s, evaluated to: %s" (show path) (show (fst r))
-  return r
- where
-  parSel = exlSelector lb
-  path = appendSel parSel (pathFromTC tc)
+  (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
+evalIndex pe (AST.Index e) t = do
+  sel <- evalExpr e
+  indexByTree sel (UnaryExprPrimaryExpr pe) t
+
+-- dump $ printf "evalIndex: path: %s, index: %s" (show path) (show e)
+-- evaluate the index expression.
+-- u <- extendTCIndex lb (UnaryExprPrimaryExpr pe) tc
+-- r <- evalExpr e (ExtendTCLabel (Path.FuncArgSelector 1) defaultLabelAttr) u >>= propUpTCSel parSel
+-- dump $ printf "evalIndex: path: %s, evaluated to: %s" (show path) (show (fst r))
+-- return r
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalUnaryOp op e lb tc =
-  do
-    pure tc >>= extendTCUnaryOp lb op (dispUnaryFunc op)
-    >>= evalUnaryExpr e (ExtendTCLabel Path.unaryOpSelector defaultLabelAttr)
-    >>= propUpTCSel (exlSelector lb)
+evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> m Tree
+evalUnaryOp op e = do
+  t <- evalUnaryExpr e
+  return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
+
+-- do
+--   pure tc >>= extendTCUnaryOp lb op (dispUnaryFunc op)
+--   >>= evalUnaryExpr e (ExtendTCLabel Path.unaryOpSelector defaultLabelAttr)
+--   >>= propUpTCSel (exlSelector lb)
 
 dispUnaryFunc :: (EvalEnv m) => UnaryOp -> Tree -> TreeCursor -> m TreeCursor
 dispUnaryFunc op t tc = do
@@ -291,8 +401,8 @@ dispUnaryFunc op t tc = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReMatch p]
-        (AST.ReNotMatch, String p) -> return $ mkTNBounds [BdStrMatch $ BdReNotMatch p]
+        (AST.ReMatch, String p) -> return $ mkBounds [BdStrMatch $ BdReMatch p]
+        (AST.ReNotMatch, String p) -> return $ mkBounds [BdStrMatch $ BdReNotMatch p]
         _ -> returnConflict
       _ -> returnConflict
     -- The unary op is operating on a non-atom.
@@ -313,25 +423,29 @@ dispUnaryFunc op t tc = do
   fa a f = return $ mkTreeAtom (Float $ f a)
 
   mkb :: (EvalEnv m) => Bound -> m Tree
-  mkb b = return $ mkTNBounds [b]
+  mkb b = return $ mkBounds [b]
 
   mkib :: (EvalEnv m) => BdNumCmpOp -> Integer -> m Tree
-  mkib uop i = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
+  mkib uop i = return $ mkBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
 
   mkfb :: (EvalEnv m) => BdNumCmpOp -> Double -> m Tree
-  mkfb uop f = return $ mkTNBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
+  mkfb uop f = return $ mkBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
-evalBinary :: (EvalEnv m) => BinaryOp -> Expression -> Expression -> ExtendTCLabel -> TreeCursor -> m TreeCursor
+evalBinary :: (EvalEnv m) => BinaryOp -> Expression -> Expression -> m Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-evalBinary AST.Disjunction e1 e2 lb tc = evalDisj e1 e2 lb tc
-evalBinary op e1 e2 lb tc =
-  pure tc
-    >>= extendTCBinaryOp lb op (dispBinFunc op)
-    >>= (evalExpr e1 (ExtendTCLabel binOpLeftSelector defaultLabelAttr))
-    >>= (evalExpr e2 (ExtendTCLabel binOpRightSelector defaultLabelAttr))
-    >>= propUpTCSel (exlSelector lb)
+evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
+evalBinary op e1 e2 = do
+  lt <- evalExpr e1
+  rt <- evalExpr e2
+  return $ mkNewTree (TNFunc $ mkBinaryOp op (dispBinFunc op) lt rt)
+
+-- pure tc
+--   >>= extendTCBinaryOp lb op (dispBinFunc op)
+--   >>= (evalExpr e1 (ExtendTCLabel binOpLeftSelector defaultLabelAttr))
+--   >>= (evalExpr e2 (ExtendTCLabel binOpRightSelector defaultLabelAttr))
+--   >>= propUpTCSel (exlSelector lb)
 
 dispBinFunc :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
 dispBinFunc op = case op of
@@ -506,37 +620,43 @@ instance Show DisjItem where
   show (DisjDefault t) = show t
   show (DisjRegular t) = show t
 
-evalDisj :: (EvalEnv m) => Expression -> Expression -> ExtendTCLabel -> TreeCursor -> m TreeCursor
-evalDisj e1 e2 lb tc = do
-  u <- extendTCDisj lb evalDisjAdapt tc
-  v <- case (e1, e2) of
-    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) ->
-      pure u
-        >>= evalUnaryExpr se1 (withDefAttr binOpLeftSelector)
-        >>= evalUnaryExpr se2 (withDefAttr binOpRightSelector)
-        >>= propUpTCSel parSel
-    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), _) ->
-      pure u
-        >>= evalUnaryExpr se1 (withDefAttr binOpLeftSelector)
-        >>= evalExpr e2 (withDefAttr binOpRightSelector)
-        >>= propUpTCSel parSel
-    (_, ExprUnaryExpr (UnaryExprUnaryOp Star se2)) ->
-      pure u
-        >>= evalExpr e1 (withDefAttr binOpLeftSelector)
-        >>= evalUnaryExpr se2 (withDefAttr binOpRightSelector)
-        >>= propUpTCSel parSel
-    (_, _) ->
-      pure u
-        >>= evalExpr e1 (withDefAttr binOpLeftSelector)
-        >>= evalExpr e2 (withDefAttr binOpRightSelector)
-        >>= propUpTCSel parSel
-  dump $ printf "evalDisj: path: %s, tree:\n%s" (show $ pathFromTC tc) (show $ fst v)
-  return v
+evalDisj :: (EvalEnv m) => Expression -> Expression -> m Tree
+evalDisj e1 e2 = do
+  -- u <- extendTCDisj lb evalDisjAdapt tc
+  (lt, rt) <- case (e1, e2) of
+    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
+      l <- evalUnaryExpr se1
+      r <- evalUnaryExpr se2
+      return (l, r)
+    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), _) -> do
+      l <- evalUnaryExpr se1
+      r <- evalExpr e2
+      return (l, r)
+    (_, ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
+      l <- evalExpr e1
+      r <- evalUnaryExpr se2
+      return (l, r)
+    -- pure u
+    --   >>= evalExpr e1 (withDefAttr binOpLeftSelector)
+    --   >>= evalUnaryExpr se2 (withDefAttr binOpRightSelector)
+    --   >>= propUpTCSel parSel
+    (_, _) -> do
+      l <- evalExpr e1
+      r <- evalExpr e2
+      return (l, r)
+  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction evalDisjAdapt lt rt)
  where
-  parSel = exlSelector lb
+  -- pure u
+  --   >>= evalExpr e1 (withDefAttr binOpLeftSelector)
+  --   >>= evalExpr e2 (withDefAttr binOpRightSelector)
+  --   >>= propUpTCSel parSel
+  -- dump $ printf "evalDisj: path: %s, tree:\n%s" (show $ pathFromTC tc) (show $ fst v)
+  -- return v
 
-  withDefAttr :: Path.Selector -> ExtendTCLabel
-  withDefAttr sel = ExtendTCLabel sel defaultLabelAttr
+  -- parSel = exlSelector lb
+
+  -- withDefAttr :: Path.Selector -> ExtendTCLabel
+  -- withDefAttr sel = ExtendTCLabel sel defaultLabelAttr
 
   evalDisjAdapt :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
   evalDisjAdapt unt1 unt2 x = do

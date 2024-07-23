@@ -205,13 +205,19 @@ operand = do
     (modLexemeRes OpLiteral <$> literal)
       <|> (modLexemeRes (OperandName . Identifier) <$> identifier)
       <|> ( do
-              _ <- lexeme $ (,TokenLParen) <$> char '('
+              _ <- lparen
               (e, _, _) <- expr
-              (_, _, nl) <- lexeme $ (,TokenRParen) <$> char ')'
+              (_, _, nl) <- rparen
               return $ (OpExpression e, TokenRParen, nl)
           )
       <?> "failed to parse operand"
   return opd
+
+lparen :: Parser (Lexeme Char)
+lparen = lexeme $ (,TokenLParen) <$> (char '(' <?> "failed to parse left parenthesis")
+
+rparen :: Parser (Lexeme Char)
+rparen = lexeme $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parenthesis")
 
 literal :: Parser (Lexeme Literal)
 literal =
@@ -342,6 +348,14 @@ labelName :: Parser (Lexeme LabelName)
 labelName =
   (modLexemeRes LabelID <$> identifier)
     <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
+    <|> labelNameExpr
+
+labelNameExpr :: Parser (Lexeme LabelName)
+labelNameExpr = do
+  _ <- lparen
+  (e, _, _) <- expr
+  (_, tok, nl) <- rparen
+  return (LabelNameExpr e, tok, nl)
 
 litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
 litLexeme t p = lexeme $ do

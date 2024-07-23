@@ -31,11 +31,14 @@ import Test.Tasty.HUnit (
 import Tree
 import Unify (unify)
 
+strSel :: String -> Selector
+strSel = ScopeSelector . StringSelector
+
 edgesGen :: [(String, String)] -> [(Path, Path)]
-edgesGen = map (\(x, y) -> (Path [StringSelector x], Path [StringSelector y]))
+edgesGen = map (\(x, y) -> (Path [strSel x], Path [strSel y]))
 
 strsToPath :: [String] -> [Path]
-strsToPath = map (\x -> Path [StringSelector x])
+strsToPath = map (\x -> Path [strSel x])
 
 testDepsHasCycle :: IO ()
 testDepsHasCycle =
@@ -47,19 +50,19 @@ testDepsHasCycle =
         assertEqual "depsHasCycle" True result1
         assertEqual "depsHasCycle" False result2
 
-selY = StringSelector "y"
+selY = strSel "y"
 
 pathY = Path [selY]
 
-selZ = StringSelector "z"
+selZ = strSel "z"
 
 pathZ = Path [selZ]
 
-selX1 = StringSelector "x1"
+selX1 = strSel "x1"
 
 pathX1 = Path [selX1]
 
-selX2 = StringSelector "x2"
+selX2 = strSel "x2"
 
 pathX2 = Path [selX2]
 

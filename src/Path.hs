@@ -1,5 +1,6 @@
 module Path where
 
+import qualified AST
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
@@ -7,7 +8,7 @@ import qualified Data.Set as Set
 
 data Selector
   = StartSelector
-  | StringSelector String
+  | ScopeSelector ScopeSelector
   | IndexSelector Int
   | -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
     FuncArgSelector Int
@@ -18,14 +19,27 @@ data Selector
 
 instance Show Selector where
   show StartSelector = "/"
-  show (StringSelector s) = s
+  show (ScopeSelector s) = show s
   show (IndexSelector i) = show i
   show (FuncArgSelector i) = "a" ++ show i
-  -- show UnaryOpSelector = "u"
-  -- show (BinOpSelector d) = show d
   show (DisjDefaultSelector) = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
+
+data ScopeSelector
+  = StringSelector String
+  | DynamicSelector Int AST.Expression
+  deriving (Eq)
+
+instance Ord ScopeSelector where
+  compare (StringSelector s1) (StringSelector s2) = compare s1 s2
+  compare (StringSelector _) _ = LT
+  compare _ (StringSelector _) = GT
+  compare (DynamicSelector i1 _) (DynamicSelector i2 _) = compare i1 i2
+
+instance Show ScopeSelector where
+  show (StringSelector s) = s
+  show (DynamicSelector i _) = "sd" ++ show i
 
 unaryOpSelector :: Selector
 unaryOpSelector = FuncArgSelector 0
@@ -58,7 +72,7 @@ showPath :: Path -> String
 showPath (Path []) = "."
 showPath (Path sels) =
   let revSels = reverse sels
-   in if head revSels == StartSelector
+   in if (revSels !! 0) == StartSelector
         then "/" ++ (intercalate "/" $ map show (drop 1 revSels))
         else intercalate "/" $ map show (reverse sels)
 
@@ -99,7 +113,7 @@ tailPath (Path xs) = Just $ Path (init xs)
 -}
 lastSel :: Path -> Maybe Selector
 lastSel (Path []) = Nothing
-lastSel (Path xs) = Just $ head xs
+lastSel (Path xs) = Just $ xs !! 0
 
 {- | Get the head selector of a path.
 >>> headSel (Path [StringSelector "a", StringSelector "b"])

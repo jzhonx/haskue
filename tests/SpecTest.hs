@@ -19,15 +19,15 @@ newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
 newStruct lbls ow subs =
   mkNewTree . TNScope $
     TreeScope
-      { trsSubs = Map.fromList subs
-      , trsOrdLabels = lbls
+      { trsSubs = Map.fromList (map (\(k, v) -> (Path.StringSelector k, v)) subs)
+      , trsOrdLabels = map Path.StringSelector lbls
       , trsAttrs = Map.fromList $ map attrWrite lbls
       }
  where
-  attrWrite :: String -> (String, LabelAttr)
+  attrWrite :: String -> (ScopeSelector, LabelAttr)
   attrWrite s = case lookup s ow of
-    Just v -> (s, v)
-    Nothing -> (s, defaultLabelAttr)
+    Just v -> (StringSelector s, v)
+    Nothing -> (StringSelector s, defaultLabelAttr)
 
 newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls subs = newStruct lbls [] subs
@@ -46,9 +46,12 @@ assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do
   assertEqual "labels" (trsOrdLabels exp) (trsOrdLabels act)
   assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
-  mapM_ (\(k, v) -> assertEqual k v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
-  mapM_ (\(k, v) -> assertEqual k (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
+  mapM_ (\(k, v) -> assertEqual (show k) v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
+  mapM_ (\(k, v) -> assertEqual (show k) (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
 assertStructs _ _ = assertFailure "Not structs"
+
+strSel :: String -> Selector
+strSel = ScopeSelector . StringSelector
 
 testBottom :: IO ()
 testBottom = do
@@ -467,14 +470,14 @@ testSelector1 = do
       TreeDisj
         (Just fieldEDefault)
         [newSimpleStruct ["a"] [("a", newSimpleDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
-  pathC = Path [StringSelector "c"]
+  pathC = Path [strSel "c"]
   pendValC =
     mkNewTree . TNLink $
       TreeLink
-        { trlTarget = pathFromList [StringSelector "T", StringSelector "z"]
+        { trlTarget = pathFromList [strSel "T", strSel "z"]
         , trlExpr = undefined
         }
-  pathF = Path [StringSelector "f"]
+  pathF = Path [strSel "f"]
   disjF = newSimpleDisj [Int 4] [Int 3, Int 4]
   expStruct =
     newSimpleStruct
@@ -540,7 +543,7 @@ testCycles2 = do
                   mkBinaryOp
                     AST.Add
                     undefined
-                    (mkSimpleLink $ pathFromList [StringSelector "b"])
+                    (mkSimpleLink $ pathFromList [strSel "b"])
                     (mkTreeAtom $ Int 100)
             )
           ,
@@ -550,7 +553,7 @@ testCycles2 = do
                   mkBinaryOp
                     AST.Sub
                     undefined
-                    (mkSimpleLink $ pathFromList [StringSelector "a"])
+                    (mkSimpleLink $ pathFromList [strSel "a"])
                     (mkTreeAtom $ Int 100)
             )
           ]
@@ -590,7 +593,7 @@ testCycles4 = do
                         mkBinaryOp
                           AST.Add
                           undefined
-                          (mkSimpleLink $ pathFromList [StringSelector "b"])
+                          (mkSimpleLink $ pathFromList [strSel "b"])
                           (mkTreeAtom $ Int 100)
                   )
                 ,
@@ -600,7 +603,7 @@ testCycles4 = do
                         mkBinaryOp
                           AST.Sub
                           undefined
-                          (mkSimpleLink $ pathFromList [StringSelector "a"])
+                          (mkSimpleLink $ pathFromList [strSel "a"])
                           (mkTreeAtom $ Int 100)
                   )
                 ]
@@ -684,7 +687,7 @@ testIncomplete = do
                 mkBinaryOp
                   AST.Sub
                   undefined
-                  (mkSimpleLink $ pathFromList [StringSelector "a"])
+                  (mkSimpleLink $ pathFromList [strSel "a"])
                   (mkTreeAtom $ Int 1)
             )
           ]
@@ -891,9 +894,9 @@ testStruct3 = do
       (map (\i -> "x" ++ show i) [0 .. 7])
       [ ("x0", sGen $ mkTreeAtom $ Int 3)
       , ("x1", sGen $ mkTreeAtom $ Int 3)
-      , ("x2", sGen $ mkTNBounds [BdType BdInt])
-      , ("x3", sGen2 (mkTNBounds [BdNumCmp $ BdNumCmpCons BdLT (NumInt 1)]) (LabelAttr SLRequired True))
-      , ("x4", sGen $ mkTNBounds [BdNumCmp $ BdNumCmpCons BdLE (NumInt 3)])
+      , ("x2", sGen $ mkBounds [BdType BdInt])
+      , ("x3", sGen2 (mkBounds [BdNumCmp $ BdNumCmpCons BdLT (NumInt 1)]) (LabelAttr SLRequired True))
+      , ("x4", sGen $ mkBounds [BdNumCmp $ BdNumCmpCons BdLE (NumInt 3)])
       , ("x5", sGen $ mkTreeAtom $ Int 3)
       , ("x6", sGen $ mkTreeAtom $ Int 3)
       , ("x7", sGen $ mkTreeAtom $ Int 3)
@@ -982,8 +985,8 @@ cmpStructs :: Tree -> Tree -> IO ()
 cmpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
   assertEqual "labels" (trsOrdLabels exp) (trsOrdLabels act)
   assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
-  mapM_ (\(k, v) -> assertEqual k v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
-  mapM_ (\(k, v) -> assertEqual k (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
+  mapM_ (\(k, v) -> assertEqual (show k) v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
+  mapM_ (\(k, v) -> assertEqual (show k) (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
 cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
 
 cmpExpStructs :: Tree -> Tree -> IO ()
@@ -992,6 +995,6 @@ cmpExpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
  where
   cmp (k, v) =
     if k `Map.member` trsSubs act
-      then assertEqual k v (trsSubs act Map.! k)
-      else assertFailure $ printf "Field %s not found" k
+      then assertEqual (show k) v (trsSubs act Map.! k)
+      else assertFailure $ printf "Field %s not found" (show k)
 cmpExpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
