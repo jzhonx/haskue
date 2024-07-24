@@ -314,7 +314,7 @@ lookupVar var e _ tc = do
         tarPath = Path [tarSel]
         link = mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e})
        in
-        evalTC $ replaceTCTip link tc
+        return $ replaceTCTip link tc
  where
   -- extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
 
