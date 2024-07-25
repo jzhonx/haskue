@@ -36,27 +36,13 @@ module Tree (
   TreeNode (..),
   LabelAttr (..),
   ScopeLabelType (..),
-  ExtendTCLabel (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
   dump,
   evalTC,
   extendTC,
-  extendTCStub,
-  updateTCBinaryOp,
-  updateTCBound,
-  updateTCDisj,
-  updateTCDot,
-  updateTCIndex,
-  updateTCList,
-  updateTCScope,
-  -- extendTCEmptyScope,
-  updateTCStub,
-  updateTCUnaryOp,
-  updateTCVarLink,
   replaceTCTip,
-  extendTCUnify,
   getScalarValue,
   goDownTCPath,
   goDownTCSel,
@@ -915,46 +901,6 @@ mkBottom msg = mkNewTree (TNBottom $ TreeBottom{trBmMsg = msg})
 
 -- -- --
 
-{- | Insert a sub-tree to the tree node with the given selector.
-Returns the updated parent tree node that contains the newly inserted sub-tree.
--}
-insertSubTree ::
-  (EvalEnv m) => Tree -> Selector -> Tree -> m Tree
-insertSubTree parent lb sub = undefined
-
---  case (sel, parentNode) of
---    (StartSelector, TNRoot t) -> returnTree $ TNRoot $ t{trRtSub = sub}
---    (ScopeSelector s, TNScope parScope) ->
---      returnTree $
---        TNScope $
---          parScope
---            { trsSubs = Map.insert s sub (trsSubs parScope)
---            , trsAttrs = Map.insert s (exlAttr lb) (trsAttrs parScope)
---            }
---    (IndexSelector i, TNList vs) ->
---      returnTree $ TNList $ vs{trLstSubs = take i (trLstSubs vs) ++ [sub] ++ drop (i + 1) (trLstSubs vs)}
---    (FuncArgSelector i, TNFunc fn) ->
---      returnTree $ TNFunc $ fn{trfnArgs = take i (trfnArgs fn) ++ [sub] ++ drop (i + 1) (trfnArgs fn)}
---    (DisjDefaultSelector, TNDisj d) -> returnTree $ TNDisj $ d{trdDefault = (trdDefault d)}
---    (DisjDisjunctSelector i, TNDisj d) ->
---      returnTree $ TNDisj $ d{trdDisjuncts = take i (trdDisjuncts d) ++ [sub] ++ drop (i + 1) (trdDisjuncts d)}
---    _ -> throwError errMsg
--- where
---  parentNode = treeNode parent
---  sel = exlSelector lb
---
---  errMsg :: String
---  errMsg =
---    printf
---      "insertSubTree: cannot insert sub to %s, selector: %s, sub:\n%s\nparent:\n%s"
---      (showTreeType parent)
---      (show sel)
---      (show sub)
---      (show parent)
---
---  returnTree :: (EvalEnv m) => TreeNode -> m Tree
---  returnTree x = return (Tree x (treeOrig parent))
-
 -- step down the tree with the given selector.
 -- This should only be used by TreeCursor.
 goTreeSel :: Selector -> Tree -> Maybe Tree
@@ -1048,14 +994,6 @@ goDownTCSel sel cursor = case go sel cursor of
       if isJust (trdDefault d)
         then goDownTCSel DisjDefaultSelector cursor >>= go sel
         else Nothing
-    --   if isJust (trdDefault d)
-    --     then goDownTCSel (DisjDefaultSelector) cursor >>= go sel
-    --     else Nothing
-    -- IndexSelector _ ->
-    --   if isJust (trdDefault)
-    --     then goDownTCSel (DisjDisjunctSelector i) cursor >>= go sel
-    --     else Nothing
-    -- _ -> Nothing
     _ -> Nothing
  where
   go :: Selector -> TreeCursor -> Maybe TreeCursor
@@ -1199,14 +1137,6 @@ traverseSubNodes f tc = case treeNode (fst tc) of
 
   getSubTC :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
   getSubTC sel cursor = goDownTCSelErr sel cursor
-
--- ( printf
---     "%s: cannot get sub cursor with selector %s, path: %s, cursor:\n%s"
---     header
---     (show sel)
---     (show $ pathFromTC cursor)
---     (showTreeCursor cursor)
--- )
 
 {- | Traverse the leaves of the tree cursor in the following order
 1. Traverse the current node.
@@ -1363,140 +1293,14 @@ data ExtendTCLabel = ExtendTCLabel
   }
   deriving (Show)
 
-{- | Insert the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
-newly inserted value (tree cursor moved down).
--}
-extendTCUnify :: (EvalEnv m) => Selector -> Tree -> TreeCursor -> m TreeCursor
-extendTCUnify sel sub tc@(tip, _) = case treeNode tip of
-  TNStub -> extendTC sel sub tc
-  _ -> do
-    Config{cfUnify = unify} <- ask
-    let newSub = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify tip sub)
-    extendTC sel newSub tc
-
--- case (sel, tip) of
---  (ScopeSelector s, Tree{treeNode = TNScope parScope}) -> extendScope s parScope
---  _ -> extendTC sel sub tc
--- where
---  errMsg :: String
---  errMsg =
---    printf
---      "extendTCUnify: cannot insert sub to %s with selector %s, sub:\n%s"
---      (showTreeType tip)
---      (show sel)
---      (show sub)
---
---  extendScope :: (EvalEnv m) => ScopeSelector -> TNScope -> m TreeCursor
---  extendScope key parScope = do
---    maybe
---      (extendTC sel sub tc)
---      -- If the sub tree is already in the scope, the new sub tree will be unified with existing one.
---      -- It is done by creating a new TNFunc node.
---      ( \extSub -> do
---          Config{cfUnify = unify} <- ask
---          let newSub = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify extSub sub)
---              -- update the LabelAttr of the new sub tree.
---              extAttr = trsAttrs parScope Map.! key
---              newAttr = mergeAttrs extAttr (exlAttr lb)
---
---          -- upar <- insertSubTree (fst tc) (ExtendTCLabel (exlSelector lb) newAttr) newSub
---          let
---            -- first go to the newly created TNFunc node, then go to the newly inserted sub tree.
---            utip = insertScopeSub parScope key (Just newAttr) newSub
---            newTC = (utip, cs)
---          maybe (throwError errMsg) return $ goDownTCSel sel newTC >>= goDownTCSel binOpRightSelector
---      )
---      $ Map.lookup key (trsSubs parScope) >>= \case
---        Tree{treeNode = TNStub} -> Nothing
---        stree -> Just stree
-
 {- | Update the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
 updated value.
 -}
-extendTC :: (EvalEnv m) => Selector -> Tree -> TreeCursor -> m TreeCursor
-extendTC sel sub (tip, cs) = return (sub, (sel, tip) : cs)
-
--- u <- insertSubTree par lb sub
--- goDownTCSelErr sel errMsg (u, cs)
---
-extendTCStub :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
-extendTCStub sel = extendTC sel mkStub
-
--- sel = exlSelector lb
--- errMsg :: String
--- errMsg =
---   printf
---     "extendTC: cannot go to sub. selector %s, par type: %s, sub:\n%s"
---     (show sel)
---     (showTreeType par)
---     (show sub)
-
--- -- | Insert a list of labels the tree and return the new cursor that contains the newly inserted value.
--- extendTCEmptyScope :: (EvalEnv m) => ExtendTCLabel -> TreeCursor -> m TreeCursor
--- extendTCEmptyScope lb tc =
---   extendTCUnify lb sub tc
---  where
---   sub =
---     mkNewTree
---       ( TNScope $
---           TreeScope
---             { trsOrdLabels = []
---             , trsSubs = Map.empty
---             , trsAttrs = Map.empty
---             }
---       )
---
-updateTCStub :: (EvalEnv m) => Tree -> TreeCursor -> m TreeCursor
-updateTCStub t (_, cs) = case treeNode t of
-  TNStub -> return $ replaceTCTip t (t, cs)
-  _ -> throwError "updateTCStub: cannot update non-stub node"
+extendTC :: Selector -> Tree -> TreeCursor -> TreeCursor
+extendTC sel sub (tip, cs) = (sub, (sel, tip) : cs)
 
 replaceTCTip :: Tree -> TreeCursor -> TreeCursor
 replaceTCTip t (_, cs) = (t, cs)
-
--- | Insert a list of labels the tree and return the new cursor that contains the newly inserted value.
-updateTCScope :: (EvalEnv m) => [(ScopeSelector, LabelAttr)] -> TreeCursor -> m TreeCursor
-updateTCScope labels tc =
-  updateTCStub sub tc
- where
-  ordLabels = map fst labels
-  sub =
-    mkNewTree
-      ( TNScope $
-          TreeScope
-            { trsOrdLabels = ordLabels
-            , trsSubs = Map.fromList [(l, mkNewTree TNStub) | l <- ordLabels]
-            , trsAttrs = Map.fromList labels
-            }
-      )
-
--- | Insert a unary operator that works for scalar values.
-updateTCUnaryOp ::
-  (EvalEnv m) =>
-  AST.UnaryOp ->
-  (Tree -> TreeCursor -> EvalMonad TreeCursor) ->
-  TreeCursor ->
-  m TreeCursor
-updateTCUnaryOp op f tc = updateTCStub sub tc
- where
-  sub = mkNewTree (TNFunc $ mkUnaryOp op f mkStub)
-
--- | Insert a binary operator that works for scalar values.
-updateTCBinaryOp ::
-  (EvalEnv m) =>
-  AST.BinaryOp ->
-  (Tree -> Tree -> TreeCursor -> EvalMonad TreeCursor) ->
-  TreeCursor ->
-  m TreeCursor
-updateTCBinaryOp rep f tc = updateTCStub sub tc
- where
-  sub = mkNewTree (TNFunc $ mkBinaryOp rep f mkStub mkStub)
-
-updateTCDisj ::
-  (EvalEnv m) => (Tree -> Tree -> TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
-updateTCDisj f tc = updateTCStub sub tc
- where
-  sub = mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction f (mkNewTree TNStub) (mkNewTree TNStub))
 
 indexBySel :: (EvalEnv m) => Selector -> AST.UnaryExpr -> Tree -> m Tree
 indexBySel sel ue t = case treeNode t of
@@ -1613,54 +1417,3 @@ indexByTree sel ue tree =
 
   invalidSelector :: Tree
   invalidSelector = mkNewTree (TNBottom $ TreeBottom $ printf "invalid selector: %s" (show sel))
-
-updateTCDot ::
-  (EvalEnv m) => Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
-updateTCDot dotSel ue tc = do
-  target <- indexBySel dotSel ue (fst tc)
-  return (target, snd tc)
-
-updateTCIndex ::
-  (EvalEnv m) => AST.UnaryExpr -> TreeCursor -> m TreeCursor
-updateTCIndex ue tc = do
-  let sub = subGen (fst tc)
-  dump $ printf "extendTCIndex: index func evaluated to %s" (show sub)
-  return (sub, snd tc)
- where
-  subGen :: Tree -> Tree
-  subGen tree =
-    mkNewTree
-      ( TNFunc $
-          mkTNFunc
-            "index"
-            Function
-            ( \ts utc -> do
-                ltc <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) utc)
-                rtc <- evalTC (mkSubTC (FuncArgSelector 1) (ts !! 1) utc)
-                t <- indexByTree (fst ltc) ue (fst rtc)
-                return (t, snd utc)
-            )
-            (\_ -> AST.ExprUnaryExpr ue)
-            [tree, mkNewTree TNStub]
-      )
-
--- | Insert a variable link to the tree cursor.
-updateTCVarLink :: (EvalEnv m) => String -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
-updateTCVarLink var e tc = do
-  dump $ printf "extendTCVarLink: link to %s, path: %s" (show tarPath) (show $ pathFromTC tc)
-  updateTCStub sub tc
- where
-  tarSel = ScopeSelector $ StringSelector var
-  tarPath = Path [tarSel]
-  sub = mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e})
-
-updateTCBound :: (EvalEnv m) => Bound -> TreeCursor -> m TreeCursor
-updateTCBound b tc = updateTCStub sub tc
- where
-  sub = mkBounds [b]
-
-updateTCList :: (EvalEnv m) => Int -> TreeCursor -> m TreeCursor
-updateTCList n tc = updateTCStub l tc
- where
-  subs = replicate n mkStub
-  l = mkNewTree (TNList $ TreeList{trLstSubs = subs})
