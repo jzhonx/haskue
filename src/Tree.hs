@@ -150,7 +150,6 @@ instance MonadTrans EnvMaybe where
 newEvalEnvMaybe :: (EvalEnv m) => Maybe a -> EnvMaybe m a
 newEvalEnvMaybe = EnvMaybe . return
 
--- TODO: move top out of Atom.
 data Atom
   = String String
   | Int Integer
@@ -1224,8 +1223,7 @@ The cursor will also be propagated to the parent block.
 searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
 searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (fst tc) of
   TNScope scope -> case Map.lookup ssel (trsSubs scope) of
-    -- TODO: extendTC
-    Just node -> return $ Just (node, (sel, fst tc) : snd tc)
+    Just node -> return . Just $ extendTC sel node tc
     Nothing -> goUp tc
   _ -> goUp tc
  where
