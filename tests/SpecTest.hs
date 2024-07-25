@@ -567,7 +567,7 @@ testCycles3 = do
     Right val' ->
       val'
         @?= newSimpleStruct
-          ["b", "a"]
+          ["a", "b"]
           [ ("a", mkTreeAtom $ Int 200)
           , ("b", mkTreeAtom $ Int 100)
           ]

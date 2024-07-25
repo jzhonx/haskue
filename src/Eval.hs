@@ -269,26 +269,31 @@ evalPrimExpr e@(PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing -> mkLookupVar e ident
+    -- Nothing -> mkLinkVar e ident
+    Nothing ->
+      let
+        tarSel = Path.ScopeSelector $ Path.StringSelector ident
+        tarPath = Path [tarSel]
+       in
+        return $ mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = AST.UnaryExprPrimaryExpr e})
     Just b -> return $ mkBounds [b]
 -- pure tc >>= extendTCBound lb b >>= propUpTCSel (exlSelector lb)
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
   evalSelector e sel p
-evalPrimExpr e@(PrimExprIndex primExpr index) =
-  do
-    p <- evalPrimExpr primExpr
-    evalIndex e index p
+evalPrimExpr e@(PrimExprIndex primExpr index) = do
+  p <- evalPrimExpr primExpr
+  evalIndex e index p
 
-mkLookupVar :: (EvalEnv m) => PrimaryExpr -> String -> m Tree
-mkLookupVar pe var =
+mkLinkVar :: (EvalEnv m) => PrimaryExpr -> String -> m Tree
+mkLinkVar pe var =
   return . mkNewTree . TNFunc $
     TreeFunc
-      { trfnName = "lookupVar"
+      { trfnName = "linkVar"
       , trfnType = Function
       , trfnArgs = [mkTreeAtom $ String var]
       , trfnExprGen = \_ -> AST.ExprUnaryExpr . AST.UnaryExprPrimaryExpr $ pe
-      , trfnFunc = lookupVar var (AST.UnaryExprPrimaryExpr pe)
+      , trfnFunc = linkVar var (AST.UnaryExprPrimaryExpr pe)
       }
 
 {- | Looks up the variable denoted by the name in the current scope or the parent scopes.
@@ -300,12 +305,13 @@ Parameters:
 For example, { a: b: x+y }
 If the name is "y", and the path is "a.b".
 -}
-lookupVar :: (EvalEnv m) => String -> AST.UnaryExpr -> [Tree] -> TreeCursor -> m TreeCursor
-lookupVar var e _ tc = do
+linkVar :: (EvalEnv m) => String -> AST.UnaryExpr -> [Tree] -> TreeCursor -> m TreeCursor
+linkVar var e _ tc = do
   dump $ printf "lookupVar: path: %s, looks up var: %s" (show path) var
   res <- searchTCVar (Path.ScopeSelector $ Path.StringSelector var) tc
   case res of
-    Nothing ->
+    Nothing -> do
+      dump $ printf "lookupVar: path: %s, not found: %s" (show path) var
       return
         (substTreeNode (treeNode $ notFound) (fst tc), snd tc)
     Just _ ->
@@ -314,7 +320,9 @@ lookupVar var e _ tc = do
         tarPath = Path [tarSel]
         link = mkNewTree (TNLink $ TreeLink{trlTarget = tarPath, trlExpr = e})
        in
-        return $ replaceTCTip link tc
+        do
+          dump $ printf "lookupVar: path: %s, found: %s" (show path) var
+          return $ replaceTCTip link tc
  where
   -- extendTCVarLink lb var (UnaryExprPrimaryExpr e) tc
 

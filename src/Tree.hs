@@ -120,6 +120,7 @@ import Data.List (intercalate, (!?))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
 import Data.Text (pack)
+import Debug.Trace
 import Path
 import Text.Printf (printf)
 
@@ -1043,12 +1044,18 @@ goDownTCSel :: Selector -> TreeCursor -> Maybe TreeCursor
 goDownTCSel sel cursor = case go sel cursor of
   Just c -> Just c
   Nothing -> case treeNode (fst cursor) of
-    TNDisj d -> case sel of
-      ScopeSelector _ ->
-        if isJust (trdDefault d)
-          then goDownTCSel (DisjDefaultSelector) cursor >>= go sel
-          else Nothing
-      _ -> Nothing
+    TNDisj d ->
+      if isJust (trdDefault d)
+        then goDownTCSel DisjDefaultSelector cursor >>= go sel
+        else Nothing
+    --   if isJust (trdDefault d)
+    --     then goDownTCSel (DisjDefaultSelector) cursor >>= go sel
+    --     else Nothing
+    -- IndexSelector _ ->
+    --   if isJust (trdDefault)
+    --     then goDownTCSel (DisjDisjunctSelector i) cursor >>= go sel
+    --     else Nothing
+    -- _ -> Nothing
     _ -> Nothing
  where
   go :: Selector -> TreeCursor -> Maybe TreeCursor
@@ -1235,7 +1242,7 @@ setOrigNodesTC = traverseTC f
 evalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 evalTC tc = case treeNode (fst tc) of
   TNFunc fn -> do
-    dump $ printf "evalTC: path: %s, evaluate function" (show $ pathFromTC tc)
+    dump $ printf "evalTC: path: %s, evaluate function, tip:%s" (show $ pathFromTC tc) (show $ fst tc)
     trfnFunc fn (trfnArgs fn) tc
   TNConstraint c ->
     let
@@ -1331,6 +1338,7 @@ The cursor will also be propagated to the parent block.
 searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
 searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (fst tc) of
   TNScope scope -> case Map.lookup ssel (trsSubs scope) of
+    -- TODO: extendTC
     Just node -> return $ Just (node, (sel, fst tc) : snd tc)
     Nothing -> goUp tc
   _ -> goUp tc
@@ -1347,7 +1355,7 @@ searchTCPath p tc = runEnvMaybe $ do
   base <- EnvMaybe $ searchTCVar fstSel tc
   tailP <- newEvalEnvMaybe $ tailPath p
   -- TODO: what if the base contains unevaluated nodes?
-  newEvalEnvMaybe $ goDownTCPath tailP base
+  newEvalEnvMaybe $ goDownTCPath tailP (trace (printf "base is %s, tail is %s" (show base) (show tailP)) base)
 
 data ExtendTCLabel = ExtendTCLabel
   { exlSelector :: Selector
@@ -1500,9 +1508,9 @@ indexBySel sel ue t = case treeNode t of
         return $
           mkNewTree
             ( TNFunc $
-                mkTNFunc "index" Function constFunc (\_ -> AST.ExprUnaryExpr ue) [t]
+                mkTNFunc "indexBySel" Function constFunc (\_ -> AST.ExprUnaryExpr ue) [t]
             )
-    _ -> throwError "invalid selector"
+    s -> throwError $ printf "invalid selector: %s" (show s)
   TNList list -> case sel of
     IndexSelector i ->
       return $
@@ -1528,12 +1536,12 @@ indexBySel sel ue t = case treeNode t of
       mkNewTree
         ( TNFunc $
             mkTNFunc
-              "index"
+              "indexBySel"
               Function
               ( \ts tc -> do
                   utc <- evalTC (mkSubTC unaryOpSelector (ts !! 0) tc)
                   r <- indexBySel sel ue (fst utc)
-                  return (r, snd tc)
+                  evalTC $ replaceTCTip r tc
               )
               (\_ -> AST.ExprUnaryExpr ue)
               [t]
@@ -1552,23 +1560,45 @@ indexByTree sel ue tree =
       idxsel <- selFromAtom ta
       indexBySel idxsel ue tree
     TNDisj dj -> case trdDefault dj of
-      Just df -> indexByTree df ue tree
+      Just df -> do
+        dump $ printf "indexByTree: default disjunct: %s" (show df)
+        indexByTree df ue tree
       Nothing -> return invalidSelector
     TNConstraint c -> do
       idxsel <- selFromAtom (trCnOrigAtom c)
       indexBySel idxsel ue tree
+    TNLink link ->
+      return $
+        mkNewTree
+          ( TNFunc $
+              TreeFunc
+                { trfnName = "indexByTree"
+                , trfnType = Function
+                , trfnArgs = [sel]
+                , trfnExprGen = \_ -> AST.ExprUnaryExpr (trlExpr link)
+                , trfnFunc = \ts tc -> do
+                    idx <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) tc)
+                    dump $ printf "indexByTree TNLink: index resolved to %s" (show $ fst idx)
+                    t <- indexByTree (fst idx) ue tree
+                    dump $ printf "indexByTree TNLink: index result created %s" (show $ t)
+                    u <- evalTC $ replaceTCTip t tc
+                    dump $ printf "indexByTree TNLink: index result resolved to %s" (show $ fst u)
+                    return u
+                }
+          )
     TNFunc _ ->
       return $
         mkNewTree
           ( TNFunc $
               mkTNFunc
-                "index"
+                "indexByTree"
                 Function
-                ( \ts utc -> do
-                    selTC <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) utc)
-                    treeTC <- evalTC (mkSubTC (FuncArgSelector 1) (ts !! 1) utc)
-                    t <- indexByTree (fst selTC) ue (fst treeTC)
-                    return (t, snd utc)
+                ( \ts tc -> do
+                    selTC <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) tc)
+                    dump $ printf "indexByTree: path: %s, sel: %s, tree: %s" (show $ pathFromTC tc) (show $ fst selTC) (show $ ts !! 1)
+                    t <- indexByTree (fst selTC) ue (ts !! 1)
+                    dump $ printf "indexByTree TNFunc: resolved to %s" (show t)
+                    evalTC $ replaceTCTip t tc
                 )
                 (\_ -> AST.ExprUnaryExpr ue)
                 [sel, tree]
@@ -1582,7 +1612,7 @@ indexByTree sel ue tree =
     _ -> throwError "extendTCIndex: invalid selector"
 
   invalidSelector :: Tree
-  invalidSelector = mkNewTree (TNBottom $ TreeBottom "invalid selector")
+  invalidSelector = mkNewTree (TNBottom $ TreeBottom $ printf "invalid selector: %s" (show sel))
 
 updateTCDot ::
   (EvalEnv m) => Selector -> AST.UnaryExpr -> TreeCursor -> m TreeCursor
