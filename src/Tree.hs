@@ -477,9 +477,10 @@ emptyTNScope = TreeScope{trsOrdLabels = [], trsSubs = Map.empty, trsAttrs = Map.
 
 mkScope :: [ScopeSelector] -> [(ScopeSelector, LabelAttr, Tree)] -> Tree
 mkScope ordLabels fields =
-  let fieldMap = Map.fromList [(l, (a, t)) | (l, a, t) <- fields]
-   in mkNewTree . TNScope $
-        TreeScope{trsOrdLabels = ordLabels, trsSubs = Map.map snd fieldMap, trsAttrs = Map.map fst fieldMap}
+  mkNewTree . TNScope $
+    TreeScope{trsOrdLabels = ordLabels, trsSubs = Map.map snd fieldMap, trsAttrs = Map.map fst fieldMap}
+ where
+  fieldMap = Map.fromList [(l, (a, t)) | (l, a, t) <- fields]
 
 insertScopeSub :: TNScope -> ScopeSelector -> Maybe LabelAttr -> Tree -> TNScope
 insertScopeSub s label attrMaybe sub =
@@ -1222,13 +1223,16 @@ The cursor will also be propagated to the parent block.
 -}
 searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
 searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (fst tc) of
-  TNScope scope -> case Map.lookup ssel (trsSubs scope) of
-    Just node -> return . Just $ extendTC sel node tc
-    Nothing -> goUp tc
+  TNScope scope -> case (Map.lookup ssel (trsSubs scope), Map.lookup ssel (trsAttrs scope)) of
+    (Just node, Just attr) ->
+      if lbAttrIsVar attr
+        then return . Just $ extendTC sel node tc
+        else goUp tc
+    _ -> goUp tc
   _ -> goUp tc
  where
   goUp :: (EvalEnv m) => TreeCursor -> m (Maybe TreeCursor)
-  goUp (_, []) = return Nothing
+  goUp (_, [(RootSelector, _)]) = return Nothing
   goUp utc = propUpTC utc >>= searchTCVar sel
 searchTCVar _ _ = return Nothing
 

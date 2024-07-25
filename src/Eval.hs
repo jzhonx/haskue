@@ -130,25 +130,26 @@ evalStructLit decls = do
             sub <- evalExpr e
             return (key, attr, sub)
       l1 : l2 : rs ->
-        do
-          let
-            (lb1, attr1) = slFrom l1
-            attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
-          key <- sselFrom lb1
-          (key2, attr2, sub2) <- evalFdLabels (l2 : rs) e
-          let sub = mkScope [key2] [(key2, attr2, sub2)]
-          return (key, attr, sub)
+        let
+          (lb1, attr1) = slFrom l1
+          attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
+         in
+          do
+            key <- sselFrom lb1
+            (key2, attr2, sub2) <- evalFdLabels (l2 : rs) e
+            let sub = mkScope [key2] [(key2, attr2, sub2)]
+            return (key, attr, sub)
 
+  -- Returns the label name and the whether the label is static.
   sselFrom :: (EvalEnv m) => LabelName -> m Path.ScopeSelector
   sselFrom (LabelID ident) = return $ Path.StringSelector ident
   sselFrom (LabelString ls) = return $ Path.StringSelector ls
-  sselFrom (LabelNameExpr e) =
-    do
-      -- Use the current label as the label for the expression.
-      t <- evalExpr e
-      case treeNode t of
-        TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
-        _ -> throwError $ printf "label name expression is not a string, %s" (show t)
+  sselFrom (LabelNameExpr e) = do
+    -- Use the current label as the label for the expression.
+    t <- evalExpr e
+    case treeNode t of
+      TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
+      _ -> throwError $ printf "label name expression is not a string, %s" (show t)
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of
