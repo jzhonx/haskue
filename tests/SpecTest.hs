@@ -38,9 +38,8 @@ mkSimpleLink p = mkNewTree $ TNLink $ TreeLink{trlTarget = p, trlExpr = undefine
 startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ do
   tc <- runIO s
-  case goDownTCSel StartSelector tc of
-    Just u -> return $ fst u
-    Nothing -> return $ mkNewTree . TNRoot $ TreeRoot (mkBottom "No value")
+  res <- goDownTCSelErr RootSelector tc
+  return $ fst res
 
 assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do

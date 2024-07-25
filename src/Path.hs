@@ -7,7 +7,9 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 data Selector
-  = StartSelector
+  = -- RootSelector is a special selector that represents the root of the path.
+    -- It is crucial to distinguish between the absolute path and the relative path.
+    RootSelector
   | ScopeSelector ScopeSelector
   | IndexSelector Int
   | -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
@@ -18,7 +20,7 @@ data Selector
   deriving (Eq, Ord)
 
 instance Show Selector where
-  show StartSelector = "/"
+  show RootSelector = "/"
   show (ScopeSelector s) = show s
   show (IndexSelector i) = show i
   show (FuncArgSelector i) = "a" ++ show i
@@ -72,15 +74,12 @@ showPath :: Path -> String
 showPath (Path []) = "."
 showPath (Path sels) =
   let revSels = reverse sels
-   in if (revSels !! 0) == StartSelector
+   in if (revSels !! 0) == RootSelector
         then "/" ++ (intercalate "/" $ map show (drop 1 revSels))
         else intercalate "/" $ map show (reverse sels)
 
 instance Show Path where
   show = showPath
-
-startPath :: Path
-startPath = Path [StartSelector]
 
 pathFromList :: [Selector] -> Path
 pathFromList sels = Path (reverse sels)
@@ -98,8 +97,6 @@ canonicalizePath :: Path -> Path
 canonicalizePath (Path xs) = Path $ filter (not . isOperator) xs
  where
   isOperator :: Selector -> Bool
-  -- isOperator UnaryOpSelector = True
-  -- isOperator (BinOpSelector _) = True
   isOperator (FuncArgSelector _) = True
   isOperator _ = False
 

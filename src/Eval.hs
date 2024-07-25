@@ -33,17 +33,14 @@ runStr s = do
   parsedE <- parseCUE s
   eval parsedE
 
--- (ExtendTCLabel Path.StartSelector defaultLabelAttr)
-
 eval :: (MonadError String m, MonadLogger m) => Expression -> m TreeCursor
 eval expr = do
   rootTC <-
     runReaderT
       ( do
           root <- evalExpr expr
-          -- >>= propUpTCSel (exlSelector lb)
           dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
-          let rootTC = (mkNewTree (TNRoot $ TreeRoot root), [])
+          let rootTC = (root, [(RootSelector, mkBottom "")])
           r2 <- setOrigNodesTC rootTC
           dump $ printf "--- start resolving links ---"
           res <- evalTC r2
@@ -57,9 +54,6 @@ eval expr = do
       Config{cfUnify = unify, cfCreateCnstr = False}
   dump $ printf "--- constraints evaluated: ---\n%s" (showTreeCursor finalized)
   return finalized
- where
-  initTC :: TreeCursor
-  initTC = (mkNewTree (TNRoot $ TreeRoot mkStub), [])
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -77,8 +71,6 @@ evalLiteral (StructLit s) = evalStructLit s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
-  -- >>= propUpTCSel (exlSelector lb)
-
   v = case lit of
     StringLit (SimpleStringLit s) -> mkTreeAtom $ String s
     IntLit i -> mkTreeAtom $ Int i

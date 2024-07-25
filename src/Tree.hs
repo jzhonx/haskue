@@ -28,7 +28,6 @@ module Tree (
   TNFunc (..),
   TNLink (..),
   TNList (..),
-  TNRoot (..),
   TNScope (..),
   TNBottom (..),
   Tree (..),
@@ -219,7 +218,6 @@ instance TreeRepBuilder Tree where
 
 tnStrBldr :: Int -> Tree -> Builder
 tnStrBldr i t = case treeNode t of
-  TNRoot sub -> content t i mempty [(string7 $ show StartSelector, (trRtSub sub))]
   TNAtom leaf -> content t i (string7 (show $ trAmAtom leaf)) emptyTreeFields
   TNStub -> content t i mempty emptyTreeFields
   TNLink _ -> content t i mempty emptyTreeFields
@@ -299,7 +297,6 @@ showTreeIdent t i = LBS.unpack $ toLazyByteString $ tnStrBldr i t
 
 showTreeType :: Tree -> String
 showTreeType t = case treeNode t of
-  TNRoot _ -> "Root"
   TNAtom _ -> "Leaf"
   TNBounds _ -> "Bounds"
   TNScope{} -> "Scope"
@@ -314,7 +311,6 @@ showTreeType t = case treeNode t of
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
-  TNRoot _ -> "()"
   TNAtom _ -> "v"
   TNBounds _ -> "b"
   TNScope{} -> "{}"
@@ -332,7 +328,6 @@ instance Show Tree where
 
 instance BuildASTExpr Tree where
   buildASTExpr t = case treeNode t of
-    TNRoot r -> buildASTExpr r
     TNScope s -> buildASTExpr s
     TNList l -> buildASTExpr l
     TNDisj d -> buildASTExpr d
@@ -356,8 +351,7 @@ substTreeNode n t = t{treeNode = n}
 
 -- | Tree represents a tree structure that contains values.
 data TreeNode
-  = TNRoot TNRoot
-  | -- | TreeScope is a struct that contains a value and a map of selectors to Tree.
+  = -- | TreeScope is a struct that contains a value and a map of selectors to Tree.
     TNScope TNScope
   | TNList TNList
   | TNDisj TNDisj
@@ -373,7 +367,6 @@ data TreeNode
   | TNBottom TNBottom
 
 instance Eq TreeNode where
-  (==) (TNRoot t1) (TNRoot t2) = t1 == t2
   (==) (TNScope s1) (TNScope s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
@@ -401,7 +394,6 @@ instance ValueNode TreeNode where
     TNDisj _ -> True
     TNConstraint _ -> True
     TNRefCycleVar -> False
-    TNRoot _ -> False
     TNLink _ -> False
     TNStub -> False
     TNFunc _ -> False
@@ -418,16 +410,6 @@ instance ValueNode TreeNode where
     TNAtom s -> Just (trAmAtom s)
     TNConstraint c -> Just (trAmAtom $ trCnAtom c)
     _ -> Nothing
-
-data TNRoot = TreeRoot
-  { trRtSub :: Tree
-  }
-
-instance Eq TNRoot where
-  (==) r1 r2 = trRtSub r1 == trRtSub r2
-
-instance BuildASTExpr TNRoot where
-  buildASTExpr r = buildASTExpr (trRtSub r)
 
 data TNList = TreeList
   { trLstSubs :: [Tree]
@@ -906,9 +888,7 @@ mkBottom msg = mkNewTree (TNBottom $ TreeBottom{trBmMsg = msg})
 goTreeSel :: Selector -> Tree -> Maybe Tree
 goTreeSel sel t =
   case sel of
-    StartSelector -> case node of
-      TNRoot sub -> Just (trRtSub sub)
-      _ -> Nothing
+    RootSelector -> Just t
     ScopeSelector s -> case node of
       TNScope scope -> Map.lookup s (trsSubs scope)
       _ -> Nothing
@@ -1019,12 +999,6 @@ The structure of the tree is not changed.
 propUpTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 propUpTC (t, []) = return (t, [])
 propUpTC tc@(subT, (sel, parT) : cs) = case sel of
-  StartSelector ->
-    if length cs > 0
-      then throwError "StartSelector is not the first selector in the path"
-      else case parNode of
-        TNRoot t -> return (substTreeNode (TNRoot t{trRtSub = subT}) parT, [])
-        _ -> throwError "propUpTC: root is not TNRoot"
   ScopeSelector s -> updateParScope parT s subT
   IndexSelector i -> case parNode of
     TNList vs ->
@@ -1051,6 +1025,7 @@ propUpTC tc@(subT, (sel, parT) : cs) = case sel of
         )
     _ -> throwError insertErrMsg
   ParentSelector -> throwError "propUpTC: ParentSelector is not allowed"
+  RootSelector -> throwError "propUpTC: RootSelector is not allowed"
  where
   parNode = treeNode parT
   updateParScope :: (MonadError String m) => Tree -> ScopeSelector -> Tree -> m TreeCursor
@@ -1086,7 +1061,6 @@ propUpTCSel sel tc@(_, (s, _) : _) =
 -- | Traverse all the sub nodes of the tree.
 traverseSubNodes :: (EvalEnv m) => (TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
 traverseSubNodes f tc = case treeNode (fst tc) of
-  TNRoot _ -> getSubTC StartSelector tc >>= f >>= levelUp StartSelector
   TNScope scope ->
     let
       goSub :: (EvalEnv m) => TreeCursor -> ScopeSelector -> m TreeCursor
@@ -1144,7 +1118,6 @@ traverseSubNodes f tc = case treeNode (fst tc) of
 -}
 traverseTC :: (EvalEnv m) => (TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
 traverseTC f tc = case treeNode n of
-  TNRoot _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNScope _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNDisj _ -> f tc >>= traverseSubNodes (traverseTC f)
   TNFunc _ -> f tc >>= traverseSubNodes (traverseTC f)
@@ -1203,7 +1176,6 @@ evalTC tc = case treeNode (fst tc) of
   TNBottom _ -> return tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
-  TNRoot _ -> traverseSubNodes evalTC tc
  where
   header :: String
   header = "evalTC"
