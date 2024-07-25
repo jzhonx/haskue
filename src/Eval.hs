@@ -77,7 +77,7 @@ evalLiteral lit = return v
     FloatLit a -> mkTreeAtom $ Float a
     BoolLit b -> mkTreeAtom $ Bool b
     NullLit -> mkTreeAtom $ Null
-    TopLit -> mkTreeAtom $ Top
+    TopLit -> mkNewTree $ TNTop
     BottomLit -> mkBottom ""
 
 -- | The struct is guaranteed to have unique labels by transform.
@@ -431,7 +431,6 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
           x <- evalTC unevaledTC
           dump $ printf "regBinOther: %s, is evaluated to:\n%s" (show t1) (show $ fst x)
           case treeNode (fst x) of
-            TNAtom TreeAtom{trAmAtom = Top} -> delay
             TNAtom a1 -> regBinLeftAtom op (d1, a1, fst x) (d2, t2) tc
             TNDisj dj1 -> regBinLeftDisj op (d1, dj1, fst x) (d2, t2) tc
             TNScope s1 -> regBinLeftScope op (d1, s1, fst x) (d2, t2) tc

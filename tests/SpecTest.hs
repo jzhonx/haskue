@@ -71,14 +71,11 @@ testBasic = do
       val'
         @?= newSimpleStruct
           ["a", "b", "c", "d"]
-          ( map
-              (\(k, v) -> (k, mkTreeAtom v))
-              [ ("a", Bool True)
-              , ("b", Bool False)
-              , ("c", Top)
-              , ("d", Null)
-              ]
-          )
+          [ ("a", mkTreeAtom $ Bool True)
+          , ("b", mkTreeAtom $ Bool False)
+          , ("c", mkNewTree $ TNTop)
+          , ("d", mkTreeAtom $ Null)
+          ]
 
 testUnaryOp :: IO ()
 testUnaryOp = do
@@ -679,7 +676,7 @@ testIncomplete = do
       val'
         @?= newSimpleStruct
           ["a", "b"]
-          [ ("a", mkTreeAtom Top)
+          [ ("a", mkNewTree TNTop)
           ,
             ( "b"
             , mkNewTree . TNFunc $
@@ -782,7 +779,7 @@ testRef2 = do
             , newSimpleStruct
                 ["c", "d"]
                 [ ("c", mkTreeAtom $ Int 1)
-                , ("d", mkTreeAtom $ Top)
+                , ("d", mkNewTree $ TNTop)
                 ]
             )
           ]

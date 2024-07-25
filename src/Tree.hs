@@ -152,8 +152,7 @@ newEvalEnvMaybe = EnvMaybe . return
 
 -- TODO: move top out of Atom.
 data Atom
-  = Top
-  | String String
+  = String String
   | Int Integer
   | Float Double
   | Bool Bool
@@ -166,7 +165,6 @@ instance Show Atom where
   show (Int i) = show i
   show (Float f) = show f
   show (Bool b) = show b
-  show Top = "_"
   show Null = "null"
 
 instance Eq Atom where
@@ -176,7 +174,6 @@ instance Eq Atom where
   (==) (Float i1) (Int i2) = i1 == fromIntegral i2
   (==) (Float f1) (Float f2) = f1 == f2
   (==) (Bool b1) (Bool b2) = b1 == b2
-  (==) Top Top = True
   (==) Null Null = True
   (==) _ _ = False
 
@@ -185,7 +182,6 @@ instance BuildASTExpr Atom where
 
 aToLiteral :: Atom -> AST.Literal
 aToLiteral a = case a of
-  Top -> AST.TopLit
   String s -> AST.StringLit $ AST.SimpleStringLit ((show AST.DoubleQuote) ++ s ++ (show AST.DoubleQuote))
   Int i -> AST.IntLit i
   Float f -> AST.FloatLit f
@@ -258,6 +254,7 @@ tnStrBldr i t = case treeNode t of
     let args = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trfnArgs f))
      in content t i (string7 $ trfnName f) args
   TNBottom b -> content t i (string7 $ show b) emptyTreeFields
+  TNTop -> content t i mempty emptyTreeFields
  where
   emptyTreeFields :: [(Builder, Tree)]
   emptyTreeFields = []
@@ -305,6 +302,7 @@ showTreeType t = case treeNode t of
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "Func"
   TNBottom _ -> "Bottom"
+  TNTop -> "Top"
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
@@ -318,6 +316,7 @@ showTreeSymbol t = case treeNode t of
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "fn"
   TNBottom _ -> "_|_"
+  TNTop -> "_"
 
 instance Show Tree where
   show tree = showTreeIdent tree 0
@@ -334,6 +333,7 @@ instance BuildASTExpr Tree where
     TNRefCycleVar -> AST.litCons AST.TopLit
     TNFunc fn -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr fn
     TNBottom _ -> AST.litCons AST.BottomLit
+    TNTop -> AST.litCons AST.TopLit
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree n Nothing
@@ -355,6 +355,7 @@ data TreeNode
   | TNConstraint TNConstraint
   | TNRefCycleVar
   | TNFunc TNFunc
+  | TNTop
   | TNBottom TNBottom
 
 instance Eq TreeNode where
@@ -373,6 +374,7 @@ instance Eq TreeNode where
   (==) (TNFunc f1) (TNFunc f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNBottom _) (TNBottom _) = True
+  (==) TNTop TNTop = True
   (==) _ _ = False
 
 instance ValueNode TreeNode where
@@ -387,10 +389,9 @@ instance ValueNode TreeNode where
     TNLink _ -> False
     TNFunc _ -> False
     TNBottom _ -> True
+    TNTop -> True
   isValueAtom n = case n of
-    TNAtom l -> case trAmAtom l of
-      Top -> False
-      _ -> True
+    TNAtom _ -> True
     _ -> False
   isValueConcrete n = case n of
     TNScope scope -> isScopeConcrete scope
@@ -1091,6 +1092,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
   TNRefCycleVar -> return tc
   TNLink _ -> return tc
   TNBottom _ -> return tc
+  TNTop -> return tc
  where
   levelUp :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
   levelUp = propUpTCSel
@@ -1114,6 +1116,7 @@ traverseTC f tc = case treeNode n of
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
   TNBottom _ -> f tc
+  TNTop -> f tc
  where
   n = fst tc
 
@@ -1153,12 +1156,13 @@ evalTC tc = case treeNode (fst tc) of
         u <- evalTC tarTC
         return (fst u, snd tc)
   TNList _ -> traverseSubNodes evalTC tc
+  TNScope _ -> traverseSubNodes evalTC tc
+  TNDisj _ -> traverseSubNodes evalTC tc
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
   TNBounds _ -> return tc
   TNBottom _ -> return tc
-  TNScope _ -> traverseSubNodes evalTC tc
-  TNDisj _ -> traverseSubNodes evalTC tc
+  TNTop -> return tc
 
 -- TODO: Update the substituted tree cursor.
 followLink :: (EvalEnv m) => TNLink -> TreeCursor -> m (Maybe TreeCursor)

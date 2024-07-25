@@ -35,6 +35,8 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
       (show d2)
       (show t2)
   res <- case (treeNode t1, treeNode t2) of
+    (TNTop, _) -> return t2
+    (_, TNTop) -> return t1
     (TNBottom _, _) -> return t1
     (_, TNBottom _) -> return t2
     (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2 tc
@@ -53,7 +55,6 @@ parTC points to the bin op node.
 unifyLeftAtom :: (EvalEnv m) => (Path.BinOpDirect, TNAtom, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
 unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
   case (trAmAtom l1, treeNode t2) of
-    (Top, _) -> returnTree (treeNode t2)
     (String x, TNAtom s) -> case trAmAtom s of
       String y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
