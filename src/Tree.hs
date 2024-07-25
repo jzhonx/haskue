@@ -55,7 +55,6 @@ module Tree (
   mkBinaryOp,
   mkBinaryOpDir,
   mkNewTree,
-  mkStub,
   mkSubTC,
   mkBounds,
   mkTNConstraint,
@@ -219,7 +218,6 @@ instance TreeRepBuilder Tree where
 tnStrBldr :: Int -> Tree -> Builder
 tnStrBldr i t = case treeNode t of
   TNAtom leaf -> content t i (string7 (show $ trAmAtom leaf)) emptyTreeFields
-  TNStub -> content t i mempty emptyTreeFields
   TNLink _ -> content t i mempty emptyTreeFields
   TNScope s ->
     let ordLabels =
@@ -303,7 +301,6 @@ showTreeType t = case treeNode t of
   TNList{} -> "List"
   TNLink{} -> "Link"
   TNDisj{} -> "Disj"
-  TNStub -> "Stub"
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "Func"
@@ -317,7 +314,6 @@ showTreeSymbol t = case treeNode t of
   TNList{} -> "[]"
   TNLink l -> printf "-> %s" (show $ trlTarget l)
   TNDisj{} -> "dj"
-  TNStub -> ".."
   TNConstraint{} -> "Cnstr"
   TNRefCycleVar -> "RefCycleVar"
   TNFunc{} -> "fn"
@@ -334,7 +330,6 @@ instance BuildASTExpr Tree where
     TNLink l -> buildASTExpr l
     TNAtom s -> buildASTExpr s
     TNBounds b -> buildASTExpr b
-    TNStub -> AST.litCons . AST.StringLit $ AST.SimpleStringLit "STUB"
     TNConstraint _ -> buildASTExpr (fromJust $ treeOrig t)
     TNRefCycleVar -> AST.litCons AST.TopLit
     TNFunc fn -> if isJust (treeOrig t) then buildASTExpr (fromJust $ treeOrig t) else buildASTExpr fn
@@ -342,9 +337,6 @@ instance BuildASTExpr Tree where
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree n Nothing
-
-mkStub :: Tree
-mkStub = mkNewTree TNStub
 
 substTreeNode :: TreeNode -> Tree -> Tree
 substTreeNode n t = t{treeNode = n}
@@ -360,7 +352,6 @@ data TreeNode
   | -- | TNAtom contains an atom value.
     TNAtom TNAtom
   | TNBounds TNBounds
-  | TNStub
   | TNConstraint TNConstraint
   | TNRefCycleVar
   | TNFunc TNFunc
@@ -372,7 +363,6 @@ instance Eq TreeNode where
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
   (==) (TNLink l1) (TNLink l2) = l1 == l2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
-  (==) TNStub TNStub = True
   (==) (TNConstraint c1) (TNConstraint c2) = c1 == c2
   (==) TNRefCycleVar TNRefCycleVar = True
   (==) (TNDisj dj1) n2@(TNAtom _) =
@@ -395,7 +385,6 @@ instance ValueNode TreeNode where
     TNConstraint _ -> True
     TNRefCycleVar -> False
     TNLink _ -> False
-    TNStub -> False
     TNFunc _ -> False
     TNBottom _ -> True
   isValueAtom n = case n of
@@ -1078,7 +1067,6 @@ traverseSubNodes f tc = case treeNode (fst tc) of
       do
         utc <- maybe (return tc) (\_ -> goSub tc DisjDefaultSelector) (trdDefault d)
         foldM goSub utc (map DisjDisjunctSelector [0 .. length (trdDisjuncts d) - 1])
-  TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList l ->
     let
       goSub :: (EvalEnv m) => TreeCursor -> Int -> m TreeCursor
@@ -1104,8 +1092,6 @@ traverseSubNodes f tc = case treeNode (fst tc) of
   TNLink _ -> return tc
   TNBottom _ -> return tc
  where
-  header = "traverseSubNodes"
-
   levelUp :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
   levelUp = propUpTCSel
 
@@ -1128,10 +1114,8 @@ traverseTC f tc = case treeNode n of
   TNRefCycleVar -> f tc
   TNLink _ -> f tc
   TNBottom _ -> f tc
-  TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
  where
   n = fst tc
-  header = "traverseTC"
 
 setOrigNodesTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 setOrigNodesTC = traverseTC f
@@ -1168,7 +1152,6 @@ evalTC tc = case treeNode (fst tc) of
       Just tarTC -> do
         u <- evalTC tarTC
         return (fst u, snd tc)
-  TNStub -> throwError $ printf "%s: TNStub should have been resolved" header
   TNList _ -> traverseSubNodes evalTC tc
   TNRefCycleVar -> return tc
   TNAtom _ -> return tc
@@ -1176,9 +1159,6 @@ evalTC tc = case treeNode (fst tc) of
   TNBottom _ -> return tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
- where
-  header :: String
-  header = "evalTC"
 
 -- TODO: Update the substituted tree cursor.
 followLink :: (EvalEnv m) => TNLink -> TreeCursor -> m (Maybe TreeCursor)
