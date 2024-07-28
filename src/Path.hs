@@ -1,6 +1,5 @@
 module Path where
 
-import qualified AST
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
@@ -30,18 +29,18 @@ instance Show Selector where
 
 data ScopeSelector
   = StringSelector String
-  | DynamicSelector Int AST.Expression
+  | DynamicSelector Int
   deriving (Eq)
 
 instance Ord ScopeSelector where
   compare (StringSelector s1) (StringSelector s2) = compare s1 s2
   compare (StringSelector _) _ = LT
   compare _ (StringSelector _) = GT
-  compare (DynamicSelector i1 _) (DynamicSelector i2 _) = compare i1 i2
+  compare (DynamicSelector i1) (DynamicSelector i2) = compare i1 i2
 
 instance Show ScopeSelector where
   show (StringSelector s) = s
-  show (DynamicSelector i _) = "sd" ++ show i
+  show (DynamicSelector i) = "sd" ++ show i
 
 unaryOpSelector :: Selector
 unaryOpSelector = FuncArgSelector 0

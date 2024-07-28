@@ -35,6 +35,7 @@ module Tree (
   TreeNode (..),
   LabelAttr (..),
   ScopeLabelType (..),
+  ScopeField (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -90,7 +91,7 @@ import Control.Monad.Logger (
   MonadLogger,
   logDebugN,
  )
-import Control.Monad.Reader (MonadReader, ask)
+import Control.Monad.Reader (MonadReader)
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.ByteString.Builder (
   Builder,
@@ -223,14 +224,14 @@ tnStrBldr i t = case treeNode t of
         label :: ScopeSelector -> Builder
         label k =
           string7 (show k)
-            <> case lbAttrType (trsAttrs s Map.! k) of
+            <> case lbAttrType $ sfAttr (trsSubs s Map.! k) of
               SLRegular -> mempty
               SLRequired -> string7 "!"
               SLOptional -> string7 "?"
-            <> if lbAttrIsVar (trsAttrs s Map.! k)
+            <> if lbAttrIsVar $ sfAttr (trsSubs s Map.! k)
               then string7 ",v"
               else mempty
-        fields = map (\k -> (label k, (trsSubs s) Map.! k)) (trsOrdLabels s)
+        fields = map (\k -> (label k, sfField $ (trsSubs s) Map.! k)) (trsOrdLabels s)
      in content t i ordLabels fields
   TNList vs ->
     let fields = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (trLstSubs vs))
@@ -433,35 +434,44 @@ mergeAttrs a1 a2 =
 data ScopeLabelType = SLRegular | SLRequired | SLOptional
   deriving (Eq, Ord, Enum, Show)
 
+data ScopeField = ScopeField
+  { sfField :: Tree
+  , sfSelExpr :: Maybe AST.Expression
+  , sfAttr :: LabelAttr
+  }
+  deriving (Show)
+
+instance Eq ScopeField where
+  (==) f1 f2 = sfField f1 == sfField f2 && sfSelExpr f1 == sfSelExpr f2 && sfAttr f1 == sfAttr f2
+
 data TNScope = TreeScope
   { trsOrdLabels :: [ScopeSelector]
-  , trsSubs :: Map.Map ScopeSelector Tree
-  , trsAttrs :: Map.Map ScopeSelector LabelAttr
+  , trsSubs :: Map.Map ScopeSelector ScopeField
   }
 
 instance Eq TNScope where
-  (==) s1 s2 = trsOrdLabels s1 == trsOrdLabels s2 && trsSubs s1 == trsSubs s2 && trsAttrs s1 == trsAttrs s2
+  (==) s1 s2 = trsOrdLabels s1 == trsOrdLabels s2 && trsSubs s1 == trsSubs s2
 
 instance BuildASTExpr TNScope where
   buildASTExpr s =
     let
-      processField :: (ScopeSelector, LabelAttr, Tree) -> AST.Declaration
-      processField (label, attr, sub) = case label of
+      processField :: (ScopeSelector, ScopeField) -> AST.Declaration
+      processField (label, sf) = case label of
         StringSelector sel ->
           AST.FieldDecl $
             AST.Field
-              [ labelCons attr $
-                  if lbAttrIsVar attr
+              [ labelCons (sfAttr sf) $
+                  if lbAttrIsVar (sfAttr sf)
                     then AST.LabelID sel
                     else AST.LabelString sel
               ]
-              (buildASTExpr sub)
-        DynamicSelector _ e ->
+              (buildASTExpr (sfField sf))
+        DynamicSelector _ ->
           AST.FieldDecl $
             AST.Field
-              [ labelCons attr $ AST.LabelNameExpr e
+              [ labelCons (sfAttr sf) $ AST.LabelNameExpr (fromJust $ sfSelExpr sf)
               ]
-              (buildASTExpr sub)
+              (buildASTExpr (sfField sf))
 
       labelCons :: LabelAttr -> AST.LabelName -> AST.Label
       labelCons attr =
@@ -470,39 +480,37 @@ instance BuildASTExpr TNScope where
           SLRequired -> AST.RequiredLabel
           SLOptional -> AST.OptionalLabel
      in
-      AST.litCons $ AST.StructLit $ map processField [(l, trsAttrs s Map.! l, trsSubs s Map.! l) | l <- trsOrdLabels s]
+      AST.litCons $ AST.StructLit $ map processField [(l, trsSubs s Map.! l) | l <- trsOrdLabels s]
 
 emptyTNScope :: TNScope
-emptyTNScope = TreeScope{trsOrdLabels = [], trsSubs = Map.empty, trsAttrs = Map.empty}
+emptyTNScope = TreeScope{trsOrdLabels = [], trsSubs = Map.empty}
 
-mkScope :: [ScopeSelector] -> [(ScopeSelector, LabelAttr, Tree)] -> Tree
+mkScope :: [ScopeSelector] -> [(ScopeSelector, ScopeField)] -> Tree
 mkScope ordLabels fields =
   mkNewTree . TNScope $
-    TreeScope{trsOrdLabels = ordLabels, trsSubs = Map.map snd fieldMap, trsAttrs = Map.map fst fieldMap}
- where
-  fieldMap = Map.fromList [(l, (a, t)) | (l, a, t) <- fields]
+    TreeScope
+      { trsOrdLabels = ordLabels
+      , trsSubs = Map.fromList fields
+      }
 
-insertScopeSub :: TNScope -> ScopeSelector -> Maybe LabelAttr -> Tree -> TNScope
-insertScopeSub s label attrMaybe sub =
-  if Map.member label (trsSubs s)
-    then
-      s
-        { trsSubs = Map.insert label sub (trsSubs s)
-        , trsAttrs = Map.insert label (newAttr) (trsAttrs s)
-        }
+insertScopeSub :: TNScope -> ScopeSelector -> ScopeField -> TNScope
+insertScopeSub scope sel sf =
+  if Map.member sel (trsSubs scope)
+    then scope{trsSubs = Map.insert sel sf (trsSubs scope)}
     else
-      let newLabels = trsOrdLabels s ++ [label]
-          newFields = Map.insert label sub (trsSubs s)
-       in s{trsOrdLabels = newLabels, trsSubs = newFields, trsAttrs = Map.insert label (newAttr) (trsAttrs s)}
- where
-  newAttr = case attrMaybe of
-    Just attr -> attr
-    Nothing -> case trsAttrs s Map.!? label of
-      Just attr -> attr
-      Nothing -> LabelAttr SLRegular False
+      TreeScope
+        { trsOrdLabels = trsOrdLabels scope ++ [sel]
+        , trsSubs = Map.insert sel sf (trsSubs scope)
+        }
 
 isScopeConcrete :: TNScope -> Bool
-isScopeConcrete s = foldl (\acc (Tree{treeNode = x}) -> acc && isValueConcrete x) True (Map.elems (trsSubs s))
+isScopeConcrete s =
+  foldl
+    ( \acc
+       (ScopeField{sfField = Tree{treeNode = x}}) -> acc && isValueConcrete x
+    )
+    True
+    (Map.elems (trsSubs s))
 
 data TNLink = TreeLink
   { trlTarget :: Path
@@ -880,7 +888,7 @@ goTreeSel sel t =
   case sel of
     RootSelector -> Just t
     ScopeSelector s -> case node of
-      TNScope scope -> Map.lookup s (trsSubs scope)
+      TNScope scope -> sfField <$> Map.lookup s (trsSubs scope)
       _ -> Nothing
     IndexSelector i -> case node of
       TNList vs -> (trLstSubs vs) !? i
@@ -1021,13 +1029,16 @@ propUpTC tc@(subT, (sel, parT) : cs) = case sel of
   updateParScope :: (MonadError String m) => Tree -> ScopeSelector -> Tree -> m TreeCursor
   updateParScope par label newSub = case treeNode par of
     TNScope parScope ->
-      if isTreeBottom newSub
-        then return (newSub, cs)
-        else
-          let
-            newParNode = insertScopeSub parScope label Nothing newSub
-           in
-            return (substTreeNode (TNScope newParNode) parT, cs)
+      if
+        | isTreeBottom newSub -> return (newSub, cs)
+        | Map.member label (trsSubs parScope) ->
+            let
+              sf = trsSubs parScope Map.! label
+              newSF = sf{sfField = newSub}
+              newScope = parScope{trsSubs = Map.insert label newSF (trsSubs parScope)}
+             in
+              return (substTreeNode (TNScope newScope) parT, cs)
+        | otherwise -> throwError insertErrMsg
     _ -> throwError insertErrMsg
 
   insertErrMsg :: String
@@ -1223,10 +1234,10 @@ The cursor will also be propagated to the parent block.
 -}
 searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
 searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (fst tc) of
-  TNScope scope -> case (Map.lookup ssel (trsSubs scope), Map.lookup ssel (trsAttrs scope)) of
-    (Just node, Just attr) ->
-      if lbAttrIsVar attr
-        then return . Just $ extendTC sel node tc
+  TNScope scope -> case Map.lookup ssel (trsSubs scope) of
+    Just sf ->
+      if lbAttrIsVar (sfAttr sf)
+        then return . Just $ extendTC sel (sfField sf) tc
         else goUp tc
     _ -> goUp tc
   _ -> goUp tc
@@ -1265,7 +1276,7 @@ indexBySel sel ue t = case treeNode t of
   -- The tree is an evaluated, final scope, which could be formed by an in-place expression, like ({}).a.
   TNScope scope -> case sel of
     ScopeSelector s -> case Map.lookup s (trsSubs scope) of
-      Just sub -> return sub
+      Just sf -> return (sfField sf)
       Nothing ->
         return $
           mkNewTree

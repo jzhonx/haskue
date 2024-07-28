@@ -16,9 +16,10 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
+
+import Control.Monad.State.Strict (MonadState (get, put), evalStateT)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, isJust)
-import qualified Data.Set as Set
+import Data.Maybe (fromJust, isJust)
 import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
@@ -40,7 +41,7 @@ eval expr = do
       ( do
           root <- evalExpr expr
           dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
-          let rootTC = (root, [(RootSelector, mkBottom "")])
+          let rootTC = (root, [(RootSelector, mkNewTree TNTop)])
           r2 <- setOrigNodesTC rootTC
           dump $ printf "--- start resolving links ---"
           res <- evalTC r2
@@ -83,7 +84,8 @@ evalLiteral lit = return v
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
 evalStructLit decls = do
-  (scope, ts) <- foldM evalDecl (emptyTNScope, []) decls
+  let lbnCounter = 0
+  (scope, ts) <- evalStateT (foldM evalDecl (emptyTNScope, []) decls) lbnCounter
   let v =
         if null ts
           then mkNewTree (TNScope scope)
@@ -92,28 +94,34 @@ evalStructLit decls = do
   return v
  where
   --  Evaluates a declaration in a struct.
-  evalDecl :: (EvalEnv m) => (TNScope, [Tree]) -> Declaration -> m (TNScope, [Tree])
-  evalDecl acc (Embedding e) =
-    do
-      v <- evalExpr e
-      return (fst acc, v : snd acc)
+  evalDecl :: (EvalEnv m, MonadState Int m) => (TNScope, [Tree]) -> Declaration -> m (TNScope, [Tree])
+  evalDecl acc (Embedding e) = do
+    v <- evalExpr e
+    return (fst acc, v : snd acc)
   evalDecl (scope, ts) (FieldDecl fd) = case fd of
     Field ls e -> do
-      (sel, attr, t) <- evalFdLabels ls e
+      (sel, sf) <- evalFdLabels ls e
       let
-        extSubMaybe = Map.lookup sel (trsSubs scope)
-        newSub =
-          if isJust extSubMaybe
-            then mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (fromJust extSubMaybe) t)
-            else t
-        newAttr =
-          if isJust extSubMaybe
-            then mergeAttrs attr ((trsAttrs scope) Map.! sel)
-            else attr
-        newScope = insertScopeSub scope sel (Just newAttr) newSub
+        newSFMaybe = do
+          extSF <- Map.lookup sel (trsSubs scope)
+          return
+            ScopeField
+              { sfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (sfField extSF) (sfField sf))
+              , sfSelExpr = Nothing
+              , sfAttr = mergeAttrs (sfAttr extSF) (sfAttr sf)
+              }
+        newScope = insertScopeSub scope sel (maybe sf id newSFMaybe)
       return (newScope, ts)
 
-  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (ScopeSelector, LabelAttr, Tree)
+  toScopeField :: Maybe AST.Expression -> LabelAttr -> Tree -> ScopeField
+  toScopeField eMaybe attr t =
+    ScopeField
+      { sfField = t
+      , sfSelExpr = eMaybe
+      , sfAttr = attr
+      }
+
+  evalFdLabels :: (EvalEnv m, MonadState Int m) => [AST.Label] -> AST.Expression -> m (ScopeSelector, ScopeField)
   evalFdLabels lbls e =
     case lbls of
       [] -> throwError "empty labels"
@@ -124,32 +132,35 @@ evalStructLit decls = do
          in
           do
             dump $ printf "evalFdLabels: lb1: %s" (show lb1)
-            key <- sselFrom lb1
+            (key, eMaybe) <- sselFrom lb1
             dump $
               printf "evalFdLabels: key: %s, e: %s" (show key) (show e)
             sub <- evalExpr e
-            return (key, attr, sub)
+            return (key, toScopeField eMaybe attr sub)
       l1 : l2 : rs ->
         let
           (lb1, attr1) = slFrom l1
           attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
          in
           do
-            key <- sselFrom lb1
-            (key2, attr2, sub2) <- evalFdLabels (l2 : rs) e
-            let sub = mkScope [key2] [(key2, attr2, sub2)]
-            return (key, attr, sub)
+            (key, eMaybe) <- sselFrom lb1
+            (key2, sf2) <- evalFdLabels (l2 : rs) e
+            let sub = mkScope [key2] [(key2, sf2)]
+            return (key, toScopeField eMaybe attr sub)
 
   -- Returns the label name and the whether the label is static.
-  sselFrom :: (EvalEnv m) => LabelName -> m Path.ScopeSelector
-  sselFrom (LabelID ident) = return $ Path.StringSelector ident
-  sselFrom (LabelString ls) = return $ Path.StringSelector ls
-  sselFrom (LabelNameExpr e) = do
-    -- Use the current label as the label for the expression.
-    t <- evalExpr e
-    case treeNode t of
-      TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
-      _ -> throwError $ printf "label name expression is not a string, %s" (show t)
+  sselFrom :: (EvalEnv m, MonadState Int m) => LabelName -> m (Path.ScopeSelector, Maybe AST.Expression)
+  sselFrom (LabelID ident) = return (Path.StringSelector ident, Nothing)
+  sselFrom (LabelString ls) = return (Path.StringSelector ls, Nothing)
+  sselFrom (LabelNameExpr _) = do
+    lneCnt <- get
+    put (lneCnt + 1)
+    return (Path.DynamicSelector lneCnt, Nothing)
+  -- -- Use the current label as the label for the expression.
+  -- t <- evalExpr e
+  -- case treeNode t of
+  --   TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
+  --   _ -> throwError $ printf "label name expression is not a string, %s" (show t)
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of

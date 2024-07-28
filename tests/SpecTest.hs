@@ -19,9 +19,22 @@ newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
 newStruct lbls ow subs =
   mkNewTree . TNScope $
     TreeScope
-      { trsSubs = Map.fromList (map (\(k, v) -> (Path.StringSelector k, v)) subs)
+      { trsSubs =
+          Map.fromList
+            ( map
+                ( \(k, v) ->
+                    ( Path.StringSelector k
+                    , ScopeField
+                        { sfField = v
+                        , sfSelExpr = Nothing
+                        , sfAttr = snd $ attrWrite k
+                        }
+                    )
+                )
+                subs
+            )
       , trsOrdLabels = map Path.StringSelector lbls
-      , trsAttrs = Map.fromList $ map attrWrite lbls
+      -- , trsAttrs = Map.fromList $ map attrWrite lbls
       }
  where
   attrWrite :: String -> (ScopeSelector, LabelAttr)
