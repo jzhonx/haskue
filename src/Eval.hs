@@ -16,8 +16,8 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
-
 import Control.Monad.State.Strict (MonadState (get, put), evalStateT)
+import Data.List ((!?))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import Parser (parseCUE)
@@ -107,7 +107,9 @@ evalStructLit decls = do
           return
             ScopeField
               { sfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (sfField extSF) (sfField sf))
-              , sfSelExpr = Nothing
+              , sfSelExpr = do
+                  xs <- sequence [sfSelExpr extSF, sfSelExpr sf]
+                  xs !? 0
               , sfAttr = mergeAttrs (sfAttr extSF) (sfAttr sf)
               }
         newScope = insertScopeSub scope sel (maybe sf id newSFMaybe)
@@ -152,15 +154,10 @@ evalStructLit decls = do
   sselFrom :: (EvalEnv m, MonadState Int m) => LabelName -> m (Path.ScopeSelector, Maybe AST.Expression)
   sselFrom (LabelID ident) = return (Path.StringSelector ident, Nothing)
   sselFrom (LabelString ls) = return (Path.StringSelector ls, Nothing)
-  sselFrom (LabelNameExpr _) = do
+  sselFrom (LabelNameExpr e) = do
     lneCnt <- get
     put (lneCnt + 1)
-    return (Path.DynamicSelector lneCnt, Nothing)
-  -- -- Use the current label as the label for the expression.
-  -- t <- evalExpr e
-  -- case treeNode t of
-  --   TNAtom (TreeAtom (String s)) -> return $ Path.StringSelector s
-  --   _ -> throwError $ printf "label name expression is not a string, %s" (show t)
+    return (Path.DynamicSelector lneCnt, Just e)
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of

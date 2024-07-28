@@ -228,9 +228,14 @@ tnStrBldr i t = case treeNode t of
               SLRegular -> mempty
               SLRequired -> string7 "!"
               SLOptional -> string7 "?"
-            <> if lbAttrIsVar $ sfAttr (trsSubs s Map.! k)
-              then string7 ",v"
-              else mempty
+            <> ( if lbAttrIsVar $ sfAttr (trsSubs s Map.! k)
+                  then string7 ",v"
+                  else mempty
+               )
+            <> ( if isJust (sfSelExpr $ trsSubs s Map.! k)
+                  then string7 ",e"
+                  else mempty
+               )
         fields = map (\k -> (label k, sfField $ (trsSubs s) Map.! k)) (trsOrdLabels s)
      in content t i ordLabels fields
   TNList vs ->
