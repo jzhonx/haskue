@@ -102,26 +102,23 @@ evalStructLit decls = do
     Field ls e -> do
       (sel, sf) <- evalFdLabels ls e
       let
+        exprMaybe extSF = do
+          xs <- sequence [sfSelExpr extSF, sfSelExpr sf]
+          xs !? 0
+        selTreeMaybe extFS = do
+          xs <- sequence [sfSelTree extFS, sfSelTree sf]
+          xs !? 0
         newSFMaybe = do
           extSF <- Map.lookup sel (trsSubs scope)
           return
             ScopeField
               { sfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (sfField extSF) (sfField sf))
-              , sfSelExpr = do
-                  xs <- sequence [sfSelExpr extSF, sfSelExpr sf]
-                  xs !? 0
+              , sfSelExpr = exprMaybe extSF
+              , sfSelTree = selTreeMaybe extSF
               , sfAttr = mergeAttrs (sfAttr extSF) (sfAttr sf)
               }
         newScope = insertScopeSub scope sel (maybe sf id newSFMaybe)
       return (newScope, ts)
-
-  toScopeField :: Maybe AST.Expression -> LabelAttr -> Tree -> ScopeField
-  toScopeField eMaybe attr t =
-    ScopeField
-      { sfField = t
-      , sfSelExpr = eMaybe
-      , sfAttr = attr
-      }
 
   evalFdLabels :: (EvalEnv m, MonadState Int m) => [AST.Label] -> AST.Expression -> m (ScopeSelector, ScopeField)
   evalFdLabels lbls e =
@@ -150,14 +147,31 @@ evalStructLit decls = do
             let sub = mkScope [key2] [(key2, sf2)]
             return (key, toScopeField eMaybe attr sub)
 
+  toScopeField :: Maybe (AST.Expression, Tree) -> LabelAttr -> Tree -> ScopeField
+  toScopeField Nothing attr t =
+    ScopeField
+      { sfField = t
+      , sfSelExpr = Nothing
+      , sfSelTree = return t
+      , sfAttr = attr
+      }
+  toScopeField (Just (e, et)) attr t =
+    ScopeField
+      { sfField = t
+      , sfSelExpr = Just e
+      , sfSelTree = Just et
+      , sfAttr = attr
+      }
+
   -- Returns the label name and the whether the label is static.
-  sselFrom :: (EvalEnv m, MonadState Int m) => LabelName -> m (Path.ScopeSelector, Maybe AST.Expression)
+  sselFrom :: (EvalEnv m, MonadState Int m) => LabelName -> m (Path.ScopeSelector, Maybe (AST.Expression, Tree))
   sselFrom (LabelID ident) = return (Path.StringSelector ident, Nothing)
   sselFrom (LabelString ls) = return (Path.StringSelector ls, Nothing)
   sselFrom (LabelNameExpr e) = do
     lneCnt <- get
     put (lneCnt + 1)
-    return (Path.DynamicSelector lneCnt, Just e)
+    t <- evalExpr e
+    return (Path.DynamicSelector lneCnt, Just (e, t))
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of

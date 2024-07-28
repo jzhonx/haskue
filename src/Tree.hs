@@ -81,6 +81,8 @@ module Tree (
   mkList,
   indexBySel,
   indexByTree,
+  runEnvMaybe,
+  newEvalEnvMaybe,
 )
 where
 
@@ -442,12 +444,17 @@ data ScopeLabelType = SLRegular | SLRequired | SLOptional
 data ScopeField = ScopeField
   { sfField :: Tree
   , sfSelExpr :: Maybe AST.Expression
+  , sfSelTree :: Maybe Tree
   , sfAttr :: LabelAttr
   }
   deriving (Show)
 
 instance Eq ScopeField where
-  (==) f1 f2 = sfField f1 == sfField f2 && sfSelExpr f1 == sfSelExpr f2 && sfAttr f1 == sfAttr f2
+  (==) f1 f2 =
+    sfField f1 == sfField f2
+      && sfSelExpr f1 == sfSelExpr f2
+      && sfAttr f1 == sfAttr f2
+      && sfSelTree f1 == sfSelTree f2
 
 data TNScope = TreeScope
   { trsOrdLabels :: [ScopeSelector]
