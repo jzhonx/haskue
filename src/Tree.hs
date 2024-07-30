@@ -31,17 +31,17 @@ module Tree (
   TNScope (..),
   TNBottom (..),
   Tree (..),
-  TreeCursor,
   TreeNode (..),
   LabelAttr (..),
   ScopeLabelType (..),
   ScopeField (..),
+  TreeCursor (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
   dump,
   evalTC,
-  extendTC,
+  -- extendTC,
   replaceTCTip,
   getScalarValue,
   goDownTCPath,
@@ -65,7 +65,6 @@ module Tree (
   mkBottom,
   mkUnaryOp,
   pathFromTC,
-  propRootEvalTC,
   propUpTCSel,
   searchTCVar,
   setOrigNodesTC,
@@ -552,13 +551,13 @@ substLinkTC link tc = do
         printf
           "substLinkTC: link (%s) target is found in the eval tree, tree: %s"
           (show $ trlTarget link)
-          (show $ (fst tarTC))
-    case treeNode (fst tarTC) of
+          (show $ (tcFocus tarTC))
+    case treeNode (tcFocus tarTC) of
       -- The link leads to a cycle head, which does not have the original node.
       TNRefCycleVar -> return tarTC
       _ -> do
-        origTarTree <- newEvalEnvMaybe $ treeOrig (fst tarTC)
-        return (origTarTree, snd tarTC)
+        origTarTree <- newEvalEnvMaybe $ treeOrig (tcFocus tarTC)
+        return (TreeCursor origTarTree (tcCrumbs tarTC))
   case res of
     Nothing -> do
       dump $ printf "substLinkTC: original target of the link (%s) is not found" (show $ trlTarget link)
@@ -569,14 +568,14 @@ substLinkTC link tc = do
           "substLinkTC: link (%s) target is found, path: %s, tree node:\n%s"
           (show $ trlTarget link)
           (show $ pathFromTC tarOTC)
-          (show $ fst tarOTC)
+          (show $ tcFocus tarOTC)
       substTC <- evalOutScopeLinkTC (pathFromTC tarOTC) tarOTC
-      dump $ printf "substLinkTC: link (%s) target is evaluated to:\n%s" (show $ trlTarget link) (show $ fst substTC)
+      dump $ printf "substLinkTC: link (%s) target is evaluated to:\n%s" (show $ trlTarget link) (show $ tcFocus substTC)
       return substTC
  where
   -- substitute out-scope links with evaluated nodes.
   evalOutScopeLinkTC :: (EvalEnv m) => Path -> TreeCursor -> m TreeCursor
-  evalOutScopeLinkTC p = traverseTC $ \x -> case treeNode (fst x) of
+  evalOutScopeLinkTC p = traverseTC $ \x -> case treeNode (tcFocus x) of
     -- Use the first var to determine if the link is in the scope. Then search the whole path.
     -- This handles the x.a case correctly.
     TNLink l -> do
@@ -933,13 +932,20 @@ a: {
 Suppose the cursor is at the struct that contains the value 42. The cursor is
 (struct_c, [("b", struct_b), ("a", struct_a)]).
 -}
-type TreeCursor = (Tree, [TreeCrumb])
+data TreeCursor = TreeCursor
+  { tcFocus :: Tree
+  , tcCrumbs :: [TreeCrumb]
+  }
+  deriving (Eq)
+
+instance Show TreeCursor where
+  show = showTreeCursor
 
 showTreeCursor :: TreeCursor -> String
 showTreeCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
  where
   prettyBldr :: TreeCursor -> Builder
-  prettyBldr (t, cs) =
+  prettyBldr (TreeCursor t cs) =
     string7 "-- ():\n"
       <> string7 (show t)
       <> char7 '\n'
@@ -956,13 +962,16 @@ showTreeCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
+replaceTCTip :: Tree -> TreeCursor -> TreeCursor
+replaceTCTip t (TreeCursor _ cs) = (TreeCursor t cs)
+
 mkSubTC :: Selector -> Tree -> TreeCursor -> TreeCursor
-mkSubTC sel node tc = (node, (sel, fst tc) : snd tc)
+mkSubTC sel node tc = TreeCursor node ((sel, tcFocus tc) : tcCrumbs tc)
 
 -- | Go up the tree cursor and return the new cursor.
 goUpTC :: TreeCursor -> Maybe TreeCursor
-goUpTC (_, []) = Nothing
-goUpTC (_, (_, v) : vs) = Just (v, vs)
+goUpTC (TreeCursor _ []) = Nothing
+goUpTC (TreeCursor _ ((_, v) : vs)) = Just $ TreeCursor v vs
 
 goDownTCPath :: Path -> TreeCursor -> Maybe TreeCursor
 goDownTCPath (Path sels) tc = go (reverse sels) tc
@@ -977,27 +986,27 @@ goDownTCPath (Path sels) tc = go (reverse sels) tc
 It handles the case when the current node is a disjunction node.
 -}
 goDownTCSel :: Selector -> TreeCursor -> Maybe TreeCursor
-goDownTCSel sel cursor = case go sel cursor of
+goDownTCSel sel tc = case go sel tc of
   Just c -> Just c
-  Nothing -> case treeNode (fst cursor) of
+  Nothing -> case treeNode (tcFocus tc) of
     TNDisj d ->
       if isJust (trdDefault d)
-        then goDownTCSel DisjDefaultSelector cursor >>= go sel
+        then goDownTCSel DisjDefaultSelector tc >>= go sel
         else Nothing
     _ -> Nothing
  where
   go :: Selector -> TreeCursor -> Maybe TreeCursor
-  go s (tree, vs) = do
-    nextTree <- goTreeSel s tree
-    return (nextTree, (s, tree) : vs)
+  go s x = do
+    nextTree <- goTreeSel s (tcFocus x)
+    return $ mkSubTC s nextTree x
 
 goDownTCSelErr :: (MonadError String m) => Selector -> TreeCursor -> m TreeCursor
 goDownTCSelErr sel tc = case goDownTCSel sel tc of
   Just c -> return c
-  Nothing -> throwError $ printf "cannot go down tree with selector %s, tree: %s" (show sel) (show $ fst tc)
+  Nothing -> throwError $ printf "cannot go down tree with selector %s, tree: %s" (show sel) (show $ tcFocus tc)
 
 pathFromTC :: TreeCursor -> Path
-pathFromTC (_, crumbs) = Path . reverse $ go crumbs []
+pathFromTC (TreeCursor _ crumbs) = Path . reverse $ go crumbs []
  where
   go :: [TreeCrumb] -> [Selector] -> [Selector]
   go [] acc = acc
@@ -1007,31 +1016,33 @@ pathFromTC (_, crumbs) = Path . reverse $ go crumbs []
 The structure of the tree is not changed.
 -}
 propUpTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-propUpTC (t, []) = return (t, [])
-propUpTC tc@(subT, (sel, parT) : cs) = case sel of
+propUpTC tc@(TreeCursor _ []) = return tc
+propUpTC tc@(TreeCursor subT ((sel, parT) : cs)) = case sel of
   ScopeSelector s -> updateParScope parT s subT
   IndexSelector i -> case parNode of
     TNList vs ->
       let subs = trLstSubs vs
           l = TNList $ vs{trLstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-       in return (substTreeNode l parT, cs)
+       in return (TreeCursor (substTreeNode l parT) cs)
     _ -> throwError insertErrMsg
   FuncArgSelector i -> case parNode of
     TNFunc fn ->
       let args = trfnArgs fn
           l = TNFunc $ fn{trfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
-       in return (substTreeNode l parT, cs)
+       in return (TreeCursor (substTreeNode l parT) cs)
     _ -> throwError insertErrMsg
   DisjDefaultSelector -> case parNode of
     TNDisj d ->
       return
-        (substTreeNode (TNDisj $ d{trdDefault = (trdDefault d)}) parT, cs)
+        (TreeCursor (substTreeNode (TNDisj $ d{trdDefault = (trdDefault d)}) parT) cs)
     _ -> throwError insertErrMsg
   DisjDisjunctSelector i -> case parNode of
     TNDisj d ->
       return
-        ( substTreeNode (TNDisj $ d{trdDisjuncts = take i (trdDisjuncts d) ++ [subT] ++ drop (i + 1) (trdDisjuncts d)}) parT
-        , cs
+        ( TreeCursor
+            ( substTreeNode (TNDisj $ d{trdDisjuncts = take i (trdDisjuncts d) ++ [subT] ++ drop (i + 1) (trdDisjuncts d)}) parT
+            )
+            cs
         )
     _ -> throwError insertErrMsg
   ParentSelector -> throwError "propUpTC: ParentSelector is not allowed"
@@ -1042,14 +1053,14 @@ propUpTC tc@(subT, (sel, parT) : cs) = case sel of
   updateParScope par label newSub = case treeNode par of
     TNScope parScope ->
       if
-        | isTreeBottom newSub -> return (newSub, cs)
+        | isTreeBottom newSub -> return (TreeCursor newSub cs)
         | Map.member label (trsSubs parScope) ->
             let
               sf = trsSubs parScope Map.! label
               newSF = sf{sfField = newSub}
               newScope = parScope{trsSubs = Map.insert label newSF (trsSubs parScope)}
              in
-              return (substTreeNode (TNScope newScope) parT, cs)
+              return (TreeCursor (substTreeNode (TNScope newScope) parT) cs)
         | otherwise -> throwError insertErrMsg
     _ -> throwError insertErrMsg
 
@@ -1065,20 +1076,20 @@ propUpTC tc@(subT, (sel, parT) : cs) = case sel of
       (show parT)
 
 propUpTCSel :: (EvalEnv m) => Selector -> TreeCursor -> m TreeCursor
-propUpTCSel _ (t, []) = return (t, [])
-propUpTCSel sel tc@(_, (s, _) : _) =
+propUpTCSel _ tc@(TreeCursor _ []) = return tc
+propUpTCSel sel tc@(TreeCursor _ ((s, _) : _)) =
   if s == sel
     then propUpTC tc
     else propUpTC tc >>= propUpTCSel sel
 
 -- | Traverse all the sub nodes of the tree.
 traverseSubNodes :: (EvalEnv m) => (TreeCursor -> EvalMonad TreeCursor) -> TreeCursor -> m TreeCursor
-traverseSubNodes f tc = case treeNode (fst tc) of
+traverseSubNodes f tc = case treeNode (tcFocus tc) of
   TNScope scope ->
     let
       goSub :: (EvalEnv m) => TreeCursor -> ScopeSelector -> m TreeCursor
       goSub acc k =
-        if isTreeBottom (fst acc)
+        if isTreeBottom (tcFocus acc)
           then return acc
           else getSubTC (ScopeSelector k) acc >>= f >>= levelUp (ScopeSelector k)
      in
@@ -1095,7 +1106,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
     let
       goSub :: (EvalEnv m) => TreeCursor -> Int -> m TreeCursor
       goSub acc i =
-        if isTreeBottom (fst acc)
+        if isTreeBottom (tcFocus acc)
           then return acc
           else getSubTC (IndexSelector i) acc >>= f >>= levelUp (IndexSelector i)
      in
@@ -1104,7 +1115,7 @@ traverseSubNodes f tc = case treeNode (fst tc) of
     let
       goSub :: (EvalEnv m) => TreeCursor -> Int -> m TreeCursor
       goSub acc i =
-        if isTreeBottom (fst acc)
+        if isTreeBottom (tcFocus acc)
           then return acc
           else getSubTC (FuncArgSelector i) acc >>= f >>= levelUp (FuncArgSelector i)
      in
@@ -1141,34 +1152,34 @@ traverseTC f tc = case treeNode n of
   TNBottom _ -> f tc
   TNTop -> f tc
  where
-  n = fst tc
+  n = tcFocus tc
 
 setOrigNodesTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
 setOrigNodesTC = traverseTC f
  where
   f :: (EvalEnv m) => TreeCursor -> m TreeCursor
   f tc =
-    let cur = fst tc
+    let cur = tcFocus tc
         updated = if isNothing (treeOrig cur) then cur{treeOrig = Just cur} else cur
-     in return (updated, snd tc)
+     in return (TreeCursor updated (tcCrumbs tc))
 
 evalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-evalTC tc = case treeNode (fst tc) of
+evalTC tc = case treeNode (tcFocus tc) of
   TNFunc fn -> do
-    dump $ printf "evalTC: path: %s, evaluate function, tip:%s" (show $ pathFromTC tc) (show $ fst tc)
+    dump $ printf "evalTC: path: %s, evaluate function, tip:%s" (show $ pathFromTC tc) (show $ tcFocus tc)
     trfnFunc fn (trfnArgs fn) tc
   TNConstraint c ->
     let
       origAtom = mkNewTree (TNAtom $ trCnOrigAtom c)
       op = mkNewTree (TNFunc $ mkBinaryOp AST.Unify (trCnUnify c) origAtom (trCnCnstr c))
-      unifyTC = (op, snd tc)
+      unifyTC = TreeCursor op (tcCrumbs tc)
      in
       do
         dump $ printf "evalTC: constraint unify tc:\n%s" (showTreeCursor unifyTC)
         x <- evalTC unifyTC
-        if (fst x) == origAtom
-          then return (origAtom, snd tc)
-          else throwError $ printf "evalTC: constraint not satisfied, %s != %s" (show (fst x)) (show origAtom)
+        if (tcFocus x) == origAtom
+          then return (TreeCursor origAtom (tcCrumbs tc))
+          else throwError $ printf "evalTC: constraint not satisfied, %s != %s" (show (tcFocus x)) (show origAtom)
   TNLink l -> do
     dump $
       printf "evalTC: path: %s, evaluate link %s" (show $ pathFromTC tc) (show $ trlTarget l)
@@ -1177,7 +1188,7 @@ evalTC tc = case treeNode (fst tc) of
       Nothing -> return tc
       Just tarTC -> do
         u <- evalTC tarTC
-        return (fst u, snd tc)
+        return (TreeCursor (tcFocus u) (tcCrumbs tc))
   TNList _ -> traverseSubNodes evalTC tc
   TNScope _ -> traverseSubNodes evalTC tc
   TNDisj _ -> traverseSubNodes evalTC tc
@@ -1203,7 +1214,7 @@ followLink link tc = do
                     header
                     (show $ pathFromTC tc)
                     (show $ pathFromTC tarTC)
-                return $ Just (mkNewTree TNRefCycleVar, snd tc)
+                return $ Just (TreeCursor (mkNewTree TNRefCycleVar) (tcCrumbs tc))
             | isPrefix tarAbsPath selfAbsPath ->
                 throwError $
                   printf
@@ -1211,15 +1222,15 @@ followLink link tc = do
                     (show tarAbsPath)
                     (show selfAbsPath)
             | otherwise ->
-                let tarNode = fst tarTC
-                    substTC = (tarNode, snd tc)
+                let tarNode = tcFocus tarTC
+                    substTC = TreeCursor tarNode (tcCrumbs tc)
                  in case treeNode tarNode of
                       TNLink newLink -> do
                         dump $ printf "%s: substitutes to another link. go to %s" header (show $ trlTarget newLink)
                         followLink newLink substTC
                       TNConstraint c -> do
                         dump $ printf "%s: substitutes to the atom value of the constraint" header
-                        return $ Just (mkNewTree (TNAtom $ trCnAtom c), snd tc)
+                        return $ Just (TreeCursor (mkNewTree (TNAtom $ trCnAtom c)) (tcCrumbs tc))
                       _ -> do
                         dump $ printf "%s: resolves to tree node:\n%s" header (show tarNode)
                         return $ Just substTC
@@ -1228,34 +1239,21 @@ followLink link tc = do
   header = printf "followLink, link %s, path: %s" (show $ trlTarget link) (show $ pathFromTC tc)
   selfAbsPath = canonicalizePath $ pathFromTC tc
 
-{- | propUp propagates the changes made to the tip of the block to the parent block.
-The structure of the tree is not changed.
--}
-propUpEvalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-propUpEvalTC tc = evalTC tc >>= propUpTC
-
-{- | Propagates the changes to the parent blocks until the top block.
-It returns the root block.
--}
-propRootEvalTC :: (EvalEnv m) => TreeCursor -> m TreeCursor
-propRootEvalTC (t, []) = return (t, [])
-propRootEvalTC tc = propUpEvalTC tc >>= propRootEvalTC
-
 {- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 The cursor will also be propagated to the parent block.
 -}
 searchTCVar :: (EvalEnv m) => Selector -> TreeCursor -> m (Maybe TreeCursor)
-searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (fst tc) of
+searchTCVar sel@(ScopeSelector ssel@(StringSelector _)) tc = case treeNode (tcFocus tc) of
   TNScope scope -> case Map.lookup ssel (trsSubs scope) of
     Just sf ->
       if lbAttrIsVar (sfAttr sf)
-        then return . Just $ extendTC sel (sfField sf) tc
+        then return . Just $ mkSubTC sel (sfField sf) tc
         else goUp tc
     _ -> goUp tc
   _ -> goUp tc
  where
   goUp :: (EvalEnv m) => TreeCursor -> m (Maybe TreeCursor)
-  goUp (_, [(RootSelector, _)]) = return Nothing
+  goUp (TreeCursor _ [(RootSelector, _)]) = return Nothing
   goUp utc = propUpTC utc >>= searchTCVar sel
 searchTCVar _ _ = return Nothing
 
@@ -1274,14 +1272,11 @@ data ExtendTCLabel = ExtendTCLabel
   }
   deriving (Show)
 
-{- | Update the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
-updated value.
--}
-extendTC :: Selector -> Tree -> TreeCursor -> TreeCursor
-extendTC sel sub (tip, cs) = (sub, (sel, tip) : cs)
-
-replaceTCTip :: Tree -> TreeCursor -> TreeCursor
-replaceTCTip t (_, cs) = (t, cs)
+-- {- | Update the tree node to the tree cursor with the given selector and returns the new cursor that focuses on the
+-- updated value.
+-- -}
+-- extendTC :: Selector -> Tree -> TreeCursor -> TreeCursor
+-- extendTC sel sub (tip, cs) = (sub, (sel, tip) : cs)
 
 indexBySel :: (EvalEnv m) => Selector -> AST.UnaryExpr -> Tree -> m Tree
 indexBySel sel ue t = case treeNode t of
@@ -1325,7 +1320,7 @@ indexBySel sel ue t = case treeNode t of
               Function
               ( \ts tc -> do
                   utc <- evalTC (mkSubTC unaryOpSelector (ts !! 0) tc)
-                  r <- indexBySel sel ue (fst utc)
+                  r <- indexBySel sel ue (tcFocus utc)
                   evalTC $ replaceTCTip r tc
               )
               (\_ -> AST.ExprUnaryExpr ue)
@@ -1363,11 +1358,11 @@ indexByTree sel ue tree =
                 , trfnExprGen = \_ -> AST.ExprUnaryExpr (trlExpr link)
                 , trfnFunc = \ts tc -> do
                     idx <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) tc)
-                    dump $ printf "indexByTree TNLink: index resolved to %s" (show $ fst idx)
-                    t <- indexByTree (fst idx) ue tree
+                    dump $ printf "indexByTree TNLink: index resolved to %s" (show $ tcFocus idx)
+                    t <- indexByTree (tcFocus idx) ue tree
                     dump $ printf "indexByTree TNLink: index result created %s" (show $ t)
                     u <- evalTC $ replaceTCTip t tc
-                    dump $ printf "indexByTree TNLink: index result resolved to %s" (show $ fst u)
+                    dump $ printf "indexByTree TNLink: index result resolved to %s" (show $ tcFocus u)
                     return u
                 }
           )
@@ -1380,8 +1375,8 @@ indexByTree sel ue tree =
                 Function
                 ( \ts tc -> do
                     selTC <- evalTC (mkSubTC (FuncArgSelector 0) (ts !! 0) tc)
-                    dump $ printf "indexByTree: path: %s, sel: %s, tree: %s" (show $ pathFromTC tc) (show $ fst selTC) (show $ ts !! 1)
-                    t <- indexByTree (fst selTC) ue (ts !! 1)
+                    dump $ printf "indexByTree: path: %s, sel: %s, tree: %s" (show $ pathFromTC tc) (show $ tcFocus selTC) (show $ ts !! 1)
+                    t <- indexByTree (tcFocus selTC) ue (ts !! 1)
                     dump $ printf "indexByTree TNFunc: resolved to %s" (show t)
                     evalTC $ replaceTCTip t tc
                 )

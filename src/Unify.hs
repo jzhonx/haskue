@@ -19,7 +19,7 @@ import Tree
 unify :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
 unify t1 t2 tc = do
   node <- unifyToTree t1 t2 tc
-  return (substTreeNode (treeNode node) (fst tc), snd tc)
+  return $ TreeCursor (substTreeNode (treeNode node) (tcFocus tc)) (tcCrumbs tc)
 
 unifyToTree :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m Tree
 unifyToTree t1 t2 = unifyWithDir (Path.L, t1) (Path.R, t2)
@@ -77,7 +77,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
           return $
             Tree
               (TNBottom $ TreeBottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
-              (treeOrig (fst parTC))
+              (treeOrig (tcFocus parTC))
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
       unifyLeftDisj (d2, dj2, t2) (d1, t1) parTC
@@ -361,11 +361,11 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   (TNRefCycleVar, _) -> return t2
   (TNLink l, _) -> do
     substTC1 <- substLinkTC l $ mkSubTC (Path.toBinOpSelector d1) t1 tc
-    case treeNode (fst substTC1) of
+    case treeNode (tcFocus substTC1) of
       TNLink _ -> do
-        dump $ printf "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s" (show t1) (show $ fst substTC1)
+        dump $ printf "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s" (show t1) (show $ tcFocus substTC1)
         mkUnification dt1 dt2
-      _ -> unifyWithDir (d1, fst substTC1) dt2 tc
+      _ -> unifyWithDir (d1, tcFocus substTC1) dt2 tc
   _ -> notUnifiable dt1 dt2
  where
   evalOrDelay :: (EvalEnv m) => m Tree
@@ -374,17 +374,17 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
      in do
           x <- evalTC subTC
           dump $
-            printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show $ pathFromTC tc) (show t1) (show $ fst x)
+            printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show $ pathFromTC tc) (show t1) (show $ tcFocus x)
           updatedTC <- propUpTCSel (Path.toBinOpSelector d1) x
           dump $
             printf
               "unifyLeftOther, path: %s, starts proc left results. %s: %s, %s: %s"
               (show $ pathFromTC updatedTC)
               (show d1)
-              (show $ fst x)
+              (show $ tcFocus x)
               (show d2)
               (show t2)
-          procLeftEvalRes (d1, fst x) dt2 updatedTC
+          procLeftEvalRes (d1, tcFocus x) dt2 updatedTC
 
 procLeftEvalRes :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
 procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
@@ -404,10 +404,10 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) tc = case treeNode t2 of
 
 unifyStructs :: (EvalEnv m) => (Path.BinOpDirect, TNScope) -> (Path.BinOpDirect, TNScope) -> TreeCursor -> m Tree
 unifyStructs (_, s1) (_, s2) tc = do
-  let utc = (nodesToScope allNodes, snd tc)
-  dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (fst utc))
+  let utc = TreeCursor (nodesToScope allNodes) (tcCrumbs tc)
+  dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (tcFocus utc))
   u <- evalAllNodes utc
-  return (fst u)
+  return (tcFocus u)
  where
   fields1 = trsSubs s1
   fields2 = trsSubs s2
@@ -431,6 +431,7 @@ unifyStructs (_, s1) (_, s2) tc = do
                     { sfField = unifyOp
                     , sfAttr = ua
                     , sfSelExpr = Nothing
+                    , sfSelTree = Nothing
                     }
                 )
                   : acc
@@ -449,7 +450,7 @@ unifyStructs (_, s1) (_, s2) tc = do
   evalAllNodes x = foldM evalNode x allNodes
 
   evalNode :: (EvalEnv m) => TreeCursor -> (Path.ScopeSelector, ScopeField) -> m TreeCursor
-  evalNode acc (key, sf) = case treeNode (fst acc) of
+  evalNode acc (key, sf) = case treeNode (tcFocus acc) of
     (TNBottom _) -> return acc
     _ -> do
       u <- evalTC $ mkSubTC (Path.ScopeSelector key) (sfField sf) acc
@@ -459,7 +460,7 @@ unifyStructs (_, s1) (_, s2) tc = do
           "unifyStructs: %s gets updated after eval %s, new struct tree:\n%s"
           (show $ pathFromTC v)
           (show key)
-          (show (fst v))
+          (show (tcFocus v))
       return v
 
   nodesToScope :: [(Path.ScopeSelector, ScopeField)] -> Tree
@@ -548,7 +549,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
       then mapM (\y -> oneToMany (ld2, y) (ld1, ts1)) ts2
       else mapM (\x -> oneToMany (ld1, x) (ld2, ts2)) ts1
 
-  origTree = treeOrig (fst tc)
+  origTree = treeOrig (tcFocus tc)
 
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> Maybe Tree -> m Tree
 treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of

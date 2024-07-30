@@ -41,7 +41,7 @@ eval expr = do
       ( do
           root <- evalExpr expr
           dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
-          let rootTC = (root, [(RootSelector, mkNewTree TNTop)])
+          let rootTC = TreeCursor root [(RootSelector, mkNewTree TNTop)]
           r2 <- setOrigNodesTC rootTC
           dump $ printf "--- start resolving links ---"
           res <- evalTC r2
@@ -131,28 +131,28 @@ evalStructLit decls = do
          in
           do
             dump $ printf "evalFdLabels: lb1: %s" (show lb1)
-            (key, eMaybe) <- sselFrom lb1
+            (key, keyExprMaybe) <- sselFrom lb1
             dump $
               printf "evalFdLabels: key: %s, e: %s" (show key) (show e)
             sub <- evalExpr e
-            return (key, toScopeField eMaybe attr sub)
+            return (key, toScopeField keyExprMaybe attr sub)
       l1 : l2 : rs ->
         let
           (lb1, attr1) = slFrom l1
           attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
          in
           do
-            (key, eMaybe) <- sselFrom lb1
+            (key, keyExprMaybe) <- sselFrom lb1
             (key2, sf2) <- evalFdLabels (l2 : rs) e
             let sub = mkScope [key2] [(key2, sf2)]
-            return (key, toScopeField eMaybe attr sub)
+            return (key, toScopeField keyExprMaybe attr sub)
 
   toScopeField :: Maybe (AST.Expression, Tree) -> LabelAttr -> Tree -> ScopeField
   toScopeField Nothing attr t =
     ScopeField
       { sfField = t
       , sfSelExpr = Nothing
-      , sfSelTree = return t
+      , sfSelTree = Nothing
       , sfAttr = attr
       }
   toScopeField (Just (e, et)) attr t =
@@ -272,7 +272,7 @@ dispUnaryFunc op t tc = do
     -- The unary op is operating on a non-atom.
     TNFunc _ -> return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
     _ -> returnConflict
-  return (unode, snd tc)
+  return (TreeCursor unode (tcCrumbs tc))
  where
   conflict :: Tree
   conflict = mkBottom $ printf "%s cannot be used for %s" (show t) (show op)
@@ -313,7 +313,7 @@ dispBinFunc op = case op of
 regBin :: (EvalEnv m) => BinaryOp -> Tree -> Tree -> TreeCursor -> m TreeCursor
 regBin op t1 t2 tc = do
   node <- regBinDir op (L, t1) (R, t2) tc
-  return (substTreeNode (treeNode node) (fst tc), snd tc)
+  return (TreeCursor (substTreeNode (treeNode node) (tcFocus tc)) (tcCrumbs tc))
 
 regBinDir :: (EvalEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> TreeCursor -> m Tree
 regBinDir op dt1@(d1, t1) dt2@(d2, t2) tc = do
@@ -440,7 +440,7 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   (TNConstraint c, _) -> do
     na <- regBinDir op (d1, mkNewTree (TNAtom $ trCnAtom c)) (d2, t2) tc
     case treeNode na of
-      TNAtom atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (fst tc)
+      TNAtom atom -> return $ substTreeNode (TNConstraint $ updateTNConstraintAtom atom c) (tcFocus tc)
       _ -> undefined
   _ -> return (mkBottom mismatchErr)
  where
@@ -450,20 +450,20 @@ regBinOther op (d1, t1) (d2, t2) tc = case (treeNode t1, t2) of
   evalOrDelay =
     let unevaledTC = mkSubTC (toBinOpSelector d1) t1 tc
      in do
-          dump $ printf "regBinOther: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
+          dump $ printf "regBinOther: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (tcFocus unevaledTC))
           x <- evalTC unevaledTC
-          dump $ printf "regBinOther: %s, is evaluated to:\n%s" (show t1) (show $ fst x)
-          case treeNode (fst x) of
-            TNAtom a1 -> regBinLeftAtom op (d1, a1, fst x) (d2, t2) tc
-            TNDisj dj1 -> regBinLeftDisj op (d1, dj1, fst x) (d2, t2) tc
-            TNScope s1 -> regBinLeftScope op (d1, s1, fst x) (d2, t2) tc
+          dump $ printf "regBinOther: %s, is evaluated to:\n%s" (show t1) (show $ tcFocus x)
+          case treeNode (tcFocus x) of
+            TNAtom a1 -> regBinLeftAtom op (d1, a1, tcFocus x) (d2, t2) tc
+            TNDisj dj1 -> regBinLeftDisj op (d1, dj1, tcFocus x) (d2, t2) tc
+            TNScope s1 -> regBinLeftScope op (d1, s1, tcFocus x) (d2, t2) tc
             TNList _ -> undefined
-            TNConstraint _ -> regBinOther op (d1, fst x) (d2, t2) tc
+            TNConstraint _ -> regBinOther op (d1, tcFocus x) (d2, t2) tc
             _ -> delay
 
   delay :: (EvalEnv m) => m Tree
   delay =
-    let v = substTreeNode (TNFunc $ mkBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (fst tc)
+    let v = substTreeNode (TNFunc $ mkBinaryOpDir op (regBin op) (d1, t1) (d2, t2)) (tcFocus tc)
      in do
           dump $ printf "regBinOther: %s is incomplete, delaying to %s" (show t1) (show v)
           return v
@@ -516,18 +516,18 @@ evalDisj e1 e2 = do
             (_, ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
               evalDisjPair (DisjRegular t1) (DisjDefault t2)
             (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-          return (substTreeNode (treeNode unode) (fst x), snd x)
-    dump $ printf "evalDisjAdapt: evaluated to %s" (show $ fst u)
+          return (TreeCursor (substTreeNode (treeNode unode) (tcFocus x)) (tcCrumbs x))
+    dump $ printf "evalDisjAdapt: evaluated to %s" (show $ tcFocus u)
     return u
 
   evalSub :: (EvalEnv m) => Path.Selector -> Tree -> TreeCursor -> m Tree
   evalSub sel t x =
     let unevaledTC = mkSubTC sel t x
      in do
-          dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (fst unevaledTC))
+          dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ pathFromTC unevaledTC) (show (tcFocus unevaledTC))
           u <- evalTC unevaledTC
-          dump $ printf "evalDisj: path: %s, %s, is evaluated to:\n%s" (show $ pathFromTC u) (show t) (show $ fst u)
-          return $ fst u
+          dump $ printf "evalDisj: path: %s, %s, is evaluated to:\n%s" (show $ pathFromTC u) (show t) (show $ tcFocus u)
+          return $ tcFocus u
 
   -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
   evalDisjPair :: (EvalEnv m) => DisjItem -> DisjItem -> m Tree

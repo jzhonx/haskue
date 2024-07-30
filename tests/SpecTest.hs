@@ -27,6 +27,7 @@ newStruct lbls ow subs =
                     , ScopeField
                         { sfField = v
                         , sfSelExpr = Nothing
+                        , sfSelTree = Nothing
                         , sfAttr = snd $ attrWrite k
                         }
                     )
@@ -52,7 +53,7 @@ startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ do
   tc <- runIO s
   res <- goDownTCSelErr RootSelector tc
-  return $ fst res
+  return $ tcFocus res
 
 assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do
@@ -80,9 +81,9 @@ testBasic = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
-        @?= newSimpleStruct
+    Right y ->
+      cmpStructs y $
+        newSimpleStruct
           ["a", "b", "c", "d"]
           [ ("a", mkTreeAtom $ Bool True)
           , ("b", mkTreeAtom $ Bool False)
