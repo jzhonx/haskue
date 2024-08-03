@@ -39,6 +39,7 @@ module Tree (
   DynamicScopeField (..),
   ScopeFieldAdder (..),
   TreeCursor (..),
+  EvalState (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -117,10 +118,9 @@ import Text.Printf (printf)
 dump :: (MonadLogger m) => String -> m ()
 dump = logDebugN . pack
 
--- type EvalEnvState s m = (MonadError String m, MonadLogger m, MonadReader Config m, MonadState s m)
-type EvalEnvState m = (MonadError String m, MonadLogger m, MonadReader Config m)
+type EvalEnvState s m = (MonadError String m, MonadLogger m, MonadReader Config m, MonadState s m)
 
-type EvalEnv m = EvalEnvState m
+type EvalEnv m = EvalEnvState EvalState m
 
 data EvalState = EvalState {}
 

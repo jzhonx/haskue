@@ -42,19 +42,20 @@ eval expr = do
   rootTC <-
     runReaderT
       ( do
-          root <- evalExpr expr
+          root <- evalStateT (evalExpr expr) EvalState{}
           dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
           let rootTC = TreeCursor root [(RootSelector, mkNewTree TNTop)]
-          r2 <- setOrigNodesTC rootTC
+          r2 <- evalStateT (setOrigNodesTC rootTC) EvalState{}
           dump $ printf "--- start resolving links ---"
-          res <- evalTC r2
+          res <- evalStateT (evalTC r2) EvalState{}
           dump $ printf "--- resolved: ---\n%s" (showTreeCursor res)
           return res
       )
       Config{cfUnify = unify, cfCreateCnstr = True}
   finalized <-
     runReaderT
-      (evalTC rootTC)
+      ( evalStateT (evalTC rootTC) EvalState{}
+      )
       Config{cfUnify = unify, cfCreateCnstr = False}
   dump $ printf "--- constraints evaluated: ---\n%s" (showTreeCursor finalized)
   return finalized
