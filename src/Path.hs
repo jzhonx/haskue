@@ -23,7 +23,7 @@ instance Show Selector where
   show (ScopeSelector s) = show s
   show (IndexSelector i) = show i
   show (FuncArgSelector i) = "a" ++ show i
-  show (DisjDefaultSelector) = "d*"
+  show DisjDefaultSelector = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
 
@@ -31,6 +31,10 @@ data ScopeSelector
   = StringSelector String
   | DynamicSelector Int
   deriving (Eq)
+
+viewScopeSelector :: ScopeSelector -> Int
+viewScopeSelector (DynamicSelector _) = 1
+viewScopeSelector _ = 0
 
 instance Ord ScopeSelector where
   compare (StringSelector s1) (StringSelector s2) = compare s1 s2

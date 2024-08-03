@@ -24,17 +24,16 @@ newStruct lbls ow subs =
             ( map
                 ( \(k, v) ->
                     ( Path.StringSelector k
-                    , ScopeField
-                        { sfField = v
-                        , sfSelExpr = Nothing
-                        , sfSelTree = Nothing
-                        , sfAttr = snd $ attrWrite k
+                    , StaticScopeField
+                        { ssfField = v
+                        , ssfAttr = snd $ attrWrite k
                         }
                     )
                 )
                 subs
             )
       , trsOrdLabels = map Path.StringSelector lbls
+      , trsDynSubs = []
       -- , trsAttrs = Map.fromList $ map attrWrite lbls
       }
  where

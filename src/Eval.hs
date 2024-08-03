@@ -1,8 +1,11 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Eval (
   runIO,
@@ -15,11 +18,11 @@ import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
-import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (MonadState (get, put), evalStateT)
+import Control.Monad.Reader (MonadTrans (lift), ReaderT (runReaderT))
+import Control.Monad.State.Strict (MonadState (get, put), StateT, evalStateT)
 import Data.List ((!?))
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
+import Data.Maybe (fromJust, fromMaybe, isJust)
 import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
@@ -84,8 +87,7 @@ evalLiteral lit = return v
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
 evalStructLit decls = do
-  let lbnCounter = 0
-  (scope, ts) <- evalStateT (foldM evalDecl (emptyTNScope, []) decls) lbnCounter
+  (scope, ts) <- foldM evalDecl (emptyTNScope, []) decls
   let v =
         if null ts
           then mkNewTree (TNScope scope)
@@ -94,84 +96,62 @@ evalStructLit decls = do
   return v
  where
   --  Evaluates a declaration in a struct.
-  evalDecl :: (EvalEnv m, MonadState Int m) => (TNScope, [Tree]) -> Declaration -> m (TNScope, [Tree])
-  evalDecl acc (Embedding e) = do
+  --  It returns the updated scope and the list of to be unified trees, which are embeddings.
+  evalDecl :: (EvalEnv m) => (TNScope, [Tree]) -> Declaration -> m (TNScope, [Tree])
+  evalDecl (scp, ts) (Embedding e) = do
     v <- evalExpr e
-    return (fst acc, v : snd acc)
+    return (scp, v : ts)
   evalDecl (scope, ts) (FieldDecl fd) = case fd of
     Field ls e -> do
-      (sel, sf) <- evalFdLabels ls e
-      let
-        exprMaybe extSF = do
-          xs <- sequence [sfSelExpr extSF, sfSelExpr sf]
-          xs !? 0
-        selTreeMaybe extFS = do
-          xs <- sequence [sfSelTree extFS, sfSelTree sf]
-          xs !? 0
-        newSFMaybe = do
-          extSF <- Map.lookup sel (trsSubs scope)
-          return
-            ScopeField
-              { sfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (sfField extSF) (sfField sf))
-              , sfSelExpr = exprMaybe extSF
-              , sfSelTree = selTreeMaybe extSF
-              , sfAttr = mergeAttrs (sfAttr extSF) (sfAttr sf)
-              }
-        newScope = insertScopeSub scope sel (maybe sf id newSFMaybe)
+      sfa <- evalFdLabels ls e
+      let newScope = insertUnifyScope sfa unify scope
       return (newScope, ts)
 
-  evalFdLabels :: (EvalEnv m, MonadState Int m) => [AST.Label] -> AST.Expression -> m (ScopeSelector, ScopeField)
+  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m ScopeFieldAdder
   evalFdLabels lbls e =
     case lbls of
       [] -> throwError "empty labels"
-      l1 : [] ->
+      [l1] ->
         let
           (lb1, attr1) = slFrom l1
           attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
          in
           do
             dump $ printf "evalFdLabels: lb1: %s" (show lb1)
-            (key, keyExprMaybe) <- sselFrom lb1
-            dump $
-              printf "evalFdLabels: key: %s, e: %s" (show key) (show e)
             sub <- evalExpr e
-            return (key, toScopeField keyExprMaybe attr sub)
+            adder <- adderFrom lb1 attr sub
+            dump $ printf "evalFdLabels: adder: %s" (show adder)
+            return adder
       l1 : l2 : rs ->
         let
           (lb1, attr1) = slFrom l1
           attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
          in
           do
-            (key, keyExprMaybe) <- sselFrom lb1
-            (key2, sf2) <- evalFdLabels (l2 : rs) e
-            let sub = mkScope [key2] [(key2, sf2)]
-            return (key, toScopeField keyExprMaybe attr sub)
+            dump $ printf "evalFdLabels, nested: lb1: %s" (show lb1)
+            sf2 <- evalFdLabels (l2 : rs) e
+            let sub = mkScope [sf2]
+            adder <- adderFrom lb1 attr sub
+            dump $ printf "evalFdLabels, nested: adder: %s" (show adder)
+            return adder
 
-  toScopeField :: Maybe (AST.Expression, Tree) -> LabelAttr -> Tree -> ScopeField
-  toScopeField Nothing attr t =
-    ScopeField
-      { sfField = t
-      , sfSelExpr = Nothing
-      , sfSelTree = Nothing
-      , sfAttr = attr
-      }
-  toScopeField (Just (e, et)) attr t =
-    ScopeField
-      { sfField = t
-      , sfSelExpr = Just e
-      , sfSelTree = Just et
-      , sfAttr = attr
-      }
+  adderFrom :: (EvalEnv m) => LabelName -> LabelAttr -> Tree -> m ScopeFieldAdder
+  adderFrom ln attr sub = case ln of
+    (sselFrom -> Just key) -> return $ Static key (StaticScopeField sub attr)
+    (dselFrom -> Just se) -> do
+      selTree <- evalExpr se
+      return $ Dynamic (DynamicScopeField sub attr se selTree)
+    _ -> throwError "invalid label"
 
   -- Returns the label name and the whether the label is static.
-  sselFrom :: (EvalEnv m, MonadState Int m) => LabelName -> m (Path.ScopeSelector, Maybe (AST.Expression, Tree))
-  sselFrom (LabelID ident) = return (Path.StringSelector ident, Nothing)
-  sselFrom (LabelString ls) = return (Path.StringSelector ls, Nothing)
-  sselFrom (LabelNameExpr e) = do
-    lneCnt <- get
-    put (lneCnt + 1)
-    t <- evalExpr e
-    return (Path.DynamicSelector lneCnt, Just (e, t))
+  sselFrom :: LabelName -> Maybe Path.ScopeSelector
+  sselFrom (LabelID ident) = Just (Path.StringSelector ident)
+  sselFrom (LabelString ls) = Just (Path.StringSelector ls)
+  sselFrom _ = Nothing
+
+  dselFrom :: LabelName -> Maybe AST.Expression
+  dselFrom (LabelNameExpr e) = Just e
+  dselFrom _ = Nothing
 
   slFrom :: Label -> (LabelName, ScopeLabelType)
   slFrom l = case l of

@@ -404,7 +404,7 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) tc = case treeNode t2 of
 
 unifyStructs :: (EvalEnv m) => (Path.BinOpDirect, TNScope) -> (Path.BinOpDirect, TNScope) -> TreeCursor -> m Tree
 unifyStructs (_, s1) (_, s2) tc = do
-  let utc = TreeCursor (nodesToScope allNodes) (tcCrumbs tc)
+  let utc = TreeCursor (nodesToScope allStatics combinedDynSubs) (tcCrumbs tc)
   dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (tcFocus utc))
   u <- evalAllNodes utc
   return (tcFocus u)
@@ -416,44 +416,42 @@ unifyStructs (_, s1) (_, s2) tc = do
   interKeys = Set.intersection l1Set l2Set
   disjKeys1 = Set.difference l1Set interKeys
   disjKeys2 = Set.difference l2Set interKeys
+  combinedDynSubs = trsDynSubs s1 ++ trsDynSubs s2
 
-  interNodes :: [(Path.ScopeSelector, ScopeField)]
-  interNodes =
-    ( Set.foldr
-        ( \key acc ->
-            let sf1 = fields1 Map.! key
-                sf2 = fields2 Map.! key
-                ua = mergeAttrs (sfAttr sf1) (sfAttr sf2)
-                -- No original node exists yet
-                unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (sfField sf1) (sfField sf2))
-             in ( key
-                , ScopeField
-                    { sfField = unifyOp
-                    , sfAttr = ua
-                    , sfSelExpr = Nothing
-                    , sfSelTree = Nothing
-                    }
-                )
-                  : acc
-        )
-        []
-        interKeys
-    )
+  inter :: [(Path.ScopeSelector, StaticScopeField)]
+  inter =
+    Set.foldr
+      ( \key acc ->
+          let sf1 = fields1 Map.! key
+              sf2 = fields2 Map.! key
+              ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
+              -- No original node exists yet
+              unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2))
+           in ( key
+              , StaticScopeField
+                  { ssfField = unifyOp
+                  , ssfAttr = ua
+                  }
+              )
+                : acc
+      )
+      []
+      interKeys
 
-  select :: TNScope -> Set.Set Path.ScopeSelector -> [(Path.ScopeSelector, ScopeField)]
-  select s keys = map (\key -> (key, (trsSubs s) Map.! key)) (Set.toList keys)
+  select :: TNScope -> Set.Set Path.ScopeSelector -> [(Path.ScopeSelector, StaticScopeField)]
+  select s keys = map (\key -> (key, trsSubs s Map.! key)) (Set.toList keys)
 
-  allNodes :: [(Path.ScopeSelector, ScopeField)]
-  allNodes = interNodes ++ (select s1 disjKeys1) ++ (select s2 disjKeys2)
+  allStatics :: [(Path.ScopeSelector, StaticScopeField)]
+  allStatics = inter ++ select s1 disjKeys1 ++ select s2 disjKeys2
 
   evalAllNodes :: (EvalEnv m) => TreeCursor -> m TreeCursor
-  evalAllNodes x = foldM evalNode x allNodes
+  evalAllNodes x = foldM evalStatic x allStatics
 
-  evalNode :: (EvalEnv m) => TreeCursor -> (Path.ScopeSelector, ScopeField) -> m TreeCursor
-  evalNode acc (key, sf) = case treeNode (tcFocus acc) of
+  evalStatic :: (EvalEnv m) => TreeCursor -> (Path.ScopeSelector, StaticScopeField) -> m TreeCursor
+  evalStatic acc (key, sf) = case treeNode (tcFocus acc) of
     (TNBottom _) -> return acc
     _ -> do
-      u <- evalTC $ mkSubTC (Path.ScopeSelector key) (sfField sf) acc
+      u <- evalTC $ mkSubTC (Path.ScopeSelector key) (ssfField sf) acc
       v <- propUpTCSel (Path.ScopeSelector key) u
       dump $
         printf
@@ -463,13 +461,14 @@ unifyStructs (_, s1) (_, s2) tc = do
           (show (tcFocus v))
       return v
 
-  nodesToScope :: [(Path.ScopeSelector, ScopeField)] -> Tree
-  nodesToScope nodes =
+  nodesToScope :: [(Path.ScopeSelector, StaticScopeField)] -> [DynamicScopeField] -> Tree
+  nodesToScope nodes dyns =
     mkNewTree
       ( TNScope $
           TreeScope
             { trsOrdLabels = map fst nodes
             , trsSubs = Map.fromList nodes
+            , trsDynSubs = dyns
             }
       )
 
