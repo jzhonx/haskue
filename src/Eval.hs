@@ -20,7 +20,6 @@ import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
 import Control.Monad.Reader (MonadTrans (lift), ReaderT (runReaderT))
 import Control.Monad.State.Strict (MonadState (get, put), StateT, evalStateT)
-import Data.List ((!?))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
 import Parser (parseCUE)
@@ -42,19 +41,19 @@ eval expr = do
   rootTC <-
     runReaderT
       ( do
-          root <- evalStateT (evalExpr expr) EvalState{}
+          root <- evalStateT (evalExpr expr) emptyEvalState
           dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
           let rootTC = TreeCursor root [(RootSelector, mkNewTree TNTop)]
-          r2 <- evalStateT (setOrigNodesTC rootTC) EvalState{}
+          r2 <- evalStateT (setOrigNodesTC rootTC) emptyEvalState
           dump $ printf "--- start resolving links ---"
-          res <- evalStateT (evalTC r2) EvalState{}
+          res <- evalStateT (evalTC r2) emptyEvalState
           dump $ printf "--- resolved: ---\n%s" (showTreeCursor res)
           return res
       )
       Config{cfUnify = unify, cfCreateCnstr = True}
   finalized <-
     runReaderT
-      ( evalStateT (evalTC rootTC) EvalState{}
+      ( evalStateT (evalTC rootTC) emptyEvalState
       )
       Config{cfUnify = unify, cfCreateCnstr = False}
   dump $ printf "--- constraints evaluated: ---\n%s" (showTreeCursor finalized)

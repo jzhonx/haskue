@@ -43,15 +43,18 @@ module Tree (
   aToLiteral,
   bdRep,
   buildASTExpr,
+  defaultLabelAttr,
   dump,
+  emptyTNScope,
   evalTC,
-  -- extendTC,
-  setTCFocus,
   getScalarValue,
   goDownTCPath,
   goDownTCSel,
   goDownTCSelErr,
   goUpTC,
+  indexBySel,
+  indexByTree,
+  insertUnifyScope,
   isTreeBottom,
   isValueAtom,
   isValueConcrete,
@@ -59,33 +62,30 @@ module Tree (
   mergeAttrs,
   mkBinaryOp,
   mkBinaryOpDir,
-  mkNewTree,
-  mkSubTC,
+  mkBottom,
   mkBounds,
+  mkList,
+  mkNewTree,
+  mkScope,
+  mkSubTC,
   mkTNConstraint,
   mkTNFunc,
   mkTreeAtom,
   mkTreeDisj,
-  mkBottom,
   mkUnaryOp,
+  newEvalEnvMaybe,
   pathFromTC,
   propUpTCSel,
+  runEnvMaybe,
   searchTCVar,
   setOrigNodesTC,
+  setTCFocus,
   showTreeCursor,
   substLinkTC,
   substTreeNode,
   updateTNConstraintAtom,
   updateTNConstraintCnstr,
-  defaultLabelAttr,
-  insertUnifyScope,
-  mkScope,
-  emptyTNScope,
-  mkList,
-  indexBySel,
-  indexByTree,
-  runEnvMaybe,
-  newEvalEnvMaybe,
+  emptyEvalState,
 )
 where
 
@@ -110,7 +110,7 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.List (intercalate, (!?))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
-import Data.Text (pack)
+import Data.Text (empty, pack)
 import Debug.Trace
 import Path
 import Text.Printf (printf)
@@ -122,7 +122,15 @@ type EvalEnvState s m = (MonadError String m, MonadLogger m, MonadReader Config 
 
 type EvalEnv m = EvalEnvState EvalState m
 
-data EvalState = EvalState {}
+data EvalState = EvalState
+  { esNotifierMap :: Map.Map Path Path
+  }
+
+emptyEvalState :: EvalState
+emptyEvalState =
+  EvalState
+    { esNotifierMap = Map.empty
+    }
 
 data Config = Config
   { cfUnify :: forall m. (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
