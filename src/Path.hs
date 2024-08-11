@@ -9,7 +9,7 @@ data Selector
   = -- RootSelector is a special selector that represents the root of the path.
     -- It is crucial to distinguish between the absolute path and the relative path.
     RootSelector
-  | ScopeSelector ScopeSelector
+  | StructSelector StructSelector
   | IndexSelector Int
   | -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
     FuncArgSelector Int
@@ -20,29 +20,29 @@ data Selector
 
 instance Show Selector where
   show RootSelector = "/"
-  show (ScopeSelector s) = show s
+  show (StructSelector s) = show s
   show (IndexSelector i) = show i
-  show (FuncArgSelector i) = "a" ++ show i
+  show (FuncArgSelector i) = "fa" ++ show i
   show DisjDefaultSelector = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
 
-data ScopeSelector
+data StructSelector
   = StringSelector String
   | DynamicSelector Int
   deriving (Eq)
 
-viewScopeSelector :: ScopeSelector -> Int
-viewScopeSelector (DynamicSelector _) = 1
-viewScopeSelector _ = 0
+viewStructSelector :: StructSelector -> Int
+viewStructSelector (DynamicSelector _) = 1
+viewStructSelector _ = 0
 
-instance Ord ScopeSelector where
+instance Ord StructSelector where
   compare (StringSelector s1) (StringSelector s2) = compare s1 s2
   compare (StringSelector _) _ = LT
   compare _ (StringSelector _) = GT
   compare (DynamicSelector i1) (DynamicSelector i2) = compare i1 i2
 
-instance Show ScopeSelector where
+instance Show StructSelector where
   show (StringSelector s) = s
   show (DynamicSelector i) = "sd" ++ show i
 

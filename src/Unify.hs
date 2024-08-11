@@ -9,6 +9,7 @@ import qualified AST
 import Control.Monad (foldM, forM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
+import Control.Monad.State.Strict (get, gets, put)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -16,20 +17,19 @@ import qualified Path
 import Text.Printf (printf)
 import Tree
 
-unify :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m TreeCursor
-unify t1 t2 tc = do
-  node <- unifyToTree t1 t2 tc
-  return $ TreeCursor (substTreeNode (treeNode node) (tcFocus tc)) (tcCrumbs tc)
+unify :: (FuncEnv m) => Tree -> Tree -> m Tree
+unify = unifyToTree
 
-unifyToTree :: (EvalEnv m) => Tree -> Tree -> TreeCursor -> m Tree
+unifyToTree :: (FuncEnv m) => Tree -> Tree -> m Tree
 unifyToTree t1 t2 = unifyWithDir (Path.L, t1) (Path.R, t2)
 
-unifyWithDir :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
+unifyWithDir :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
+  fn <- get
   dump $
     printf
       ("unifying, path: %s:, %s:\n%s" ++ "\n" ++ "with %s:\n%s")
-      (show $ pathFromTC tc)
+      (show $ cvPath fn)
       (show d1)
       (show t1)
       (show d2)
@@ -39,53 +39,60 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) tc = do
     (_, TNTop) -> return t1
     (TNBottom _, _) -> return t1
     (_, TNBottom _) -> return t2
-    (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2 tc
+    (TNAtom l1, _) -> unifyLeftAtom (d1, l1, t1) dt2
     -- Below is the earliest time to create a constraint
-    (_, TNAtom l2) -> unifyLeftAtom (d2, l2, t2) dt1 tc
-    (TNDisj dj1, _) -> unifyLeftDisj (d1, dj1, t1) (d2, t2) tc
-    (TNScope s1, _) -> unifyLeftStruct (d1, s1, t1) dt2 tc
-    (TNBounds b1, _) -> unifyLeftBound (d1, b1, t1) dt2 tc
-    _ -> unifyLeftOther dt1 dt2 tc
-  dump $ printf ("unifying, path: %s:, res:\n%s") (show $ pathFromTC tc) (show res)
+    (_, TNAtom l2) -> unifyLeftAtom (d2, l2, t2) dt1
+    (TNDisj dj1, _) -> unifyLeftDisj (d1, dj1, t1) (d2, t2)
+    (TNStruct s1, _) -> unifyLeftStruct (d1, s1, t1) dt2
+    (TNBounds b1, _) -> unifyLeftBound (d1, b1, t1) dt2
+    _ -> unifyLeftOther dt1 dt2
+  dump $
+    printf
+      "unifying, path: %s, %s: %s, with %s: %s, res:%s"
+      (show $ cvPath fn)
+      (show d1)
+      (show t1)
+      (show d2)
+      (show t2)
+      (show res)
   return res
 
 {- |
 parTC points to the bin op node.
 -}
-unifyLeftAtom :: (EvalEnv m) => (Path.BinOpDirect, TNAtom, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
-  case (trAmAtom l1, treeNode t2) of
-    (String x, TNAtom s) -> case trAmAtom s of
+unifyLeftAtom :: (FuncEnv m) => (Path.BinOpDirect, AtomV, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
+  case (amvAtom l1, treeNode t2) of
+    (String x, TNAtom s) -> case amvAtom s of
       String y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Int x, TNAtom s) -> case trAmAtom s of
+    (Int x, TNAtom s) -> case amvAtom s of
       Int y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Bool x, TNAtom s) -> case trAmAtom s of
+    (Bool x, TNAtom s) -> case amvAtom s of
       Bool y -> returnTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
-    (Null, TNAtom s) -> case trAmAtom s of
+    (Null, TNAtom s) -> case amvAtom s of
       Null -> returnTree $ TNAtom l1
       _ -> notUnifiable dt1 dt2
     (_, TNBounds b) -> do
       dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-      return $ unifyAtomBounds (d1, (trAmAtom l1)) (d2, (trBdList b))
+      return $ unifyAtomBounds (d1, amvAtom l1) (d2, bdsList b)
     (_, TNConstraint c) ->
-      if l1 == trCnAtom c
+      if l1 == cnsAtom c
         then returnTree (TNConstraint c)
         else
           return $
-            Tree
-              (TNBottom $ TreeBottom $ printf "values mismatch: %s != %s" (show l1) (show $ trCnAtom c))
-              (treeOrig (tcFocus parTC))
+            mkBottom $
+              printf "values mismatch: %s != %s" (show l1) (show $ cnsAtom c)
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
-      unifyLeftDisj (d2, dj2, t2) (d1, t1) parTC
-    (_, TNFunc fn) -> case trfnType fn of
+      unifyLeftDisj (d2, dj2, t2) (d1, t1)
+    (_, TNFunc fn2) -> case fncType fn2 of
       -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
       -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
       -- marked disjunction.
-      DisjFunc -> unifyLeftOther dt2 dt1 parTC
+      DisjFunc -> unifyLeftOther dt2 dt1
       _ -> procOther
     (_, TNRefCycleVar) -> procOther
     (_, TNLink _) -> procOther
@@ -93,33 +100,33 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) parTC = do
  where
   dt1 = (d1, t1)
 
-  returnTree :: (EvalEnv m) => TreeNode -> m Tree
+  returnTree :: (FuncEnv m) => TreeNode -> m Tree
   returnTree n = return $ mkNewTree n
 
   mismatch :: (Show a) => a -> a -> TreeNode
-  mismatch x y = TNBottom . TreeBottom $ printf "values mismatch: %s != %s" (show x) (show y)
+  mismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
-  procOther :: (EvalEnv m) => m Tree
+  procOther :: (FuncEnv m) => m Tree
   procOther = do
     Config{cfCreateCnstr = cc} <- ask
     if cc
       then mkCnstr (d1, l1) dt2
-      else unifyLeftOther dt2 dt1 parTC
+      else unifyLeftOther dt2 dt1
 
 -- dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 -- dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
-mkCnstr :: (EvalEnv m) => (Path.BinOpDirect, TNAtom) -> (Path.BinOpDirect, Tree) -> m Tree
-mkCnstr (_, l1) (_, t2) = return $ mkNewTree (TNConstraint $ mkTNConstraint l1 t2 unify)
+mkCnstr :: (FuncEnv m) => (Path.BinOpDirect, AtomV) -> (Path.BinOpDirect, Tree) -> m Tree
+mkCnstr (_, l1) (_, t2) = return $ mkNewTree (TNConstraint $ mkConstraint l1 t2 unify)
 
-unifyLeftBound :: (EvalEnv m) => (Path.BinOpDirect, TNBounds, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
+unifyLeftBound :: (FuncEnv m) => (Path.BinOpDirect, Bounds, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
   TNAtom ta2 -> do
     dump $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-    return $ unifyAtomBounds (d2, (trAmAtom ta2)) (d1, trBdList b1)
+    return $ unifyAtomBounds (d2, amvAtom ta2) (d1, bdsList b1)
   TNBounds b2 -> do
     dump $ printf "unifyBoundList: %s, %s" (show t1) (show t2)
-    let res = unifyBoundList (d1, trBdList b1) (d2, trBdList b2)
+    let res = unifyBoundList (d1, bdsList b1) (d2, bdsList b2)
     case res of
       Left err -> return $ mkBottom err
       Right bs ->
@@ -136,11 +143,11 @@ unifyLeftBound (d1, b1, t1) (d2, t2) tc = case treeNode t2 of
           case snd r of
             Just a -> return $ mkTreeAtom a
             Nothing -> return $ mkBounds (fst r)
-  TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1) tc
-  TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc
-  TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1) tc
-  TNLink _ -> unifyLeftOther (d2, t2) (d1, t1) tc
-  TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+  TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1)
+  TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1)
+  TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1)
+  TNLink _ -> unifyLeftOther (d2, t2) (d1, t1)
+  TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1)
   _ -> notUnifiable (d1, t1) (d2, t2)
 
 unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tree
@@ -159,8 +166,8 @@ unifyAtomBounds (d1, a1) (_, bs) =
       case r of
         Left s -> mkBottom s
         Right v -> case v of
-          x : [] -> case x of
-            BdIsAtom a -> mkNewTree $ TNAtom $ TreeAtom a
+          [x] -> case x of
+            BdIsAtom a -> mkNewTree $ TNAtom $ AtomV a
             _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show x)
           _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show v)
 
@@ -187,7 +194,7 @@ unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
  where
   oneToMany :: (Path.BinOpDirect, Bound) -> (Path.BinOpDirect, [Bound]) -> Either String [Bound]
   oneToMany (ld1, b) (ld2, ts) =
-    let f = \x y -> unifyBounds (ld1, x) (ld2, y)
+    let f x y = unifyBounds (ld1, x) (ld2, y)
      in do
           r <- mapM (`f` b) ts
           return $ concat r
@@ -288,9 +295,9 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   uNumCmpNumCmp :: BdNumCmp -> BdNumCmp -> Either String [Bound]
   uNumCmpNumCmp (BdNumCmpCons o1 n1) (BdNumCmpCons o2 n2) =
     let
-      c1g = if o1 `elem` (fst (ncncGroup !! 0)) then ncncGroup !! 0 else ncncGroup !! 1
-      c1SameGCmp = (snd c1g) !! 0
-      c1OppGCmp = (snd c1g) !! 1
+      c1g = if o1 `elem` fst (ncncGroup !! 0) then ncncGroup !! 0 else ncncGroup !! 1
+      c1SameGCmp = snd c1g !! 0
+      c1OppGCmp = snd c1g !! 1
       isSameGroup = o2 `elem` (fst c1g)
       oppClosedEnds = sort [o1, o2] == [BdLE, BdGE]
      in
@@ -342,13 +349,13 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds :: [Bound]
   newOrdBounds = if d1 == Path.L then [b1, b2] else [b2, b1]
 
-unifyLeftOther :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
-  (TNFunc _, _) -> evalOrDelay
+unifyLeftOther :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
+  (TNFunc _, _) -> evalLeftOrDelay
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
   -- containing an atom or a bottom.
   (TNConstraint c1, _) -> do
-    na <- unifyWithDir (d1, mkNewTree (TNAtom $ trCnAtom c1)) dt2 tc
+    na <- unifyWithDir (d1, mkNewTree (TNAtom $ cnsAtom c1)) dt2
     case treeNode na of
       TNBottom _ -> return na
       _ -> return t1
@@ -360,65 +367,83 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) tc = case (treeNode t1, treeNode t2) of
   -- We can just return the second value.
   (TNRefCycleVar, _) -> return t2
   (TNLink l, _) -> do
-    substTC1 <- substLinkTC l $ mkSubTC (Path.toBinOpSelector d1) t1 tc
-    case treeNode (tcFocus substTC1) of
+    substCV1 <-
+      getCTFromFuncEnv
+        >>= mapEvalCVCur (return . mkSubTC (Path.toBinOpSelector d1) (l, t1))
+        >>= substLink
+    let substT1 = cvVal substCV1
+    case treeNode substT1 of
       TNLink _ -> do
-        dump $ printf "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s" (show t1) (show $ tcFocus substTC1)
+        dump $
+          printf
+            "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s"
+            (show t1)
+            (show substT1)
         mkUnification dt1 dt2
-      _ -> unifyWithDir (d1, tcFocus substTC1) dt2 tc
+      _ -> unifyWithDir (d1, substT1) dt2
   _ -> notUnifiable dt1 dt2
  where
-  evalOrDelay :: (EvalEnv m) => m Tree
-  evalOrDelay =
-    let subTC = mkSubTC (Path.toBinOpSelector d1) t1 tc
-     in do
-          x <- evalTC subTC
-          dump $
-            printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show $ pathFromTC tc) (show t1) (show $ tcFocus x)
-          updatedTC <- propUpTCSel (Path.toBinOpSelector d1) x
-          dump $
-            printf
-              "unifyLeftOther, path: %s, starts proc left results. %s: %s, %s: %s"
-              (show $ pathFromTC updatedTC)
-              (show d1)
-              (show $ tcFocus x)
-              (show d2)
-              (show t2)
-          procLeftEvalRes (d1, tcFocus x) dt2 updatedTC
+  evalLeftOrDelay :: (FuncEnv m) => m Tree
+  evalLeftOrDelay = do
+    oct <- get
+    dump $ printf "unifyLeftOther starts, path: %s, L: %s, R: %s" (show $ cvPath oct) (show t1) (show t2)
+    ct <-
+      getCTFromFuncEnv
+        >>= mapEvalCVCur (return . mkSubTC (Path.toBinOpSelector d1) t1)
+        >>= evalCV
+    let res = cvVal ct
+    dump $
+      printf
+        "unifyLeftOther, path: %s, %s is evaluated to %s"
+        (show $ cvPath ct)
+        (show t1)
+        (show res)
 
-procLeftEvalRes :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) tc = case treeNode t1 of
+    uct <- mapEvalCVCur (propUpTCSel (Path.toBinOpSelector d1)) ct
+    dump $
+      printf
+        "unifyLeftOther, path: %s, starts proc left results. %s: %s, %s: %s"
+        (show . cvPath $ uct)
+        (show d1)
+        (show res)
+        (show d2)
+        (show t2)
+    putCTInFuncEnv uct
+    procLeftEvalRes (d1, res) dt2
+
+procLeftEvalRes :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+procLeftEvalRes dt1@(_, t1) dt2@(d2, t2) = case treeNode t1 of
   TNFunc _ -> procDelay
   TNLink _ -> mkUnification dt1 dt2
-  _ -> unifyWithDir dt1 dt2 tc
+  _ -> unifyWithDir dt1 dt2
  where
-  procDelay :: (EvalEnv m) => m Tree
+  procDelay :: (FuncEnv m) => m Tree
   procDelay = case treeNode t2 of
     TNAtom l2 -> mkCnstr (d2, l2) dt1
     _ -> mkUnification dt1 dt2
 
-unifyLeftStruct :: (EvalEnv m) => (Path.BinOpDirect, TNScope, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeftStruct (d1, s1, t1) (d2, t2) tc = case treeNode t2 of
-  TNScope s2 -> unifyStructs (d1, s1) (d2, s2) tc
-  _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+unifyLeftStruct :: (FuncEnv m) => (Path.BinOpDirect, Struct, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
+  TNStruct s2 -> unifyStructs (d1, s1) (d2, s2)
+  _ -> unifyLeftOther (d2, t2) (d1, t1)
 
-unifyStructs :: (EvalEnv m) => (Path.BinOpDirect, TNScope) -> (Path.BinOpDirect, TNScope) -> TreeCursor -> m Tree
-unifyStructs (_, s1) (_, s2) tc = do
-  let utc = TreeCursor (nodesToScope allStatics combinedDynSubs) (tcCrumbs tc)
-  dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ pathFromTC utc) (show (tcFocus utc))
-  u <- evalAllNodes utc
-  return (tcFocus u)
+unifyStructs :: (FuncEnv m) => (Path.BinOpDirect, Struct) -> (Path.BinOpDirect, Struct) -> m Tree
+unifyStructs (_, s1) (_, s2) = do
+  fn <- get
+  let merged = nodesToStruct allStatics combinedDynSubs
+  dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ cvPath fn) (show merged)
+  evalAllNodes merged
  where
-  fields1 = trsSubs s1
-  fields2 = trsSubs s2
+  fields1 = stcSubs s1
+  fields2 = stcSubs s2
   l1Set = Map.keysSet fields1
   l2Set = Map.keysSet fields2
   interKeys = Set.intersection l1Set l2Set
   disjKeys1 = Set.difference l1Set interKeys
   disjKeys2 = Set.difference l2Set interKeys
-  combinedDynSubs = trsDynSubs s1 ++ trsDynSubs s2
+  combinedDynSubs = stcDynSubs s1 ++ stcDynSubs s2
 
-  inter :: [(Path.ScopeSelector, StaticScopeField)]
+  inter :: [(Path.StructSelector, StaticStructField)]
   inter =
     Set.foldr
       ( \key acc ->
@@ -428,7 +453,7 @@ unifyStructs (_, s1) (_, s2) tc = do
               -- No original node exists yet
               unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2))
            in ( key
-              , StaticScopeField
+              , StaticStructField
                   { ssfField = unifyOp
                   , ssfAttr = ua
                   }
@@ -438,132 +463,142 @@ unifyStructs (_, s1) (_, s2) tc = do
       []
       interKeys
 
-  select :: TNScope -> Set.Set Path.ScopeSelector -> [(Path.ScopeSelector, StaticScopeField)]
-  select s keys = map (\key -> (key, trsSubs s Map.! key)) (Set.toList keys)
+  select :: Struct -> Set.Set Path.StructSelector -> [(Path.StructSelector, StaticStructField)]
+  select s keys = map (\key -> (key, stcSubs s Map.! key)) (Set.toList keys)
 
-  allStatics :: [(Path.ScopeSelector, StaticScopeField)]
+  allStatics :: [(Path.StructSelector, StaticStructField)]
   allStatics = inter ++ select s1 disjKeys1 ++ select s2 disjKeys2
 
-  evalAllNodes :: (EvalEnv m) => TreeCursor -> m TreeCursor
+  evalAllNodes :: (FuncEnv m) => Tree -> m Tree
   evalAllNodes x = foldM evalStatic x allStatics
 
-  evalStatic :: (EvalEnv m) => TreeCursor -> (Path.ScopeSelector, StaticScopeField) -> m TreeCursor
-  evalStatic acc (key, sf) = case treeNode (tcFocus acc) of
+  -- TODO: no need to change the states
+  evalStatic :: (FuncEnv m) => Tree -> (Path.StructSelector, StaticStructField) -> m Tree
+  evalStatic acc (key, sf) = case treeNode acc of
     (TNBottom _) -> return acc
     _ -> do
-      u <- evalTC $ mkSubTC (Path.ScopeSelector key) (ssfField sf) acc
-      v <- propUpTCSel (Path.ScopeSelector key) u
+      ct <- gets (acc <$)
+      uct <-
+        mapEvalCVCur (return . mkSubTC (Path.StructSelector key) (ssfField sf)) ct
+          >>= evalCV
+          -- >>= ( \x -> do
+          --         dump $
+          --           printf "unifyStructs: x is:\n%s" (show $ getCVCursor x)
+          --         return x
+          --     )
+          >>= mapEvalCVCur (propUpTCSel (Path.StructSelector key))
+      let t = cvVal uct
       dump $
         printf
           "unifyStructs: %s gets updated after eval %s, new struct tree:\n%s"
-          (show $ pathFromTC v)
+          (show $ cvPath uct)
           (show key)
-          (show (tcFocus v))
-      return v
+          (show t)
+      -- put uct
+      return t
 
-  nodesToScope :: [(Path.ScopeSelector, StaticScopeField)] -> [DynamicScopeField] -> Tree
-  nodesToScope nodes dyns =
+  nodesToStruct :: [(Path.StructSelector, StaticStructField)] -> [DynamicStructField] -> Tree
+  nodesToStruct nodes dyns =
     mkNewTree
-      ( TNScope $
-          TreeScope
-            { trsOrdLabels = map fst nodes
-            , trsSubs = Map.fromList nodes
-            , trsDynSubs = dyns
+      ( TNStruct $
+          Struct
+            { stcOrdLabels = map fst nodes
+            , stcSubs = Map.fromList nodes
+            , stcDynSubs = dyns
             }
       )
 
 mkNodeWithDir ::
-  (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> (Tree -> Tree -> m Tree) -> m Tree
+  (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> (Tree -> Tree -> m Tree) -> m Tree
 mkNodeWithDir (d1, t1) (_, t2) f = case d1 of
   Path.L -> f t1 t2
   Path.R -> f t2 t1
 
-notUnifiable :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+notUnifiable :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
 notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
  where
-  f :: (EvalEnv m) => Tree -> Tree -> m Tree
+  f :: (FuncEnv m) => Tree -> Tree -> m Tree
   f x y = return $ mkBottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
-mkUnification :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+mkUnification :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
 mkUnification dt1 dt2 = return $ mkNewTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2)
 
-unifyLeftDisj :: (EvalEnv m) => (Path.BinOpDirect, TNDisj, Tree) -> (Path.BinOpDirect, Tree) -> TreeCursor -> m Tree
-unifyLeftDisj (d1, dj1, t1) (d2, t2) tc = do
+unifyLeftDisj :: (FuncEnv m) => (Path.BinOpDirect, Disj, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
+unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
+  ct <- get
   case treeNode t2 of
-    TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1) tc
-    TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1) tc
-    TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1) tc
-    TNLink _ -> unifyLeftOther (d2, t2) (d1, t1) tc
+    TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1)
+    TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1)
+    TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1)
+    TNLink _ -> unifyLeftOther (d2, t2) (d1, t1)
     TNDisj dj2 -> case (dj1, dj2) of
       -- this is U0 rule, <v1> & <v2> => <v1&v2>
-      (TreeDisj{trdDefault = Nothing, trdDisjuncts = ds1}, TreeDisj{trdDefault = Nothing, trdDisjuncts = ds2}) -> do
+      (Disj{dsjDefault = Nothing, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do
         ds <- mapM (`oneToMany` (d2, ds2)) (map (\x -> (d1, x)) ds1)
-        treeFromNodes Nothing ds origTree
+        treeFromNodes Nothing ds
       -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
-      (TreeDisj{trdDefault = Just df1, trdDisjuncts = ds1}, TreeDisj{trdDefault = Nothing, trdDisjuncts = ds2}) -> do
-        dump $ printf ("unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s") (show df1) (show ds1) (show ds2)
+      (Disj{dsjDefault = Just df1, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do
+        dump $ printf "unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s" (show df1) (show ds1) (show ds2)
         dfs <- oneToMany (d1, df1) (d2, ds2)
-        df <- treeFromNodes Nothing [dfs] Nothing
+        df <- treeFromNodes Nothing [dfs]
         dss <- manyToMany (d1, ds1) (d2, ds2)
-        treeFromNodes (Just df) dss origTree
+        treeFromNodes (Just df) dss
       -- this is also the U1 rule.
-      (TreeDisj{trdDefault = Nothing}, TreeDisj{}) -> unifyLeftDisj (d2, dj2, t2) (d1, t1) tc
+      (Disj{dsjDefault = Nothing}, Disj{}) -> unifyLeftDisj (d2, dj2, t2) (d1, t1)
       -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
-      (TreeDisj{trdDefault = Just df1, trdDisjuncts = ds1}, TreeDisj{trdDefault = Just df2, trdDisjuncts = ds2}) -> do
+      (Disj{dsjDefault = Just df1, dsjDisjuncts = ds1}, Disj{dsjDefault = Just df2, dsjDisjuncts = ds2}) -> do
         dump $
           printf
-            ("unifyLeftDisj: path: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s")
-            (show $ pathFromTC tc)
+            "unifyLeftDisj: path: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
+            (show $ cvPath ct)
             (show d1)
             (show df1)
             (show ds1)
             (show df2)
             (show ds2)
-        df <- unifyWithDir (d1, df1) (d2, df2) tc
+        df <- unifyWithDir (d1, df1) (d2, df2)
         dss <- manyToMany (d1, ds1) (d2, ds2)
-        dump $ printf ("unifyLeftDisj: path: %s, U2, df: %s, dss: %s") (show $ pathFromTC tc) (show df) (show dss)
-        treeFromNodes (Just df) dss origTree
+        dump $ printf "unifyLeftDisj: path: %s, U2, df: %s, dss: %s" (show $ cvPath ct) (show df) (show dss)
+        treeFromNodes (Just df) dss
     -- this is the case for a disjunction unified with a value.
     _ -> case dj1 of
-      TreeDisj{trdDefault = Nothing, trdDisjuncts = ds1} -> do
+      Disj{dsjDefault = Nothing, dsjDisjuncts = ds1} -> do
         ds2 <- oneToMany (d2, t2) (d1, ds1)
-        treeFromNodes Nothing [ds2] origTree
-      TreeDisj{trdDefault = Just df1, trdDisjuncts = ds1} -> do
-        dump $ printf ("unifyLeftDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)") (show t2) (show df1) (show ds1)
-        df2 <- unifyWithDir (d2, df1) (d2, t2) tc
+        treeFromNodes Nothing [ds2]
+      Disj{dsjDefault = Just df1, dsjDisjuncts = ds1} -> do
+        dump $ printf "unifyLeftDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
+        df2 <- unifyWithDir (d2, df1) (d2, t2)
         ds2 <- oneToMany (d2, t2) (d1, ds1)
-        dump $ printf ("unifyLeftDisj: U1, df2: %s, ds2: %s") (show df2) (show ds2)
-        r <- treeFromNodes (Just df2) [ds2] origTree
-        dump $ printf ("unifyLeftDisj: U1, result: %s") (show r)
+        dump $ printf "unifyLeftDisj: U1, df2: %s, ds2: %s" (show df2) (show ds2)
+        r <- treeFromNodes (Just df2) [ds2]
+        dump $ printf "unifyLeftDisj: U1, result: %s" (show r)
         return r
  where
-  oneToMany :: (EvalEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, [Tree]) -> m [Tree]
+  oneToMany :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, [Tree]) -> m [Tree]
   oneToMany (ld1, node) (ld2, ts) =
-    let f = \x y -> unifyWithDir (ld1, x) (ld2, y) tc
+    let f x y = unifyWithDir (ld1, x) (ld2, y)
      in mapM (`f` node) ts
 
-  manyToMany :: (EvalEnv m) => (Path.BinOpDirect, [Tree]) -> (Path.BinOpDirect, [Tree]) -> m [[Tree]]
+  manyToMany :: (FuncEnv m) => (Path.BinOpDirect, [Tree]) -> (Path.BinOpDirect, [Tree]) -> m [[Tree]]
   manyToMany (ld1, ts1) (ld2, ts2) =
     if ld1 == Path.R
       then mapM (\y -> oneToMany (ld2, y) (ld1, ts1)) ts2
       else mapM (\x -> oneToMany (ld1, x) (ld2, ts2)) ts1
 
-  origTree = treeOrig (tcFocus tc)
-
-treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> Maybe Tree -> m Tree
-treeFromNodes dfM ds orig = case (excludeDefault dfM, (concatExclude ds)) of
+treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
+treeFromNodes dfM ds = case (excludeDefault dfM, concatExclude ds) of
   (_, []) -> throwError $ "empty disjuncts"
-  (Nothing, _d : []) -> return $ Tree (treeNode _d) orig
+  (Nothing, [_d]) -> return $ mkNewTree (treeNode _d)
   (Nothing, _ds) ->
     let
-      node = TNDisj $ TreeDisj{trdDefault = Nothing, trdDisjuncts = _ds}
+      node = TNDisj $ Disj{dsjDefault = Nothing, dsjDisjuncts = _ds}
      in
-      return $ Tree node orig
+      return $ mkNewTree node
   (_df, _ds) ->
     let
-      node = TNDisj $ TreeDisj{trdDefault = _df, trdDisjuncts = _ds}
+      node = TNDisj $ Disj{dsjDefault = _df, dsjDisjuncts = _ds}
      in
-      return $ Tree node orig
+      return $ mkNewTree node
  where
   -- concat the disjuncts and exclude the disjuncts with Bottom values.
   concatExclude :: [[Tree]] -> [Tree]

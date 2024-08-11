@@ -32,7 +32,7 @@ import Tree
 import Unify (unify)
 
 strSel :: String -> Selector
-strSel = ScopeSelector . StringSelector
+strSel = StructSelector . StringSelector
 
 edgesGen :: [(String, String)] -> [(Path, Path)]
 edgesGen = map (\(x, y) -> (Path [strSel x], Path [strSel y]))
@@ -76,10 +76,10 @@ bottomExpr = AST.litCons AST.BottomLit
 --  where
 --   mkSimple :: (String, Tree) -> Tree
 --   mkSimple pair =
---     TNScope $
---       emptyTNScope
---         { trsOrdLabels = [fst pair]
---         , trsSubs = Map.fromList [pair]
+--     TNStruct $
+--       emptyTNStruct
+--         { stcOrdLabels = [fst pair]
+--         , stcSubs = Map.fromList [pair]
 --         }
 --   -- { a: { b: { c: 42 } } }
 --   holderC = mkSimple ("c", mkTreeLeaf $ Int 42)
@@ -91,12 +91,12 @@ bottomExpr = AST.litCons AST.BottomLit
 --
 --   test :: (MonadError String m, MonadIO m, MonadLogger m, MonadReader Config m) => m ()
 --   test =
---     let rootTC = (TNRoot $ TNScope emptyTNScope, [])
+--     let rootTC = (TNRoot $ TNStruct emptyTNStruct, [])
 --      in do
 --           tc <-
---             insertTCScope StartSelector ["a"] Set.empty rootTC
---               >>= insertTCScope selA ["b"] Set.empty
---               >>= insertTCScope selB ["c"] Set.empty
+--             insertTCStruct StartSelector ["a"] Set.empty rootTC
+--               >>= insertTCStruct selA ["b"] Set.empty
+--               >>= insertTCStruct selB ["c"] Set.empty
 --               >>= insertTCLeafValue selC (Int 42)
 --               >>= propRootEvalTC
 --

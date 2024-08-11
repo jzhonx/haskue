@@ -38,7 +38,7 @@ library
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:    
-      base ^>=4.19.0.0,
+      base ^>=4.17.0.0,
       parsec,
       containers,
       mtl,
@@ -59,7 +59,7 @@ executable haskue
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        base ^>=4.19.0.0,
+        base ^>=4.17.0.0,
         haskue,
         mtl,
         bytestring,
@@ -75,7 +75,7 @@ Test-Suite haskue-unit-test
     SpecTest,
     TreeTest,
   build-depends:
-        base ^>=4.19.0.0,
+        base ^>=4.17.0.0,
         tasty >= 0.7,
         tasty-hunit,
         haskue,

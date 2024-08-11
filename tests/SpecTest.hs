@@ -6,7 +6,7 @@ import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
-import Eval (eval, runIO)
+import Eval (eval, runTCIO)
 import Parser
 import Path
 import System.IO (readFile)
@@ -17,14 +17,14 @@ import Tree
 
 newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
 newStruct lbls ow subs =
-  mkNewTree . TNScope $
-    TreeScope
-      { trsSubs =
+  mkNewTree . TNStruct $
+    Struct
+      { stcSubs =
           Map.fromList
             ( map
                 ( \(k, v) ->
                     ( Path.StringSelector k
-                    , StaticScopeField
+                    , StaticStructField
                         { ssfField = v
                         , ssfAttr = snd $ attrWrite k
                         }
@@ -32,12 +32,12 @@ newStruct lbls ow subs =
                 )
                 subs
             )
-      , trsOrdLabels = map Path.StringSelector lbls
-      , trsDynSubs = []
+      , stcOrdLabels = map Path.StringSelector lbls
+      , stcDynSubs = []
       -- , trsAttrs = Map.fromList $ map attrWrite lbls
       }
  where
-  attrWrite :: String -> (ScopeSelector, LabelAttr)
+  attrWrite :: String -> (StructSelector, LabelAttr)
   attrWrite s = case lookup s ow of
     Just v -> (StringSelector s, v)
     Nothing -> (StringSelector s, defaultLabelAttr)
@@ -46,24 +46,21 @@ newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls subs = newStruct lbls [] subs
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = mkNewTree $ TNLink $ TreeLink{trlTarget = p, trlExpr = undefined}
+mkSimpleLink p = mkNewTree $ TNLink $ Link{lnkTarget = p, lnkExpr = undefined}
 
 startEval :: String -> IO (Either String Tree)
-startEval s = runExceptT $ do
-  tc <- runIO s
-  res <- goDownTCSelErr RootSelector tc
-  return $ tcFocus res
+startEval s = runExceptT $ runTCIO s
 
 assertStructs :: Tree -> Tree -> IO ()
-assertStructs (Tree{treeNode = TNScope exp}) (Tree{treeNode = TNScope act}) = do
-  assertEqual "labels" (trsOrdLabels exp) (trsOrdLabels act)
-  assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
-  mapM_ (\(k, v) -> assertEqual (show k) v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
-  mapM_ (\(k, v) -> assertEqual (show k) (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
+assertStructs (Tree{treeNode = TNStruct exp}) (Tree{treeNode = TNStruct act}) = do
+  assertEqual "labels" (stcOrdLabels exp) (stcOrdLabels act)
+  assertEqual "fields-length" (length $ stcSubs exp) (length $ stcSubs act)
+  mapM_ (\(k, v) -> assertEqual (show k) v (stcSubs act Map.! k)) (Map.toList $ stcSubs exp)
+  mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
 assertStructs _ _ = assertFailure "Not structs"
 
 strSel :: String -> Selector
-strSel = ScopeSelector . StringSelector
+strSel = StructSelector . StringSelector
 
 testBottom :: IO ()
 testBottom = do
@@ -364,34 +361,34 @@ testDisj1 = do
       cmpStructs v $
         newSimpleStruct
           (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
-          [ ("x1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
-          , ("x2", newSimpleDisj [Int 1] [Int 1, Int 2, Int 3])
-          , ("x3", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-          , ("x4", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
-          , ("x5", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-          , ("x6", newSimpleDisj [] [Int 1, Int 2])
-          , ("y0", newSimpleDisj [] [Int 1, Int 2, Int 3])
-          , ("y1", newSimpleDisj [Int 2] [Int 1, Int 2, Int 3])
-          , ("y2", newSimpleDisj [Int 3] [Int 1, Int 2, Int 3])
+          [ ("x1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("x2", newSimpleAtomDisj [Int 1] [Int 1, Int 2, Int 3])
+          , ("x3", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x4", newSimpleAtomDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("x5", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x6", newSimpleAtomDisj [] [Int 1, Int 2])
+          , ("y0", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
+          , ("y1", newSimpleAtomDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("y2", newSimpleAtomDisj [Int 3] [Int 1, Int 2, Int 3])
           ]
 
-newSimpleDisj :: [Atom] -> [Atom] -> Tree
-newSimpleDisj d1 d2 = mkNewTree . TNDisj $ TreeDisj (mkDefault d1) (map mkTreeAtom d2)
+newSimpleAtomDisj :: [Atom] -> [Atom] -> Tree
+newSimpleAtomDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) (map mkTreeAtom d2)
  where
   mkDefault :: [Atom] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
-    x : [] -> Just $ mkTreeAtom x
-    xs -> Just $ newSimpleDisj [] xs
+    [x] -> Just $ mkTreeAtom x
+    xs -> Just $ newSimpleAtomDisj [] xs
 
-newSimpleTreeDisj :: [Tree] -> [Tree] -> Tree
-newSimpleTreeDisj d1 d2 = mkNewTree . TNDisj $ TreeDisj (mkDefault d1) d2
+newSimpleDisj :: [Tree] -> [Tree] -> Tree
+newSimpleDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) d2
  where
   mkDefault :: [Tree] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
-    x : [] -> Just x
-    xs -> Just $ newSimpleTreeDisj [] xs
+    [x] -> Just x
+    xs -> Just $ newSimpleDisj [] xs
 
 testDisj2 :: IO ()
 testDisj2 = do
@@ -406,7 +403,7 @@ testDisj2 = do
           [
             ( "x"
             , mkNewTree . TNDisj $
-                TreeDisj
+                Disj
                   Nothing
                   [ newSimpleStruct
                       ["y", "z"]
@@ -431,21 +428,21 @@ testDisj3 = do
               ++ ["d" ++ (show i) | i <- [0 .. 0]]
               ++ ["e" ++ (show i) | i <- [0 .. 4]]
           )
-          ( [ ("a0", newSimpleDisj [] [String "tcp", String "udp"])
-            , ("a1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
+          ( [ ("a0", newSimpleAtomDisj [] [String "tcp", String "udp"])
+            , ("a1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
             , ("a2", mkTreeAtom $ Int 4)
-            , ("b0", newSimpleDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-            , ("b1", newSimpleDisj [] [Int 1, Int 2, Int 3])
-            , ("c0", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("c1", newSimpleDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("c2", newSimpleDisj [String "tcp"] [String "tcp"])
-            , ("c3", newSimpleDisj [] [String "tcp", String "udp"])
-            , ("d0", newSimpleDisj [Bool True] [Bool True, Bool False])
-            , ("e0", newSimpleTreeDisj [] [sa, sb])
-            , ("e1", newSimpleTreeDisj [sb] [sa, sb])
-            , ("e2", newSimpleTreeDisj [] [sa, sb])
-            , ("e3", newSimpleTreeDisj [] [sa, sba])
-            , ("e4", newSimpleTreeDisj [sb] [sa, sba, sab, sb])
+            , ("b0", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+            , ("b1", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
+            , ("c0", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+            , ("c1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+            , ("c2", newSimpleAtomDisj [String "tcp"] [String "tcp"])
+            , ("c3", newSimpleAtomDisj [] [String "tcp", String "udp"])
+            , ("d0", newSimpleAtomDisj [Bool True] [Bool True, Bool False])
+            , ("e0", newSimpleDisj [] [sa, sb])
+            , ("e1", newSimpleDisj [sb] [sa, sb])
+            , ("e2", newSimpleDisj [] [sa, sb])
+            , ("e3", newSimpleDisj [] [sa, sba])
+            , ("e4", newSimpleDisj [sb] [sa, sba, sab, sb])
             ]
           )
  where
@@ -473,21 +470,21 @@ testSelector1 = do
           , ("x-y", Int 4)
           ]
       )
-  fieldEDefault = newSimpleStruct ["a"] [("a", newSimpleDisj [Int 4] [Int 3, Int 4])]
+  fieldEDefault = newSimpleStruct ["a"] [("a", newSimpleAtomDisj [Int 4] [Int 3, Int 4])]
   structE =
     mkNewTree . TNDisj $
-      TreeDisj
+      Disj
         (Just fieldEDefault)
-        [newSimpleStruct ["a"] [("a", newSimpleDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
+        [newSimpleStruct ["a"] [("a", newSimpleAtomDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
   pathC = Path [strSel "c"]
   pendValC =
     mkNewTree . TNLink $
-      TreeLink
-        { trlTarget = pathFromList [strSel "T", strSel "z"]
-        , trlExpr = undefined
+      Link
+        { lnkTarget = pathFromList [strSel "T", strSel "z"]
+        , lnkExpr = undefined
         }
   pathF = Path [strSel "f"]
-  disjF = newSimpleDisj [Int 4] [Int 3, Int 4]
+  disjF = newSimpleAtomDisj [Int 4] [Int 3, Int 4]
   expStruct =
     newSimpleStruct
       ["T", "a", "b", "c", "d", "e", "f"]
@@ -497,7 +494,7 @@ testSelector1 = do
       , ("c", pendValC)
       , ("d", mkTreeAtom $ Int 4)
       , ("e", structE)
-      , ("f", disjF)
+      , ("f", mkNewTree . TNFunc $ mkReference disjF undefined)
       ]
 
 testUnify1 :: IO ()
@@ -658,9 +655,9 @@ testCycles6 = do
       val'
         @?= newSimpleStruct
           ["a", "b", "c"]
-          [ ("a", newSimpleTreeDisj [] [yzx, sy1])
-          , ("b", newSimpleTreeDisj [] [sx2, xyz])
-          , ("c", newSimpleTreeDisj [] [xzy, sz3])
+          [ ("a", newSimpleDisj [] [yzx, sy1])
+          , ("b", newSimpleDisj [] [sx2, xyz])
+          , ("c", newSimpleDisj [] [xzy, sz3])
           ]
  where
   innerStructGen labels =
@@ -821,11 +818,15 @@ testRef3 = do
                 ["y"]
                 [
                   ( "y"
-                  , newSimpleStruct
-                      ["a", "c"]
-                      [ ("a", mkTreeAtom $ Int 1)
-                      , ("c", mkTreeAtom $ Int 2)
-                      ]
+                  , mkNewTree . TNFunc $
+                      mkReference
+                        ( newSimpleStruct
+                            ["a", "c"]
+                            [ ("a", mkTreeAtom $ Int 1)
+                            , ("c", mkTreeAtom $ Int 2)
+                            ]
+                        )
+                        undefined
                   )
                 ]
             )
@@ -922,8 +923,8 @@ testList1 = do
   exp =
     newSimpleStruct
       ["x0", "x1"]
-      ( [ ("x0", mkNewTree . TNList $ TreeList (map mkTreeAtom [Int 1, Int 4, Int 9]))
-        , ("x1", mkNewTree . TNList $ TreeList (map mkTreeAtom [Float 1.0, Bool True, String "hello"]))
+      ( [ ("x0", mkNewTree . TNList $ List (map mkTreeAtom [Int 1, Int 4, Int 9]))
+        , ("x1", mkNewTree . TNList $ List (map mkTreeAtom [Float 1.0, Bool True, String "hello"]))
         ]
       )
 
@@ -991,19 +992,19 @@ specTests =
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()
-cmpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
-  assertEqual "labels" (trsOrdLabels exp) (trsOrdLabels act)
-  assertEqual "fields-length" (length $ trsSubs exp) (length $ trsSubs act)
-  mapM_ (\(k, v) -> assertEqual (show k) v (trsSubs act Map.! k)) (Map.toList $ trsSubs exp)
-  mapM_ (\(k, v) -> assertEqual (show k) (trsSubs exp Map.! k) v) (Map.toList $ trsSubs act)
+cmpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
+  assertEqual "labels" (stcOrdLabels exp) (stcOrdLabels act)
+  assertEqual "fields-length" (length $ stcSubs exp) (length $ stcSubs act)
+  mapM_ (\(k, v) -> assertEqual (show k) v (stcSubs act Map.! k)) (Map.toList $ stcSubs exp)
+  mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
 cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
 
 cmpExpStructs :: Tree -> Tree -> IO ()
-cmpExpStructs (Tree{treeNode = TNScope act}) (Tree{treeNode = TNScope exp}) = do
-  mapM_ cmp (Map.toList $ trsSubs exp)
+cmpExpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
+  mapM_ cmp (Map.toList $ stcSubs exp)
  where
   cmp (k, v) =
-    if k `Map.member` trsSubs act
-      then assertEqual (show k) v (trsSubs act Map.! k)
+    if k `Map.member` stcSubs act
+      then assertEqual (show k) v (stcSubs act Map.! k)
       else assertFailure $ printf "Field %s not found" (show k)
 cmpExpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)

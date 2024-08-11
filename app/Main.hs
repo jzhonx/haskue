@@ -12,8 +12,8 @@ import Tree
 main :: IO ()
 main = do
   args <- getArgs
-  f <- readFile (args !! 0)
-  x <- runExceptT $ runIO f >>= \tc -> return $ buildASTExpr (tcFocus tc)
+  file <- readFile (args !! 0)
+  x <- runExceptT $ runIO file
   case x of
     Left err -> putStrLn err
     Right expr -> hPutBuilder stdout (exprBld expr)
