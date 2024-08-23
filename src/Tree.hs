@@ -35,7 +35,6 @@ module Tree (
   LabelAttr (..),
   Link (..),
   List (..),
-  Mut (..),
   Number (..),
   StaticStructField (..),
   Struct (..),
@@ -55,7 +54,6 @@ module Tree (
   dump,
   emptyContext,
   emptyStruct,
-  evalMut,
   evalCV,
   getCTFromFuncEnv,
   getCVCursor,
@@ -81,7 +79,6 @@ module Tree (
   mkConstraint,
   -- mkFunc,
   mkList,
-  mkMut,
   mkNewTree,
   mkStruct,
   mkSubTC,
@@ -100,7 +97,6 @@ module Tree (
   substTreeNode,
   updateConstraintAtom,
   updateConstraintCnstr,
-  updateMutArgs,
   mkReference,
 )
 where
@@ -408,7 +404,6 @@ tnStrBldr i t = case treeNode t of
           args
   TNBottom b -> content t i (string7 $ show b) emptyTreeFields
   TNTop -> content t i mempty emptyTreeFields
-  TNMut _ -> content t i (string7 "Mut") emptyTreeFields
  where
   emptyTreeFields :: [(Builder, Tree)]
   emptyTreeFields = []
@@ -457,7 +452,6 @@ showTreeSymbol t = case treeNode t of
   TNFunc{} -> "fn"
   TNBottom _ -> "_|_"
   TNTop -> "_"
-  TNMut _ -> "Mut"
 
 instance Show Tree where
   show tree = showTreeIdent tree 0
@@ -478,7 +472,6 @@ instance BuildASTExpr Tree where
         else buildASTExpr fn
     TNBottom _ -> return $ AST.litCons AST.BottomLit
     TNTop -> return $ AST.litCons AST.TopLit
-    TNMut m -> buildASTExpr m
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree n Nothing
@@ -503,7 +496,6 @@ data TreeNode
   | TNConstraint Constraint
   | TNRefCycleVar
   | TNFunc Func
-  | TNMut (Mut Tree)
   | TNTop
   | TNBottom Bottom
 
@@ -539,7 +531,6 @@ instance ValueNode TreeNode where
     TNFunc _ -> False
     TNBottom _ -> True
     TNTop -> True
-    TNMut _ -> True
   isValueAtom n = case n of
     TNAtom _ -> True
     _ -> False
@@ -1285,103 +1276,6 @@ evalFunc cv = do
  where
   fn = fst $ cvVal cv
   ct = snd <$> cv
-
-viewMut :: Tree -> Maybe (Mut Tree)
-viewMut t = case treeNode t of
-  TNMut m -> Just m
-  _ -> Nothing
-
-data Mut a = Mut
-  { mutDeps :: [Path]
-  , mutFunc :: forall m. (EvalEnv m) => [(Path, Tree)] -> m Tree
-  , mutState :: forall m. (EvalEnv m) => StateT ([(Path, Tree)], Tree) m a
-  }
-
-instance Functor Mut where
-  fmap f m = m{mutState = fmap f (mutState m)}
-
-instance Applicative Mut where
-  pure a = Mut [] (const $ return $ mkNewTree TNTop) (pure a)
-  mf <*> ma = ma{mutState = mutState mf <*> mutState ma}
-
-instance Monad Mut where
-  return = pure
-  m >>= f = m{mutState = mutState m >>= \a -> mutState (f a)}
-
-instance BuildASTExpr (Mut Tree) where
-  buildASTExpr _ = throwError "Mut does not have an AST representation. It should be replaced with finalized value."
-
-addArg :: Path -> Tree -> [(Path, Tree)] -> [(Path, Tree)]
-addArg p t args = case findIndex (\(x, _) -> x == p) args of
-  Just i -> take i args ++ [(p, t)] ++ drop (i + 1) args
-  Nothing -> (p, t) : args
-
-addArgs :: [(Path, Tree)] -> [(Path, Tree)] -> [(Path, Tree)]
-addArgs newArgs args = foldl (\acc (p, t) -> addArg p t acc) args newArgs
-
-evalMutArgs :: (EvalEnv m) => [(Path, Tree)] -> m [(Path, Tree)]
-evalMutArgs =
-  mapM
-    ( \(p, t) -> case viewMut t of
-        Just m -> do
-          a <- evalMut m
-          return (p, a)
-        Nothing -> return (p, t)
-    )
-
-mkMut :: [(Path, Tree)] -> ([(Path, Tree)] -> EvalMonad Tree) -> Mut Tree
-mkMut args f =
-  Mut
-    { mutDeps = map fst args
-    , mutFunc = f
-    , mutState = StateT $ \_ -> do
-        evaledArgs <- evalMutArgs args
-        a <- f evaledArgs
-        return (a, (evaledArgs, a))
-    }
-
-updateMutArgs :: [(Path, Tree)] -> Mut Tree -> Mut Tree
-updateMutArgs args m =
-  m
-    { mutState = mutState m >>= f
-    }
- where
-  f :: (EvalEnv m) => Tree -> StateT ([(Path, Tree)], Tree) m Tree
-  f _ = do
-    (extArgs, _) <- get
-    evaledArgs <- lift $ evalMutArgs args
-    let newArgs = addArgs evaledArgs extArgs
-    res <- lift $ mutFunc m newArgs
-    put (newArgs, res)
-    return res
-
-evalMut :: (EvalEnv m) => Mut Tree -> m Tree
-evalMut m = do
-  (a, _) <- runStateT (mutState m) ([], mkNewTree TNTop)
-  return a
-
-execMut :: (EvalEnv m) => Mut Tree -> m [(Path, Tree)]
-execMut m = do
-  (_, s) <- runStateT (mutState m) ([], mkNewTree TNTop)
-  return $ fst s
-
--- combineMuts :: (EvalEnv m) => (Tree -> Tree -> EvalMonad Tree) -> Mut Tree -> Mut Tree -> m (Mut Tree)
--- combineMuts f ma mb = do
---   argsA <- execMut ma
---   return $
---     Mut
---       { mutDeps = mutDeps ma ++ mutDeps mb
---       , mutFunc = combinedFunc
---       , mutState = StateT $ \s -> do
---           let args = argsA ++ fst s
---           res <- combinedFunc args
---           return (res, (args, res))
---       }
---  where
---   combinedFunc xs = do
---     a <- mutFunc ma xs
---     b <- mutFunc mb xs
---     f a b
 
 newtype Bottom = Bottom {btmMsg :: String}
 
