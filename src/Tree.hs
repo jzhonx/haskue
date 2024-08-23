@@ -114,7 +114,7 @@ import Control.Monad.Logger (
   logDebugN,
   runStderrLoggingT,
  )
-import Control.Monad.Reader (MonadReader, runReaderT)
+import Control.Monad.Reader (MonadReader, ask, runReaderT)
 import Control.Monad.State.Strict (
   MonadState,
   StateT (StateT),
@@ -720,7 +720,7 @@ isStructConcrete s =
 
 evalStruct :: (CommonEnv m) => CtxVal (Struct, Tree) -> m CtxTree
 evalStruct cv =
-  foldM evalSub ct (Map.keys (stcSubs struct))
+  foldM evalSub ct (Map.keys (stcSubs struct) ++ map DynamicSelector [0 .. length (stcDynSubs struct) - 1])
  where
   ct = snd <$> cv
   struct = fst (cvVal cv)
@@ -740,49 +740,59 @@ evalCVStructField sel cv = case sel of
           >>= evalCV
           >>= mapEvalCVCur (propUpTCSel subSel)
   DynamicSelector i ->
-    let sf = stcDynSubs struct !! i
+    let dsf = stcDynSubs struct !! i
      in do
-          evaledSelCT <-
+          -- evaluate the dynamic label.
+          labelCT <-
             do
               return $ snd <$> cv
-              >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree sf))
+              >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
               >>= evalCV
-          case treeNode . cvVal $ evaledSelCT of
+          let label = cvVal labelCT
+          dump $
+            printf
+              "evalCVStructField: path: %s, dynamic label is evaluated to %s"
+              (show $ cvPath cv)
+              (show label)
+          case treeNode label of
             TNAtom (AtomV (String s)) -> do
-              subCT <-
+              Config{cfUnify = unify} <- ask
+              let
+                mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
+                sSel = StructSelector $ StringSelector s
+              mergedCT <-
                 do
-                  return $ snd <$> copyCVNotifiers cv evaledSelCT
-                  >>= mapEvalCVCur (return . mkSubTC subSel (dsfField sf))
+                  mapEvalCVCur (propUpTCSel subSel) labelCT
+                  >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
                   >>= evalCV
-              uctx <- mapEvalCVCur (propUpTCSel subSel) subCT
-              return $ insertEvaledDyn s (dsfAttr sf) (cvVal subCT) <$> uctx
+                  >>= mapEvalCVCur (propUpTCSel sSel)
+              return $ setTreeNode (TNStruct $ updateDynStruct i s mergedSF struct) <$> mergedCT
             _ -> return $ mkBottom "selector can only be a string" <$ cv
  where
   focus = cvVal cv
   struct = fst focus
   subSel = StructSelector sel
 
-  insertEvaledDyn :: String -> LabelAttr -> Tree -> Tree -> Tree
-  insertEvaledDyn s a sub t@(treeNode -> (TNStruct x)) =
-    setTreeNode
-      ( TNStruct $
-          x
-            { stcSubs =
-                ( Map.delete sel
-                    . Map.insert
-                      (StringSelector s)
-                      ( StaticStructField
-                          { ssfField = sub
-                          , ssfAttr = a
-                          }
-                      )
-                )
-                  (stcSubs x)
-            , stcOrdLabels = filter (/= sel) (stcOrdLabels x) ++ [StringSelector s]
-            }
-      )
-      t
-  insertEvaledDyn _ _ _ _ = mkBottom "not a struct"
+  dynToStaticField ::
+    DynamicStructField -> Maybe StaticStructField -> (Tree -> Tree -> FuncMonad Tree) -> StaticStructField
+  dynToStaticField dsf sfM unify = case sfM of
+    Just sf ->
+      StaticStructField
+        { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfField dsf))
+        , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
+        }
+    Nothing ->
+      StaticStructField
+        { ssfField = dsfField dsf
+        , ssfAttr = dsfAttr dsf
+        }
+
+  updateDynStruct :: Int -> String -> StaticStructField -> Struct -> Struct
+  updateDynStruct i s sf x =
+    x
+      { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
+      , stcDynSubs = take i (stcDynSubs x) ++ drop (i + 1) (stcDynSubs x)
+      }
 
 data Link = Link
   { lnkTarget :: Path
@@ -1582,7 +1592,19 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
               newStruct = parStruct{stcSubs = Map.insert label newSF (stcSubs parStruct)}
              in
               return (ValCursor (substTreeNode (TNStruct newStruct) parT) cs)
-        | otherwise -> throwError insertErrMsg
+        | otherwise -> case label of
+            DynamicSelector i ->
+              let
+                sf = stcDynSubs parStruct !! i
+                newSF = sf{dsfField = newSub}
+                newStruct =
+                  parStruct
+                    { stcDynSubs =
+                        take i (stcDynSubs parStruct) ++ [newSF] ++ drop (i + 1) (stcDynSubs parStruct)
+                    }
+               in
+                return (ValCursor (substTreeNode (TNStruct newStruct) parT) cs)
+            _ -> throwError insertErrMsg
     _ -> throwError insertErrMsg
 
   insertErrMsg :: String
