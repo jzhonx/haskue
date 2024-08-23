@@ -488,7 +488,7 @@ evalDisj e1 e2 = do
     t1 <- evalSub binOpLeftSelector unt1
     t2 <- evalSub binOpRightSelector unt2
     u <-
-      if not (isValueNode (treeNode t1)) || not (isValueNode (treeNode t2))
+      if not (isTreeValue t1) || not (isTreeValue t2)
         then do
           dump $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
           cvVal <$> getCTFromFuncEnv

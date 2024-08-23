@@ -57,7 +57,7 @@ module Tree (
   evalCV,
   getCTFromFuncEnv,
   getCVCursor,
-  getScalarValue,
+  -- getScalarValue,
   goDownTCPath,
   goDownTCSel,
   goDownTCSelErr,
@@ -66,9 +66,11 @@ module Tree (
   indexByTree,
   insertUnifyStruct,
   isTreeBottom,
-  isValueAtom,
-  isValueConcrete,
-  isValueNode,
+  isTreeAtom,
+  isTreeValue,
+  -- isValueAtom,
+  -- isValueConcrete,
+  -- isValueNode,
   mapEvalCVCur,
   mergeAttrs,
   mkBinaryOp,
@@ -128,7 +130,7 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.List (findIndex, intercalate)
+import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
 import Data.Text (pack)
@@ -294,6 +296,7 @@ instance Eq Atom where
   (==) _ _ = False
 
 instance BuildASTExpr Atom where
+  buildASTExpr :: (CommonEnv m) => Atom -> m AST.Expression
   buildASTExpr a = return $ (AST.litCons . aToLiteral) a
 
 aToLiteral :: Atom -> AST.Literal
@@ -304,11 +307,11 @@ aToLiteral a = case a of
   Bool b -> AST.BoolLit b
   Null -> AST.NullLit
 
-class ValueNode a where
-  isValueNode :: a -> Bool
-  isValueAtom :: a -> Bool
-  isValueConcrete :: a -> Bool
-  getScalarValue :: a -> Maybe Atom
+class Value a where
+  getValue :: a -> a
+
+class AtomValue where
+  getAtom :: a -> Atom
 
 class BuildASTExpr a where
   buildASTExpr :: forall m. (CommonEnv m) => a -> m AST.Expression
@@ -323,9 +326,6 @@ data Tree = Tree
 
 setTN :: TreeNode -> Tree -> Tree
 setTN n t = t{treeNode = n}
-
--- modifyTreeNode :: (TreeNode -> TreeNode) -> Tree -> Tree
--- modifyTreeNode f t = t{treeNode = f (treeNode t)}
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -481,7 +481,7 @@ substTN n t = t{treeNode = n}
 copyOrigNode :: Tree -> Tree -> Tree
 copyOrigNode new old = new{treeOrig = treeOrig old}
 
--- | Tree represents a tree structure that contains values.
+-- | TreeNode represents a tree structure that contains values.
 data TreeNode
   = -- | TNStruct is a struct that contains a value and a map of selectors to Tree.
     TNStruct Struct
@@ -517,38 +517,59 @@ instance Eq TreeNode where
   (==) TNTop TNTop = True
   (==) _ _ = False
 
-instance ValueNode TreeNode where
-  isValueNode n = case n of
-    TNAtom _ -> True
-    TNBounds _ -> True
-    TNStruct _ -> True
-    TNList _ -> True
-    TNDisj _ -> True
-    TNConstraint _ -> True
-    TNRefCycleVar -> False
-    TNLink _ -> False
-    TNFunc _ -> False
-    TNBottom _ -> True
-    TNTop -> True
-  isValueAtom n = case n of
-    TNAtom _ -> True
-    _ -> False
+isTreeAtom :: Tree -> Bool
+isTreeAtom t = case treeNode t of
+  TNAtom _ -> True
+  _ -> False
 
-  isValueConcrete n = case n of
-    TNStruct struct -> isStructConcrete struct
-    _ -> isValueAtom n
-  getScalarValue n = case n of
-    TNAtom s -> Just (amvAtom s)
-    TNConstraint c -> Just (amvAtom $ cnsAtom c)
-    _ -> Nothing
+isTreeBottom :: Tree -> Bool
+isTreeBottom (Tree (TNBottom _) _) = True
+isTreeBottom _ = False
+
+isTreeValue :: Tree -> Bool
+isTreeValue n = case treeNode n of
+  TNAtom _ -> True
+  TNBounds _ -> True
+  TNStruct _ -> True
+  TNList _ -> True
+  TNDisj _ -> True
+  TNConstraint _ -> True
+  TNRefCycleVar -> False
+  TNLink _ -> False
+  TNFunc _ -> False
+  TNBottom _ -> True
+  TNTop -> True
+
+-- instance ValueNode TreeNode where
+--   isValueNode n = case n of
+--     TNAtom _ -> True
+--     TNBounds _ -> True
+--     TNStruct _ -> True
+--     TNList _ -> True
+--     TNDisj _ -> True
+--     TNConstraint _ -> True
+--     TNRefCycleVar -> False
+--     TNLink _ -> False
+--     TNFunc _ -> False
+--     TNBottom _ -> True
+--     TNTop -> True
+--   isValueAtom n = case n of
+--     TNAtom _ -> True
+--     _ -> False
+
+--   isValueConcrete n = case n of
+--     TNStruct struct -> isStructConcrete struct
+--     _ -> isValueAtom n
+--   getScalarValue n = case n of
+--     TNAtom s -> Just (amvAtom s)
+--     TNConstraint c -> Just (amvAtom $ cnsAtom c)
+--     _ -> Nothing
 
 isTNRefCycleVar :: TreeNode -> Bool
 isTNRefCycleVar TNRefCycleVar = True
 isTNRefCycleVar _ = False
 
-newtype List = List
-  { lstSubs :: [Tree]
-  }
+newtype List = List {lstSubs :: [Tree]}
 
 instance Eq List where
   (==) l1 l2 = lstSubs l1 == lstSubs l2
@@ -653,6 +674,9 @@ instance BuildASTExpr Struct where
           AST.litCons $
             AST.StructLit (stcs ++ dyns)
 
+instance Value Struct where
+  getValue s = s
+
 emptyStruct :: Struct
 emptyStruct = Struct{stcOrdLabels = [], stcSubs = Map.empty, stcDynSubs = []}
 
@@ -699,14 +723,14 @@ structStaticLabels = filter (\x -> viewStructSelector x == 0) . stcOrdLabels
 structDynIndexes :: Struct -> [Int]
 structDynIndexes s = [0 .. length (stcDynSubs s) - 1]
 
-isStructConcrete :: Struct -> Bool
-isStructConcrete s =
-  foldl
-    ( \acc
-       (StaticStructField{ssfField = Tree{treeNode = x}}) -> acc && isValueConcrete x
-    )
-    True
-    (Map.elems (stcSubs s))
+-- isStructConcrete :: Struct -> Bool
+-- isStructConcrete s =
+--   foldl
+--     ( \acc
+--        (StaticStructField{ssfField = Tree{treeNode = x}}) -> acc && isValueConcrete x
+--     )
+--     True
+--     (Map.elems (stcSubs s))
 
 evalStruct :: (CommonEnv m) => CtxVal (Struct, Tree) -> m CtxTree
 evalStruct cv =
@@ -815,7 +839,7 @@ evalLink cv = do
   case res of
     Nothing -> return ct
     Just (tp, tar) -> do
-      if isValueAtom (treeNode tar) || isTNRefCycleVar (treeNode tar)
+      if isTreeAtom tar || isTNRefCycleVar (treeNode tar)
         -- If the target is an atom or a cycle head, there is no need to create the reference relation.
         then return $ tar <$ ct
         else do
@@ -911,6 +935,9 @@ instance Eq AtomV where
 
 instance BuildASTExpr AtomV where
   buildASTExpr (AtomV v) = buildASTExpr v
+
+instance Value AtomV where
+  getValue = id
 
 mkAtomTree :: Atom -> Tree
 mkAtomTree v = mkNewTree (TNAtom $ AtomV{amvAtom = v})
@@ -1220,7 +1247,7 @@ evalFunc cv = do
       (show $ cvVal ct)
   (a, newCV) <- runStateT (fncFunc fn (fncArgs fn)) (fst <$> cv)
   res <-
-    if isValueAtom (treeNode a) || not (fncHasRef fn)
+    if isTreeAtom a || not (fncHasRef fn)
       then do
         -- keep the original expression.
         let newNode = copyOrigNode a (snd $ cvVal cv)
@@ -1265,10 +1292,6 @@ instance Show Bottom where
 
 mkBottomTree :: String -> Tree
 mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
-
-isTreeBottom :: Tree -> Bool
-isTreeBottom (Tree (TNBottom _) _) = True
-isTreeBottom _ = False
 
 -- -- --
 
