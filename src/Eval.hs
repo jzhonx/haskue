@@ -83,13 +83,13 @@ evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
   v = case lit of
-    StringLit (SimpleStringLit s) -> mkTreeAtom $ String s
-    IntLit i -> mkTreeAtom $ Int i
-    FloatLit a -> mkTreeAtom $ Float a
-    BoolLit b -> mkTreeAtom $ Bool b
-    NullLit -> mkTreeAtom Null
+    StringLit (SimpleStringLit s) -> mkAtomTree $ String s
+    IntLit i -> mkAtomTree $ Int i
+    FloatLit a -> mkAtomTree $ Float a
+    BoolLit b -> mkAtomTree $ Bool b
+    NullLit -> mkAtomTree Null
     TopLit -> mkNewTree TNTop
-    BottomLit -> mkBottom ""
+    BottomLit -> mkBottomTree ""
 
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
@@ -137,7 +137,7 @@ evalStructLit decls = do
           do
             dump $ printf "evalFdLabels, nested: lb1: %s" (show lb1)
             sf2 <- evalFdLabels (l2 : rs) e
-            let sub = mkStruct [sf2]
+            let sub = mkStructTree [sf2]
             adder <- adderFrom lb1 attr sub
             dump $ printf "evalFdLabels, nested: adder: %s" (show adder)
             return adder
@@ -174,7 +174,7 @@ evalStructLit decls = do
 evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree
 evalListLit (AST.EmbeddingList es) = do
   xs <- mapM evalExpr es
-  return $ mkList xs
+  return $ mkListTree xs
 
 evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> m Tree
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
@@ -194,7 +194,7 @@ evalPrimExpr e@(PrimExprOperand op) = case op of
         tarPath = Path [tarSel]
        in
         return $ mkNewTree (TNLink $ Link{lnkTarget = tarPath, lnkExpr = AST.UnaryExprPrimaryExpr e})
-    Just b -> return $ mkBounds [b]
+    Just b -> return $ mkBoundsTree [b]
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
   evalSelector e sel p
@@ -241,7 +241,7 @@ dispUnaryFunc op t = do
       (Plus, Float i) -> fa i id
       (Minus, Int i) -> ia i negate
       (Minus, Float i) -> fa i negate
-      (Not, Bool b) -> return $ mkTreeAtom (Bool (not b))
+      (Not, Bool b) -> return $ mkAtomTree (Bool (not b))
       (AST.UnaRelOp uop, _) -> case (uop, amvAtom ta) of
         (AST.NE, a) -> mkb (BdNE a)
         (AST.LT, Int i) -> mkib BdLT i
@@ -252,8 +252,8 @@ dispUnaryFunc op t = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> return $ mkBounds [BdStrMatch $ BdReMatch p]
-        (AST.ReNotMatch, String p) -> return $ mkBounds [BdStrMatch $ BdReNotMatch p]
+        (AST.ReMatch, String p) -> return $ mkBoundsTree [BdStrMatch $ BdReMatch p]
+        (AST.ReNotMatch, String p) -> return $ mkBoundsTree [BdStrMatch $ BdReNotMatch p]
         _ -> returnConflict
       _ -> returnConflict
     -- The unary op is operating on a non-atom.
@@ -261,25 +261,25 @@ dispUnaryFunc op t = do
     _ -> returnConflict
  where
   conflict :: Tree
-  conflict = mkBottom $ printf "%s cannot be used for %s" (show t) (show op)
+  conflict = mkBottomTree $ printf "%s cannot be used for %s" (show t) (show op)
 
   returnConflict :: (FuncEnv m) => m Tree
   returnConflict = return conflict
 
   ia :: (FuncEnv m) => Integer -> (Integer -> Integer) -> m Tree
-  ia a f = return $ mkTreeAtom (Int $ f a)
+  ia a f = return $ mkAtomTree (Int $ f a)
 
   fa :: (FuncEnv m) => Double -> (Double -> Double) -> m Tree
-  fa a f = return $ mkTreeAtom (Float $ f a)
+  fa a f = return $ mkAtomTree (Float $ f a)
 
   mkb :: (FuncEnv m) => Bound -> m Tree
-  mkb b = return $ mkBounds [b]
+  mkb b = return $ mkBoundsTree [b]
 
   mkib :: (FuncEnv m) => BdNumCmpOp -> Integer -> m Tree
-  mkib uop i = return $ mkBounds [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
+  mkib uop i = return $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
 
   mkfb :: (FuncEnv m) => BdNumCmpOp -> Double -> m Tree
-  mkfb uop f = return $ mkBounds [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
+  mkfb uop f = return $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -337,7 +337,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ uncmpAtoms a1 a2
            in
             case r of
-              Right b -> return $ mkTreeAtom b
+              Right b -> return $ mkAtomTree b
               Left err -> return err
         TNStruct _ -> return $ cmpNull a1 t2
         TNList _ -> return $ cmpNull a1 t2
@@ -370,29 +370,29 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ mismatch a1 (amvAtom ta2)
            in
             case r of
-              Right b -> return $ mkTreeAtom b
+              Right b -> return $ mkAtomTree b
               Left err -> return err
         TNStruct _ -> return $ mismatchArith a1 t2
         TNList _ -> return $ mismatchArith a1 t2
         TNDisj _ -> return $ mismatchArith a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1)
-    | otherwise -> return $ mkBottom $ printf "operator %s is not supported" (show op)
+    | otherwise -> return $ mkBottomTree $ printf "operator %s is not supported" (show op)
  where
   a1 = amvAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
   arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
   uncmpAtoms :: Atom -> Atom -> Tree
-  uncmpAtoms x y = mkBottom $ printf "%s and %s are not comparable" (show x) (show y)
+  uncmpAtoms x y = mkBottomTree $ printf "%s and %s are not comparable" (show x) (show y)
 
   cmpNull :: Atom -> Tree -> Tree
   cmpNull a t =
     if
       -- There is no way for a non-atom to be compared with a non-null atom.
       | a /= Null -> mismatch a t
-      | op == AST.Equ -> mkTreeAtom (Bool False)
-      | op == AST.BinRelOp AST.NE -> mkTreeAtom (Bool True)
-      | otherwise -> mkBottom $ printf "operator %s is not supported" (show op)
+      | op == AST.Equ -> mkAtomTree (Bool False)
+      | op == AST.BinRelOp AST.NE -> mkAtomTree (Bool True)
+      | otherwise -> mkBottomTree $ printf "operator %s is not supported" (show op)
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree
   mismatchArith = mismatch
@@ -401,7 +401,7 @@ dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mismatch :: (Show a, Show b) => a -> b -> Tree
-mismatch x y = mkBottom $ printf "%s can not be used with %s and %s" (show x) (show y)
+mismatch x y = mkBottomTree $ printf "%s can not be used with %s and %s" (show x) (show y)
 
 regBinLeftStruct ::
   (FuncEnv m) => BinaryOp -> (BinOpDirect, Struct, Tree) -> (BinOpDirect, Tree) -> m Tree
@@ -428,7 +428,7 @@ regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
       TNAtom atom -> do
         return $ mkNewTree (TNConstraint $ updateConstraintAtom atom c)
       _ -> undefined
-  _ -> return (mkBottom mismatchErr)
+  _ -> return (mkBottomTree mismatchErr)
  where
   -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
   -- returns a delayed evaluation.
@@ -566,7 +566,7 @@ evalDisj e1 e2 = do
       subTree :: Maybe Tree
       subTree = case map fromJust (filter isJust [df1, df2]) of
         [x] -> Just x
-        [x, y] -> Just $ mkTreeDisj Nothing [x, y]
+        [x, y] -> Just $ mkDisjTree Nothing [x, y]
         _ -> Nothing
      in
-      return $ mkTreeDisj subTree (dedupAppend ds1 ds2)
+      return $ mkDisjTree subTree (dedupAppend ds1 ds2)

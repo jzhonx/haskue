@@ -73,20 +73,19 @@ module Tree (
   mergeAttrs,
   mkBinaryOp,
   mkBinaryOpDir,
-  mkBottom,
-  mkBounds,
+  mkBottomTree,
+  mkBoundsTree,
   mkCVFromCur,
   mkConstraint,
-  -- mkFunc,
-  mkList,
+  mkListTree,
   mkNewTree,
-  mkStruct,
+  mkReference,
+  mkStructTree,
   mkSubTC,
-  mkTreeAtom,
-  mkTreeDisj,
+  mkAtomTree,
+  mkDisjTree,
   mkUnaryOp,
   newEvalEnvMaybe,
-  tcPath,
   propUpTCSel,
   putCTInFuncEnv,
   runEnvMaybe,
@@ -94,10 +93,10 @@ module Tree (
   setOrigNodesCV,
   setTCFocus,
   substLink,
-  substTreeNode,
+  substTN,
+  tcPath,
   updateConstraintAtom,
   updateConstraintCnstr,
-  mkReference,
 )
 where
 
@@ -322,8 +321,8 @@ data Tree = Tree
   , treeOrig :: Maybe Tree
   }
 
-setTreeNode :: TreeNode -> Tree -> Tree
-setTreeNode n t = t{treeNode = n}
+setTN :: TreeNode -> Tree -> Tree
+setTN n t = t{treeNode = n}
 
 -- modifyTreeNode :: (TreeNode -> TreeNode) -> Tree -> Tree
 -- modifyTreeNode f t = t{treeNode = f (treeNode t)}
@@ -476,8 +475,8 @@ instance BuildASTExpr Tree where
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree n Nothing
 
-substTreeNode :: TreeNode -> Tree -> Tree
-substTreeNode n t = t{treeNode = n}
+substTN :: TreeNode -> Tree -> Tree
+substTN n t = t{treeNode = n}
 
 copyOrigNode :: Tree -> Tree -> Tree
 copyOrigNode new old = new{treeOrig = treeOrig old}
@@ -558,8 +557,8 @@ instance BuildASTExpr List where
   buildASTExpr l =
     AST.litCons . AST.ListLit . AST.EmbeddingList <$> mapM buildASTExpr (lstSubs l)
 
-mkList :: [Tree] -> Tree
-mkList ts = mkNewTree (TNList $ List{lstSubs = ts})
+mkListTree :: [Tree] -> Tree
+mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
 data LabelAttr = LabelAttr
   { lbAttrType :: StructLabelType
@@ -660,8 +659,8 @@ emptyStruct = Struct{stcOrdLabels = [], stcSubs = Map.empty, stcDynSubs = []}
 data StructFieldAdder = Static StructSelector StaticStructField | Dynamic DynamicStructField
   deriving (Show)
 
-mkStruct :: [StructFieldAdder] -> Tree
-mkStruct as =
+mkStructTree :: [StructFieldAdder] -> Tree
+mkStructTree as =
   mkNewTree . TNStruct $
     Struct
       { stcOrdLabels = ordLabels
@@ -719,7 +718,7 @@ evalStruct cv =
   evalSub acc sel = case (treeNode . cvVal) acc of
     TNBottom _ -> return acc
     TNStruct x -> evalCVStructField sel ((x, cvVal acc) <$ acc)
-    _ -> return $ mkBottom "not a struct" <$ acc
+    _ -> return $ mkBottomTree "not a struct" <$ acc
 
 evalCVStructField :: (CommonEnv m) => StructSelector -> CtxVal (Struct, Tree) -> m CtxTree
 evalCVStructField sel cv = case sel of
@@ -757,8 +756,8 @@ evalCVStructField sel cv = case sel of
                   >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
                   >>= evalCV
                   >>= mapEvalCVCur (propUpTCSel sSel)
-              return $ setTreeNode (TNStruct $ updateDynStruct i s mergedSF struct) <$> mergedCT
-            _ -> return $ mkBottom "selector can only be a string" <$ cv
+              return $ setTN (TNStruct $ updateDynStruct i s mergedSF struct) <$> mergedCT
+            _ -> return $ mkBottomTree "selector can only be a string" <$ cv
  where
   focus = cvVal cv
   struct = fst focus
@@ -913,12 +912,8 @@ instance Eq AtomV where
 instance BuildASTExpr AtomV where
   buildASTExpr (AtomV v) = buildASTExpr v
 
-mkTreeAtom :: Atom -> Tree
-mkTreeAtom v = mkNewTree (TNAtom $ AtomV{amvAtom = v})
-
-isTreeBottom :: Tree -> Bool
-isTreeBottom (Tree (TNBottom _) _) = True
-isTreeBottom _ = False
+mkAtomTree :: Atom -> Tree
+mkAtomTree v = mkNewTree (TNAtom $ AtomV{amvAtom = v})
 
 data Disj = Disj
   { dsjDefault :: Maybe Tree
@@ -940,8 +935,8 @@ instance BuildASTExpr Disj where
             )
             xs
 
-mkTreeDisj :: Maybe Tree -> [Tree] -> Tree
-mkTreeDisj m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
+mkDisjTree :: Maybe Tree -> [Tree] -> Tree
+mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
 
 -- Constraint does not need to implement the BuildASTExpr.
 data Constraint = Constraint
@@ -1095,8 +1090,8 @@ instance BuildASTExpr Bounds where
     xs <- mapM buildASTExpr (bdsList b)
     return $ foldr1 (AST.ExprBinaryOp AST.Unify) xs
 
-mkBounds :: [Bound] -> Tree
-mkBounds bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
+mkBoundsTree :: [Bound] -> Tree
+mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
 data FuncType = RegularFunc | DisjFunc
   deriving (Eq, Enum)
@@ -1144,26 +1139,6 @@ getFuncHasRef =
         TNFunc fn -> fncHasRef fn
         _ -> False
     )
-
--- mkFunc ::
---   String ->
---   FuncType ->
---   ([(Path, Tree)] -> FuncMonad Tree) ->
---   ([(Path, Tree)] -> forall m. (CommonEnv m) => m AST.Expression) ->
---   [(Path, Tree)] ->
---   Func
--- mkFunc name typ f g args =
---   Func
---     { fncFunc = f
---     , fncType = typ
---     , fncExprGen = g
---     , fncName = name
---     , fncArgs = args
---     , fncRes = Nothing
---     }
---  where
---   flattenedArgs :: [(Path, Tree)]
---   flattenedArgs = undefined
 
 mkUnaryOp :: AST.UnaryOp -> (Tree -> FuncMonad Tree) -> Tree -> Func
 mkUnaryOp op f n =
@@ -1264,7 +1239,7 @@ evalFunc cv = do
           _ -> return a
         let
           newFn = fn{fncRes = Just v}
-          newNode = substTreeNode (TNFunc newFn) (snd $ cvVal cv)
+          newNode = substTN (TNFunc newFn) (snd $ cvVal cv)
         return $ newNode <$ newCV
   dump $
     printf
@@ -1288,8 +1263,12 @@ instance BuildASTExpr Bottom where
 instance Show Bottom where
   show (Bottom m) = m
 
-mkBottom :: String -> Tree
-mkBottom msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
+mkBottomTree :: String -> Tree
+mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
+
+isTreeBottom :: Tree -> Bool
+isTreeBottom (Tree (TNBottom _) _) = True
+isTreeBottom _ = False
 
 -- -- --
 
@@ -1368,7 +1347,7 @@ viewTC :: TreeCursor -> TreeNode
 viewTC tc = treeNode (vcFocus tc)
 
 -- tcNodeSetter :: TreeCursor -> TreeNode -> TreeCursor
--- tcNodeSetter (TreeCursor t cs) n = TreeCursor (substTreeNode n t) cs
+-- tcNodeSetter (TreeCursor t cs) n = TreeCursor (substTN n t) cs
 
 showCursor :: (Show a) => ValCursor a -> String
 showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
@@ -1448,24 +1427,24 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
     TNList vs ->
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-       in return (ValCursor (substTreeNode l parT) cs)
+       in return (ValCursor (substTN l parT) cs)
     _ -> throwError insertErrMsg
   FuncArgSelector i -> case parNode of
     TNFunc fn ->
       let args = fncArgs fn
           l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
-       in return (ValCursor (substTreeNode l parT) cs)
+       in return (ValCursor (substTN l parT) cs)
     _ -> throwError insertErrMsg
   DisjDefaultSelector -> case parNode of
     TNDisj d ->
       return
-        (ValCursor (substTreeNode (TNDisj $ d{dsjDefault = dsjDefault d}) parT) cs)
+        (ValCursor (substTN (TNDisj $ d{dsjDefault = dsjDefault d}) parT) cs)
     _ -> throwError insertErrMsg
   DisjDisjunctSelector i -> case parNode of
     TNDisj d ->
       return
         ( ValCursor
-            ( substTreeNode (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)}) parT
+            ( substTN (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)}) parT
             )
             cs
         )
@@ -1485,7 +1464,7 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
               newSF = sf{ssfField = newSub}
               newStruct = parStruct{stcSubs = Map.insert label newSF (stcSubs parStruct)}
              in
-              return (ValCursor (substTreeNode (TNStruct newStruct) parT) cs)
+              return (ValCursor (substTN (TNStruct newStruct) parT) cs)
         | otherwise -> case label of
             DynamicSelector i ->
               let
@@ -1497,7 +1476,7 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
                         take i (stcDynSubs parStruct) ++ [newSF] ++ drop (i + 1) (stcDynSubs parStruct)
                     }
                in
-                return (ValCursor (substTreeNode (TNStruct newStruct) parT) cs)
+                return (ValCursor (substTN (TNStruct newStruct) parT) cs)
             _ -> throwError insertErrMsg
     _ -> throwError insertErrMsg
 
@@ -1613,7 +1592,7 @@ reEval tp t ct = do
         then throwError $ printf "reEval: the target node %s is not a reference." (show $ cvVal tar)
         else do
           let newFn = fn{fncRes = Just t, fncFunc = \_ -> return t}
-          return $ substTreeNode (TNFunc newFn) (cvVal tar) <$ tar
+          return $ substTN (TNFunc newFn) (cvVal tar) <$ tar
     _ -> throwError $ printf "reEval: the target node %s is not a function." (show $ cvVal tar)
   dump $ printf "reEval: path: %s, updated func: %s" (show $ cvPath tar) (show $ cvVal utar)
   fn <- upTillHighestFunc utar
@@ -1681,7 +1660,7 @@ followLink link tc = do
                         followLink newLink substTC
                       TNConstraint c -> do
                         dump $ printf "%s: substitutes to the atom value of the constraint" header
-                        return $ Just (tcPath tarTC, mkTreeAtom (amvAtom . cnsAtom $ c))
+                        return $ Just (tcPath tarTC, mkAtomTree (amvAtom . cnsAtom $ c))
                       _ -> do
                         dump $ printf "%s: resolves to tree node:\n%s" header (show tarNode)
                         return $ Just (tcPath tarTC, tarNode)
@@ -1723,12 +1702,6 @@ searchTCPath p tc =
       -- TODO: what if the base contains unevaluated nodes?
       newCommonEnvMaybe $ goDownTCPath tailP base
 
-data ExtendTCLabel = ExtendTCLabel
-  { exlSelector :: Selector
-  , exlAttr :: LabelAttr
-  }
-  deriving (Show)
-
 indexBySel :: (CommonEnv m) => Selector -> AST.UnaryExpr -> Tree -> m Tree
 indexBySel sel ue t = case treeNode t of
   -- The tree is an evaluated, final struct, which could be formed by an in-place expression, like ({}).a.
@@ -1755,7 +1728,7 @@ indexBySel sel ue t = case treeNode t of
       return $
         if i < length (lstSubs list)
           then lstSubs list !! i
-          else mkBottom $ "index out of bound: " ++ show i
+          else mkBottomTree $ "index out of bound: " ++ show i
     _ -> throwError "invalid list selector"
   TNLink link ->
     return $

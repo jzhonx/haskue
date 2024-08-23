@@ -83,7 +83,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
         then returnTree (TNConstraint c)
         else
           return $
-            mkBottom $
+            mkBottomTree $
               printf "values mismatch: %s != %s" (show l1) (show $ cnsAtom c)
     (_, TNDisj dj2) -> do
       dump $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
@@ -128,7 +128,7 @@ unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
     dump $ printf "unifyBoundList: %s, %s" (show t1) (show t2)
     let res = unifyBoundList (d1, bdsList b1) (d2, bdsList b2)
     case res of
-      Left err -> return $ mkBottom err
+      Left err -> return $ mkBottomTree err
       Right bs ->
         let
           r =
@@ -141,8 +141,8 @@ unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
               bs
          in
           case snd r of
-            Just a -> return $ mkTreeAtom a
-            Nothing -> return $ mkBounds (fst r)
+            Just a -> return $ mkAtomTree a
+            Nothing -> return $ mkBoundsTree (fst r)
   TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1)
   TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1)
   TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1)
@@ -154,9 +154,9 @@ unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tr
 unifyAtomBounds (d1, a1) (_, bs) =
   let
     cs = map withBound bs
-    ta1 = mkTreeAtom a1
+    ta1 = mkAtomTree a1
    in
-    foldl (\_ x -> if x == ta1 then ta1 else x) (mkTreeAtom a1) cs
+    foldl (\_ x -> if x == ta1 then ta1 else x) (mkAtomTree a1) cs
  where
   withBound :: Bound -> Tree
   withBound b =
@@ -164,12 +164,12 @@ unifyAtomBounds (d1, a1) (_, bs) =
       r = unifyBounds (d1, BdIsAtom a1) (Path.R, b)
      in
       case r of
-        Left s -> mkBottom s
+        Left s -> mkBottomTree s
         Right v -> case v of
           [x] -> case x of
             BdIsAtom a -> mkNewTree $ TNAtom $ AtomV a
-            _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show x)
-          _ -> mkBottom $ printf "unexpected bounds unification result: %s" (show v)
+            _ -> mkBottomTree $ printf "unexpected bounds unification result: %s" (show x)
+          _ -> mkBottomTree $ printf "unexpected bounds unification result: %s" (show v)
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
@@ -518,7 +518,7 @@ notUnifiable :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tr
 notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f
  where
   f :: (FuncEnv m) => Tree -> Tree -> m Tree
-  f x y = return $ mkBottom $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
+  f x y = return $ mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
 mkUnification :: (FuncEnv m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Tree
 mkUnification dt1 dt2 = return $ mkNewTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2)
