@@ -147,7 +147,7 @@ evalStructLit decls = do
     (sselFrom -> Just key) -> return $ Static key (StaticStructField sub attr)
     (dselFrom -> Just se) -> do
       selTree <- evalExpr se
-      return $ Dynamic (DynamicStructField sub attr se selTree)
+      return $ Dynamic (DynamicStructField sub attr se selTree False)
     _ -> throwError "invalid label"
 
   -- Returns the label name and the whether the label is static.
@@ -169,6 +169,7 @@ evalStructLit decls = do
 
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True
+  -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
 evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree

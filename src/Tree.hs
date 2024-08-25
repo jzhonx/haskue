@@ -610,11 +610,16 @@ data DynamicStructField = DynamicStructField
   , dsfAttr :: LabelAttr
   , dsfSelExpr :: AST.Expression
   , dsfSelTree :: Tree
+  , dsfIsEvaled :: Bool
   }
   deriving (Show)
 
 instance Eq DynamicStructField where
-  (==) f1 f2 = dsfField f1 == dsfField f2 && dsfAttr f1 == dsfAttr f2 && dsfSelExpr f1 == dsfSelExpr f2
+  (==) f1 f2 =
+    dsfField f1 == dsfField f2
+      && dsfAttr f1 == dsfAttr f2
+      && dsfSelExpr f1 == dsfSelExpr f2
+      && dsfIsEvaled f1 == dsfIsEvaled f2
 
 data Struct = Struct
   { stcOrdLabels :: [StructSelector] -- Should only contain string labels.
@@ -665,7 +670,7 @@ instance BuildASTExpr Struct where
      in
       do
         stcs <- sequence [processStaticField (l, stcSubs s Map.! l) | l <- structStaticLabels s]
-        dyns <- sequence [processDynField sf | sf <- stcDynSubs s]
+        dyns <- mapM processDynField (filter (not . dsfIsEvaled) (stcDynSubs s))
         return $
           AST.litCons $
             AST.StructLit (stcs ++ dyns)
@@ -758,36 +763,39 @@ evalStructField (sel, f) cv = case (sel, f) of
       >>= evalCV
       >>= mapEvalCVCur (propUpTCSel subSel)
   (DynamicSelector i, DynamicField dsf) ->
-    do
-      -- evaluate the dynamic label.
-      labelCT <-
-        do
-          return $ snd <$> cv
-          >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
-          >>= evalCV
-      let label = cvVal labelCT
-      dump $
-        printf
-          "evalCVStructField: path: %s, dynamic label is evaluated to %s"
-          (show $ cvPath cv)
-          (show label)
-      case treeNode label of
-        TNAtom (AtomV (String s)) -> do
-          Config{cfUnify = unify} <- ask
-          let
-            mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
-            sSel = StructSelector $ StringSelector s
-          mergedCT <-
-            do
-              mapEvalCVCur (propUpTCSel subSel) labelCT
-              >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
-              >>= evalCV
-          let
-            mergedT = cvVal mergedCT
-            tc = fromJust . goUpTC $ getCVCursor mergedCT
-            ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
-          return $ setCVCur ntc mergedCT
-        _ -> return $ mkBottomTree "selector can only be a string" <$ cv
+    if dsfIsEvaled dsf
+      then return $ snd <$> cv
+      else do
+        -- evaluate the dynamic label.
+        labelCT <-
+          do
+            return $ snd <$> cv
+            >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
+            >>= evalCV
+        let label = cvVal labelCT
+        dump $
+          printf
+            "evalCVStructField: path: %s, dynamic label is evaluated to %s"
+            (show $ cvPath cv)
+            (show label)
+        case treeNode label of
+          TNAtom (AtomV (String s)) -> do
+            Config{cfUnify = unify} <- ask
+            let
+              mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
+              sSel = StructSelector $ StringSelector s
+            mergedCT <-
+              do
+                mapEvalCVCur (propUpTCSel subSel) labelCT
+                >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
+                >>= evalCV
+            let
+              -- TODO: the mergedT could be incomplete.
+              mergedT = cvVal mergedCT
+              tc = fromJust . goUpTC $ getCVCursor mergedCT
+              ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
+            return $ setCVCur ntc mergedCT
+          _ -> return $ mkBottomTree "selector can only be a string" <$ cv
   _ -> throwError "evalStructField: invalid selector field combination"
  where
   focus = cvVal cv
@@ -812,7 +820,10 @@ evalStructField (sel, f) cv = case (sel, f) of
   updateDynStruct i s sf x =
     x
       { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
-      , stcDynSubs = take i (stcDynSubs x) ++ drop (i + 1) (stcDynSubs x)
+      , stcDynSubs =
+          take i (stcDynSubs x)
+            ++ [(stcDynSubs x !! i){dsfIsEvaled = True}]
+            ++ drop (i + 1) (stcDynSubs x)
       , stcOrdLabels =
           if StringSelector s `elem` stcOrdLabels x
             then stcOrdLabels x

@@ -928,6 +928,50 @@ testStruct3 = do
       , ("x7", sGen $ mkAtomTree $ Int 3)
       ]
 
+testStruct4 :: IO ()
+testStruct4 = do
+  s <- readFile "tests/spec/struct4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      ["a", "b", "foo", "foobar", "bar"]
+      [ ("foo", LabelAttr SLRegular False)
+      , ("bar", LabelAttr SLRequired False)
+      , ("foobar", LabelAttr SLRegular False)
+      ]
+      [ ("a", mkAtomTree $ String "foo")
+      , ("b", mkAtomTree $ String "bar")
+      , ("foo", mkAtomTree $ String "baz")
+      , ("foobar", mkAtomTree $ String "qux")
+      , ("bar", mkBoundsTree [BdType BdString])
+      ]
+
+testStruct5 :: IO ()
+testStruct5 = do
+  s <- readFile "tests/spec/struct5.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newSimpleStruct
+      ["a", "b"]
+      [ ("a", newSimpleStruct ["c"] [("c", mkAtomTree $ String "b")])
+      ,
+        ( "b"
+        , newSimpleStruct
+            ["x", "y"]
+            [ ("x", mkAtomTree $ String "x")
+            , ("y", mkAtomTree $ String "y")
+            ]
+        )
+      ]
+
 testList1 :: IO ()
 testList1 = do
   s <- readFile "tests/spec/list1.cue"
@@ -1004,6 +1048,8 @@ specTests =
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
     , testCase "struct3" testStruct3
+    , testCase "struct4" testStruct4
+    , testCase "struct5" testStruct5
     , testCase "list1" testList1
     , testCase "index1" testIndex1
     ]
