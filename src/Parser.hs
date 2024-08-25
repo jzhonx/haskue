@@ -260,7 +260,7 @@ rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace"
 
 list :: Parser (Lexeme Literal)
 list = do
-  _ <- lexeme $ (,TokenLSquare) <$> char '['
+  _ <- lsquare
   elements <- many $ do
     (r, tok, nl) <- expr
     rsquareMaybe <- lookAhead $ optionMaybe rsquare
@@ -273,6 +273,9 @@ list = do
   let es :: [Embedding]
       es = map getLexeme elements
   return (ListLit (EmbeddingList es), TokenRSquare, nl)
+
+lsquare :: Parser (Lexeme Char)
+lsquare = lexeme $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left square")
 
 rsquare :: Parser (Lexeme Char)
 rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
@@ -317,7 +320,7 @@ field = do
   (e, tok, nl) <- expr
   let
     ln = getLexeme lnx
-    otherLns = map (\x -> getLexeme x) otherxs
+    otherLns = map getLexeme otherxs
   return (Field (ln : otherLns) e, tok, nl)
  where
   label :: Parser (Lexeme Label)
@@ -327,7 +330,10 @@ field = do
     return (Label le, tok, nl)
 
 labelExpr :: Parser (Lexeme LabelExpr)
-labelExpr = do
+labelExpr = labelPattern <|> labelNameConstraint
+
+labelNameConstraint :: Parser (Lexeme LabelExpr)
+labelNameConstraint = do
   lnlem <- labelName
   optionMaybe (questionMark <|> exclamation) >>= \case
     Just (_, tok, nl) ->
@@ -335,6 +341,13 @@ labelExpr = do
         then return (LabelName (getLexeme lnlem) OptionalLabel, tok, nl)
         else return (LabelName (getLexeme lnlem) RequiredLabel, tok, nl)
     Nothing -> return $ modLexemeRes (`LabelName` RegularLabel) lnlem
+
+labelPattern :: Parser (Lexeme LabelExpr)
+labelPattern = do
+  _ <- lsquare
+  (e, _, _) <- expr
+  (_, tok, nl) <- rsquare
+  return (LabelPattern e, tok, nl)
 
 questionMark :: Parser (Lexeme Char)
 questionMark = lexeme $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
@@ -407,7 +420,7 @@ spaces = do
           <|> (char '\t' >> return False)
           <|> (char '\n' >> return True)
       )
-  return $ any (== True) nls
+  return $ or nls
 
 lineComment :: Parser ()
 lineComment = do
@@ -417,7 +430,7 @@ lineComment = do
 skippable :: Parser Bool
 skippable = do
   hasnls <- many (spaces <|> (lineComment >> return False))
-  return $ any (== True) hasnls
+  return $ or hasnls
 
 lexeme :: Parser (TokAttr a) -> Parser (Lexeme a)
 lexeme p = do
