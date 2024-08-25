@@ -401,7 +401,7 @@ dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
 mismatch :: (Show a, Show b) => a -> b -> Tree
-mismatch x y = mkBottomTree $ printf "%s can not be used with %s and %s" (show x) (show y)
+mismatch x y = mkBottomTree $ printf "%s and %s mismatch" (show x) (show y)
 
 regBinLeftStruct ::
   (FuncEnv m) => BinaryOp -> (BinOpDirect, Struct, Tree) -> (BinOpDirect, Tree) -> m Tree

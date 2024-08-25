@@ -57,7 +57,6 @@ module Tree (
   evalCV,
   getCTFromFuncEnv,
   getCVCursor,
-  -- getScalarValue,
   goDownTCPath,
   goDownTCSel,
   goDownTCSelErr,
@@ -65,27 +64,24 @@ module Tree (
   indexBySel,
   indexByTree,
   insertUnifyStruct,
-  isTreeBottom,
   isTreeAtom,
+  isTreeBottom,
   isTreeValue,
-  -- isValueAtom,
-  -- isValueConcrete,
-  -- isValueNode,
   mapEvalCVCur,
   mergeAttrs,
+  mkAtomTree,
   mkBinaryOp,
   mkBinaryOpDir,
   mkBottomTree,
   mkBoundsTree,
   mkCVFromCur,
   mkConstraint,
+  mkDisjTree,
   mkListTree,
   mkNewTree,
   mkReference,
   mkStructTree,
   mkSubTC,
-  mkAtomTree,
-  mkDisjTree,
   mkUnaryOp,
   newEvalEnvMaybe,
   propUpTCSel,
@@ -731,57 +727,68 @@ structDynIndexes s = [0 .. length (stcDynSubs s) - 1]
 --     )
 --     True
 --     (Map.elems (stcSubs s))
+--
+data StructField = StaticField StaticStructField | DynamicField DynamicStructField
 
 evalStruct :: (CommonEnv m) => CtxVal (Struct, Tree) -> m CtxTree
 evalStruct cv =
-  foldM evalSub ct (Map.keys (stcSubs struct) ++ map DynamicSelector [0 .. length (stcDynSubs struct) - 1])
+  foldM
+    evalSub
+    ct
+    ( map
+        (\(s, a) -> (s, StaticField a))
+        (Map.toList (stcSubs struct))
+        ++ map (\(i, a) -> (DynamicSelector i, DynamicField a)) (zip [0 ..] (stcDynSubs struct))
+    )
  where
   ct = snd <$> cv
   struct = fst (cvVal cv)
-  evalSub :: (CommonEnv m) => CtxTree -> StructSelector -> m CtxTree
-  evalSub acc sel = case (treeNode . cvVal) acc of
+  evalSub :: (CommonEnv m) => CtxTree -> (StructSelector, StructField) -> m CtxTree
+  evalSub acc (sel, f) = case (treeNode . cvVal) acc of
     TNBottom _ -> return acc
-    TNStruct x -> evalCVStructField sel ((x, cvVal acc) <$ acc)
+    TNStruct x -> evalStructField (sel, f) ((x, cvVal acc) <$ acc)
     _ -> return $ mkBottomTree "not a struct" <$ acc
 
-evalCVStructField :: (CommonEnv m) => StructSelector -> CtxVal (Struct, Tree) -> m CtxTree
-evalCVStructField sel cv = case sel of
-  StringSelector _ ->
-    let sf = stcSubs struct Map.! sel
-     in do
+evalStructField :: (CommonEnv m) => (StructSelector, StructField) -> CtxVal (Struct, Tree) -> m CtxTree
+evalStructField (sel, f) cv = case (sel, f) of
+  (StringSelector _, StaticField sf) ->
+    do
+      return $ snd <$> cv
+      >>= mapEvalCVCur (return . mkSubTC subSel (ssfField sf))
+      >>= evalCV
+      >>= mapEvalCVCur (propUpTCSel subSel)
+  (DynamicSelector i, DynamicField dsf) ->
+    do
+      -- evaluate the dynamic label.
+      labelCT <-
+        do
           return $ snd <$> cv
-          >>= mapEvalCVCur (return . mkSubTC subSel (ssfField sf))
+          >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
           >>= evalCV
-          >>= mapEvalCVCur (propUpTCSel subSel)
-  DynamicSelector i ->
-    let dsf = stcDynSubs struct !! i
-     in do
-          -- evaluate the dynamic label.
-          labelCT <-
+      let label = cvVal labelCT
+      dump $
+        printf
+          "evalCVStructField: path: %s, dynamic label is evaluated to %s"
+          (show $ cvPath cv)
+          (show label)
+      case treeNode label of
+        TNAtom (AtomV (String s)) -> do
+          Config{cfUnify = unify} <- ask
+          let
+            mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
+            sSel = StructSelector $ StringSelector s
+          mergedCT <-
             do
-              return $ snd <$> cv
-              >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
+              mapEvalCVCur (propUpTCSel subSel) labelCT
+              >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
               >>= evalCV
-          let label = cvVal labelCT
-          dump $
-            printf
-              "evalCVStructField: path: %s, dynamic label is evaluated to %s"
-              (show $ cvPath cv)
-              (show label)
-          case treeNode label of
-            TNAtom (AtomV (String s)) -> do
-              Config{cfUnify = unify} <- ask
-              let
-                mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
-                sSel = StructSelector $ StringSelector s
-              mergedCT <-
-                do
-                  mapEvalCVCur (propUpTCSel subSel) labelCT
-                  >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
-                  >>= evalCV
-                  >>= mapEvalCVCur (propUpTCSel sSel)
-              return $ setTN (TNStruct $ updateDynStruct i s mergedSF struct) <$> mergedCT
-            _ -> return $ mkBottomTree "selector can only be a string" <$ cv
+          let
+            mergedT = cvVal mergedCT
+            tc = fromJust . goUpTC $ getCVCursor mergedCT
+            ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
+          return $ setCVCur ntc mergedCT
+        _ -> return $ mkBottomTree "selector can only be a string" <$ cv
+  _ -> throwError "evalStructField: invalid selector field combination"
  where
   focus = cvVal cv
   struct = fst focus
@@ -806,6 +813,10 @@ evalCVStructField sel cv = case sel of
     x
       { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
       , stcDynSubs = take i (stcDynSubs x) ++ drop (i + 1) (stcDynSubs x)
+      , stcOrdLabels =
+          if StringSelector s `elem` stcOrdLabels x
+            then stcOrdLabels x
+            else stcOrdLabels x ++ [StringSelector s]
       }
 
 data Link = Link
@@ -958,8 +969,7 @@ instance BuildASTExpr Disj where
         xs <- mapM buildASTExpr (dsjDisjuncts dj)
         return $
           foldr1
-            ( \x y -> AST.ExprBinaryOp AST.Disjunction x y
-            )
+            (AST.ExprBinaryOp AST.Disjunction)
             xs
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
@@ -1467,8 +1477,7 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
     TNDisj d ->
       return
         ( ValCursor
-            ( substTN (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)}) parT
-            )
+            (substTN (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)}) parT)
             cs
         )
     _ -> throwError insertErrMsg
@@ -1481,6 +1490,7 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
     TNStruct parStruct ->
       if
         | isTreeBottom newSub -> return (ValCursor newSub cs)
+        -- the label should already exist in the parent struct.
         | Map.member label (stcSubs parStruct) ->
             let
               sf = stcSubs parStruct Map.! label
