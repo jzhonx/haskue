@@ -148,6 +148,22 @@ testBinOp2 = do
               ]
           )
 
+testBinOp3 :: IO ()
+testBinOp3 = do
+  s <- readFile "tests/spec/binop3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      y
+        @?= newSimpleStruct
+          ["x1"]
+          ( map
+              (\(k, v) -> (k, mkAtomTree v))
+              [ ("x1", String "foobar")
+              ]
+          )
+
 testBinOpCmpEq :: IO ()
 testBinOpCmpEq = do
   s <- readFile "tests/spec/binop_cmp_eq.cue"
@@ -959,6 +975,7 @@ specTests =
     , testCase "unaryop" testUnaryOp
     , testCase "binop" testBinop
     , testCase "binop2" testBinOp2
+    , testCase "binop3" testBinOp3
     , testCase "binop_cmp_eq" testBinOpCmpEq
     , testCase "binop_cmp_ne" testBinOpCmpNE
     , testCase "bounds1" testBounds1

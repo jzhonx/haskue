@@ -319,6 +319,7 @@ regBinLeftAtom :: (FuncEnv m) => BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinO
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   dump $ printf "regBinLeftAtom: %s (%s: %s) (%s)" (show op) (show d1) (show ta1) (show t2)
   if
+    -- comparison operators
     | isJust (lookup op cmpOps) -> case treeNode t2 of
         TNAtom ta2 ->
           let
@@ -343,6 +344,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
         TNList _ -> return $ cmpNull a1 t2
         TNDisj _ -> return $ cmpNull a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1)
+    -- arithmetic operators
     | op `elem` arithOps -> case treeNode t2 of
         TNAtom ta2 ->
           let
@@ -351,23 +353,24 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
                 (Int i1, Int i2) -> Right . Int $ dirApply (+) (d1, i1) i2
                 (Int i1, Float i2) -> Right . Float $ dirApply (+) (d1, fromIntegral i1) i2
                 (Float i1, Int i2) -> Right . Float $ dirApply (+) (d1, i1) (fromIntegral i2)
-                _ -> Left $ mismatch a1 (amvAtom ta2)
+                (String s1, String s2) -> Right . String $ dirApply (++) (d1, s1) s2
+                _ -> Left $ mismatch op a1 (amvAtom ta2)
               AST.Sub -> case (a1, amvAtom ta2) of
                 (Int i1, Int i2) -> Right . Int $ dirApply (-) (d1, i1) i2
                 (Int i1, Float i2) -> Right . Float $ dirApply (-) (d1, fromIntegral i1) i2
                 (Float i1, Int i2) -> Right . Float $ dirApply (-) (d1, i1) (fromIntegral i2)
-                _ -> Left $ mismatch a1 (amvAtom ta2)
+                _ -> Left $ mismatch op a1 (amvAtom ta2)
               AST.Mul -> case (a1, amvAtom ta2) of
                 (Int i1, Int i2) -> Right . Int $ dirApply (*) (d1, i1) i2
                 (Int i1, Float i2) -> Right . Float $ dirApply (*) (d1, fromIntegral i1) i2
                 (Float i1, Int i2) -> Right . Float $ dirApply (*) (d1, i1) (fromIntegral i2)
-                _ -> Left $ mismatch a1 (amvAtom ta2)
+                _ -> Left $ mismatch op a1 (amvAtom ta2)
               AST.Div -> case (a1, amvAtom ta2) of
                 (Int i1, Int i2) -> Right . Float $ dirApply (/) (d1, fromIntegral i1) (fromIntegral i2)
                 (Int i1, Float i2) -> Right . Float $ dirApply (/) (d1, fromIntegral i1) i2
                 (Float i1, Int i2) -> Right . Float $ dirApply (/) (d1, i1) (fromIntegral i2)
-                _ -> Left $ mismatch a1 (amvAtom ta2)
-              _ -> Left $ mismatch a1 (amvAtom ta2)
+                _ -> Left $ mismatch op a1 (amvAtom ta2)
+              _ -> Left $ mismatch op a1 (amvAtom ta2)
            in
             case r of
               Right b -> return $ mkAtomTree b
@@ -389,25 +392,25 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   cmpNull a t =
     if
       -- There is no way for a non-atom to be compared with a non-null atom.
-      | a /= Null -> mismatch a t
+      | a /= Null -> mismatch op a t
       | op == AST.Equ -> mkAtomTree (Bool False)
       | op == AST.BinRelOp AST.NE -> mkAtomTree (Bool True)
       | otherwise -> mkBottomTree $ printf "operator %s is not supported" (show op)
 
   mismatchArith :: (Show a, Show b) => a -> b -> Tree
-  mismatchArith = mismatch
+  mismatchArith = mismatch op
 
 dirApply :: (a -> a -> b) -> (BinOpDirect, a) -> a -> b
 dirApply f (di1, i1) i2 = if di1 == L then f i1 i2 else f i2 i1
 
-mismatch :: (Show a, Show b) => a -> b -> Tree
-mismatch x y = mkBottomTree $ printf "%s and %s mismatch" (show x) (show y)
+mismatch :: (Show a, Show b) => BinaryOp -> a -> b -> Tree
+mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
 regBinLeftStruct ::
   (FuncEnv m) => BinaryOp -> (BinOpDirect, Struct, Tree) -> (BinOpDirect, Tree) -> m Tree
 regBinLeftStruct op (d1, _, t1) (d2, t2) = case treeNode t2 of
   TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-  _ -> return (mismatch t1 t2)
+  _ -> return (mismatch op t1 t2)
 
 regBinLeftDisj ::
   (FuncEnv m) => BinaryOp -> (BinOpDirect, Disj, Tree) -> (BinOpDirect, Tree) -> m Tree
@@ -415,7 +418,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
   Disj{dsjDefault = Just d} -> regBinDir op (d1, d) (d2, t2)
   _ -> case treeNode t2 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-    _ -> return (mismatch t1 t2)
+    _ -> return (mismatch op t1 t2)
 
 regBinOther :: (FuncEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
 regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
