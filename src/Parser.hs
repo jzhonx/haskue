@@ -123,11 +123,11 @@ expr = prec1
  where
   binOp ::
     Parser (Lexeme Expression) ->
-    Parser ((Lexeme Expression) -> (Lexeme Expression) -> (Lexeme Expression)) ->
+    Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression) ->
     Parser (Lexeme Expression)
-  binOp higher sep = chainl1 higher sep
+  binOp = chainl1
 
-  precedence :: Parser String -> Parser ((Lexeme Expression) -> (Lexeme Expression) -> (Lexeme Expression))
+  precedence :: Parser String -> Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression)
   precedence op = do
     (s, _, _) <- lexeme (binOpAdapt op)
     let _op = fromJust $ lookup s binopTable
@@ -168,15 +168,15 @@ primaryExpr = chainPrimExpr primOperand (selector <|> index)
   primOperand :: Parser (Lexeme PrimaryExpr)
   primOperand = modLexemeRes PrimExprOperand <$> operand
 
-  selector :: Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr))
+  selector :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
   selector = do
     _ <- lexeme $ (,TokenDot) <$> char '.'
     (sel, tok, nl) <-
       (modLexemeRes IDSelector <$> identifier)
-        <|> (modLexemeRes StringSelector <$> (litLexeme TokenString simpleStringLit))
+        <|> (modLexemeRes StringSelector <$> litLexeme TokenString simpleStringLit)
     return $ \(pe, _, _) -> (PrimExprSelector pe sel, tok, nl)
 
-  index :: Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr))
+  index :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
   index = do
     _ <- lexeme $ (,TokenLSquare) <$> char '['
     (e, _, _) <- expr
@@ -185,7 +185,7 @@ primaryExpr = chainPrimExpr primOperand (selector <|> index)
 
 chainPrimExpr ::
   Parser (Lexeme PrimaryExpr) ->
-  Parser ((Lexeme PrimaryExpr) -> (Lexeme PrimaryExpr)) ->
+  Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr) ->
   Parser (Lexeme PrimaryExpr)
 chainPrimExpr p op = do
   x <- p
@@ -200,18 +200,16 @@ chainPrimExpr p op = do
       <?> "failed to parse chainPrimExpr"
 
 operand :: Parser (Lexeme Operand)
-operand = do
-  opd <-
-    (modLexemeRes OpLiteral <$> literal)
-      <|> (modLexemeRes (OperandName . Identifier) <$> identifier)
-      <|> ( do
-              _ <- lparen
-              (e, _, _) <- expr
-              (_, _, nl) <- rparen
-              return $ (OpExpression e, TokenRParen, nl)
-          )
-      <?> "failed to parse operand"
-  return opd
+operand =
+  (modLexemeRes OpLiteral <$> literal)
+    <|> (modLexemeRes (OperandName . Identifier) <$> identifier)
+    <|> ( do
+            _ <- lparen
+            (e, _, _) <- expr
+            (_, _, nl) <- rparen
+            return $ (OpExpression e, TokenRParen, nl)
+        )
+    <?> "failed to parse operand"
 
 lparen :: Parser (Lexeme Char)
 lparen = lexeme $ (,TokenLParen) <$> (char '(' <?> "failed to parse left parenthesis")
@@ -222,9 +220,9 @@ rparen = lexeme $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parent
 literal :: Parser (Lexeme Literal)
 literal =
   try (litLexeme TokenFloat floatLit)
-    <|> (litLexeme TokenInt intLit)
+    <|> litLexeme TokenInt intLit
     <|> try (litLexeme TokenBool bool)
-    <|> try (modLexemeRes (StringLit . SimpleStringLit) <$> (litLexeme TokenString simpleStringLit))
+    <|> try (modLexemeRes (StringLit . SimpleStringLit) <$> litLexeme TokenString simpleStringLit)
     <|> try (litLexeme TokenBottom bottom)
     <|> try (litLexeme TokenTop top)
     <|> try (litLexeme TokenNull null)
@@ -254,7 +252,7 @@ struct = do
   (_, _, nl) <- rbrace
   let
     ds :: [Declaration]
-    ds = map (\x -> getLexeme x) decls
+    ds = map getLexeme decls
   return (StructLit ds, TokenRBrace, nl)
 
 rbrace :: Parser (Lexeme Char)
@@ -273,7 +271,7 @@ list = do
         return (r, tok, nl)
   (_, _, nl) <- rsquare
   let es :: [Embedding]
-      es = map (\x -> getLexeme x) elements
+      es = map getLexeme elements
   return (ListLit (EmbeddingList es), TokenRSquare, nl)
 
 rsquare :: Parser (Lexeme Char)
@@ -334,9 +332,9 @@ labelExpr = do
   optionMaybe (questionMark <|> exclamation) >>= \case
     Just (_, tok, nl) ->
       if tok == TokenQuestionMark
-        then return (OptionalLabel $ getLexeme lnlem, tok, nl)
-        else return (RequiredLabel $ getLexeme lnlem, tok, nl)
-    Nothing -> return $ modLexemeRes RegularLabel lnlem
+        then return (LabelName (getLexeme lnlem) OptionalLabel, tok, nl)
+        else return (LabelName (getLexeme lnlem) RequiredLabel, tok, nl)
+    Nothing -> return $ modLexemeRes (`LabelName` RegularLabel) lnlem
 
 questionMark :: Parser (Lexeme Char)
 questionMark = lexeme $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
@@ -347,7 +345,7 @@ exclamation = lexeme $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !"
 labelName :: Parser (Lexeme LabelName)
 labelName =
   (modLexemeRes LabelID <$> identifier)
-    <|> (modLexemeRes LabelString <$> (litLexeme TokenString simpleStringLit))
+    <|> (modLexemeRes LabelString <$> litLexeme TokenString simpleStringLit)
     <|> labelNameExpr
 
 labelNameExpr :: Parser (Lexeme LabelName)

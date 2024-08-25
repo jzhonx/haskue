@@ -10,6 +10,7 @@ module AST (
   Label (..),
   LabelExpr (..),
   LabelName (..),
+  LabelConstraint (..),
   Literal (..),
   Operand (..),
   OperandName (..),
@@ -103,9 +104,14 @@ type SimpleStringLit = String
 newtype Label = Label LabelExpr deriving (Eq, Show)
 
 data LabelExpr
-  = RegularLabel LabelName
-  | OptionalLabel LabelName
-  | RequiredLabel LabelName
+  = LabelName LabelName LabelConstraint
+  | LabelPattern Expression
+  deriving (Eq, Show)
+
+data LabelConstraint
+  = RegularLabel
+  | OptionalLabel
+  | RequiredLabel
   deriving (Eq, Show)
 
 data LabelName
@@ -291,9 +297,11 @@ labelBld (Label e) = labelExprBld e
 
 labelExprBld :: LabelExpr -> Builder
 labelExprBld e = case e of
-  RegularLabel ln -> labelNameBld ln
-  OptionalLabel ln -> labelNameBld ln <> string7 "?"
-  RequiredLabel ln -> labelNameBld ln <> string7 "!"
+  LabelName ln cnstr -> case cnstr of
+    RegularLabel -> labelNameBld ln
+    OptionalLabel -> labelNameBld ln <> string7 "?"
+    RequiredLabel -> labelNameBld ln <> string7 "!"
+  LabelPattern ex -> undefined
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case e of

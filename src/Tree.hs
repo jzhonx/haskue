@@ -110,9 +110,7 @@ import Control.Monad.Logger (
 import Control.Monad.Reader (MonadReader, ask, runReaderT)
 import Control.Monad.State.Strict (
   MonadState,
-  StateT (StateT),
   evalStateT,
-  get,
   gets,
   put,
   runStateT,
@@ -130,7 +128,6 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
 import Data.Text (pack)
-import Debug.Trace
 import Path
 import Text.Printf (printf)
 
@@ -625,6 +622,7 @@ data Struct = Struct
   { stcOrdLabels :: [StructSelector] -- Should only contain string labels.
   , stcSubs :: Map.Map StructSelector StaticStructField
   , stcDynSubs :: [DynamicStructField]
+  -- , stcPatterns :: [(Bound, Tree)]
   }
 
 instance Eq Struct where
@@ -633,7 +631,10 @@ instance Eq Struct where
       && stcSubs s1 == stcSubs s2
       && stcDynSubs s1 == stcDynSubs s2
 
+-- && stcPatterns s1 == stcPatterns s2
+
 instance BuildASTExpr Struct where
+  -- Patterns are not included in the AST.
   buildASTExpr s =
     let
       processStaticField :: (CommonEnv m) => (StructSelector, StaticStructField) -> m AST.Declaration
@@ -662,11 +663,15 @@ instance BuildASTExpr Struct where
               e
 
       labelCons :: LabelAttr -> AST.LabelName -> AST.Label
-      labelCons attr =
-        AST.Label . case lbAttrType attr of
-          SLRegular -> AST.RegularLabel
-          SLRequired -> AST.RequiredLabel
-          SLOptional -> AST.OptionalLabel
+      labelCons attr ln =
+        AST.Label $
+          AST.LabelName
+            ln
+            ( case lbAttrType attr of
+                SLRegular -> AST.RegularLabel
+                SLRequired -> AST.RequiredLabel
+                SLOptional -> AST.OptionalLabel
+            )
      in
       do
         stcs <- sequence [processStaticField (l, stcSubs s Map.! l) | l <- structStaticLabels s]
@@ -679,7 +684,13 @@ instance Value Struct where
   getValue s = s
 
 emptyStruct :: Struct
-emptyStruct = Struct{stcOrdLabels = [], stcSubs = Map.empty, stcDynSubs = []}
+emptyStruct =
+  Struct
+    { stcOrdLabels = []
+    , stcSubs = Map.empty
+    , stcDynSubs = []
+    -- , stcPatterns = []
+    }
 
 data StructFieldAdder = Static StructSelector StaticStructField | Dynamic DynamicStructField
   deriving (Show)
@@ -691,6 +702,7 @@ mkStructTree as =
       { stcOrdLabels = ordLabels
       , stcSubs = Map.fromList statics
       , stcDynSubs = dynamics
+      -- , stcPatterns = []
       }
  where
   ordLabels = [l | Static l _ <- as]

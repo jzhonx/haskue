@@ -163,9 +163,11 @@ evalStructLit decls = do
   slFrom :: Label -> (LabelName, StructLabelType)
   slFrom l = case l of
     Label le -> case le of
-      RegularLabel ln -> (ln, SLRegular)
-      OptionalLabel ln -> (ln, SLOptional)
-      RequiredLabel ln -> (ln, SLRequired)
+      LabelName ln cnstr -> case cnstr of
+        RegularLabel -> (ln, SLRegular)
+        OptionalLabel -> (ln, SLOptional)
+        RequiredLabel -> (ln, SLRequired)
+      LabelPattern _ -> undefined
 
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True
