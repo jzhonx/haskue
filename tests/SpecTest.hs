@@ -33,8 +33,8 @@ newStruct lbls ow subs =
                 subs
             )
       , stcOrdLabels = map Path.StringSelector lbls
-      , stcDynSubs = []
-      -- , trsAttrs = Map.fromList $ map attrWrite lbls
+      , stcPendSubs = []
+      , stcPatterns = []
       }
  where
   attrWrite :: String -> (StructSelector, LabelAttr)

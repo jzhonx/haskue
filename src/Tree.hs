@@ -38,12 +38,15 @@ module Tree (
   Number (..),
   StaticStructField (..),
   Struct (..),
-  StructFieldAdder (..),
+  StructElemAdder (..),
   StructLabelType (..),
   Tree (..),
   TreeCursor,
   TreeNode (..),
   ValCursor (..),
+  -- StructField (..),
+  PatternStructField (..),
+  PendingStructElem (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -112,6 +115,7 @@ import Control.Monad.State.Strict (
   MonadState,
   evalStateT,
   gets,
+  modify,
   put,
   runStateT,
  )
@@ -352,24 +356,33 @@ tnStrBldr i t = case treeNode t of
            in string7 (show k)
                 <> attr (ssfAttr sf)
                 <> isVar (ssfAttr sf)
-        dlabel :: Int -> Builder
-        dlabel j =
-          let sf = stcDynSubs s !! j
-           in string7 (show j)
-                <> attr (dsfAttr sf)
-                <> isVar (dsfAttr sf)
-                <> string7 ",e"
+        dlabel :: Int -> DynamicStructField -> Builder
+        dlabel j dsf =
+          string7 (show j)
+            <> attr (dsfAttr dsf)
+            <> isVar (dsfAttr dsf)
+            <> string7 ",e"
+
+        plabel :: Int -> Builder
+        plabel j = string7 (show j) <> string7 "pattern,e"
+
         fields =
           map (\k -> (slabel k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
             ++ map
-              (\j -> (dlabel j, dsfField $ stcDynSubs s !! j))
-              (structDynIndexes s)
+              ( \j ->
+                  let a = stcPendSubs s !! j
+                   in case a of
+                        DynamicField dsf -> (dlabel j dsf, dsfValue dsf)
+                        PatternField _ val -> (plabel j, val)
+                        -- StaticField _ -> (mempty, mkBottomTree "static field in pending")
+              )
+              (structPendIndexes s)
      in content t i ordLabels fields
   TNList vs ->
     let fields = map (\(j, v) -> (integerDec j, v)) (zip [0 ..] (lstSubs vs))
      in content t i mempty fields
   TNDisj d ->
-    let dfField = maybe [] (\v -> [(string7 (show $ DisjDefaultSelector), v)]) (dsjDefault d)
+    let dfField = maybe [] (\v -> [(string7 (show DisjDefaultSelector), v)]) (dsjDefault d)
         djFields = map (\(j, v) -> (string7 (show $ DisjDisjunctSelector j), v)) (zip [0 ..] (dsjDisjuncts d))
      in content t i mempty (dfField ++ djFields)
   TNConstraint c ->
@@ -603,35 +616,51 @@ instance Eq StaticStructField where
   (==) f1 f2 = ssfField f1 == ssfField f2 && ssfAttr f1 == ssfAttr f2
 
 data DynamicStructField = DynamicStructField
-  { dsfField :: Tree
-  , dsfAttr :: LabelAttr
-  , dsfSelExpr :: AST.Expression
-  , dsfSelTree :: Tree
-  , dsfIsEvaled :: Bool
+  { -- For pattern constraint, this is omitted.
+    dsfAttr :: LabelAttr
+  , dsfLabel :: Tree
+  , dsfLabelExpr :: AST.Expression
+  , dsfValue :: Tree
   }
   deriving (Show)
 
 instance Eq DynamicStructField where
   (==) f1 f2 =
-    dsfField f1 == dsfField f2
+    dsfValue f1 == dsfValue f2
       && dsfAttr f1 == dsfAttr f2
-      && dsfSelExpr f1 == dsfSelExpr f2
-      && dsfIsEvaled f1 == dsfIsEvaled f2
+      && dsfLabel f1 == dsfLabel f2
+      && dsfLabelExpr f1 == dsfLabelExpr f2
+
+data PatternStructField = PatternStructField
+  { psfPattern :: Bound
+  , psfValue :: Tree
+  }
+  deriving (Show)
+
+instance Eq PatternStructField where
+  (==) f1 f2 = psfPattern f1 == psfPattern f2 && psfValue f1 == psfValue f2
+
+data PendingStructElem = DynamicField DynamicStructField | PatternField Tree Tree
+  deriving (Show, Eq)
+
+modifyPSEValue :: (Tree -> Tree) -> PendingStructElem -> PendingStructElem
+modifyPSEValue f pse = case pse of
+  DynamicField dsf -> DynamicField dsf{dsfValue = f (dsfValue dsf)}
+  PatternField pattern val -> PatternField pattern (f val)
 
 data Struct = Struct
   { stcOrdLabels :: [StructSelector] -- Should only contain string labels.
   , stcSubs :: Map.Map StructSelector StaticStructField
-  , stcDynSubs :: [DynamicStructField]
-  -- , stcPatterns :: [(Bound, Tree)]
+  , stcPatterns :: [PatternStructField]
+  , stcPendSubs :: [PendingStructElem]
   }
 
 instance Eq Struct where
   (==) s1 s2 =
     stcOrdLabels s1 == stcOrdLabels s2
       && stcSubs s1 == stcSubs s2
-      && stcDynSubs s1 == stcDynSubs s2
-
--- && stcPatterns s1 == stcPatterns s2
+      && stcPatterns s1 == stcPatterns s2
+      && stcPendSubs s1 == stcPendSubs s2
 
 instance BuildASTExpr Struct where
   -- Patterns are not included in the AST.
@@ -650,15 +679,15 @@ instance BuildASTExpr Struct where
                       else AST.LabelString sel
                 ]
                 e
-        DynamicSelector _ -> throwError "DynamicSelector is not allowed in static fields."
+        PendingSelector _ -> throwError "PendingSelector is not allowed in static fields."
 
       processDynField :: (CommonEnv m) => DynamicStructField -> m AST.Declaration
       processDynField sf = do
-        e <- buildASTExpr (dsfField sf)
+        e <- buildASTExpr (dsfValue sf)
         return $
           AST.FieldDecl $
             AST.Field
-              [ labelCons (dsfAttr sf) $ AST.LabelNameExpr (dsfSelExpr sf)
+              [ labelCons (dsfAttr sf) $ AST.LabelNameExpr (dsfLabelExpr sf)
               ]
               e
 
@@ -675,10 +704,16 @@ instance BuildASTExpr Struct where
      in
       do
         stcs <- sequence [processStaticField (l, stcSubs s Map.! l) | l <- structStaticLabels s]
-        dyns <- mapM processDynField (filter (not . dsfIsEvaled) (stcDynSubs s))
-        return $
-          AST.litCons $
-            AST.StructLit (stcs ++ dyns)
+        dyns <-
+          sequence $
+            foldr
+              ( \x acc -> case x of
+                  DynamicField dsf -> processDynField dsf : acc
+                  _ -> acc
+              )
+              []
+              (stcPendSubs s)
+        return $ AST.litCons $ AST.StructLit (stcs ++ dyns)
 
 instance Value Struct where
   getValue s = s
@@ -688,53 +723,67 @@ emptyStruct =
   Struct
     { stcOrdLabels = []
     , stcSubs = Map.empty
-    , stcDynSubs = []
-    -- , stcPatterns = []
+    , stcPendSubs = []
+    , stcPatterns = []
     }
 
-data StructFieldAdder = Static StructSelector StaticStructField | Dynamic DynamicStructField
+data StructElemAdder
+  = Static StructSelector StaticStructField
+  | Dynamic DynamicStructField
+  | Pattern Tree Tree
   deriving (Show)
 
-mkStructTree :: [StructFieldAdder] -> Tree
+mkStructTree :: [StructElemAdder] -> Tree
 mkStructTree as =
   mkNewTree . TNStruct $
     Struct
       { stcOrdLabels = ordLabels
       , stcSubs = Map.fromList statics
-      , stcDynSubs = dynamics
-      -- , stcPatterns = []
+      , stcPatterns = []
+      , stcPendSubs = pendings
       }
  where
   ordLabels = [l | Static l _ <- as]
   statics = [(s, sf) | Static s sf <- as]
-  dynamics = [df | Dynamic df <- as]
+  pendings =
+    foldr
+      ( \x acc ->
+          case x of
+            Dynamic dsf -> DynamicField dsf : acc
+            Pattern pattern val -> PatternField pattern val : acc
+            _ -> acc
+      )
+      []
+      as
 
 -- Insert a new field into the struct. If the field is already in the struct, then unify the field with the new field.
-insertUnifyStruct :: StructFieldAdder -> (Tree -> Tree -> FuncMonad Tree) -> Struct -> Struct
-insertUnifyStruct (Static sel sf) unify struct = case subs Map.!? sel of
-  Just extSF ->
-    let
-      unifySFOp =
-        StaticStructField
-          { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
-          , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
-          }
-     in
-      struct{stcSubs = Map.insert sel unifySFOp subs}
-  Nothing ->
-    struct
-      { stcOrdLabels = stcOrdLabels struct ++ [sel]
-      , stcSubs = Map.insert sel sf subs
-      }
+insertUnifyStruct :: StructElemAdder -> (Tree -> Tree -> FuncMonad Tree) -> Struct -> Struct
+insertUnifyStruct adder unify struct = case adder of
+  (Static sel sf) -> case subs Map.!? sel of
+    Just extSF ->
+      let
+        unifySFOp =
+          StaticStructField
+            { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
+            , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
+            }
+       in
+        struct{stcSubs = Map.insert sel unifySFOp subs}
+    Nothing ->
+      struct
+        { stcOrdLabels = stcOrdLabels struct ++ [sel]
+        , stcSubs = Map.insert sel sf subs
+        }
+  (Dynamic dsf) -> struct{stcPendSubs = stcPendSubs struct ++ [DynamicField dsf]}
+  (Pattern pattern val) -> struct{stcPendSubs = stcPendSubs struct ++ [PatternField pattern val]}
  where
   subs = stcSubs struct
-insertUnifyStruct (Dynamic sf) _ struct = struct{stcDynSubs = stcDynSubs struct ++ [sf]}
 
 structStaticLabels :: Struct -> [StructSelector]
 structStaticLabels = filter (\x -> viewStructSelector x == 0) . stcOrdLabels
 
-structDynIndexes :: Struct -> [Int]
-structDynIndexes s = [0 .. length (stcDynSubs s) - 1]
+structPendIndexes :: Struct -> [Int]
+structPendIndexes s = [0 .. length (stcPendSubs s) - 1]
 
 -- isStructConcrete :: Struct -> Bool
 -- isStructConcrete s =
@@ -745,86 +794,117 @@ structDynIndexes s = [0 .. length (stcDynSubs s) - 1]
 --     True
 --     (Map.elems (stcSubs s))
 --
-data StructField = StaticField StaticStructField | DynamicField DynamicStructField
-
 evalStruct :: (CommonEnv m) => CtxVal (Struct, Tree) -> m CtxTree
-evalStruct cv =
-  foldM
-    evalSub
-    ct
-    ( map
-        (\(s, a) -> (s, StaticField a))
-        (Map.toList (stcSubs struct))
-        ++ map (\(i, a) -> (DynamicSelector i, DynamicField a)) (zip [0 ..] (stcDynSubs struct))
-    )
+evalStruct cv = do
+  (res, delIdxes) <- runStateT ucv []
+  case treeNode (cvVal res) of
+    TNStruct struct -> do
+      let
+        newStruct = struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
+      return $ setTN (TNStruct newStruct) <$> res
+    _ -> return res
  where
-  ct = snd <$> cv
-  struct = fst (cvVal cv)
-  evalSub :: (CommonEnv m) => CtxTree -> (StructSelector, StructField) -> m CtxTree
-  evalSub acc (sel, f) = case (treeNode . cvVal) acc of
-    TNBottom _ -> return acc
-    TNStruct x -> evalStructField (sel, f) ((x, cvVal acc) <$ acc)
-    _ -> return $ mkBottomTree "not a struct" <$ acc
+  origStruct = fst $ cvVal cv
 
-evalStructField :: (CommonEnv m) => (StructSelector, StructField) -> CtxVal (Struct, Tree) -> m CtxTree
-evalStructField (sel, f) cv = case (sel, f) of
-  (StringSelector _, StaticField sf) ->
+  ucv :: (EvalStructEnv m) => m CtxTree
+  ucv =
     do
-      return $ snd <$> cv
-      >>= mapEvalCVCur (return . mkSubTC subSel (ssfField sf))
-      >>= evalCV
-      >>= mapEvalCVCur (propUpTCSel subSel)
-  (DynamicSelector i, DynamicField dsf) ->
-    if dsfIsEvaled dsf
-      then return $ snd <$> cv
-      else do
-        -- evaluate the dynamic label.
-        labelCT <-
+      foldM (evalStructSub evalStaticSF) (snd <$> cv) (Map.toList . stcSubs $ origStruct)
+      >>= (\x -> foldM (evalStructSub evalPattern) x (zip (map PendingSelector [0 ..]) (stcPatterns origStruct)))
+      >>= (\x -> foldM (evalStructSub evalPendSE) x (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct)))
+
+type EvalStructEnv m = (CommonEnv m, MonadState [Int] m)
+
+evalStructSub ::
+  (EvalStructEnv m) =>
+  (forall n. (EvalStructEnv n) => CtxVal (Struct, Tree) -> StructSelector -> a -> n CtxTree) ->
+  CtxTree ->
+  (StructSelector, a) ->
+  m CtxTree
+evalStructSub f acc (sel, a) = case (treeNode . cvVal) acc of
+  TNBottom _ -> return acc
+  TNStruct struct -> f ((struct,) <$> acc) sel a
+  _ -> return $ mkBottomTree "not a struct" <$ acc
+
+evalStaticSF :: (EvalStructEnv m) => CtxVal (Struct, Tree) -> StructSelector -> StaticStructField -> m CtxTree
+evalStaticSF cv sel sf =
+  mapEvalCVCur (return . mkSubTC (StructSelector sel) (ssfField sf)) (snd <$> cv)
+    >>= evalCV
+    >>= mapEvalCVCur (propUpTCSel (StructSelector sel))
+
+evalPattern :: (EvalStructEnv m) => CtxVal (Struct, Tree) -> StructSelector -> PatternStructField -> m CtxTree
+evalPattern cv sel psf =
+  mapEvalCVCur (return . mkSubTC (StructSelector sel) (psfValue psf)) (snd <$> cv)
+    >>= evalCV
+    >>= mapEvalCVCur (propUpTCSel (StructSelector sel))
+
+evalPendSE :: (EvalStructEnv m) => CtxVal (Struct, Tree) -> StructSelector -> PendingStructElem -> m CtxTree
+evalPendSE cv sel pse = case (sel, pse) of
+  (PendingSelector i, DynamicField dsf) -> do
+    -- evaluate the dynamic label.
+    labelCT <-
+      do
+        return $ snd <$> cv
+        >>= mapEvalCVCur (return . mkSubTC (StructSelector sel) (dsfLabel dsf))
+        >>= evalCV
+    let label = cvVal labelCT
+    dump $
+      printf
+        "evalStructField: path: %s, dynamic label is evaluated to %s"
+        (show $ cvPath cv)
+        (show label)
+    case treeNode label of
+      TNAtom (AtomV (String s)) -> do
+        Config{cfUnify = unify} <- ask
+        let
+          mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
+          sSel = StructSelector $ StringSelector s
+        mergedCT <-
           do
-            return $ snd <$> cv
-            >>= mapEvalCVCur (return . mkSubTC subSel (dsfSelTree dsf))
+            mapEvalCVCur (propUpTCSel (StructSelector sel)) labelCT
+            >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
             >>= evalCV
-        let label = cvVal labelCT
-        dump $
-          printf
-            "evalCVStructField: path: %s, dynamic label is evaluated to %s"
-            (show $ cvPath cv)
-            (show label)
-        case treeNode label of
-          TNAtom (AtomV (String s)) -> do
-            Config{cfUnify = unify} <- ask
-            let
-              mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
-              sSel = StructSelector $ StringSelector s
-            mergedCT <-
-              do
-                mapEvalCVCur (propUpTCSel subSel) labelCT
-                >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
-                >>= evalCV
-            let
-              -- TODO: the mergedT could be incomplete.
-              mergedT = cvVal mergedCT
-              tc = fromJust . goUpTC $ getCVCursor mergedCT
-              ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
-            return $ setCVCur ntc mergedCT
-          _ -> return $ mkBottomTree "selector can only be a string" <$ cv
+        let
+          -- TODO: the mergedT could be incomplete.
+          mergedT = cvVal mergedCT
+          tc = fromJust . goUpTC $ getCVCursor mergedCT
+          ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
+        modify (i :)
+        return $ setCVCur ntc mergedCT
+      _ -> return $ mkBottomTree "selector can only be a string" <$ cv
+  (PendingSelector i, PatternField pattern val) -> do
+    -- evaluate the pattern.
+    patternCT <-
+      do
+        return $ snd <$> cv
+        >>= mapEvalCVCur (return . mkSubTC (StructSelector sel) pattern)
+        >>= evalCV
+    let res = cvVal patternCT
+    dump $
+      printf
+        "evalStructField: path: %s, pattern is evaluated to %s"
+        (show $ cvPath cv)
+        (show res)
+    case treeNode res of
+      TNBounds bds -> case bdsList bds of
+        [x] -> undefined
+        _ -> return $ mkBottomTree "pattern should be a single value" <$ cv
+      _ -> return $ mkBottomTree "pattern should be a bounds" <$ cv
   _ -> throwError "evalStructField: invalid selector field combination"
  where
-  focus = cvVal cv
-  struct = fst focus
-  subSel = StructSelector sel
+  struct = fst $ cvVal cv
 
   dynToStaticField ::
     DynamicStructField -> Maybe StaticStructField -> (Tree -> Tree -> FuncMonad Tree) -> StaticStructField
   dynToStaticField dsf sfM unify = case sfM of
     Just sf ->
       StaticStructField
-        { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfField dsf))
+        { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfValue dsf))
         , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
         }
     Nothing ->
       StaticStructField
-        { ssfField = dsfField dsf
+        { ssfField = dsfValue dsf
         , ssfAttr = dsfAttr dsf
         }
 
@@ -832,10 +912,6 @@ evalStructField (sel, f) cv = case (sel, f) of
   updateDynStruct i s sf x =
     x
       { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
-      , stcDynSubs =
-          take i (stcDynSubs x)
-            ++ [(stcDynSubs x !! i){dsfIsEvaled = True}]
-            ++ drop (i + 1) (stcDynSubs x)
       , stcOrdLabels =
           if StringSelector s `elem` stcOrdLabels x
             then stcOrdLabels x
@@ -1140,9 +1216,7 @@ buildBoundASTExpr b = case b of
             NumFloat f -> AST.FloatLit f
         )
 
-newtype Bounds = Bounds
-  { bdsList :: [Bound]
-  }
+newtype Bounds = Bounds {bdsList :: [Bound]}
   deriving (Eq)
 
 instance BuildASTExpr Bounds where
@@ -1337,7 +1411,9 @@ goTreeSel sel t =
     StructSelector s -> case node of
       TNStruct struct -> case s of
         StringSelector _ -> ssfField <$> Map.lookup s (stcSubs struct)
-        DynamicSelector i -> Just $ dsfField $ stcDynSubs struct !! i
+        PendingSelector i -> case stcPendSubs struct !! i of
+          DynamicField dsf -> Just (dsfValue dsf)
+          PatternField _ val -> Just val
       _ -> Nothing
     IndexSelector i -> case node of
       TNList vs -> lstSubs vs `index` i
@@ -1522,14 +1598,14 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
              in
               return (ValCursor (substTN (TNStruct newStruct) parT) cs)
         | otherwise -> case label of
-            DynamicSelector i ->
+            PendingSelector i ->
               let
-                sf = stcDynSubs parStruct !! i
-                newSF = sf{dsfField = newSub}
+                psf = stcPendSubs parStruct !! i
+                newPSF = modifyPSEValue (const newSub) psf
                 newStruct =
                   parStruct
-                    { stcDynSubs =
-                        take i (stcDynSubs parStruct) ++ [newSF] ++ drop (i + 1) (stcDynSubs parStruct)
+                    { stcPendSubs =
+                        take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
                     }
                in
                 return (ValCursor (substTN (TNStruct newStruct) parT) cs)

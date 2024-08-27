@@ -430,7 +430,7 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
 unifyStructs :: (FuncEnv m) => (Path.BinOpDirect, Struct) -> (Path.BinOpDirect, Struct) -> m Tree
 unifyStructs (_, s1) (_, s2) = do
   fn <- get
-  let merged = nodesToStruct allStatics combinedDynSubs
+  let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
   dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show $ cvPath fn) (show merged)
   evalAllNodes merged
  where
@@ -441,7 +441,8 @@ unifyStructs (_, s1) (_, s2) = do
   interKeys = Set.intersection l1Set l2Set
   disjKeys1 = Set.difference l1Set interKeys
   disjKeys2 = Set.difference l2Set interKeys
-  combinedDynSubs = stcDynSubs s1 ++ stcDynSubs s2
+  combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
+  combinedPatterns = stcPatterns s1 ++ stcPatterns s2
 
   inter :: [(Path.StructSelector, StaticStructField)]
   inter =
@@ -481,11 +482,6 @@ unifyStructs (_, s1) (_, s2) = do
       uct <-
         mapEvalCVCur (return . mkSubTC (Path.StructSelector key) (ssfField sf)) ct
           >>= evalCV
-          -- >>= ( \x -> do
-          --         dump $
-          --           printf "unifyStructs: x is:\n%s" (show $ getCVCursor x)
-          --         return x
-          --     )
           >>= mapEvalCVCur (propUpTCSel (Path.StructSelector key))
       let t = cvVal uct
       dump $
@@ -494,17 +490,17 @@ unifyStructs (_, s1) (_, s2) = do
           (show $ cvPath uct)
           (show key)
           (show t)
-      -- put uct
       return t
 
-  nodesToStruct :: [(Path.StructSelector, StaticStructField)] -> [DynamicStructField] -> Tree
-  nodesToStruct nodes dyns =
+  nodesToStruct :: [(Path.StructSelector, StaticStructField)] -> [PatternStructField] -> [PendingStructElem] -> Tree
+  nodesToStruct nodes patterns pends =
     mkNewTree
       ( TNStruct $
           Struct
             { stcOrdLabels = map fst nodes
             , stcSubs = Map.fromList nodes
-            , stcDynSubs = dyns
+            , stcPendSubs = pends
+            , stcPatterns = patterns
             }
       )
 

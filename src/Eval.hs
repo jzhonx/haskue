@@ -114,41 +114,39 @@ evalStructLit decls = do
       let newStruct = insertUnifyStruct sfa unify struct
       return (newStruct, ts)
 
-  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m StructFieldAdder
+  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m StructElemAdder
   evalFdLabels lbls e =
     case lbls of
       [] -> throwError "empty labels"
       [l1] ->
-        let
-          (lb1, attr1) = slFrom l1
-          attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
-         in
-          do
-            dump $ printf "evalFdLabels: lb1: %s" (show lb1)
-            sub <- evalExpr e
-            adder <- adderFrom lb1 attr sub
-            dump $ printf "evalFdLabels: adder: %s" (show adder)
-            return adder
+        do
+          dump $ printf "evalFdLabels: lb1: %s" (show l1)
+          val <- evalExpr e
+          adder <- mkAdder l1 val
+          dump $ printf "evalFdLabels: adder: %s" (show adder)
+          return adder
       l1 : l2 : rs ->
-        let
-          (lb1, attr1) = slFrom l1
-          attr = LabelAttr{lbAttrType = attr1, lbAttrIsVar = isVar lb1}
-         in
-          do
-            dump $ printf "evalFdLabels, nested: lb1: %s" (show lb1)
-            sf2 <- evalFdLabels (l2 : rs) e
-            let sub = mkStructTree [sf2]
-            adder <- adderFrom lb1 attr sub
-            dump $ printf "evalFdLabels, nested: adder: %s" (show adder)
-            return adder
+        do
+          dump $ printf "evalFdLabels, nested: lb1: %s" (show l1)
+          sf2 <- evalFdLabels (l2 : rs) e
+          let val = mkStructTree [sf2]
+          adder <- mkAdder l1 val
+          dump $ printf "evalFdLabels, nested: adder: %s" (show adder)
+          return adder
 
-  adderFrom :: (EvalEnv m) => LabelName -> LabelAttr -> Tree -> m StructFieldAdder
-  adderFrom ln attr sub = case ln of
-    (sselFrom -> Just key) -> return $ Static key (StaticStructField sub attr)
-    (dselFrom -> Just se) -> do
-      selTree <- evalExpr se
-      return $ Dynamic (DynamicStructField sub attr se selTree False)
-    _ -> throwError "invalid label"
+  mkAdder :: (EvalEnv m) => Label -> Tree -> m StructElemAdder
+  mkAdder (Label le) val = case le of
+    AST.LabelName ln c ->
+      let attr = LabelAttr{lbAttrType = slFrom c, lbAttrIsVar = isVar ln}
+       in case ln of
+            (sselFrom -> Just key) -> return $ Static key (StaticStructField val attr)
+            (dselFrom -> Just se) -> do
+              selTree <- evalExpr se
+              return $ Dynamic (DynamicStructField attr selTree se val)
+            _ -> throwError "invalid label"
+    AST.LabelPattern pe -> do
+      pat <- evalExpr pe
+      return (Pattern pat val)
 
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe Path.StructSelector
@@ -160,14 +158,11 @@ evalStructLit decls = do
   dselFrom (LabelNameExpr e) = Just e
   dselFrom _ = Nothing
 
-  slFrom :: Label -> (LabelName, StructLabelType)
-  slFrom l = case l of
-    Label le -> case le of
-      LabelName ln cnstr -> case cnstr of
-        RegularLabel -> (ln, SLRegular)
-        OptionalLabel -> (ln, SLOptional)
-        RequiredLabel -> (ln, SLRequired)
-      LabelPattern _ -> undefined
+  slFrom :: AST.LabelConstraint -> StructLabelType
+  slFrom c = case c of
+    RegularLabel -> SLRegular
+    OptionalLabel -> SLOptional
+    RequiredLabel -> SLRequired
 
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True
