@@ -29,22 +29,18 @@ instance Show Selector where
 
 data StructSelector
   = StringSelector String
+  | PatternSelector Int
   | PendingSelector Int
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 viewStructSelector :: StructSelector -> Int
 viewStructSelector (PendingSelector _) = 1
 viewStructSelector _ = 0
 
-instance Ord StructSelector where
-  compare (StringSelector s1) (StringSelector s2) = compare s1 s2
-  compare (StringSelector _) _ = LT
-  compare _ (StringSelector _) = GT
-  compare (PendingSelector i1) (PendingSelector i2) = compare i1 i2
-
 instance Show StructSelector where
   show (StringSelector s) = s
   show (PendingSelector i) = "sd" ++ show i
+  show (PatternSelector i) = "sp" ++ show i
 
 unaryOpSelector :: Selector
 unaryOpSelector = FuncArgSelector 0

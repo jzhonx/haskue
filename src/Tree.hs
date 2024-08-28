@@ -361,20 +361,31 @@ tnStrBldr i t = case treeNode t of
           string7 (show j)
             <> attr (dsfAttr dsf)
             <> isVar (dsfAttr dsf)
-            <> string7 ",e"
+            <> string7 ",e,dsf"
 
         plabel :: Int -> Builder
-        plabel j = string7 (show j) <> string7 "pattern,e"
+        plabel j = string7 (show j) <> string7 ",e,psf"
 
+        psfLabel :: Int -> PatternStructField -> Builder
+        psfLabel j psf =
+          string7 (show j)
+            <> string7 ", ["
+            <> string7 (show $ psfPattern psf)
+            <> char7 ']'
+            <> string7 ",psf"
+
+        fields :: [(Builder, Tree)]
         fields =
           map (\k -> (slabel k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
+            ++ map
+              (\(j, k) -> (psfLabel j k, psfValue k))
+              (zip [0 ..] (stcPatterns s))
             ++ map
               ( \j ->
                   let a = stcPendSubs s !! j
                    in case a of
                         DynamicField dsf -> (dlabel j dsf, dsfValue dsf)
                         PatternField _ val -> (plabel j, val)
-                        -- StaticField _ -> (mempty, mkBottomTree "static field in pending")
               )
               (structPendIndexes s)
      in content t i ordLabels fields
@@ -632,7 +643,7 @@ instance Eq DynamicStructField where
       && dsfLabelExpr f1 == dsfLabelExpr f2
 
 data PatternStructField = PatternStructField
-  { psfPattern :: Bound
+  { psfPattern :: Bounds
   , psfValue :: Tree
   }
   deriving (Show)
@@ -679,7 +690,7 @@ instance BuildASTExpr Struct where
                       else AST.LabelString sel
                 ]
                 e
-        PendingSelector _ -> throwError "PendingSelector is not allowed in static fields."
+        _ -> throwError "Only StringSelector is allowed in static fields."
 
       processDynField :: (CommonEnv m) => DynamicStructField -> m AST.Declaration
       processDynField sf = do
@@ -801,6 +812,7 @@ evalStruct cv = do
     TNStruct struct -> do
       let
         newStruct = struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
+      dump $ printf "evalStruct: path: %s, new struct: %s" (show $ cvPath cv) (show $ mkNewTree $ TNStruct newStruct)
       return $ setTN (TNStruct newStruct) <$> res
     _ -> return res
  where
@@ -810,7 +822,7 @@ evalStruct cv = do
   ucv =
     do
       foldM (evalStructSub evalStaticSF) (snd <$> cv) (Map.toList . stcSubs $ origStruct)
-      >>= (\x -> foldM (evalStructSub evalPattern) x (zip (map PendingSelector [0 ..]) (stcPatterns origStruct)))
+      >>= (\x -> foldM (evalStructSub evalPattern) x (zip (map PatternSelector [0 ..]) (stcPatterns origStruct)))
       >>= (\x -> foldM (evalStructSub evalPendSE) x (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct)))
 
 type EvalStructEnv m = (CommonEnv m, MonadState [Int] m)
@@ -850,7 +862,7 @@ evalPendSE cv sel pse = case (sel, pse) of
     let label = cvVal labelCT
     dump $
       printf
-        "evalStructField: path: %s, dynamic label is evaluated to %s"
+        "evalPendSE: path: %s, dynamic label is evaluated to %s"
         (show $ cvPath cv)
         (show label)
     case treeNode label of
@@ -865,12 +877,13 @@ evalPendSE cv sel pse = case (sel, pse) of
             >>= mapEvalCVCur (return . mkSubTC sSel (ssfField mergedSF))
             >>= evalCV
         let
-          -- TODO: the mergedT could be incomplete.
           mergedT = cvVal mergedCT
           tc = fromJust . goUpTC $ getCVCursor mergedCT
-          ntc = setTN (TNStruct $ updateDynStruct i s (mergedSF{ssfField = mergedT}) struct) <$> tc
-        modify (i :)
+          -- do not use propUpTCSel here because the field was not in the original struct.
+          ntc = setTN (TNStruct $ addStatic s (mergedSF{ssfField = mergedT}) struct) <$> tc
+        modify (i :) -- add the index to the delete list.
         return $ setCVCur ntc mergedCT
+      -- TODO: pending label
       _ -> return $ mkBottomTree "selector can only be a string" <$ cv
   (PendingSelector i, PatternField pattern val) -> do
     -- evaluate the pattern.
@@ -879,17 +892,50 @@ evalPendSE cv sel pse = case (sel, pse) of
         return $ snd <$> cv
         >>= mapEvalCVCur (return . mkSubTC (StructSelector sel) pattern)
         >>= evalCV
-    let res = cvVal patternCT
+    let evaledPattern = cvVal patternCT
     dump $
       printf
-        "evalStructField: path: %s, pattern is evaluated to %s"
+        "evalPendSE: path: %s, pattern is evaluated to %s"
         (show $ cvPath cv)
-        (show res)
-    case treeNode res of
-      TNBounds bds -> case bdsList bds of
-        [x] -> undefined
-        _ -> return $ mkBottomTree "pattern should be a single value" <$ cv
-      _ -> return $ mkBottomTree "pattern should be a bounds" <$ cv
+        (show evaledPattern)
+    case treeNode evaledPattern of
+      TNBounds bds ->
+        if null (bdsList bds)
+          then return $ mkBottomTree "patterns must be non-empty" <$ cv
+          else do
+            Config{cfUnify = unify} <- ask
+            valCT <-
+              do
+                mapEvalCVCur (propUpTCSel (StructSelector sel)) patternCT
+                >>= mapEvalCVCur (return . mkSubTC (StructSelector sel) val)
+                >>= evalCV
+            let
+              evaledVal = cvVal valCT
+              nodes =
+                [ mkNewTree . TNFunc $
+                  mkBinaryOp AST.Unify unify (ssfField n) evaledPattern
+                | n <- Map.elems (stcSubs struct)
+                ]
+            -- apply the pattern to all existing fields.
+            extUnified <-
+              foldM
+                ( \acc n -> do
+                    case treeNode (cvVal acc) of
+                      TNBottom _ -> return acc
+                      _ -> evalCV (n <$ acc)
+                )
+                valCT
+                nodes
+            case treeNode (cvVal extUnified) of
+              TNBottom _ -> return extUnified
+              _ -> do
+                let
+                  tc = fromJust . goUpTC $ getCVCursor extUnified
+                  -- do not use propUpTCSel here because the field was not in the original struct.
+                  ntc = setTN (TNStruct $ addPattern (PatternStructField bds evaledVal) struct) <$> tc
+                modify (i :) -- add the index to the delete list.
+                return $ setCVCur ntc valCT
+      _ -> return $ mkBottomTree (printf "pattern should be bounds, but is %s" (show evaledPattern)) <$ cv
   _ -> throwError "evalStructField: invalid selector field combination"
  where
   struct = fst $ cvVal cv
@@ -908,8 +954,8 @@ evalPendSE cv sel pse = case (sel, pse) of
         , ssfAttr = dsfAttr dsf
         }
 
-  updateDynStruct :: Int -> String -> StaticStructField -> Struct -> Struct
-  updateDynStruct i s sf x =
+  addStatic :: String -> StaticStructField -> Struct -> Struct
+  addStatic s sf x =
     x
       { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
       , stcOrdLabels =
@@ -917,6 +963,9 @@ evalPendSE cv sel pse = case (sel, pse) of
             then stcOrdLabels x
             else stcOrdLabels x ++ [StringSelector s]
       }
+
+  addPattern :: PatternStructField -> Struct -> Struct
+  addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
 data Link = Link
   { lnkTarget :: Path
@@ -1217,7 +1266,7 @@ buildBoundASTExpr b = case b of
         )
 
 newtype Bounds = Bounds {bdsList :: [Bound]}
-  deriving (Eq)
+  deriving (Eq, Show)
 
 instance BuildASTExpr Bounds where
   buildASTExpr b = do
@@ -1411,6 +1460,7 @@ goTreeSel sel t =
     StructSelector s -> case node of
       TNStruct struct -> case s of
         StringSelector _ -> ssfField <$> Map.lookup s (stcSubs struct)
+        PatternSelector i -> Just (psfValue $ stcPatterns struct !! i)
         PendingSelector i -> case stcPendSubs struct !! i of
           DynamicField dsf -> Just (dsfValue dsf)
           PatternField _ val -> Just val
@@ -1598,6 +1648,16 @@ propUpTC tc@(ValCursor subT ((sel, parT) : cs)) = case sel of
              in
               return (ValCursor (substTN (TNStruct newStruct) parT) cs)
         | otherwise -> case label of
+            PatternSelector i ->
+              let
+                psf = stcPatterns parStruct !! i
+                newPSF = psf{psfValue = newSub}
+                newStruct =
+                  parStruct
+                    { stcPatterns = take i (stcPatterns parStruct) ++ [newPSF] ++ drop (i + 1) (stcPatterns parStruct)
+                    }
+               in
+                return (ValCursor (substTN (TNStruct newStruct) parT) cs)
             PendingSelector i ->
               let
                 psf = stcPendSubs parStruct !! i
