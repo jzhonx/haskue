@@ -26,9 +26,9 @@ library
         AST,
         Eval,
         Parser,
-        Unify,
-        Tree,
         Path,
+        Tree,
+        Unify,
     other-modules:
       Paths_haskue
     ghc-options: -Wall -Wpartial-fields
@@ -63,6 +63,7 @@ executable haskue
         haskue,
         mtl,
         bytestring,
+        optparse-applicative,
 
     hs-source-dirs:   app
     default-language: Haskell2010

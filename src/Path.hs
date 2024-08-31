@@ -11,8 +11,7 @@ data Selector
     RootSelector
   | StructSelector StructSelector
   | IndexSelector Int
-  | -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
-    FuncArgSelector Int
+  | FuncSelector FuncSelector
   | DisjDefaultSelector
   | DisjDisjunctSelector Int
   | ParentSelector
@@ -22,7 +21,7 @@ instance Show Selector where
   show RootSelector = "/"
   show (StructSelector s) = show s
   show (IndexSelector i) = show i
-  show (FuncArgSelector i) = "fa" ++ show i
+  show (FuncSelector f) = show f
   show DisjDefaultSelector = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
@@ -42,14 +41,24 @@ instance Show StructSelector where
   show (PendingSelector i) = "sd" ++ show i
   show (PatternSelector i) = "sp" ++ show i
 
+-- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
+data FuncSelector
+  = FuncArgSelector Int
+  | FuncResSelector
+  deriving (Eq, Ord)
+
+instance Show FuncSelector where
+  show (FuncArgSelector i) = "fa" ++ show i
+  show FuncResSelector = "fr"
+
 unaryOpSelector :: Selector
-unaryOpSelector = FuncArgSelector 0
+unaryOpSelector = FuncSelector $ FuncArgSelector 0
 
 binOpLeftSelector :: Selector
-binOpLeftSelector = FuncArgSelector 0
+binOpLeftSelector = FuncSelector $ FuncArgSelector 0
 
 binOpRightSelector :: Selector
-binOpRightSelector = FuncArgSelector 1
+binOpRightSelector = FuncSelector $ FuncArgSelector 1
 
 toBinOpSelector :: BinOpDirect -> Selector
 toBinOpSelector L = binOpLeftSelector
@@ -64,9 +73,7 @@ instance Show BinOpDirect where
 {- | Path is full path to a value. The selectors are stored in reverse order, meaning the last selector is the first in
 the list.
 -}
-newtype Path = Path
-  { getPath :: [Selector]
-  }
+newtype Path = Path {getPath :: [Selector]}
   deriving (Eq, Ord)
 
 showPath :: Path -> String
@@ -80,11 +87,21 @@ showPath (Path sels) =
 instance Show Path where
   show = showPath
 
+isPathEmpty :: Path -> Bool
+isPathEmpty (Path []) = True
+isPathEmpty _ = False
+
 pathFromList :: [Selector] -> Path
 pathFromList sels = Path (reverse sels)
 
 appendSel :: Selector -> Path -> Path
 appendSel sel (Path xs) = Path (sel : xs)
+
+-- | Append the new path to old path.
+appendPath :: Path -> Path -> Path
+-- new and old are reversed, such as [z, y, x] and [b, a]. The appended path should be [z, y, x, b, a], which is
+-- a.b.x.y.z.
+appendPath (Path new) (Path old) = Path (new ++ old)
 
 -- | Get the parent path of a path by removing the last selector.
 initPath :: Path -> Maybe Path
@@ -96,7 +113,7 @@ canonicalizePath :: Path -> Path
 canonicalizePath (Path xs) = Path $ filter (not . isOperator) xs
  where
   isOperator :: Selector -> Bool
-  isOperator (FuncArgSelector _) = True
+  isOperator (FuncSelector _) = True
   isOperator _ = False
 
 -- | Get the tail path of a path, excluding the head selector.

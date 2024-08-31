@@ -6,7 +6,7 @@ import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
-import Eval (eval, runTCIO)
+import Eval (eval, runTreeIO)
 import Parser
 import Path
 import System.IO (readFile)
@@ -49,7 +49,7 @@ mkSimpleLink :: Path -> Tree
 mkSimpleLink p = mkNewTree $ TNLink $ Link{lnkTarget = p, lnkExpr = undefined}
 
 startEval :: String -> IO (Either String Tree)
-startEval s = runExceptT $ runTCIO s
+startEval s = runExceptT $ runTreeIO s
 
 assertStructs :: Tree -> Tree -> IO ()
 assertStructs (Tree{treeNode = TNStruct exp}) (Tree{treeNode = TNStruct act}) = do
@@ -510,7 +510,7 @@ testSelector1 = do
       , ("c", pendValC)
       , ("d", mkAtomTree $ Int 4)
       , ("e", structE)
-      , ("f", mkNewTree . TNFunc $ mkReference disjF undefined)
+      , ("f", mkNewTree . TNFunc $ mkReference (pathFromList [strSel "e", strSel "a"]) disjF undefined)
       ]
 
 testUnify1 :: IO ()
@@ -836,6 +836,7 @@ testRef3 = do
                   ( "y"
                   , mkNewTree . TNFunc $
                       mkReference
+                        undefined
                         ( newSimpleStruct
                             ["a", "c"]
                             [ ("a", mkAtomTree $ Int 1)

@@ -8,8 +8,9 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Eval (
+  EvalConfig (..),
   runIO,
-  runTCIO,
+  runTreeIO,
   eval,
 )
 where
@@ -18,9 +19,9 @@ import AST
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (MonadLogger, runStderrLoggingT)
+import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (evalStateT, get, gets)
+import Control.Monad.State.Strict (evalStateT, execStateT)
 import Data.Maybe (fromJust, isJust)
 import Parser (parseCUE)
 import Path
@@ -28,42 +29,53 @@ import Text.Printf (printf)
 import Tree
 import Unify (unify)
 
-runIO :: (MonadIO m, MonadError String m) => String -> m AST.Expression
-runIO s = runStderrLoggingT $ runStr s
+data EvalConfig = EvalConfig
+  { ecDebugLogging :: Bool
+  , ecMermaidGraph :: Bool
+  , ecFilePath :: String
+  }
 
-runTCIO :: (MonadIO m, MonadError String m) => String -> m Tree
-runTCIO s = runStderrLoggingT $ runTCStr s
+runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m AST.Expression
+runIO s conf =
+  if ecDebugLogging conf
+    then runStderrLoggingT res
+    else runNoLoggingT res
+ where
+  res :: (MonadError String m, MonadLogger m) => m AST.Expression
+  res = runStr s (ecMermaidGraph conf)
 
-runStr :: (MonadError String m, MonadLogger m) => String -> m AST.Expression
-runStr s = do
-  t <- runTCStr s
-  runReaderT (buildASTExpr t) Config{}
+runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
+runTreeIO s = runNoLoggingT $ runTreeStr s False
 
-runTCStr :: (MonadError String m, MonadLogger m) => String -> m Tree
-runTCStr s = do
-  parsedE <- parseCUE s
-  eval parsedE
+runStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m AST.Expression
+runStr s mermaid = do
+  t <- runTreeStr s mermaid
+  runReaderT (buildASTExpr False t) Config{}
 
-eval :: (MonadError String m, MonadLogger m) => Expression -> m Tree
-eval expr = do
+runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree
+runTreeStr s conf = parseCUE s >>= flip eval conf
+
+eval :: (MonadError String m, MonadLogger m) => Expression -> Bool -> m Tree
+eval expr mermaid = do
   rootTC <-
     runReaderT
       ( do
           root <- evalStateT (evalExpr expr) emptyContext
-          dump $ printf "--- evaluated to rootTC: ---\n%s" (show root)
+          dump $ printf "---- evaluated to rootTC: ----\n%s" (show root)
           let rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
-          r2 <- setOrigNodesCV (mkCVFromCur rootTC)
-          dump $ printf "--- start resolving links ---"
-          res <- evalCV r2
-          dump $ printf "--- resolved: ---\n%s" (show . getCVCursor $ res)
+          r2 <- execStateT setOrigNodesCV (mkCVFromCur rootTC)
+          dump $ printf "---- start resolving links ----"
+          res <- execStateT evalCV r2
+          dump $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      Config{cfUnify = unify, cfCreateCnstr = True}
+      Config{cfUnify = unify, cfCreateCnstr = True, cfMermaid = mermaid}
+
   finalized <-
     runReaderT
-      (evalCV rootTC)
-      Config{cfUnify = unify, cfCreateCnstr = False}
-  dump $ printf "--- constraints evaluated: ---\n%s" (show . getCVCursor $ finalized)
+      (execStateT evalCV rootTC)
+      Config{cfUnify = unify, cfCreateCnstr = False, cfMermaid = mermaid}
+  dump $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized
 
 {- | evalExpr and all expr* should return the same level tree cursor.
@@ -186,12 +198,7 @@ evalPrimExpr e@(PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing ->
-      let
-        tarSel = Path.StructSelector $ Path.StringSelector ident
-        tarPath = Path [tarSel]
-       in
-        return $ mkNewTree (TNLink $ Link{lnkTarget = tarPath, lnkExpr = AST.UnaryExprPrimaryExpr e})
+    Nothing -> return $ mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
     Just b -> return $ mkBoundsTree [b]
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
@@ -210,8 +217,9 @@ If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x"
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
-evalSelector pe astSel =
-  indexBySel (Path.StructSelector $ Path.StringSelector sel) (UnaryExprPrimaryExpr pe)
+evalSelector pe astSel tree =
+  return $
+    mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -219,9 +227,9 @@ evalSelector pe astSel =
 
 evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
-evalIndex pe (AST.Index e) t = do
+evalIndex pe (AST.Index e) tree = do
   sel <- evalExpr e
-  indexByTree sel (UnaryExprPrimaryExpr pe) t
+  return $ mkIndexFuncTree tree sel (UnaryExprPrimaryExpr pe)
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
@@ -231,7 +239,7 @@ evalUnaryOp op e = do
   t <- evalUnaryExpr e
   return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
 
-dispUnaryFunc :: (FuncEnv m) => UnaryOp -> Tree -> m Tree
+dispUnaryFunc :: (TreeMonad s m) => UnaryOp -> Tree -> m ()
 dispUnaryFunc op t = do
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
@@ -239,7 +247,7 @@ dispUnaryFunc op t = do
       (Plus, Float i) -> fa i id
       (Minus, Int i) -> ia i negate
       (Minus, Float i) -> fa i negate
-      (Not, Bool b) -> return $ mkAtomTree (Bool (not b))
+      (Not, Bool b) -> putTMTree $ mkAtomTree (Bool (not b))
       (AST.UnaRelOp uop, _) -> case (uop, amvAtom ta) of
         (AST.NE, a) -> mkb (BdNE a)
         (AST.LT, Int i) -> mkib BdLT i
@@ -250,34 +258,34 @@ dispUnaryFunc op t = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> return $ mkBoundsTree [BdStrMatch $ BdReMatch p]
-        (AST.ReNotMatch, String p) -> return $ mkBoundsTree [BdStrMatch $ BdReNotMatch p]
-        _ -> returnConflict
-      _ -> returnConflict
+        (AST.ReMatch, String p) -> putTMTree $ mkBoundsTree [BdStrMatch $ BdReMatch p]
+        (AST.ReNotMatch, String p) -> putTMTree $ mkBoundsTree [BdStrMatch $ BdReNotMatch p]
+        _ -> putConflict
+      _ -> putConflict
     -- The unary op is operating on a non-atom.
-    TNFunc _ -> return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
-    _ -> returnConflict
+    TNFunc _ -> putTMTree $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
+    _ -> putConflict
  where
   conflict :: Tree
   conflict = mkBottomTree $ printf "%s cannot be used for %s" (show t) (show op)
 
-  returnConflict :: (FuncEnv m) => m Tree
-  returnConflict = return conflict
+  putConflict :: (TreeMonad s m) => m ()
+  putConflict = putTMTree conflict
 
-  ia :: (FuncEnv m) => Integer -> (Integer -> Integer) -> m Tree
-  ia a f = return $ mkAtomTree (Int $ f a)
+  ia :: (TreeMonad s m) => Integer -> (Integer -> Integer) -> m ()
+  ia a f = putTMTree $ mkAtomTree (Int $ f a)
 
-  fa :: (FuncEnv m) => Double -> (Double -> Double) -> m Tree
-  fa a f = return $ mkAtomTree (Float $ f a)
+  fa :: (TreeMonad s m) => Double -> (Double -> Double) -> m ()
+  fa a f = putTMTree $ mkAtomTree (Float $ f a)
 
-  mkb :: (FuncEnv m) => Bound -> m Tree
-  mkb b = return $ mkBoundsTree [b]
+  mkb :: (TreeMonad s m) => Bound -> m ()
+  mkb b = putTMTree $ mkBoundsTree [b]
 
-  mkib :: (FuncEnv m) => BdNumCmpOp -> Integer -> m Tree
-  mkib uop i = return $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
+  mkib :: (TreeMonad s m) => BdNumCmpOp -> Integer -> m ()
+  mkib uop i = putTMTree $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)]
 
-  mkfb :: (FuncEnv m) => BdNumCmpOp -> Double -> m Tree
-  mkfb uop f = return $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
+  mkfb :: (TreeMonad s m) => BdNumCmpOp -> Double -> m ()
+  mkfb uop f = putTMTree $ mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -289,22 +297,22 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   return $ mkNewTree (TNFunc $ mkBinaryOp op (dispBinFunc op) lt rt)
 
-dispBinFunc :: (FuncEnv m) => BinaryOp -> Tree -> Tree -> m Tree
+dispBinFunc :: (TreeMonad s m) => BinaryOp -> Tree -> Tree -> m ()
 dispBinFunc op = case op of
   AST.Unify -> unify
   _ -> regBin op
 
-regBin :: (FuncEnv m) => BinaryOp -> Tree -> Tree -> m Tree
+regBin :: (TreeMonad s m) => BinaryOp -> Tree -> Tree -> m ()
 regBin op t1 t2 = regBinDir op (L, t1) (R, t2)
 
-regBinDir :: (FuncEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
+regBinDir :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinDir op dt1@(d1, t1) dt2@(d2, t2) = do
-  ct <- get
-  dump $
-    printf "regBinDir: path: %s, %s: %s with %s: %s" (show $ cvPath ct) (show d1) (show t1) (show d2) (show t2)
+  withDumpInfo $ \path _ ->
+    dump $
+      printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, treeNode t2) of
-    (TNBottom _, _) -> return t1
-    (_, TNBottom _) -> return t2
+    (TNBottom _, _) -> putTMTree t1
+    (_, TNBottom _) -> putTMTree t2
     (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) dt2
     (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) dt1
     (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) dt2
@@ -313,7 +321,7 @@ regBinDir op dt1@(d1, t1) dt2@(d2, t2) = do
     (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) dt1
     _ -> regBinOther op dt1 dt2
 
-regBinLeftAtom :: (FuncEnv m) => BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m Tree
+regBinLeftAtom :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   dump $ printf "regBinLeftAtom: %s (%s: %s) (%s)" (show op) (show d1) (show ta1) (show t2)
   if
@@ -336,11 +344,11 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ uncmpAtoms a1 a2
            in
             case r of
-              Right b -> return $ mkAtomTree b
-              Left err -> return err
-        TNStruct _ -> return $ cmpNull a1 t2
-        TNList _ -> return $ cmpNull a1 t2
-        TNDisj _ -> return $ cmpNull a1 t2
+              Right b -> putTMTree $ mkAtomTree b
+              Left err -> putTMTree err
+        TNStruct _ -> putTMTree $ cmpNull a1 t2
+        TNList _ -> putTMTree $ cmpNull a1 t2
+        TNDisj _ -> putTMTree $ cmpNull a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1)
     -- arithmetic operators
     | op `elem` arithOps -> case treeNode t2 of
@@ -371,13 +379,13 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ mismatch op a1 (amvAtom ta2)
            in
             case r of
-              Right b -> return $ mkAtomTree b
-              Left err -> return err
-        TNStruct _ -> return $ mismatchArith a1 t2
-        TNList _ -> return $ mismatchArith a1 t2
-        TNDisj _ -> return $ mismatchArith a1 t2
+              Right b -> putTMTree $ mkAtomTree b
+              Left err -> putTMTree err
+        TNStruct _ -> putTMTree $ mismatchArith a1 t2
+        TNList _ -> putTMTree $ mismatchArith a1 t2
+        TNDisj _ -> putTMTree $ mismatchArith a1 t2
         _ -> regBinOther op (d2, t2) (d1, t1)
-    | otherwise -> return $ mkBottomTree $ printf "operator %s is not supported" (show op)
+    | otherwise -> putTMTree $ mkBottomTree $ printf "operator %s is not supported" (show op)
  where
   a1 = amvAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
@@ -405,54 +413,50 @@ mismatch :: (Show a, Show b) => BinaryOp -> a -> b -> Tree
 mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
 regBinLeftStruct ::
-  (FuncEnv m) => BinaryOp -> (BinOpDirect, Struct, Tree) -> (BinOpDirect, Tree) -> m Tree
+  (TreeMonad s m) => BinaryOp -> (BinOpDirect, Struct, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftStruct op (d1, _, t1) (d2, t2) = case treeNode t2 of
   TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-  _ -> return (mismatch op t1 t2)
+  _ -> putTMTree (mismatch op t1 t2)
 
 regBinLeftDisj ::
-  (FuncEnv m) => BinaryOp -> (BinOpDirect, Disj, Tree) -> (BinOpDirect, Tree) -> m Tree
+  (TreeMonad s m) => BinaryOp -> (BinOpDirect, Disj, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
   Disj{dsjDefault = Just d} -> regBinDir op (d1, d) (d2, t2)
   _ -> case treeNode t2 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-    _ -> return (mismatch op t1 t2)
+    _ -> putTMTree (mismatch op t1 t2)
 
-regBinOther :: (FuncEnv m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Tree
+regBinOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
   (TNFunc _, _) -> evalOrDelay
-  (TNLink _, _) -> evalOrDelay
+  -- (TNLink _, _) -> evalOrDelay
   (TNRefCycleVar, _) -> evalOrDelay
   (TNConstraint c, _) -> do
-    na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2)
+    na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
     case treeNode na of
       TNAtom atom -> do
-        return $ mkNewTree (TNConstraint $ updateConstraintAtom atom c)
+        putTMTree $ mkNewTree (TNConstraint $ updateConstraintAtom atom c)
       _ -> undefined
-  _ -> return (mkBottomTree mismatchErr)
+  _ -> putTMTree (mkBottomTree mismatchErr)
  where
   -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
   -- returns a delayed evaluation.
-  evalOrDelay :: (FuncEnv m) => m Tree
+  evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
-    unevaledCT1 <- getCTFromFuncEnv >>= mapEvalCVCur (return . mkSubTC (toBinOpSelector d1) t1)
-    dump $ printf "regBinOther: path: %s, evaluating:\n%s" (show $ cvPath unevaledCT1) (show (cvVal unevaledCT1))
-    ctx1 <- evalCV unevaledCT1
-    let et1 = cvVal ctx1
-    dump $ printf "regBinOther: %s, is evaluated to:\n%s" (show t1) (show et1)
+    et1 <- inSubTM (toBinOpSelector d1) t1 (evalCV >> getTMTree)
+    -- withDumpInfo $ \path _ ->
+    --   dump $ printf "regBinOther: path: %s, %s is evaluated to:\n%s" (show path) (show t1) (show et1)
     case treeNode et1 of
       TNAtom a1 -> regBinLeftAtom op (d1, a1, et1) (d2, t2)
       TNDisj dj1 -> regBinLeftDisj op (d1, dj1, et1) (d2, t2)
       TNStruct s1 -> regBinLeftStruct op (d1, s1, et1) (d2, t2)
       TNList _ -> undefined
       TNConstraint _ -> regBinOther op (d1, et1) (d2, t2)
-      _ -> delay
-
-  delay :: (FuncEnv m) => m Tree
-  delay = do
-    let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, t1) (d2, t2))
-    dump $ printf "regBinOther: %s is incomplete, delaying to %s" (show t1) (show v)
-    return v
+      _ -> do
+        let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, et1) (d2, t2))
+        withDumpInfo $ \path _ ->
+          dump $ printf "regBinOther: path: %s, %s is incomplete, delaying to %s" (show path) (show et1) (show v)
+        putTMTree v
 
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
@@ -484,7 +488,7 @@ evalDisj e1 e2 = do
       return (l, r)
   return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction evalDisjAdapt lt rt)
  where
-  evalDisjAdapt :: (FuncEnv m) => Tree -> Tree -> m Tree
+  evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   evalDisjAdapt unt1 unt2 = do
     t1 <- evalSub binOpLeftSelector unt1
     t2 <- evalSub binOpRightSelector unt2
@@ -492,7 +496,8 @@ evalDisj e1 e2 = do
       if not (isTreeValue t1) || not (isTreeValue t2)
         then do
           dump $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
-          cvVal <$> getCTFromFuncEnv
+          getTMTree
+        -- cvVal <$> getCTFromFuncEnv
         else do
           case (e1, e2) of
             (ExprUnaryExpr (UnaryExprUnaryOp Star _), ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
@@ -503,19 +508,21 @@ evalDisj e1 e2 = do
               evalDisjPair (DisjRegular t1) (DisjDefault t2)
             (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
     dump $ printf "evalDisjAdapt: evaluated to %s" (show u)
-    return u
+    putTMTree u
 
-  evalSub :: (FuncEnv m) => Path.Selector -> Tree -> m Tree
+  evalSub :: (TreeMonad s m) => Path.Selector -> Tree -> m Tree
   evalSub sel t = do
-    ct <- getCTFromFuncEnv >>= mapEvalCVCur (return . mkSubTC sel t)
-    dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ cvPath ct) (show (cvVal ct))
-    uct <- evalCV ct
-    let res = cvVal uct
-    dump $ printf "evalDisj: path: %s, %s, is evaluated to:\n%s" (show $ cvPath uct) (show t) (show res)
+    res <- inSubTM sel t (evalCV >> getTMTree)
+    -- ct <- getCTFromFuncEnv >>= mapEvalCVCur (return . mkSubTC sel t)
+    -- dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ cvPath ct) (show (cvVal ct))
+    -- uct <- evalCV ct
+    -- let res = cvVal uct
+    withDumpInfo $ \path _ ->
+      dump $ printf "evalDisj: path: %s, %s is evaluated to:\n%s" (show path) (show t) (show res)
     return res
 
   -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
-  evalDisjPair :: (FuncEnv m) => DisjItem -> DisjItem -> m Tree
+  evalDisjPair :: (TreeMonad s m) => DisjItem -> DisjItem -> m Tree
   evalDisjPair i1 i2 = case (i1, i2) of
     (DisjDefault v1, _) -> do
       dump $ printf "evalDisjPair: *: %s, r: %s" (show v1) (show i2)
@@ -548,7 +555,7 @@ evalDisj e1 e2 = do
 
   -- evalFullDisj is used to evaluate a disjunction whose both sides are regular.
   -- Rule: D1, D2
-  evalRegularDisj :: (FuncEnv m) => Tree -> Tree -> m Tree
+  evalRegularDisj :: (TreeMonad s m) => Tree -> Tree -> m Tree
   evalRegularDisj (Tree{treeNode = TNDisj dj1}) (Tree{treeNode = TNDisj dj2}) =
     newDisj (dsjDefault dj1) (dsjDisjuncts dj1) (dsjDefault dj2) (dsjDisjuncts dj2)
   evalRegularDisj (Tree{treeNode = TNDisj dj}) y = newDisj (dsjDefault dj) (dsjDisjuncts dj) Nothing [y]
@@ -561,7 +568,7 @@ evalDisj e1 e2 = do
   dedupAppend :: [Tree] -> [Tree] -> [Tree]
   dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
 
-  newDisj :: (FuncEnv m) => Maybe Tree -> [Tree] -> Maybe Tree -> [Tree] -> m Tree
+  newDisj :: (TreeMonad s m) => Maybe Tree -> [Tree] -> Maybe Tree -> [Tree] -> m Tree
   newDisj df1 ds1 df2 ds2 =
     let
       subTree :: Maybe Tree
