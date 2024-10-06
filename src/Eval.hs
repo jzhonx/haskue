@@ -65,7 +65,7 @@ eval expr mermaid = do
           let rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
           r2 <- execStateT setOrigNodesCV (mkCVFromCur rootTC)
           dump $ printf "---- start resolving links ----"
-          res <- execStateT evalCV r2
+          res <- execStateT evalTM r2
           dump $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
           return res
       )
@@ -73,7 +73,7 @@ eval expr mermaid = do
 
   finalized <-
     runReaderT
-      (execStateT evalCV rootTC)
+      (execStateT evalTM rootTC)
       Config{cfUnify = unify, cfCreateCnstr = False, cfMermaid = mermaid}
   dump $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized
@@ -430,7 +430,7 @@ regBinOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirec
 regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
   (TNFunc _, _) -> evalOrDelay
   -- (TNLink _, _) -> evalOrDelay
-  (TNRefCycleVar, _) -> evalOrDelay
+  (TNRefCycle _, _) -> evalOrDelay
   (TNConstraint c, _) -> do
     na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
     case treeNode na of
@@ -443,7 +443,7 @@ regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
   -- returns a delayed evaluation.
   evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
-    et1 <- inSubTM (toBinOpSelector d1) t1 (evalCV >> getTMTree)
+    et1 <- inSubTM (toBinOpSelector d1) t1 (evalTM >> getTMTree)
     -- withDumpInfo $ \path _ ->
     --   dump $ printf "regBinOther: path: %s, %s is evaluated to:\n%s" (show path) (show t1) (show et1)
     case treeNode et1 of
@@ -512,10 +512,10 @@ evalDisj e1 e2 = do
 
   evalSub :: (TreeMonad s m) => Path.Selector -> Tree -> m Tree
   evalSub sel t = do
-    res <- inSubTM sel t (evalCV >> getTMTree)
+    res <- inSubTM sel t (evalTM >> getTMTree)
     -- ct <- getCTFromFuncEnv >>= mapEvalCVCur (return . mkSubTC sel t)
     -- dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ cvPath ct) (show (cvVal ct))
-    -- uct <- evalCV ct
+    -- uct <- evalTM ct
     -- let res = cvVal uct
     withDumpInfo $ \path _ ->
       dump $ printf "evalDisj: path: %s, %s is evaluated to:\n%s" (show path) (show t) (show res)

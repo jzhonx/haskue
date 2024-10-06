@@ -96,7 +96,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
       -- marked disjunction.
       DisjFunc -> unifyLeftOther dt2 dt1
       _ -> procOther
-    (_, TNRefCycleVar) -> procOther
+    (_, TNRefCycle _) -> procOther
     _ -> notUnifiable dt1 dt2
  where
   dt1 = (d1, t1)
@@ -143,7 +143,7 @@ unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
             Nothing -> putTMTree $ mkBoundsTree (fst r)
   TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1)
   TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1)
-  TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1)
+  TNRefCycle _ -> unifyLeftOther (d2, t2) (d1, t1)
   TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1)
   _ -> notUnifiable (d1, t1) (d2, t2)
 
@@ -364,7 +364,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(_, t2) = case (treeNode t1, treeNode t2) of
   -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
   -- unification.
   -- We can just return the second value.
-  (TNRefCycleVar, _) -> putTMTree t2
+  (TNRefCycle _, _) -> putTMTree t2
   -- The successful unification of structs a and b is a new struct c which has all fields of both a and b, where the
   -- value of a field f in c is a.f & b.f if f is defined in both a and b, or just a.f or b.f if f is in just a or b,
   -- respectively. Any references to a or b in their respective field values need to be replaced with references to c.
@@ -385,7 +385,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(_, t2) = case (treeNode t1, treeNode t2) of
   evalLeftOrDelay = do
     withDumpInfo $ \path _ ->
       dump $ printf "unifyLeftOther starts, path: %s, L: %s, R: %s" (show path) (show t1) (show t2)
-    res <- inSubTM (Path.toBinOpSelector d1) t1 (evalCV >> getTMTree)
+    res <- inSubTM (Path.toBinOpSelector d1) t1 (evalTM >> getTMTree)
     withDumpInfo $ \path _ ->
       dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show res)
     procLeftEvalRes (d1, res) dt2
@@ -421,7 +421,7 @@ unifyStructs (_, s1) (_, s2) = do
   withDumpInfo $ \path _ ->
     dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
-  evalCV
+  evalTM
  where
   fields1 = stcSubs s1
   fields2 = stcSubs s2
@@ -491,7 +491,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
   case treeNode t2 of
     TNFunc _ -> unifyLeftOther (d2, t2) (d1, t1)
     TNConstraint _ -> unifyLeftOther (d2, t2) (d1, t1)
-    TNRefCycleVar -> unifyLeftOther (d2, t2) (d1, t1)
+    TNRefCycle _ -> unifyLeftOther (d2, t2) (d1, t1)
     TNDisj dj2 -> case (dj1, dj2) of
       -- this is U0 rule, <v1> & <v2> => <v1&v2>
       (Disj{dsjDefault = Nothing, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do

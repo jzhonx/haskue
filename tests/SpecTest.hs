@@ -542,10 +542,10 @@ testCycles1 = do
       val'
         @?= newSimpleStruct
           ["x", "b", "c", "d"]
-          [ ("x", mkNewTree TNRefCycleVar)
-          , ("b", mkNewTree TNRefCycleVar)
-          , ("c", mkNewTree TNRefCycleVar)
-          , ("d", mkNewTree TNRefCycleVar)
+          [ ("x", mkNewTree TNRefCycle)
+          , ("b", mkNewTree TNRefCycle)
+          , ("c", mkNewTree TNRefCycle)
+          , ("d", mkNewTree TNRefCycle)
           ]
 
 testCycles2 :: IO ()
