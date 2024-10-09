@@ -46,7 +46,7 @@ newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls subs = newStruct lbls [] subs
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = mkNewTree $ TNLink $ Link{lnkTarget = p, lnkExpr = undefined}
+mkSimpleLink p = mkNewTree . TNFunc $ mkRefFunc p undefined
 
 startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ runTreeIO s
@@ -493,12 +493,7 @@ testSelector1 = do
         (Just fieldEDefault)
         [newSimpleStruct ["a"] [("a", newSimpleAtomDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
   pathC = Path [strSel "c"]
-  pendValC =
-    mkNewTree . TNLink $
-      Link
-        { lnkTarget = pathFromList [strSel "T", strSel "z"]
-        , lnkExpr = undefined
-        }
+  pendValC = mkSimpleLink $ pathFromList [strSel "T", strSel "z"]
   pathF = Path [strSel "f"]
   disjF = newSimpleAtomDisj [Int 4] [Int 3, Int 4]
   expStruct =
@@ -510,7 +505,8 @@ testSelector1 = do
       , ("c", pendValC)
       , ("d", mkAtomTree $ Int 4)
       , ("e", structE)
-      , ("f", mkNewTree . TNFunc $ mkReference (pathFromList [strSel "e", strSel "a"]) disjF undefined)
+      , -- , ("f", mkNewTree . TNFunc $ mkReference (pathFromList [strSel "e", strSel "a"]) disjF undefined)
+        ("f", undefined)
       ]
 
 testUnify1 :: IO ()
@@ -542,11 +538,13 @@ testCycles1 = do
       val'
         @?= newSimpleStruct
           ["x", "b", "c", "d"]
-          [ ("x", mkNewTree TNRefCycle)
-          , ("b", mkNewTree TNRefCycle)
-          , ("c", mkNewTree TNRefCycle)
-          , ("d", mkNewTree TNRefCycle)
+          [ ("x", selfCycle)
+          , ("b", selfCycle)
+          , ("c", selfCycle)
+          , ("d", selfCycle)
           ]
+ where
+  selfCycle = mkNewTree (TNRefCycle (RefCycle emptyPath))
 
 testCycles2 :: IO ()
 testCycles2 = do
@@ -560,23 +558,11 @@ testCycles2 = do
           ["a", "b"]
           [
             ( "a"
-            , mkNewTree $
-                TNFunc $
-                  mkBinaryOp
-                    AST.Add
-                    undefined
-                    (mkSimpleLink $ pathFromList [strSel "b"])
-                    (mkAtomTree $ Int 100)
+            , mkNewTree (TNRefCycle (RefCycle emptyPath))
             )
           ,
             ( "b"
-            , mkNewTree $
-                TNFunc $
-                  mkBinaryOp
-                    AST.Sub
-                    undefined
-                    (mkSimpleLink $ pathFromList [strSel "a"])
-                    (mkAtomTree $ Int 100)
+            , mkNewTree (TNRefCycle (RefCycle emptyPath))
             )
           ]
 
@@ -610,23 +596,11 @@ testCycles4 = do
                 ["a", "b"]
                 [
                   ( "a"
-                  , mkNewTree $
-                      TNFunc $
-                        mkBinaryOp
-                          AST.Add
-                          undefined
-                          (mkSimpleLink $ pathFromList [strSel "b"])
-                          (mkAtomTree $ Int 100)
+                  , mkNewTree (TNRefCycle (RefCycle emptyPath))
                   )
                 ,
                   ( "b"
-                  , mkNewTree $
-                      TNFunc $
-                        mkBinaryOp
-                          AST.Sub
-                          undefined
-                          (mkSimpleLink $ pathFromList [strSel "a"])
-                          (mkAtomTree $ Int 100)
+                  , mkNewTree (TNRefCycle (RefCycle emptyPath))
                   )
                 ]
             )
@@ -834,16 +808,17 @@ testRef3 = do
                 ["y"]
                 [
                   ( "y"
-                  , mkNewTree . TNFunc $
-                      mkReference
-                        undefined
-                        ( newSimpleStruct
-                            ["a", "c"]
-                            [ ("a", mkAtomTree $ Int 1)
-                            , ("c", mkAtomTree $ Int 2)
-                            ]
-                        )
-                        undefined
+                  , undefined
+                  -- , mkNewTree . TNFunc $
+                  --     mkReference
+                  --       undefined
+                  --       ( newSimpleStruct
+                  --           ["a", "c"]
+                  --           [ ("a", mkAtomTree $ Int 1)
+                  --           , ("c", mkAtomTree $ Int 2)
+                  --           ]
+                  --       )
+                  --       undefined
                   )
                 ]
             )

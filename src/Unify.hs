@@ -28,7 +28,7 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
   withDumpInfo $ \path _ ->
     dump $
       printf
-        ("unifying, path: %s:, %s:\n%s" ++ "\n" ++ "with %s:\n%s")
+        ("unifying start, path: %s:, %s:\n%s" ++ "\n" ++ "with %s:\n%s")
         (show path)
         (show d1)
         (show t1)
@@ -51,7 +51,7 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
   withDumpInfo $ \path res ->
     dump $
       printf
-        "unifying, path: %s, %s: %s, with %s: %s, res:%s"
+        "unifying done, path: %s, %s: %s, with %s: %s, res: %s"
         (show path)
         (show d1)
         (show t1)

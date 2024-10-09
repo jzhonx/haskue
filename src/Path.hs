@@ -87,6 +87,9 @@ showPath (Path sels) =
 instance Show Path where
   show = showPath
 
+emptyPath :: Path
+emptyPath = Path []
+
 isPathEmpty :: Path -> Bool
 isPathEmpty (Path []) = True
 isPathEmpty _ = False

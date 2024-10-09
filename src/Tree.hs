@@ -47,6 +47,7 @@ module Tree (
   TreeMonad,
   TreeNode (..),
   ValCursor (..),
+  RefCycle (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -100,6 +101,7 @@ module Tree (
   mkCnstrTree,
   getFuncResOrTree,
   eliminateTMCycle,
+  mkRefFunc,
 )
 where
 
@@ -1386,12 +1388,6 @@ instance Eq Func where
       && fncArgs f1 == fncArgs f2
       && fncRes f1 == fncRes f2
 
--- bindUnaryFunc :: (TreeMonad s m) => Func -> (Tree -> m ()) -> m ()
--- bindUnaryFunc fn f = do
---   let newFn = fn{fncFunc = \ts -> f (head ts)}
---   putTMTree $ mkFuncTree newFn
---   execFunc newFn
-
 requireFuncConcrete :: Func -> Bool
 requireFuncConcrete fn = case fncType fn of
   RegularFunc -> fncName fn `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
@@ -1536,15 +1532,18 @@ reduceFunc :: (TreeMonad s m) => Func -> Tree -> m ()
 reduceFunc fn val = case treeNode val of
   TNFunc newFn -> putTMTree $ mkFuncTree newFn
   _ -> do
-    let reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || not (funcHasRef fn) || isTreeRefCycle val
+    let
+      fnHasNoRef = not (funcHasRef fn)
+      reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || fnHasNoRef
     withDumpInfo $ \path _ ->
       dump $
         printf
-          "reduceFunc: func %s, path: %s, is reducible: %s, fn: %s"
+          "reduceFunc: func %s, path: %s, is reducible: %s, fnHasNoRef: %s, args: %s"
           (show $ fncName fn)
           (show path)
           (show reducible)
-          (show $ funcHasRef fn)
+          (show fnHasNoRef)
+          (show $ fncArgs fn)
     if reducible
       then do
         path <- getTMAbsPath
@@ -1571,13 +1570,18 @@ mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
 data RefCycle
   = RefCycle Path
   | RefCycleTail
-  deriving (Eq, Show)
+  deriving (Show)
 
-mkRefCycleTree :: Path -> Tree -> Tree
-mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
+instance Eq RefCycle where
+  (==) (RefCycle _) (RefCycle _) = True
+  (==) RefCycleTail RefCycleTail = True
+  (==) _ _ = False
 
 instance BuildASTExpr RefCycle where
   buildASTExpr _ _ = throwError "RefCycle should not be used in the AST"
+
+mkRefCycleTree :: Path -> Tree -> Tree
+mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
 
 -- -- --
 
@@ -2031,13 +2035,18 @@ dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
   Config{cfMermaid = mermaid} <- ask
   when mermaid $ do
-    tc <- getTMCursor
-    rtc <- propUpTCUntil Path.RootSelector tc
-    let
-      t = vcFocus rtc
-      evalPath = pathFromCrumbs (vcCrumbs tc)
-      s = evalState (treeToMermaid msg evalPath t) 0
-    dump $ printf "entire tree:\n```mermaid\n%s\n```" s
+    withTN $ \case
+      TNAtom _ -> return ()
+      TNBottom _ -> return ()
+      TNTop -> return ()
+      _ -> do
+        tc <- getTMCursor
+        rtc <- propUpTCUntil Path.RootSelector tc
+        let
+          t = vcFocus rtc
+          evalPath = pathFromCrumbs (vcCrumbs tc)
+          s = evalState (treeToMermaid msg evalPath t) 0
+        dump $ printf "entire tree:\n```mermaid\n%s\n```" s
 
 whenStruct :: (TreeMonad s m) => a -> (Struct -> m a) -> m a
 whenStruct a f = do
