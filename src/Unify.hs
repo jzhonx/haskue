@@ -11,6 +11,7 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import qualified Path
 import Text.Printf (printf)
@@ -81,7 +82,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
       putTMTree $ unifyAtomBounds (d1, amvAtom l1) (d2, bdsList b)
     (_, TNConstraint c) ->
       if l1 == cnsAtom c
-        then putTree (TNConstraint c)
+        then mkCnstr (d2, cnsAtom c) dt1
         else
           putTMTree $
             mkBottomTree $
@@ -101,7 +102,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
   dt1 = (d1, t1)
 
   putTree :: (TreeMonad s m) => TreeNode -> m ()
-  putTree n = putTMTree $ mkNewTree n
+  putTree n = withTree $ \t -> putTMTree $ substTN n t
 
   mismatch :: (Show a) => a -> a -> TreeNode
   mismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
@@ -113,8 +114,8 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
       then mkCnstr (d1, l1) dt2
       else unifyLeftOther dt2 dt1
 
-mkCnstr :: (TreeMonad s m) => (Path.BinOpDirect, AtomV) -> (Path.BinOpDirect, Tree) -> m ()
-mkCnstr (_, a1) (_, _) = putTMTree $ mkCnstrTree a1
+  mkCnstr :: (TreeMonad s m) => (Path.BinOpDirect, AtomV) -> (Path.BinOpDirect, Tree) -> m ()
+  mkCnstr (_, a1) (_, _) = withTree $ \t -> putTMTree $ mkCnstrTree a1 t
 
 unifyLeftBound :: (TreeMonad s m) => (Path.BinOpDirect, Bounds, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
@@ -346,10 +347,32 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds = if d1 == Path.L then [b1, b2] else [b2, b1]
 
 unifyLeftOther :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m ()
-unifyLeftOther dt1@(d1, t1) dt2@(_, t2) = case (treeNode t1, treeNode t2) of
-  (TNFunc fn, _)
-    -- \| isJust (fncRes fn) -> unifyWithDir (d1, fromJust $ fncRes fn) dt2
-    | otherwise -> evalLeftOrDelay
+unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
+  (TNFunc fn1, _) -> do
+    withDumpInfo $ \path _ ->
+      dump $
+        printf
+          "unifyLeftOther starts, path: %s, %s: %s, %s: %s"
+          (show path)
+          (show d1)
+          (show t1)
+          (show d2)
+          (show t2)
+    r1 <- inSubTM (Path.toBinOpSelector d1) t1 (evalTM >> getTMTree)
+    withDumpInfo $ \path _ ->
+      dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
+
+    let
+      x = getFuncResOrTree r1
+    case treeNode x of
+      TNFunc xfn
+        -- If the function type changes from the reference to regular, we need to evaluate the regular function.
+        -- Otherwise, leave the unification.
+        | isFuncRef fn1 && isFuncRef xfn
+        , not (isFuncRef fn1) && not (isFuncRef xfn) ->
+            mkUnification dt1 dt2
+      _ -> unifyWithDir (d1, x) dt2
+
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
   -- containing an atom or a bottom.
   (TNConstraint c1, _) -> do
@@ -363,51 +386,10 @@ unifyLeftOther dt1@(d1, t1) dt2@(_, t2) = case (treeNode t1, treeNode t2) of
   -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
   -- unification.
   -- We can just return the second value.
-  (TNRefCycle _, _) -> putTMTree t2
-  -- The successful unification of structs a and b is a new struct c which has all fields of both a and b, where the
-  -- value of a field f in c is a.f & b.f if f is defined in both a and b, or just a.f or b.f if f is in just a or b,
-  -- respectively. Any references to a or b in their respective field values need to be replaced with references to c.
-  -- (TNLink l, _) -> do
-  --   substT1 <- inSubTM (Path.toBinOpSelector d1) t1 (substLink l >> getTMTree)
-  --   case treeNode substT1 of
-  --     TNLink _ -> do
-  --       dump $
-  --         printf
-  --           "unifyLeftOther: TNLink %s, is still evaluated to TNLink %s"
-  --           (show t1)
-  --           (show substT1)
-  --       mkUnification dt1 dt2
-  --     _ -> unifyWithDir (d1, substT1) dt2
+  (TNRefCycle _, _) -> do
+    putTMTree t2
+    eliminateTMCycle
   _ -> notUnifiable dt1 dt2
- where
-  evalLeftOrDelay :: (TreeMonad s m) => m ()
-  evalLeftOrDelay = do
-    withDumpInfo $ \path _ ->
-      dump $ printf "unifyLeftOther starts, path: %s, L: %s, R: %s" (show path) (show t1) (show t2)
-    res <- inSubTM (Path.toBinOpSelector d1) t1 (evalTM >> getTMTree)
-    withDumpInfo $ \path _ ->
-      dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show res)
-    procLeftEvalRes (d1, res) dt2
-
-procLeftEvalRes :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m ()
-procLeftEvalRes dt1@(d1, t1) dt2@(d2, t2) = do
-  withDumpInfo $ \path _ ->
-    dump $
-      printf
-        "unifyLeftOther, path: %s, starts proc left results. %s: %s, %s: %s"
-        (show path)
-        (show d1)
-        (show t1)
-        (show d2)
-        (show t2)
-  case treeNode t1 of
-    TNFunc _ -> procDelay
-    _ -> unifyWithDir dt1 dt2
- where
-  procDelay :: (TreeMonad s m) => m ()
-  procDelay = case treeNode t2 of
-    TNAtom l2 -> mkCnstr (d2, l2) dt1
-    _ -> mkUnification dt1 dt2
 
 unifyLeftStruct :: (TreeMonad s m) => (Path.BinOpDirect, Struct, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of

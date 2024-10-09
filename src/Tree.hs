@@ -34,7 +34,6 @@ module Tree (
   FuncType (..),
   HasCtxVal (..),
   LabelAttr (..),
-  Link (..),
   List (..),
   Number (..),
   PatternStructField (..),
@@ -67,6 +66,7 @@ module Tree (
   isTreeAtom,
   isTreeBottom,
   isTreeValue,
+  isFuncRef,
   mapEvalCVCur,
   mergeAttrs,
   mkAtomTree,
@@ -90,7 +90,6 @@ module Tree (
   putTMTree,
   setOrigNodes,
   setTCFocus,
-  substLink,
   substTN,
   tcPath,
   updateCnstrAtom,
@@ -99,6 +98,8 @@ module Tree (
   withDumpInfo,
   withTree,
   mkCnstrTree,
+  getFuncResOrTree,
+  eliminateTMCycle,
 )
 where
 
@@ -217,6 +218,12 @@ data Tree = Tree
 setTN :: TreeNode -> Tree -> Tree
 setTN n t = t{treeNode = n}
 
+setOrig :: Tree -> Tree -> Tree
+setOrig t o = t{treeOrig = Just o}
+
+setTNOrig :: TreeNode -> Tree -> Tree
+setTNOrig tn o = (mkNewTree tn){treeOrig = Just o}
+
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
 
@@ -291,7 +298,9 @@ instance TreeRepBuilderIter Tree where
       )
     -- TODO: selector
     TNBounds b -> (symbol, mempty, [], map (\(j, v) -> (show j, repTree 0 v)) (zip [0 ..] (bdsList b)))
-    TNRefCycle c -> (symbol, (show $ rfCyclePath c), emptyTreeFields, [])
+    TNRefCycle c -> case c of
+      RefCycle p -> (symbol, show p, emptyTreeFields, [])
+      RefCycleTail -> (symbol, "tail", emptyTreeFields, [])
     TNFunc f ->
       let
         args = map (\(j, v) -> (show (FuncArgSelector j), mempty, v)) (zip [0 ..] (fncArgs f))
@@ -384,11 +393,19 @@ treeToMermaid msg evalPath root = do
   subgraph :: (MonadState Int m) => Int -> Tree -> String -> m String
   subgraph toff t path = do
     let
-      (symbol, meta, fields, listedMetas) = iterRepTree t
+      (symbol, meta, fields, _) = iterRepTree t
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
       writer =
-        writeLine (printf "%s[\"`%s`\"]" path (symbol <> if null meta then mempty else " " <> meta))
+        writeLine
+          ( printf
+              "%s[\"`%s`\"]"
+              path
+              ( symbol
+                  -- <> printf ", O:%s" (if (isJust $ treeOrig t) then "Y" else "N")
+                  <> if null meta then mempty else " " <> meta
+              )
+          )
 
     foldM
       ( \acc (label, _, sub) -> do
@@ -428,12 +445,18 @@ instance BuildASTExpr Tree where
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
     TNFunc fn -> buildASTExpr cr fn
-    TNConstraint _ -> buildASTExpr cr (fromJust $ treeOrig t)
-    TNRefCycle c ->
-      if isPathEmpty (rfCyclePath c)
-        -- If the path is empty, then it is a reference to the itself.
-        then return $ AST.litCons AST.TopLit
-        else buildASTExpr cr (fromJust $ treeOrig t)
+    TNConstraint c ->
+      maybe
+        (throwError $ printf "orig expr for %s does not exist" (show (cnsAtom c)))
+        (buildASTExpr cr)
+        (treeOrig t)
+    TNRefCycle c -> case c of
+      RefCycle p -> do
+        if isPathEmpty p
+          -- If the path is empty, then it is a reference to the itself.
+          then return $ AST.litCons AST.TopLit
+          else buildASTExpr cr (fromJust $ treeOrig t)
+      RefCycleTail -> return $ AST.litCons AST.TopLit
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeEvaled = False}
@@ -832,33 +855,14 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
   addPattern :: PatternStructField -> Struct -> Struct
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
-data Link = Link
-  { lnkTarget :: [Tree]
-  , lnkExpr :: AST.UnaryExpr
+data Ref = Ref
+  { rfTarget :: Path
+  , rfExpr :: AST.UnaryExpr
   }
-
-instance Eq Link where
-  (==) l1 l2 = lnkTarget l1 == lnkTarget l2
-
-instance BuildASTExpr Link where
-  buildASTExpr _ l = return $ AST.ExprUnaryExpr $ lnkExpr l
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: String -> AST.UnaryExpr -> Tree
 mkVarLinkTree var ue = mkFuncTree $ mkRefFunc (Path [StructSelector $ StringSelector var]) ue
-
--- mkFuncTree $
---   Func
---     { fncName = printf "mkReference %s" var
---     , fncType = RegularFunc
---     , fncArgs = []
---     , fncExprGen = return $ AST.ExprUnaryExpr ue
---     , fncFunc = \_ -> do
---         ref <- mkReference (Path [StructSelector $ StringSelector var]) Nothing ue
---         putTMTree (mkFuncTree ref)
---         evalTM
---     , fncRes = Nothing
---     }
 
 -- | Create an index function node.
 mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
@@ -958,22 +962,6 @@ indexBySel tree sel = do
       -- \| isFuncRef fn -> putTMTree . mkNewTree . TNFunc $ indexRefFunc fn sel undefined
       | isFuncRef fn -> putTMTree . mkNewTree . TNFunc $ undefined
       | otherwise -> maybe (return ()) (`indexBySel` sel) (fncRes fn)
-    -- return $
-    --   mkNewTree
-    --     ( TNFunc $
-    --         Func
-    --           { fncName = "indexBySel"
-    --           , fncType = RegularFunc
-    --           , fncHasRef = getFuncHasRef [t]
-    --           , fncFunc = \ts -> do
-    --               inSubTM (FuncArgSelector 0) (ts !! 0) (evalTM >> getTMTree)
-    --                 >>= indexBySel sel ue
-    --                 >>= putTMTree
-    --           , fncExprGen = return $ AST.ExprUnaryExpr ue
-    --           , fncArgs = [t]
-    --           , fncRes = Nothing
-    --           }
-    --     )
     _ -> throwError $ insertErr t
  where
   insertErr t = printf "index: cannot index %s with sel: %s" (show t) (show sel)
@@ -1012,35 +1000,6 @@ indexByTree tree selTree = do
   invalidSelector :: Tree -> Tree
   invalidSelector sel = mkNewTree (TNBottom $ Bottom $ printf "invalid selector: %s" (show sel))
 
-evalLink :: (TreeMonad s m) => Link -> m ()
-evalLink = undefined
-
--- evalLink :: (TreeMonad s m) => Link -> m ()
--- evalLink link = do
---   -- withDumpInfo $ \path _ -> do
---   --   dump $ printf "evalLink: path: %s, evaluate link %s" (show path) (show $ lnkTarget link)
---   res <- getTMCursor >>= resolveLink link
---
---   whenJustE res $ \(tp, tar) ->
---     -- If the target is an atom or a cycle head, there is no need to create the reference relation.
---     if isTreeAtom tar || isTNRefCycle (treeNode tar)
---       then putTMTree tar
---       else withCtxTree $ \ct -> do
---         let ref = mkReference tp (Just tar) (lnkExpr link)
---         -- withDumpInfo $ \path _ -> do
---         --   dump $ printf "evalLink: path: %s, create ref: %s" (show path) (show $ mkNewTree $ TNFunc ref)
---         -- add notifier. If the referenced value changes, then the reference should be updated.
---         putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
---         -- It is a good time to evaluate the reference function.
---         -- use evalTM so that we can dump tree in the format of mermaid.
---         putTMTree $ mkNewTree (TNFunc ref)
---         evalTM
---  where
---   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
---   whenJustE m f = maybe (return ()) f m
-
--- indexLinkBySel :: (TreeMonad s m) => Tree -> Tree -> m ()
-
 -- Reference the target node when the target node is not an atom or a cycle head.
 -- It returns a function that when called, will return the latest value of the target node.
 mkReference :: (TreeMonad s m) => Path -> Maybe Tree -> AST.UnaryExpr -> m Func
@@ -1056,7 +1015,9 @@ mkRefFunc tp ue =
     , fncType = RefFunc tp
     , fncArgs = []
     , fncExprGen = return $ AST.ExprUnaryExpr ue
-    , fncFunc = \_ -> deref tp >> return ()
+    , fncFunc = \_ -> do
+        ok <- deref tp
+        when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
     , fncRes = Nothing
     }
 
@@ -1085,7 +1046,7 @@ deref tp = do
       Left (cycleStartPath, cycleTailRelPath) -> do
         ctx <- getTMContext
         putTMContext $ ctx{ctxCycle = Just (cycleStartPath, cycleTailRelPath)}
-        return Nothing
+        return $ Just (mkNewTree $ TNRefCycle RefCycleTail)
       Right origM
         | Nothing <- origM -> return Nothing
         | (Just orig) <- origM -> do
@@ -1115,7 +1076,7 @@ deref tp = do
           dump $ printf "deref: reference cycle detected: %s, set: %s" (show dstPath) (show $ Set.toList visitingSet)
           return $ Left (dstPath, relPath dstPath srcPath)
       | canDstPath == canSrcPath -> do
-          dump $ printf "deref: reference cycle detected: %s == %s." (show dstPath) (show srcPath)
+          dump $ printf "deref: reference self cycle detected: %s == %s." (show dstPath) (show srcPath)
           return $ Left (dstPath, relPath dstPath srcPath)
       | isPrefix canDstPath canSrcPath ->
           throwError $ printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)
@@ -1127,7 +1088,9 @@ deref tp = do
           TNAtom _ -> return . Right $ Just tar
           TNConstraint c -> return . Right $ Just (mkAtomVTree $ cnsAtom c)
           _ -> do
-            let orig = fromMaybe tar (treeOrig tar)
+            let x = fromMaybe tar (treeOrig tar)
+                -- back up the original tree.
+                orig = x{treeOrig = Just x}
             dump $
               printf
                 "deref: path: %s, deref'd orig is: %s, set: %s, tar: %s"
@@ -1163,74 +1126,6 @@ delNotifRecvs pathPrefix = do
  where
   del :: Map.Map Path [Path] -> Map.Map Path [Path]
   del = Map.map (filter (\p -> not (isPrefix pathPrefix p)))
-
-{- | Substitute the link node with the referenced node.
-link should be the node that is currently being evaluated.
-1. Find the target TC in the original tree.
-2. Define the struct, which is the path of the target node.
-3. Evaluate links that are outside the struct.
--}
-substLink :: (TreeMonad s m) => Link -> m ()
-substLink = undefined
-
--- substLink link = do
---   tc <- getTMCursor
---   withDumpInfo $ \path _ -> do
---     dump $ printf "substLink: link (%s), path: %s starts" (show $ lnkTarget link) (show path)
---     dump $ printf "substLink, tc:\n%s" (show tc)
---
---   res <- whenJustM (resolveLink link tc) $ \(tp, tar) -> do
---     dump $
---       printf
---         "substLink: link (%s) target is found in the eval tree, tree: %s"
---         (show $ lnkTarget link)
---         (show tar)
---
---     let utar = case treeNode tar of
---           -- The link leads to a cycle head, which does not have the original node.
---           TNRefCycle -> tar
---           -- we need to get the original (un-evalCVed) version of the target node.
---           _ -> fromMaybe tar (treeOrig tar)
---     dump $
---       printf
---         "substLink: link (%s) target is found, path: %s, tree:\n%s"
---         (show $ lnkTarget link)
---         (show tp)
---         (show utar)
---
---     putTMTree utar
---     Just <$> evalOutStructLink tp
---
---   when (isNothing res) $ do
---     dump $ printf "substLink: original target of the link (%s) is not found" (show $ lnkTarget link)
---     return ()
-
--- substitute out-struct links with evaluated nodes.
-evalOutStructLink :: (TreeMonad s m) => Path -> m ()
-evalOutStructLink = undefined
-
--- evalOutStructLink p = traverseCV $ do
---   res <- withTree $ \t -> case treeNode t of
---     -- Use the first var to determine if the link is in the struct. Then search the whole path.
---     -- This handles the x.a case correctly.
---     TNLink l -> whenJust (headSel p) $ \fstSel -> do
---       -- If the variable is outside of the struct, then no matter what the following selectors are, the link is
---       -- outside of the struct.
---       tc <- getTMCursor
---       whenJustM (searchTCVar fstSel tc) $ \varTC -> do
---         -- make sure the whole path exists.
---         _ <- searchTCPath (lnkTarget l) tc
---         return $ Just (tcPath varTC)
---     _ -> return Nothing
---
---   maybe
---     (return ())
---     ( \varPath ->
---         -- If the first selector of the link references the struct or nodes outside the struct, then evaluate the
---         -- link.
---         when (p == varPath || not (isPrefix p varPath)) evalTM
---     )
---     res
 
 newtype AtomV = AtomV
   { amvAtom :: Atom
@@ -1282,39 +1177,28 @@ data Constraint = Constraint
 instance Eq Constraint where
   (==) (Constraint a1 v1) (Constraint a2 v2) = a1 == a2 && v1 == v2
 
-mkCnstrTree :: AtomV -> Tree
-mkCnstrTree a = mkNewTree (TNConstraint $ Constraint a (mkBottomTree "validator not initialized"))
+isTreeCnstr :: Tree -> Bool
+isTreeCnstr t = case treeNode t of
+  TNConstraint _ -> True
+  _ -> False
 
--- mkConstraint ::
---   forall s m.
---   (TreeMonad s m) =>
---   AtomV ->
---   Tree ->
---   (forall s2 m2. (TreeMonad s2 m2) => Tree -> Tree -> m2 ()) ->
---   m Constraint
--- mkConstraint a cnstr unify = do
---   -- i <- allocCnstr ft
---   return $
---     Constraint
---       { cnsAtom = a
---       -- , cnsID = i
---       }
---  where
---   ft =
---     mkFuncTree $
---       Func
---         { fncArgs = [mkNewTree $ TNAtom a, cnstr]
---         , fncFunc = \ts -> do
---         , fncType = RegularFunc
---         , fncExprGen = buildASTExpr True cnstr
---         , fncName = "evalCnstr"
---         , fncRes = Nothing
---         }
+mkCnstrTree :: AtomV -> Tree -> Tree
+mkCnstrTree a = setTNOrig (TNConstraint $ Constraint a (mkBottomTree "validator not initialized"))
 
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
   dump $ printf "validateCnstrs: start"
-  traverseTM $ withTree $ \t -> case treeNode t of
+
+  ctx <- getTMContext
+  -- remove all notifiers.
+  putTMContext $ ctx{ctxNotifiers = Map.empty}
+  -- first rewrite all functions to their results if the results exist.
+  traverseTM $ withTN $ \case
+    TNFunc fn -> maybe (return ()) putTMTree (fncRes fn)
+    _ -> return ()
+
+  -- then validate all constraints.
+  traverseTM $ withTN $ \case
     TNConstraint c -> validateCnstr c
     _ -> return ()
 
@@ -1346,19 +1230,8 @@ validateCnstr c = withTree $ \t -> do
           (show origAtomT)
     putTMTree origAtomT
 
--- withCnstrAtom :: (TreeMonad s m) => (Path, Constraint) -> (Tree -> m ()) -> m ()
--- withCnstrAtom (cpath, c) f = do
---   f (mkAtomVTree $ cnsAtom c)
---   withTN $ \case
---     TNBottom _ -> return ()
---     TNAtom a -> updateCnstrAtom a c
---     _ -> return ()
-
 updateCnstrAtom :: AtomV -> Constraint -> Constraint
 updateCnstrAtom atom c = c{cnsAtom = atom}
-
--- evalConstraint :: (TreeMonad s m) => Constraint -> m ()
--- evalConstraint c = undefined
 
 data Number = NumInt Integer | NumFloat Double
   deriving (Eq)
@@ -1492,13 +1365,13 @@ data Func = Func
 
 instance BuildASTExpr Func where
   buildASTExpr c fn = do
-    dump $
-      printf
-        "buildASTExpr: Func: %s, %s, c: %s, require: %s"
-        (fncName fn)
-        (show $ fncType fn)
-        (show c)
-        (show $ requireFuncConcrete fn)
+    -- dump $
+    --   printf
+    --     "buildASTExpr: Func: %s, %s, c: %s, require: %s"
+    --     (fncName fn)
+    --     (show $ fncType fn)
+    --     (show c)
+    --     (show $ requireFuncConcrete fn)
     if
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       | (c || requireFuncConcrete fn) -> fncExprGen fn
@@ -1626,13 +1499,6 @@ mkBinaryOpDir rep op (d1, t1) (_, t2) =
     L -> mkBinaryOp rep op t1 t2
     R -> mkBinaryOp rep op t2 t1
 
--- putFuncRes :: (TreeMonad s m) => Tree -> m ()
--- putFuncRes res = withTN $ \case
---   TNFunc fn
---     | isTreeFunc res -> return ()
---     | otherwise -> putTMTree $ mkFuncTree $ fn{fncRes = Just res}
---   _ -> throwError "putFuncRes: tree ndoe is not a function"
-
 {- | Evaluate the function.
  - Function evaluation is a top-down process, unlike other languages where the arguments are evaluated first.
 Function call convention:
@@ -1663,15 +1529,6 @@ evalFunc fn = do
         (show name)
         (show t)
 
--- -- | Execute the function. The focus of the tree must be a function.
--- execFunc :: (TreeMonad s m) => Func -> m ()
--- execFunc fn = do
---   -- update the function with the evaluated arguments.
---   putTMTree $ mkFuncTree fn
---   -- the result of the function is stored at the focus of the tree.
---   r <- fncFunc fn (fncArgs fn) >> getTMTree
---   reduceFunc fn r
-
 {- | Try to reduce the function by using the function result to replace the function node.
  - This should be called after the function is evaluated.
 -}
@@ -1679,7 +1536,7 @@ reduceFunc :: (TreeMonad s m) => Func -> Tree -> m ()
 reduceFunc fn val = case treeNode val of
   TNFunc newFn -> putTMTree $ mkFuncTree newFn
   _ -> do
-    let reducible = isTreeAtom val || not (funcHasRef fn) || isTreeRefCycle val
+    let reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || not (funcHasRef fn) || isTreeRefCycle val
     withDumpInfo $ \path _ ->
       dump $
         printf
@@ -1711,11 +1568,10 @@ instance Show Bottom where
 mkBottomTree :: String -> Tree
 mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
 
-newtype RefCycle = RefCycle {rfCyclePath :: Path}
-  deriving (Eq)
-
-instance Show RefCycle where
-  show (RefCycle p) = show p
+data RefCycle
+  = RefCycle Path
+  | RefCycleTail
+  deriving (Eq, Show)
 
 mkRefCycleTree :: Path -> Tree -> Tree
 mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
@@ -2118,12 +1974,6 @@ goTMAbsPath :: (TreeMonad s m) => Path -> m Bool
 goTMAbsPath dst = do
   when (headSel dst /= Just Path.RootSelector) $
     throwError (printf "goTMAbsPath: the path %s should start with the root selector" (show dst))
-  -- origPath <- getTMPath
-  -- withDumpInfo $ \_ t -> do
-  --   dump $ printf "goTMAbsPath, in: %s -> %s, tip: %s" (show origPath) (show dst) (show t)
-  --   tc <- getTMCursor
-  --   dump $ printf "goTMAbsPath, %s -> %s, orig_tc: %s" (show origPath) (show dst) (show tc)
-
   propUpTMUntilSel Path.RootSelector
   let dstNoRoot = fromJust $ tailPath dst
   descendTM dstNoRoot
@@ -2172,6 +2022,11 @@ discardTMAndPop = do
   putTMContext ctx{ctxCrumbs = tail crumbs}
   putTMTree (snd t)
 
+eliminateTMCycle :: (TreeMonad s m) => m ()
+eliminateTMCycle = do
+  ctx <- getTMContext
+  putTMContext ctx{ctxCycle = Nothing}
+
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
   Config{cfMermaid = mermaid} <- ask
@@ -2212,13 +2067,6 @@ subNodes t = case treeNode t of
       ++ [(DisjDisjunctSelector i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
--- allocCnstr :: (TreeMonad s m) => Tree -> m Int
--- allocCnstr c = do
---   ctx <- getTMContext
---   let n = length (ctxCnstrs ctx)
---   putTMContext $ ctx{ctxCnstrs = ctxCnstrs ctx ++ [c]}
---   return n
-
 -- | Traverse all the one-level sub nodes of the tree.
 traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
 traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
@@ -2242,8 +2090,10 @@ evalTM :: (TreeMonad s m) => m ()
 evalTM = withTree $ \t -> do
   let cond = case treeNode t of
         TNFunc fn | isFuncRef fn -> True
-        _ -> not (treeEvaled t)
+        _ -> True
   parHasCycle <- isJust . ctxCycle <$> getTMContext
+  withDumpInfo $ \path _ ->
+    dump $ printf "evalTM: path: %s, cond: %s, parHasCycle: %s" (show path) (show cond) (show parHasCycle)
   when (cond && not parHasCycle) forceEvalCV
 
 forceEvalCV :: (TreeMonad s m) => m ()
@@ -2260,8 +2110,10 @@ forceEvalCV = do
     _ -> return ()
 
   withTree $ \t -> do
-    let nt = setTN (treeNode t) origT
+    let nt = setOrig t origT
     putTMTree $ nt{treeEvaled = True}
+  -- withDumpInfo $ \path _ ->
+  --   dump $ printf "evalTM: path: %s, set evaled" (show path)
   unmarkTMVisiting
 
   ctx <- getTMContext
@@ -2304,7 +2156,9 @@ tryPopulateRef nt = do
       notifers = ctxNotifiers . cvCtx $ ct
       deps = fromMaybe [] (Map.lookup resPath notifers)
     withDumpInfo $ \path _ ->
-      dump $ printf "evalTM: path: %s, using value to update %s" (show path) (show deps)
+      unless (null deps) $
+        dump $
+          printf "evalTM: path: %s, using value to update %s" (show path) (show deps)
     mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt)) deps
 
 {- | Substitute the cached result of the Func node pointed by the path with the new value. Then trigger the re-evluation
@@ -2365,40 +2219,6 @@ locateLAFunc = do
           _ -> False
       )
       sels
-
--- Resolve the link by moving the cursor to the target node indicated by the link.
--- Returns the absolute path of the target node and the target node itself.
--- TODO: we can't really follow the link because the value of link could be modified.
--- For example, {a: b, b: c, c: {x: 1}} & {b: {y: 2}}
-resolveLink :: (CommonEnv m) => Link -> TreeCursor -> m (Maybe (Path, Tree))
-resolveLink = undefined
-
--- resolveLink link tc = do
---   whenJustM (searchTCPath (lnkTarget link) tc) $ \tarTC ->
---     let tarAbsPath = canonicalizePath $ tcPath tarTC
---      in if
---           | tarAbsPath == selfAbsPath -> do
---               dump $
---                 printf
---                   "%s: reference cycle detected: %s == %s."
---                   header
---                   (show $ tcPath tc)
---                   (show $ tcPath tarTC)
---               return $ Just (tcPath tarTC, mkNewTree TNRefCycle)
---           | isPrefix tarAbsPath selfAbsPath ->
---               throwError $
---                 printf
---                   "structural cycle detected. %s is a prefix of %s"
---                   (show tarAbsPath)
---                   (show selfAbsPath)
---           | otherwise ->
---               let tarNode = vcFocus tarTC
---                in return $ Just (tcPath tarTC, tarNode)
---  where
---   selfAbsPath = canonicalizePath $ tcPath tc
---
---   header :: String
---   header = printf "resolveLink, link %s, path: %s" (show $ lnkTarget link) (show $ tcPath tc)
 
 {- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 The cursor will also be propagated to the parent block.

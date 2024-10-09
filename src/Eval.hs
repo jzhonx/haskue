@@ -319,11 +319,11 @@ regBinDir op dt1@(d1, t1) dt2@(d2, t2) = do
     (_, TNStruct s2) -> regBinLeftStruct op (d2, s2, t2) dt1
     (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) dt2
     (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) dt1
-    _ -> regBinOther op dt1 dt2
+    _ -> regBinLeftOther op dt1 dt2
 
 regBinLeftAtom :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
-  dump $ printf "regBinLeftAtom: %s (%s: %s) (%s)" (show op) (show d1) (show ta1) (show t2)
+  dump $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
   if
     -- comparison operators
     | isJust (lookup op cmpOps) -> case treeNode t2 of
@@ -349,7 +349,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
         TNStruct _ -> putTMTree $ cmpNull a1 t2
         TNList _ -> putTMTree $ cmpNull a1 t2
         TNDisj _ -> putTMTree $ cmpNull a1 t2
-        _ -> regBinOther op (d2, t2) (d1, t1)
+        _ -> regBinLeftOther op (d2, t2) (d1, t1)
     -- arithmetic operators
     | op `elem` arithOps -> case treeNode t2 of
         TNAtom ta2 ->
@@ -384,7 +384,7 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
         TNStruct _ -> putTMTree $ mismatchArith a1 t2
         TNList _ -> putTMTree $ mismatchArith a1 t2
         TNDisj _ -> putTMTree $ mismatchArith a1 t2
-        _ -> regBinOther op (d2, t2) (d1, t1)
+        _ -> regBinLeftOther op (d2, t2) (d1, t1)
     | otherwise -> putTMTree $ mkBottomTree $ printf "operator %s is not supported" (show op)
  where
   a1 = amvAtom ta1
@@ -426,35 +426,43 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
     _ -> putTMTree (mismatch op t1 t2)
 
-regBinOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
-regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
-  (TNFunc _, _) -> evalOrDelay
-  (TNRefCycle _, _) -> evalOrDelay
-  (TNConstraint c, _) -> do
-    na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
-    case treeNode na of
-      TNAtom atom -> putTMTree $ mkNewTree (TNConstraint $ updateCnstrAtom atom c)
-      _ -> undefined
-  _ -> putTMTree (mkBottomTree mismatchErr)
+regBinLeftOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
+regBinLeftOther op (d1, t1) (d2, t2) = do
+  dump $ printf "regBinLeftOther: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
+  case (treeNode t1, t2) of
+    (TNFunc fn, _)
+      | isFuncRef fn -> do
+          et1 <- inSubTM (toBinOpSelector d1) t1 (evalTM >> getTMTree)
+          regBinDir op (d1, et1) (d2, t2)
+      | otherwise -> evalOrDelay
+    (TNRefCycle _, _) -> evalOrDelay
+    (TNConstraint c, _) -> do
+      na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
+      case treeNode na of
+        TNAtom atom -> putTMTree $ mkNewTree (TNConstraint $ updateCnstrAtom atom c)
+        _ -> undefined
+    _ -> putTMTree (mkBottomTree mismatchErr)
  where
   -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
   -- returns a delayed evaluation.
   evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
+    dump $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
     et1 <- inSubTM (toBinOpSelector d1) t1 (evalTM >> getTMTree)
-    -- withDumpInfo $ \path _ ->
-    --   dump $ printf "regBinOther: path: %s, %s is evaluated to:\n%s" (show path) (show t1) (show et1)
-    case treeNode et1 of
-      TNAtom a1 -> regBinLeftAtom op (d1, a1, et1) (d2, t2)
-      TNDisj dj1 -> regBinLeftDisj op (d1, dj1, et1) (d2, t2)
-      TNStruct s1 -> regBinLeftStruct op (d1, s1, et1) (d2, t2)
-      TNList _ -> undefined
-      TNConstraint _ -> regBinOther op (d1, et1) (d2, t2)
-      _ -> do
-        let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, et1) (d2, t2))
-        withDumpInfo $ \path _ ->
-          dump $ printf "regBinOther: path: %s, %s is incomplete, delaying to %s" (show path) (show et1) (show v)
-        putTMTree v
+    procLeftOtherRes et1
+
+  procLeftOtherRes :: (TreeMonad s m) => Tree -> m ()
+  procLeftOtherRes x = case treeNode x of
+    TNAtom a1 -> regBinLeftAtom op (d1, a1, x) (d2, t2)
+    TNDisj dj1 -> regBinLeftDisj op (d1, dj1, x) (d2, t2)
+    TNStruct s1 -> regBinLeftStruct op (d1, s1, x) (d2, t2)
+    TNList _ -> undefined
+    TNConstraint _ -> regBinLeftOther op (d1, x) (d2, t2)
+    _ -> do
+      let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, x) (d2, t2))
+      withDumpInfo $ \path _ ->
+        dump $ printf "regBinLeftOther: path: %s, %s is incomplete, delaying to %s" (show path) (show x) (show v)
+      putTMTree v
 
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
@@ -511,10 +519,6 @@ evalDisj e1 e2 = do
   evalSub :: (TreeMonad s m) => Path.Selector -> Tree -> m Tree
   evalSub sel t = do
     res <- inSubTM sel t (evalTM >> getTMTree)
-    -- ct <- getCTFromFuncEnv >>= mapEvalCVCur (return . mkSubTC sel t)
-    -- dump $ printf "evalDisj: path: %s, evaluating:\n%s" (show $ cvPath ct) (show (cvVal ct))
-    -- uct <- evalTM ct
-    -- let res = cvVal uct
     withDumpInfo $ \path _ ->
       dump $ printf "evalDisj: path: %s, %s is evaluated to:\n%s" (show path) (show t) (show res)
     return res
