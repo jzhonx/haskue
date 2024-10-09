@@ -63,7 +63,7 @@ eval expr mermaid = do
           root <- evalStateT (evalExpr expr) emptyContext
           dump $ printf "---- evaluated to rootTC: ----\n%s" (show root)
           let rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
-          r2 <- execStateT setOrigNodesCV (mkCVFromCur rootTC)
+          r2 <- execStateT setOrigNodes (mkCVFromCur rootTC)
           dump $ printf "---- start resolving links ----"
           res <- execStateT evalTM r2
           dump $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
@@ -73,7 +73,7 @@ eval expr mermaid = do
 
   finalized <-
     runReaderT
-      (execStateT evalTM rootTC)
+      (execStateT validateCnstrs rootTC)
       Config{cfUnify = unify, cfCreateCnstr = False, cfMermaid = mermaid}
   dump $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized
@@ -429,13 +429,11 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
 regBinOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinOther op (d1, t1) (d2, t2) = case (treeNode t1, t2) of
   (TNFunc _, _) -> evalOrDelay
-  -- (TNLink _, _) -> evalOrDelay
   (TNRefCycle _, _) -> evalOrDelay
   (TNConstraint c, _) -> do
     na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
     case treeNode na of
-      TNAtom atom -> do
-        putTMTree $ mkNewTree (TNConstraint $ updateConstraintAtom atom c)
+      TNAtom atom -> putTMTree $ mkNewTree (TNConstraint $ updateCnstrAtom atom c)
       _ -> undefined
   _ -> putTMTree (mkBottomTree mismatchErr)
  where

@@ -11,7 +11,6 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import qualified Path
 import Text.Printf (printf)
@@ -115,7 +114,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
       else unifyLeftOther dt2 dt1
 
 mkCnstr :: (TreeMonad s m) => (Path.BinOpDirect, AtomV) -> (Path.BinOpDirect, Tree) -> m ()
-mkCnstr (_, l1) (_, t2) = putTMTree $ mkNewTree (TNConstraint $ mkConstraint l1 t2 unify)
+mkCnstr (_, a1) (_, _) = putTMTree $ mkCnstrTree a1
 
 unifyLeftBound :: (TreeMonad s m) => (Path.BinOpDirect, Bounds, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of

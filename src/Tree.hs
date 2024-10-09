@@ -32,22 +32,22 @@ module Tree (
   EvalMonad,
   Func (..),
   FuncType (..),
+  HasCtxVal (..),
   LabelAttr (..),
   Link (..),
   List (..),
   Number (..),
+  PatternStructField (..),
+  PendingStructElem (..),
   StaticStructField (..),
   Struct (..),
   StructElemAdder (..),
   StructLabelType (..),
   Tree (..),
   TreeCursor,
+  TreeMonad,
   TreeNode (..),
   ValCursor (..),
-  PatternStructField (..),
-  PendingStructElem (..),
-  TreeMonad,
-  HasCtxVal (..),
   aToLiteral,
   bdRep,
   buildASTExpr,
@@ -70,12 +70,12 @@ module Tree (
   mapEvalCVCur,
   mergeAttrs,
   mkAtomTree,
+  mkAtomVTree,
   mkBinaryOp,
   mkBinaryOpDir,
   mkBottomTree,
   mkBoundsTree,
   mkCVFromCur,
-  mkConstraint,
   mkDisjTree,
   mkIndexBySelFunc,
   mkIndexByTreeFunc,
@@ -88,16 +88,17 @@ module Tree (
   mkUnaryOp,
   mkVarLinkTree,
   putTMTree,
-  setOrigNodesCV,
+  setOrigNodes,
   setTCFocus,
   substLink,
   substTN,
   tcPath,
-  updateConstraintAtom,
-  updateConstraintCnstr,
+  updateCnstrAtom,
+  validateCnstrs,
   withCtxTree,
   withDumpInfo,
   withTree,
+  mkCnstrTree,
 )
 where
 
@@ -203,6 +204,10 @@ aToLiteral a = case a of
   Bool b -> AST.BoolLit b
   Null -> AST.NullLit
 
+-- Some rules:
+-- 1. If a node is a Func that contains references, then the node should not be supplanted to other places without
+-- changing the dependencies.
+-- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
   { treeNode :: TreeNode
   , treeOrig :: Maybe Tree
@@ -279,8 +284,8 @@ instance TreeRepBuilderIter Tree where
       ( symbol
       , mempty
       ,
-        [ ("Atom", mempty, mkNewTree (TNAtom $ cnsAtom c))
-        , ("Cond", mempty, cnsCnstr c)
+        [ ("Atom", mempty, mkAtomVTree (cnsAtom c))
+        , (show unaryOpSelector, mempty, cnsValidator c)
         ]
       , []
       )
@@ -840,19 +845,20 @@ instance BuildASTExpr Link where
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: String -> AST.UnaryExpr -> Tree
-mkVarLinkTree var ue =
-  mkFuncTree $
-    Func
-      { fncName = "mkReference"
-      , fncType = RegularFunc
-      , fncArgs = []
-      , fncExprGen = return $ AST.ExprUnaryExpr ue
-      , fncFunc = \_ -> do
-          ref <- mkReference (Path [StructSelector $ StringSelector var]) Nothing ue
-          putTMTree (mkFuncTree ref)
-          evalTM
-      , fncRes = Nothing
-      }
+mkVarLinkTree var ue = mkFuncTree $ mkRefFunc (Path [StructSelector $ StringSelector var]) ue
+
+-- mkFuncTree $
+--   Func
+--     { fncName = printf "mkReference %s" var
+--     , fncType = RegularFunc
+--     , fncArgs = []
+--     , fncExprGen = return $ AST.ExprUnaryExpr ue
+--     , fncFunc = \_ -> do
+--         ref <- mkReference (Path [StructSelector $ StringSelector var]) Nothing ue
+--         putTMTree (mkFuncTree ref)
+--         evalTM
+--     , fncRes = Nothing
+--     }
 
 -- | Create an index function node.
 mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
@@ -992,7 +998,7 @@ indexByTree tree selTree = do
         indexByTree tree df
       Nothing -> putTMTree $ invalidSelector sel
     TNConstraint c -> do
-      idxsel <- selFromAtom (cnsOrigAtom c)
+      idxsel <- selFromAtom (cnsAtom c)
       indexBySel tree idxsel
     TNFunc fn -> maybe (return ()) (indexByTree tree) (fncRes fn)
     _ -> putTMTree $ invalidSelector sel
@@ -1056,6 +1062,7 @@ mkRefFunc tp ue =
 
 -- Dereference the reference. It keeps dereferencing until the target node is not a reference node.
 -- If the target is not found, the current node is kept.
+-- No more evaluation is done after the dereference.
 deref :: (TreeMonad s m) => Path -> m Bool
 deref tp = do
   path <- getTMAbsPath
@@ -1068,7 +1075,7 @@ deref tp = do
     Nothing -> return False
  where
   -- Keep dereferencing until the target node is not a reference node.
-  -- returns  the target node.
+  -- returns the target node.
   follow :: (TreeMonad s m) => Path -> m (Maybe Tree)
   follow dst = do
     srcPath <- getTMAbsPath
@@ -1079,9 +1086,6 @@ deref tp = do
         ctx <- getTMContext
         putTMContext $ ctx{ctxCycle = Just (cycleStartPath, cycleTailRelPath)}
         return Nothing
-      -- if srcPath == cycleStartPath
-      -- then withTree $ \t -> return (Right . Just $ mkRefCycleTree cycleTailRelPath t)
-      -- else return Nothing
       Right origM
         | Nothing <- origM -> return Nothing
         | (Just orig) <- origM -> do
@@ -1089,23 +1093,17 @@ deref tp = do
               dump $ printf "deref: path: %s, substitutes with orig: %s" (show path) (show orig)
             -- substitute the reference with the target node.
             putTMTree orig
-            evalTM
             withTN $ \case
               -- follow the reference.
               TNFunc fn | RefFunc nextDst <- fncType fn -> do
                 follow nextDst
-              TNConstraint c -> do
-                withDumpInfo $ \path _ -> do
-                  dump $ printf "deref: path: %s, substitutes to the atom value of the constraint" (show path)
-                return (Just $ mkAtomTree (amvAtom . cnsAtom $ c))
-              -- found the target node.
               _ -> Just <$> getTMTree
 
   -- Get the value pointed by the reference.
   -- If the reference path is self or visited, then return the tuple of the absolute path of the start of the cycle and
   -- the cycle tail relative path.
   getDstVal :: (TreeMonad s m) => Path -> Path -> m (Either (Path, Path) (Maybe Tree))
-  getDstVal srcPath dst = inRemoteTMMaybe dst $ withTree $ \tar -> do
+  getDstVal srcPath dst = inRemoteTMMaybe dst $ do
     dstPath <- getTMAbsPath
     visitingSet <- ctxVisiting <$> getTMContext
     let
@@ -1121,15 +1119,23 @@ deref tp = do
           return $ Left (dstPath, relPath dstPath srcPath)
       | isPrefix canDstPath canSrcPath ->
           throwError $ printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)
-      | otherwise -> do
-          let orig = fromMaybe tar (treeOrig tar)
-          dump $
-            printf
-              "deref: path: %s, deref'd orig is: %s, set: %s"
-              (show dstPath)
-              (show orig)
-              (show $ Set.toList visitingSet)
-          return . Right $ Just orig
+      -- The value of a reference is a copy of the expression associated with the field that it is bound to, with
+      -- any references within that expression bound to the respective copies of the fields they were originally
+      -- bound to.
+      | otherwise -> withTree $ \tar -> case treeNode tar of
+          -- The atom value is final, so we can return it directly.
+          TNAtom _ -> return . Right $ Just tar
+          TNConstraint c -> return . Right $ Just (mkAtomVTree $ cnsAtom c)
+          _ -> do
+            let orig = fromMaybe tar (treeOrig tar)
+            dump $
+              printf
+                "deref: path: %s, deref'd orig is: %s, set: %s, tar: %s"
+                (show dstPath)
+                (show orig)
+                (show $ Set.toList visitingSet)
+                (show tar)
+            return . Right $ Just orig
 
   inRemoteTMMaybe :: (TreeMonad s m) => Path -> m (Either a (Maybe b)) -> m (Either a (Maybe b))
   inRemoteTMMaybe p f = do
@@ -1239,8 +1245,11 @@ instance Eq AtomV where
 instance BuildASTExpr AtomV where
   buildASTExpr c (AtomV v) = buildASTExpr c v
 
+mkAtomVTree :: AtomV -> Tree
+mkAtomVTree v = mkNewTree (TNAtom v)
+
 mkAtomTree :: Atom -> Tree
-mkAtomTree v = mkNewTree (TNAtom $ AtomV{amvAtom = v})
+mkAtomTree a = mkAtomVTree (AtomV a)
 
 data Disj = Disj
   { dsjDefault :: Maybe Tree
@@ -1264,67 +1273,92 @@ instance BuildASTExpr Disj where
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
 
--- Constraint does not need to implement the BuildASTExpr.
 data Constraint = Constraint
   { cnsAtom :: AtomV
-  , cnsOrigAtom :: AtomV
-  -- ^ cnsOrigAtom is the original atom value that was unified with other expression. Notice that the atom value can be
-  -- changed by binary operations.
-  , cnsCnstr :: Tree
-  , cnsUnify :: forall s m. (TreeMonad s m) => Tree -> Tree -> m ()
+  , -- validator is used when validateCnstrs is called.
+    cnsValidator :: Tree
   }
 
 instance Eq Constraint where
-  (==) (Constraint a1 o1 c1 _) (Constraint a2 o2 c2 _) =
-    a1 == a2 && c1 == c2 && o1 == o2
+  (==) (Constraint a1 v1) (Constraint a2 v2) = a1 == a2 && v1 == v2
 
-mkConstraint :: AtomV -> Tree -> (forall s m. (TreeMonad s m) => Tree -> Tree -> m ()) -> Constraint
-mkConstraint atom cnstr unify =
-  Constraint
-    { cnsAtom = atom
-    , cnsOrigAtom = atom
-    , cnsCnstr = cnstr
-    , cnsUnify = unify
-    }
+mkCnstrTree :: AtomV -> Tree
+mkCnstrTree a = mkNewTree (TNConstraint $ Constraint a (mkBottomTree "validator not initialized"))
 
-updateConstraintCnstr ::
-  (BinOpDirect, Tree) ->
-  (forall s m. (TreeMonad s m) => Tree -> Tree -> m ()) ->
-  Constraint ->
-  Constraint
-updateConstraintCnstr (d, t) unify c =
-  let newBinOp =
-        if d == L
-          then TNFunc $ mkBinaryOp AST.Unify unify t (cnsCnstr c)
-          else TNFunc $ mkBinaryOp AST.Unify unify (cnsCnstr c) t
-   in c{cnsCnstr = mkNewTree newBinOp}
+-- mkConstraint ::
+--   forall s m.
+--   (TreeMonad s m) =>
+--   AtomV ->
+--   Tree ->
+--   (forall s2 m2. (TreeMonad s2 m2) => Tree -> Tree -> m2 ()) ->
+--   m Constraint
+-- mkConstraint a cnstr unify = do
+--   -- i <- allocCnstr ft
+--   return $
+--     Constraint
+--       { cnsAtom = a
+--       -- , cnsID = i
+--       }
+--  where
+--   ft =
+--     mkFuncTree $
+--       Func
+--         { fncArgs = [mkNewTree $ TNAtom a, cnstr]
+--         , fncFunc = \ts -> do
+--         , fncType = RegularFunc
+--         , fncExprGen = buildASTExpr True cnstr
+--         , fncName = "evalCnstr"
+--         , fncRes = Nothing
+--         }
 
-updateConstraintAtom :: AtomV -> Constraint -> Constraint
-updateConstraintAtom atom c = c{cnsAtom = atom}
+validateCnstrs :: (TreeMonad s m) => m ()
+validateCnstrs = do
+  dump $ printf "validateCnstrs: start"
+  traverseTM $ withTree $ \t -> case treeNode t of
+    TNConstraint c -> validateCnstr c
+    _ -> return ()
 
-evalConstraint :: (TreeMonad s m) => Constraint -> m ()
-evalConstraint c = do
+-- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
+-- will be assigned to the constraint in the propValUp.
+validateCnstr :: (TreeMonad s m) => Constraint -> m ()
+validateCnstr c = withTree $ \t -> do
   withDumpInfo $ \path _ -> do
     tc <- getTMCursor
     dump $ printf "evalConstraint: path: %s, constraint unify tc:\n%s" (show path) (show tc)
+
+  Config{cfUnify = unify} <- ask
   let
-    origAtomT = mkNewTree (TNAtom $ cnsOrigAtom c)
-    op = mkNewTree (TNFunc $ mkBinaryOp AST.Unify (cnsUnify c) origAtomT (cnsCnstr c))
+    origAtomT = mkAtomVTree $ cnsAtom c
+    orig = fromJust $ treeOrig t
+    fn = mkFuncTree (mkBinaryOp AST.Unify unify origAtomT orig)
 
-  putTMTree op
+  -- run the function in a sub context.
+  pushTMSub unaryOpSelector fn
   x <- evalTM >> getTMTree
+  discardTMAndPop
 
-  if isTreeAtom x
-    then do
-      when (x /= origAtomT) $
-        throwError $
-          printf
-            "evalTM: constraint not satisfied, %s != %s"
-            (show x)
-            (show origAtomT)
-      putTMTree origAtomT
-    else
-      putTMTree $ mkNewTree $ TNConstraint c
+  when (isTreeAtom x) $ do
+    when (x /= origAtomT) $
+      throwError $
+        printf
+          "evalTM: constraint not satisfied, %s != %s"
+          (show x)
+          (show origAtomT)
+    putTMTree origAtomT
+
+-- withCnstrAtom :: (TreeMonad s m) => (Path, Constraint) -> (Tree -> m ()) -> m ()
+-- withCnstrAtom (cpath, c) f = do
+--   f (mkAtomVTree $ cnsAtom c)
+--   withTN $ \case
+--     TNBottom _ -> return ()
+--     TNAtom a -> updateCnstrAtom a c
+--     _ -> return ()
+
+updateCnstrAtom :: AtomV -> Constraint -> Constraint
+updateCnstrAtom atom c = c{cnsAtom = atom}
+
+-- evalConstraint :: (TreeMonad s m) => Constraint -> m ()
+-- evalConstraint c = undefined
 
 data Number = NumInt Integer | NumFloat Double
   deriving (Eq)
@@ -1709,6 +1743,7 @@ goTreeSel sel t =
       FuncResSelector -> fncRes fn
     (DisjDefaultSelector, TNDisj d) -> dsjDefault d
     (DisjDisjunctSelector i, TNDisj d) -> dsjDisjuncts d `indexList` i
+    (_, TNConstraint c) | sel == unaryOpSelector -> Just (cnsValidator c)
     _ -> Nothing
  where
   indexList :: [a] -> Int -> Maybe a
@@ -1833,6 +1868,9 @@ propValUp tc@(ValCursor subT ((sel, parT) : cs)) = case (sel, treeNode parT) of
       ValCursor
         (substTN (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)}) parT)
         cs
+  (FuncSelector _, TNConstraint c) ->
+    return $
+      ValCursor (substTN (TNConstraint $ c{cnsValidator = subT}) parT) cs
   (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
   (RootSelector, _) -> throwError "propValUp: RootSelector is not allowed"
   _ -> throwError insertErrMsg
@@ -2051,7 +2089,6 @@ pushTMSub sel tip = do
 
 inSubTM :: (TreeMonad s m) => Selector -> Tree -> m a -> m a
 inSubTM sel t f = do
-  -- dump $ printf "inSubTM: sel: %s, tip: %s" (show sel) (show t)
   pushTMSub sel t
   r <- f
   propUpTMSel sel
@@ -2110,13 +2147,6 @@ goLowestAncPathTM dst f = do
     r <- descendTM selPath
     if r then f else return Nothing
 
--- This handles the x.a case correctly.
--- Just . vcFocus
---   <$> maybeM
---     (return varTC)
---     return
---     (whenJust (tailPath dst) $ \selPath -> return $ goDownTCPath selPath varTC)
-
 descendTM :: (TreeMonad s m) => Path -> m Bool
 descendTM dst = do
   tc <- getTMCursor
@@ -2127,19 +2157,20 @@ descendTM dst = do
     (\r -> putTMCursor r >> return True)
     (goDownTCPath dst tc)
 
--- withDumpInfo $ \_ t ->
---   dump $ printf "goTMAbsPath, out: %s -> %s, tip: %s" (show origPath) (show dst) (show t)
-
--- withDumpInfo $ \_ t ->
---   dump $ printf "goTMAbsPath, out: %s -> %s, tip: %s" (show origPath) (show dst) (show t)
-
 discardTMAndPut :: (TreeMonad s m) => Tree -> m ()
 discardTMAndPut t = modify $ \s ->
   let ct = getCtxVal s
       ctx = cvCtx ct
    in setCtxVal s (ct{cvVal = t, cvCtx = ctx{ctxCrumbs = tail (ctxCrumbs ctx)}})
 
--- hasTMCycle :: (TreeMonad s m) => m Bool
+discardTMAndPop :: (TreeMonad s m) => m ()
+discardTMAndPop = do
+  ctx <- getTMContext
+  let
+    crumbs = ctxCrumbs ctx
+    t = head crumbs
+  putTMContext ctx{ctxCrumbs = tail crumbs}
+  putTMTree (snd t)
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
@@ -2181,9 +2212,16 @@ subNodes t = case treeNode t of
       ++ [(DisjDisjunctSelector i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
+-- allocCnstr :: (TreeMonad s m) => Tree -> m Int
+-- allocCnstr c = do
+--   ctx <- getTMContext
+--   let n = length (ctxCnstrs ctx)
+--   putTMContext $ ctx{ctxCnstrs = ctxCnstrs ctx ++ [c]}
+--   return n
+
 -- | Traverse all the one-level sub nodes of the tree.
-traverseSubNodes :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseSubNodes f = withTree $ \t -> mapM_ go (subNodes t)
+traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
+traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
  where
   go :: (TreeMonad s m) => (Selector, Tree) -> m ()
   go (sel, sub) = whenNotBottom () $ inSubTM sel sub f
@@ -2193,10 +2231,10 @@ traverseSubNodes f = withTree $ \t -> mapM_ go (subNodes t)
 2. Traverse the sub-tree with the selector.
 -}
 traverseTM :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseTM f = f >> traverseSubNodes (traverseTM f)
+traverseTM f = f >> traverseSub (traverseTM f)
 
-setOrigNodesCV :: forall s m. (TreeMonad s m) => m ()
-setOrigNodesCV = traverseTM $ withTree $ \t ->
+setOrigNodes :: forall s m. (TreeMonad s m) => m ()
+setOrigNodes = traverseTM $ withTree $ \t ->
   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
 
 -- Evaluate the tree.
@@ -2204,7 +2242,6 @@ evalTM :: (TreeMonad s m) => m ()
 evalTM = withTree $ \t -> do
   let cond = case treeNode t of
         TNFunc fn | isFuncRef fn -> True
-        TNConstraint _ -> True
         _ -> not (treeEvaled t)
   parHasCycle <- isJust . ctxCycle <$> getTMContext
   when (cond && not parHasCycle) forceEvalCV
@@ -2217,10 +2254,9 @@ forceEvalCV = do
   markTMVisiting
   withTree $ \t -> case treeNode t of
     TNFunc fn -> evalFunc fn
-    TNConstraint c -> evalConstraint c
     TNStruct struct -> evalStruct struct
-    TNList _ -> traverseSubNodes evalTM
-    TNDisj _ -> traverseSubNodes evalTM
+    TNList _ -> traverseSub evalTM
+    TNDisj _ -> traverseSub evalTM
     _ -> return ()
 
   withTree $ \t -> do
