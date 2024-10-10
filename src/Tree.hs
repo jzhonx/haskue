@@ -912,7 +912,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc) >> exhaustTM
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t exhaustTM
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False exhaustTM
           putTMTree res
           dump $ printf "index: tree is evaluated to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -1014,10 +1014,11 @@ indexByTree tree selTree = do
 -- Reference the target node when the target node is not an atom or a cycle head.
 -- It returns a function that when called, will return the latest value of the target node.
 mkReference :: (TreeMonad s m) => Path -> Maybe Tree -> AST.UnaryExpr -> m Func
-mkReference tp _ ue = withCtxTree $ \ct -> do
+mkReference tp tM ue = withCtxTree $ \ct -> do
   -- add notifier. If the referenced value changes, then the reference should be updated.
   putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
-  return $ mkRefFunc tp ue
+  let fn = mkRefFunc tp ue
+  return $ fn{fncRes = tM}
 
 mkRefFunc :: Path -> AST.UnaryExpr -> Func
 mkRefFunc tp ue =
@@ -1423,10 +1424,21 @@ funcHasRef fn = isFuncRef fn || argsHaveRef (fncArgs fn)
           _ -> False
       )
 
--- | Get the result of the function. If the result is not found, return the original tree.
-getFuncResOrTree :: Tree -> Tree
-getFuncResOrTree t = case treeNode t of
-  TNFunc fn -> fromMaybe t (fncRes fn)
+{- | Get the result of the function. If the result is not found, return the original tree.
+If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
+-}
+getFuncResOrTree :: Bool -> Tree -> Tree
+getFuncResOrTree reqA t = case treeNode t of
+  TNFunc fn ->
+    maybe
+      t
+      ( \r ->
+          if
+            | reqA && isTreeAtom r -> r
+            | reqA -> t
+            | otherwise -> r
+      )
+      (fncRes fn)
   _ -> t
 
 mkFuncTree :: Func -> Tree
@@ -1449,7 +1461,7 @@ mkUnaryOp op f n =
     }
  where
   g :: (TreeMonad s m) => [Tree] -> m ()
-  g [x] = f (getFuncResOrTree x)
+  g [x] = f x
   g _ = throwError "invalid number of arguments for unary function"
 
   gen :: (CommonEnv m) => m AST.Expression
@@ -1483,7 +1495,7 @@ mkBinaryOp op f l r =
     }
  where
   g :: (TreeMonad s m) => [Tree] -> m ()
-  g [x, y] = f (getFuncResOrTree x) (getFuncResOrTree y)
+  g [x, y] = f x y
   g _ = throwError "invalid number of arguments for binary function"
 
   gen :: (CommonEnv m) => m AST.Expression
@@ -1537,13 +1549,13 @@ evalFunc fn = do
 -- Notice that the argument is a function and the result of the function is not reducible, the result is still returned.
 -- This works because we do not reduce the argument. Next time the parent function is evaluated, the argument function
 -- will be evaluated again.
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m () -> m Tree
-evalFuncArg sel sub f = withTN $ \case
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m () -> m Tree
+evalFuncArg sel sub reqA f = withTN $ \case
   TNFunc _ -> do
     res <- inSubTM sel sub (f >> getTMTree)
     withDumpInfo $ \path _ ->
       dump $ printf "evalSubTM: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
-    return $ getFuncResOrTree res
+    return $ getFuncResOrTree reqA res
   _ -> throwError "evalFuncArg: node is not a function"
 
 {- | Try to reduce the function by using the function result to replace the function node.

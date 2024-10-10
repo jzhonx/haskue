@@ -505,8 +505,7 @@ testSelector1 = do
       , ("c", pendValC)
       , ("d", mkAtomTree $ Int 4)
       , ("e", structE)
-      , -- , ("f", mkNewTree . TNFunc $ mkReference (pathFromList [strSel "e", strSel "a"]) disjF undefined)
-        ("f", disjF)
+      , ("f", disjF)
       ]
 
 testUnify1 :: IO ()
@@ -683,7 +682,7 @@ testIncomplete = do
                 mkBinaryOp
                   AST.Sub
                   undefined
-                  (mkSimpleLink $ pathFromList [strSel "a"])
+                  (mkNewTree TNTop)
                   (mkAtomTree $ Int 1)
             )
           ]

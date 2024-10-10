@@ -240,7 +240,8 @@ evalUnaryOp op e = do
   return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
 
 dispUnaryFunc :: (TreeMonad s m) => UnaryOp -> Tree -> m ()
-dispUnaryFunc op t = do
+dispUnaryFunc op _t = do
+  t <- evalFuncArg unaryOpSelector _t True exhaustTM
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
       (Plus, Int i) -> ia i id
@@ -267,7 +268,7 @@ dispUnaryFunc op t = do
     _ -> putConflict
  where
   conflict :: Tree
-  conflict = mkBottomTree $ printf "%s cannot be used for %s" (show t) (show op)
+  conflict = mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
 
   putConflict :: (TreeMonad s m) => m ()
   putConflict = putTMTree conflict
@@ -306,20 +307,24 @@ regBin :: (TreeMonad s m) => BinaryOp -> Tree -> Tree -> m ()
 regBin op t1 t2 = regBinDir op (L, t1) (R, t2)
 
 regBinDir :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
-regBinDir op dt1@(d1, t1) dt2@(d2, t2) = do
+regBinDir op (d1, _t1) (d2, _t2) = do
   withDumpInfo $ \path _ ->
     dump $
-      printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
+      printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
+
+  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True exhaustTM
+  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True exhaustTM
+
   case (treeNode t1, treeNode t2) of
     (TNBottom _, _) -> putTMTree t1
     (_, TNBottom _) -> putTMTree t2
-    (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) dt2
-    (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) dt1
-    (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) dt2
-    (_, TNStruct s2) -> regBinLeftStruct op (d2, s2, t2) dt1
-    (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) dt2
-    (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) dt1
-    _ -> regBinLeftOther op dt1 dt2
+    (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
+    (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
+    (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
+    (_, TNStruct s2) -> regBinLeftStruct op (d2, s2, t2) (d1, t1)
+    (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) (d2, t2)
+    (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
+    _ -> regBinLeftOther op (d1, t1) (d2, t2)
 
 regBinLeftAtom :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
@@ -346,9 +351,9 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
             case r of
               Right b -> putTMTree $ mkAtomTree b
               Left err -> putTMTree err
+        TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
         TNStruct _ -> putTMTree $ cmpNull a1 t2
         TNList _ -> putTMTree $ cmpNull a1 t2
-        TNDisj _ -> putTMTree $ cmpNull a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
     -- arithmetic operators
     | op `elem` arithOps -> case treeNode t2 of
@@ -381,9 +386,9 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
             case r of
               Right b -> putTMTree $ mkAtomTree b
               Left err -> putTMTree err
+        TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
         TNStruct _ -> putTMTree $ mismatchArith a1 t2
         TNList _ -> putTMTree $ mismatchArith a1 t2
-        TNDisj _ -> putTMTree $ mismatchArith a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
     | otherwise -> putTMTree $ mkBottomTree $ printf "operator %s is not supported" (show op)
  where
@@ -428,13 +433,13 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
 
 regBinLeftOther :: (TreeMonad s m) => BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftOther op (d1, t1) (d2, t2) = do
-  dump $ printf "regBinLeftOther: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
+  withDumpInfo $ \path _ ->
+    dump $ printf "regBinLeftOther: path: %s, %s: %s, %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
     (TNFunc fn, _)
-      | isFuncRef fn -> do
-          et1 <- evalFuncArg (toBinOpSelector d1) t1 exhaustTM
-          regBinDir op (d1, et1) (d2, t2)
-      | otherwise -> evalOrDelay
+      -- unresolved reference
+      | isFuncRef fn -> return ()
+      | otherwise -> return ()
     (TNRefCycle _, _) -> evalOrDelay
     (TNConstraint c, _) -> do
       na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
@@ -448,7 +453,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
     dump $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1 exhaustTM
+    et1 <- evalFuncArg (toBinOpSelector d1) t1 True exhaustTM
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m ()
@@ -496,8 +501,8 @@ evalDisj e1 e2 = do
  where
   evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   evalDisjAdapt unt1 unt2 = do
-    t1 <- evalFuncArg binOpLeftSelector unt1 exhaustTM
-    t2 <- evalFuncArg binOpRightSelector unt2 exhaustTM
+    t1 <- evalFuncArg binOpLeftSelector unt1 False exhaustTM
+    t2 <- evalFuncArg binOpRightSelector unt2 False exhaustTM
     u <-
       if not (isTreeValue t1) || not (isTreeValue t2)
         then do

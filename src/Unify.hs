@@ -77,6 +77,9 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
     (Bool x, TNAtom s) -> case amvAtom s of
       Bool y -> putTree $ if x == y then TNAtom l1 else mismatch x y
       _ -> notUnifiable dt1 dt2
+    (Float x, TNAtom s) -> case amvAtom s of
+      Float y -> putTree $ if x == y then TNAtom l1 else mismatch x y
+      _ -> notUnifiable dt1 dt2
     (Null, TNAtom s) -> case amvAtom s of
       Null -> putTree $ TNAtom l1
       _ -> notUnifiable dt1 dt2
@@ -361,7 +364,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 exhaustTM
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False exhaustTM
     withDumpInfo $ \path _ ->
       dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 
