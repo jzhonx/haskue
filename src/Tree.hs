@@ -48,27 +48,22 @@ module Tree (
   TreeNode (..),
   ValCursor (..),
   RefCycle (..),
-  aToLiteral,
   bdRep,
   buildASTExpr,
-  ctxPath,
-  cvPath,
   debugRunEvalEnv,
   defaultLabelAttr,
   dump,
+  eliminateTMCycle,
   emptyContext,
   emptyStruct,
+  evalFuncArg,
   evalTM,
+  exhaustTM,
   getCVCursor,
   getTMTree,
-  goDownTCPath,
-  inSubTM,
   insertUnifyStruct,
-  isTreeAtom,
-  isTreeBottom,
-  isTreeValue,
   isFuncRef,
-  mapEvalCVCur,
+  isTreeValue,
   mergeAttrs,
   mkAtomTree,
   mkAtomVTree,
@@ -77,33 +72,23 @@ module Tree (
   mkBottomTree,
   mkBoundsTree,
   mkCVFromCur,
+  mkCnstrTree,
   mkDisjTree,
-  mkIndexBySelFunc,
-  mkIndexByTreeFunc,
   mkIndexFuncTree,
   mkListTree,
   mkNewTree,
+  mkRefFunc,
   mkReference,
   mkStructTree,
-  mkSubTC,
   mkUnaryOp,
   mkVarLinkTree,
   putTMTree,
   setOrigNodes,
-  setTCFocus,
   substTN,
-  tcPath,
   updateCnstrAtom,
   validateCnstrs,
-  withCtxTree,
   withDumpInfo,
   withTree,
-  mkCnstrTree,
-  getFuncResOrTree,
-  eliminateTMCycle,
-  mkRefFunc,
-  evalFuncArg,
-  exhaustTM,
 )
 where
 
@@ -525,11 +510,6 @@ isTreeValue n = case treeNode n of
   TNRefCycle _ -> False
   TNFunc _ -> False
 
-getDisj :: Tree -> Maybe Disj
-getDisj t = case treeNode t of
-  TNDisj d -> Just d
-  _ -> Nothing
-
 isTreeRefCycle :: Tree -> Bool
 isTreeRefCycle t = case treeNode t of
   TNRefCycle _ -> True
@@ -938,78 +918,6 @@ appendRefFuncPath Func{fncType = RefFunc origTP} p ue = do
   delNotifRecvs origTP
   mkReference (appendPath p origTP) Nothing ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
-
--- Index the tree with the sel.
-indexBySel :: (TreeMonad s m) => Tree -> Selector -> m ()
-indexBySel tree sel = do
-  t <- inSubTM (FuncSelector $ FuncArgSelector 0) tree (exhaustTM >> getTMTree)
-  withDumpInfo $ \path _ ->
-    dump $
-      printf
-        "indexBySel Func: path: %s, tree resolved to: %s"
-        (show path)
-        (show t)
-
-  case treeNode t of
-    -- The tree is an evaluated, final struct, which could be formed by an in-place expression, like ({}).a.
-    TNStruct struct -> case sel of
-      StructSelector s -> case Map.lookup s (stcSubs struct) of
-        Just sf -> putTMTree (ssfField sf)
-        Nothing -> return ()
-      s -> throwError $ printf "invalid selector: %s" (show s)
-    TNList list -> case sel of
-      IndexSelector i ->
-        putTMTree $
-          if i < length (lstSubs list)
-            then lstSubs list !! i
-            else mkBottomTree $ "index out of bound: " ++ show i
-      _ -> throwError "invalid list selector"
-    TNDisj dj ->
-      if isJust (dsjDefault dj)
-        then indexBySel (fromJust (dsjDefault dj)) sel
-        else throwError $ insertErr t
-    -- If the tree is a Func, then we should try to index the result of the Func.
-    TNFunc fn
-      -- \| isFuncRef fn -> putTMTree . mkNewTree . TNFunc $ indexRefFunc fn sel undefined
-      | isFuncRef fn -> putTMTree . mkNewTree . TNFunc $ undefined
-      | otherwise -> maybe (return ()) (`indexBySel` sel) (fncRes fn)
-    _ -> throwError $ insertErr t
- where
-  insertErr t = printf "index: cannot index %s with sel: %s" (show t) (show sel)
-
--- Index the tree with the un-evaluated selector.
-indexByTree :: (TreeMonad s m) => Tree -> Tree -> m ()
-indexByTree tree selTree = do
-  sel <- inSubTM (FuncSelector $ FuncArgSelector 1) selTree (exhaustTM >> getTMTree)
-  withDumpInfo $ \path _ ->
-    dump $
-      printf
-        "indexByTree Func: path: %s, sel resolved to: %s"
-        (show path)
-        (show sel)
-  case treeNode sel of
-    TNAtom ta -> do
-      idxsel <- selFromAtom ta
-      indexBySel tree idxsel
-    TNDisj dj -> case dsjDefault dj of
-      Just df -> do
-        dump $ printf "indexByTree: default disjunct: %s" (show df)
-        indexByTree tree df
-      Nothing -> putTMTree $ invalidSelector sel
-    TNConstraint c -> do
-      idxsel <- selFromAtom (cnsAtom c)
-      indexBySel tree idxsel
-    TNFunc fn -> maybe (return ()) (indexByTree tree) (fncRes fn)
-    _ -> putTMTree $ invalidSelector sel
- where
-  selFromAtom :: (CommonEnv m) => AtomV -> m Selector
-  selFromAtom a = case amvAtom a of
-    (String s) -> return (StructSelector $ StringSelector s)
-    (Int i) -> return $ IndexSelector $ fromIntegral i
-    _ -> throwError "extendTCIndex: invalid selector"
-
-  invalidSelector :: Tree -> Tree
-  invalidSelector sel = mkNewTree (TNBottom $ Bottom $ printf "invalid selector: %s" (show sel))
 
 -- Reference the target node when the target node is not an atom or a cycle head.
 -- It returns a function that when called, will return the latest value of the target node.
@@ -1444,11 +1352,6 @@ getFuncResOrTree reqA t = case treeNode t of
 mkFuncTree :: Func -> Tree
 mkFuncTree fn = mkNewTree (TNFunc fn)
 
-isTreeFunc :: Tree -> Bool
-isTreeFunc t = case treeNode t of
-  TNFunc _ -> True
-  _ -> False
-
 mkUnaryOp :: AST.UnaryOp -> (forall s m. (TreeMonad s m) => Tree -> m ()) -> Tree -> Func
 mkUnaryOp op f n =
   Func
@@ -1702,9 +1605,6 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-setTCFocus :: a -> ValCursor a -> ValCursor a
-setTCFocus t (ValCursor _ cs) = ValCursor t cs
-
 mkSubTC :: Selector -> a -> TreeCursor -> ValCursor a
 mkSubTC sel a tc = ValCursor a ((sel, vcFocus tc) : vcCrumbs tc)
 
@@ -1887,23 +1787,11 @@ mkCVFromCur cur =
           }
     }
 
-mapEvalCVCur :: (CommonEnv m) => (ValCursor a -> m (ValCursor b)) -> CtxVal a -> m (CtxVal b)
-mapEvalCVCur f cv = do
-  cur <- f (getCVCursor cv)
-  return $ setCVCur cur cv
-
 cvPath :: CtxVal a -> Path
 cvPath = ctxPath . cvCtx
 
 getCVCursor :: CtxVal a -> ValCursor a
 getCVCursor cv = ValCursor (cvVal cv) (ctxCrumbs . cvCtx $ cv)
-
-setCVCur :: ValCursor a -> CtxVal b -> CtxVal a
-setCVCur cur cv =
-  cv
-    { cvVal = vcFocus cur
-    , cvCtx = (cvCtx cv){ctxCrumbs = vcCrumbs cur}
-    }
 
 type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree)
 
@@ -2292,31 +2180,6 @@ searchTCVar sel@(StructSelector ssel@(StringSelector _)) tc = case treeNode (vcF
   goUp utc = propValUp utc >>= searchTCVar sel
 searchTCVar _ _ = return Nothing
 
-{- | Search the tree cursor up to the root and return the tree cursor that points to the path.
-The path should not start with the root selector.
--}
-searchTCPath :: (CommonEnv m) => Path -> TreeCursor -> m (Maybe TreeCursor)
-searchTCPath p tc = do
-  when (headSel p == Just Path.RootSelector) $
-    throwError "searchTCPath: the path should not start with the root selector."
-
-  baseTCM <- whenJust (headSel p) $ \fstSel -> searchTCVar fstSel tc
-  r <- whenJust
-    ( do
-        b <- baseTCM
-        t <- tailPath p
-        return (b, t)
-    )
-    $ \(baseTC, tailP) -> return $ goDownTCPath tailP baseTC
-
-  dump $
-    printf
-      "searchTCPath: tc_path: %s, search for: %s, result: %s"
-      (show $ tcPath tc)
-      (show p)
-      (show $ vcFocus <$> r)
-  return r
-
 maybeM :: (Monad m) => m b -> (a -> m b) -> m (Maybe a) -> m b
 maybeM b f m = do
   ma <- m
@@ -2329,39 +2192,3 @@ whenJustM :: (Monad m) => m (Maybe a) -> (a -> m (Maybe b)) -> m (Maybe b)
 whenJustM m f = do
   ma <- m
   maybe (return Nothing) f ma
-
-mkIndexBySelFunc :: Tree -> Selector -> AST.UnaryExpr -> Tree
-mkIndexBySelFunc t sel ue =
-  mkNewTree
-    ( TNFunc $
-        Func
-          { fncName = "indexBySel"
-          , fncType = RegularFunc
-          , fncArgs = [t]
-          , fncExprGen = return $ AST.ExprUnaryExpr ue
-          , fncFunc = f
-          , fncRes = Nothing
-          }
-    )
- where
-  f :: (TreeMonad s m) => [Tree] -> m ()
-  f [tree] = indexBySel tree sel
-  f _ = throwError "mkIndexBySelFunc: invalid arguments"
-
-mkIndexByTreeFunc :: Tree -> Tree -> AST.UnaryExpr -> Tree
-mkIndexByTreeFunc treeArg selArg ue =
-  mkNewTree
-    ( TNFunc $
-        Func
-          { fncName = "indexByTree"
-          , fncType = RegularFunc
-          , fncArgs = [treeArg, selArg]
-          , fncExprGen = return $ AST.ExprUnaryExpr ue
-          , fncFunc = f
-          , fncRes = Nothing
-          }
-    )
- where
-  f :: (TreeMonad s m) => [Tree] -> m ()
-  f [tree, sel] = indexByTree tree sel
-  f _ = throwError "mkIndexByTreeFunc: invalid arguments"

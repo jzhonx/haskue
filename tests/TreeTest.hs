@@ -68,51 +68,6 @@ pathX2 = Path [selX2]
 
 bottomExpr = AST.litCons AST.BottomLit
 
--- treeCursorStructTest :: IO ()
--- treeCursorStructTest =
---   (runReaderT (runStderrLoggingT $ runExceptT test) Config{cfUnify = unify}) >>= \case
---     Left err -> assertFailure err
---     Right _ -> return ()
---  where
---   mkSimple :: (String, Tree) -> Tree
---   mkSimple pair =
---     TNStruct $
---       emptyTNStruct
---         { stcOrdLabels = [fst pair]
---         , stcSubs = Map.fromList [pair]
---         }
---   -- { a: { b: { c: 42 } } }
---   holderC = mkSimple ("c", mkTreeLeaf $ Int 42)
---   holderB = mkSimple ("b", holderC)
---   holderA = mkSimple ("a", holderB)
---   selA = StringSelector "a"
---   selB = StringSelector "b"
---   selC = StringSelector "c"
---
---   test :: (MonadError String m, MonadIO m, MonadLogger m, MonadReader Config m) => m ()
---   test =
---     let rootTC = (TNRoot $ TNStruct emptyTNStruct, [])
---      in do
---           tc <-
---             insertTCStruct StartSelector ["a"] Set.empty rootTC
---               >>= insertTCStruct selA ["b"] Set.empty
---               >>= insertTCStruct selB ["c"] Set.empty
---               >>= insertTCLeafValue selC (Int 42)
---               >>= propRootEvalTC
---
---           let sva = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector]) tc
---           liftIO $ assertEqual "struct a" holderA sva
---           --
---           let svb = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector, selA]) tc
---           liftIO $ assertEqual "struct b" holderB svb
---           --
---           let trc = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector, selA, selB]) tc
---           liftIO $ assertEqual "struct c" holderC trc
---
---           let vl = fst $ fromJust $ goDownTCPath (pathFromList [StartSelector, selA, selB, selC]) tc
---           liftIO $ assertEqual "leaf value" (mkTreeLeaf $ Int 42) vl
---           return ()
-
 treeTests :: TestTree
 treeTests =
   testGroup
