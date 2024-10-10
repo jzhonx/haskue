@@ -102,6 +102,7 @@ module Tree (
   getFuncResOrTree,
   eliminateTMCycle,
   mkRefFunc,
+  evalFuncArg,
 )
 where
 
@@ -1524,6 +1525,16 @@ evalFunc fn = do
         (show path)
         (show name)
         (show t)
+
+-- Evaluate the sub node of the tree. The node must be a function.
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
+evalFuncArg sel sub = withTN $ \case
+  TNFunc _ -> do
+    res <- inSubTM sel sub (evalTM >> getTMTree)
+    withDumpInfo $ \path _ ->
+      dump $ printf "evalSubTM: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
+    return $ getFuncResOrTree res
+  _ -> throwError "evalFuncArg: node is not a function"
 
 {- | Try to reduce the function by using the function result to replace the function node.
  - This should be called after the function is evaluated.

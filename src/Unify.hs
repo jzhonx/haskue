@@ -358,7 +358,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- inSubTM (Path.toBinOpSelector d1) t1 (evalTM >> getTMTree)
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1
     withDumpInfo $ \path _ ->
       dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 

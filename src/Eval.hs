@@ -432,7 +432,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   case (treeNode t1, t2) of
     (TNFunc fn, _)
       | isFuncRef fn -> do
-          et1 <- inSubTM (toBinOpSelector d1) t1 (evalTM >> getTMTree)
+          et1 <- evalFuncArg (toBinOpSelector d1) t1
           regBinDir op (d1, et1) (d2, t2)
       | otherwise -> evalOrDelay
     (TNRefCycle _, _) -> evalOrDelay
@@ -448,7 +448,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
     dump $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- inSubTM (toBinOpSelector d1) t1 (evalTM >> getTMTree)
+    et1 <- evalFuncArg (toBinOpSelector d1) t1
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m ()
@@ -496,14 +496,13 @@ evalDisj e1 e2 = do
  where
   evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   evalDisjAdapt unt1 unt2 = do
-    t1 <- evalSub binOpLeftSelector unt1
-    t2 <- evalSub binOpRightSelector unt2
+    t1 <- evalFuncArg binOpLeftSelector unt1
+    t2 <- evalFuncArg binOpRightSelector unt2
     u <-
       if not (isTreeValue t1) || not (isTreeValue t2)
         then do
           dump $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
           getTMTree
-        -- cvVal <$> getCTFromFuncEnv
         else do
           case (e1, e2) of
             (ExprUnaryExpr (UnaryExprUnaryOp Star _), ExprUnaryExpr (UnaryExprUnaryOp Star _)) ->
@@ -515,13 +514,6 @@ evalDisj e1 e2 = do
             (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
     dump $ printf "evalDisjAdapt: evaluated to %s" (show u)
     putTMTree u
-
-  evalSub :: (TreeMonad s m) => Path.Selector -> Tree -> m Tree
-  evalSub sel t = do
-    res <- inSubTM sel t (evalTM >> getTMTree)
-    withDumpInfo $ \path _ ->
-      dump $ printf "evalDisj: path: %s, %s is evaluated to:\n%s" (show path) (show t) (show res)
-    return res
 
   -- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
   evalDisjPair :: (TreeMonad s m) => DisjItem -> DisjItem -> m Tree
