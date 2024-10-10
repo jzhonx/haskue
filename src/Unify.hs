@@ -23,6 +23,9 @@ unify = unifyToTree
 unifyToTree :: (TreeMonad s m) => Tree -> Tree -> m ()
 unifyToTree t1 t2 = unifyWithDir (Path.L, t1) (Path.R, t2)
 
+-- If there exists a struct beneath the current node, we need to be careful about the references in the struct. We
+-- should not further evaluate the values of the references.
+-- For example, {a: b + 100, b: a - 100} & {b: 50}. The "b" in the first struct will have to see the atom 50.
 unifyWithDir :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
   withDumpInfo $ \path _ ->
@@ -358,20 +361,18 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 exhaustTM
     withDumpInfo $ \path _ ->
       dump $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 
-    let
-      x = getFuncResOrTree r1
-    case treeNode x of
+    case treeNode r1 of
       TNFunc xfn
         -- If the function type changes from the reference to regular, we need to evaluate the regular function.
         -- Otherwise, leave the unification.
         | isFuncRef fn1 && isFuncRef xfn
         , not (isFuncRef fn1) && not (isFuncRef xfn) ->
             mkUnification dt1 dt2
-      _ -> unifyWithDir (d1, x) dt2
+      _ -> unifyWithDir (d1, r1) dt2
 
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
   -- containing an atom or a bottom.
@@ -402,7 +403,7 @@ unifyStructs (_, s1) (_, s2) = do
   withDumpInfo $ \path _ ->
     dump $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
-  evalTM
+  exhaustTM
  where
   fields1 = stcSubs s1
   fields2 = stcSubs s2

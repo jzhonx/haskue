@@ -103,6 +103,7 @@ module Tree (
   eliminateTMCycle,
   mkRefFunc,
   evalFuncArg,
+  exhaustTM,
 )
 where
 
@@ -759,17 +760,17 @@ evalStruct origStruct = do
 
 evalStaticSF :: (TreeMonad s m) => StructSelector -> m ()
 evalStaticSF sel = whenStruct () $ \struct ->
-  inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) evalTM
+  inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) exhaustTM
 
 evalPattern :: (TreeMonad s m) => (StructSelector, PatternStructField) -> m ()
-evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) evalTM
+evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) exhaustTM
 
 evalPendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem) -> m [Int]
 evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
   case (sel, pse) of
     (PendingSelector i, DynamicField dsf) -> do
       -- evaluate the dynamic label.
-      label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ evalTM >> getTMTree
+      label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ exhaustTM >> getTMTree
       withDumpInfo $ \path _ ->
         dump $
           printf
@@ -784,7 +785,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
             sSel = StructSelector $ StringSelector s
 
           pushTMSub sSel (ssfField mergedSF)
-          mergedT <- evalTM >> getTMTree
+          mergedT <- exhaustTM >> getTMTree
           -- do not use propUpTCSel here because the field was not in the original struct.
           let nstruct = mkNewTree (TNStruct $ addStatic s (mergedSF{ssfField = mergedT}) struct)
           discardTMAndPut nstruct
@@ -794,7 +795,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
         _ -> putTMTree (mkBottomTree "selector can only be a string") >> return idxes
     (PendingSelector i, PatternField pattern val) -> do
       -- evaluate the pattern.
-      evaledPattern <- inSubTM (StructSelector sel) pattern (evalTM >> getTMTree)
+      evaledPattern <- inSubTM (StructSelector sel) pattern (exhaustTM >> getTMTree)
       withDumpInfo $ \path _ ->
         dump $
           printf
@@ -808,7 +809,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
             else do
               Config{cfUnify = unify} <- ask
               pushTMSub (StructSelector sel) val
-              defaultVal <- evalTM >> getTMTree
+              defaultVal <- exhaustTM >> getTMTree
               -- apply the pattern to all existing fields.
               -- TODO: apply the pattern to filtered fields.
               let
@@ -817,8 +818,8 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
                     mkBinaryOp AST.Unify unify (ssfField n) defaultVal
                   | n <- Map.elems (stcSubs struct)
                   ]
-              mapM_ (\x -> whenNotBottom () (putTMTree x >> evalTM)) nodes
-              -- r <- foldM (\acc n -> whenNotBottom acc (evalTM n)) defaultVal nodes
+              mapM_ (\x -> whenNotBottom () (putTMTree x >> exhaustTM)) nodes
+              -- r <- foldM (\acc n -> whenNotBottom acc (exhaustTM n)) defaultVal nodes
               whenNotBottom idxes $ do
                 let newStruct = mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
                 discardTMAndPut newStruct
@@ -858,11 +859,6 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
   addPattern :: PatternStructField -> Struct -> Struct
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
-data Ref = Ref
-  { rfTarget :: Path
-  , rfExpr :: AST.UnaryExpr
-  }
-
 -- | Create a new identifier reference.
 mkVarLinkTree :: String -> AST.UnaryExpr -> Tree
 mkVarLinkTree var ue = mkFuncTree $ mkRefFunc (Path [StructSelector $ StringSelector var]) ue
@@ -882,7 +878,7 @@ mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
       , fncType = IndexFunc
       , fncArgs = [treeArg, selArg]
       , fncExprGen = return $ AST.ExprUnaryExpr ue
-      , fncFunc = index
+      , fncFunc = index ue
       , fncRes = Nothing
       }
 
@@ -896,13 +892,15 @@ treesToPath ts = pathFromList <$> mapM treeToSel ts
       | (Int j) <- va -> Just (IndexSelector $ fromIntegral j)
      where
       va = amvAtom a
+    -- If a disjunct has a default, then we should try to use the default.
+    TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
     _ -> Nothing
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
 -}
-index :: (TreeMonad s m) => [Tree] -> m ()
-index ts@(t : _)
+index :: (TreeMonad s m) => AST.UnaryExpr -> [Tree] -> m ()
+index ue ts@(t : _)
   | length ts > 1 = do
       idxPathM <- treesToPath <$> mapM evalIndexArg [1 .. length ts - 1]
       whenJustE idxPathM $ \idxPath -> case treeNode t of
@@ -910,23 +908,33 @@ index ts@(t : _)
           -- If the function is a ref, then we should append the path to the ref. For example, if the ref is a.b, and
           -- the path is c, then the new ref should be a.b.c.
           | isFuncRef fn -> do
-              refFunc <- appendRefFuncPath fn idxPath undefined
-              putTMTree (mkFuncTree refFunc) >> evalTM
-          -- If the function is a regular function, then we should index the result of the function.
-          | otherwise -> maybe (return ()) (\r -> putTMTree r >> descendTM idxPath >> return ()) (fncRes fn)
-        -- in-place expression, like ({}).a
-        _ -> putTMTree t >> descendTM idxPath >> return ()
+              refFunc <- appendRefFuncPath fn idxPath ue
+              putTMTree (mkFuncTree refFunc) >> exhaustTM
+        -- in-place expression, like ({}).a, or regular functions.
+        _ -> do
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t exhaustTM
+          putTMTree res
+          dump $ printf "index: tree is evaluated to %s, idxPath: %s" (show res) (show idxPath)
+
+          -- descendTM can not be used here because it would change the tree cursor.
+          tc <- getTMCursor
+          maybe
+            (throwError $ printf "index: %s is not found" (show idxPath))
+            (putTMTree . vcFocus)
+            (goDownTCPath idxPath tc)
+          withDumpInfo $ \_ r ->
+            dump $ printf "index: the indexed is %s" (show r)
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
-  evalIndexArg i = inSubTM (FuncSelector $ FuncArgSelector i) (ts !! i) (evalTM >> getTMTree)
+  evalIndexArg i = inSubTM (FuncSelector $ FuncArgSelector i) (ts !! i) (exhaustTM >> getTMTree)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
-index _ = throwError "index: invalid arguments"
+index _ _ = throwError "index: invalid arguments"
 
 appendRefFuncPath :: (TreeMonad s m) => Func -> Path -> AST.UnaryExpr -> m Func
 appendRefFuncPath Func{fncType = RefFunc origTP} p ue = do
-  -- remove original receiver
+  -- remove original receiver because origP would not exist.
   delNotifRecvs origTP
   mkReference (appendPath p origTP) Nothing ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
@@ -934,7 +942,7 @@ appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
 -- Index the tree with the sel.
 indexBySel :: (TreeMonad s m) => Tree -> Selector -> m ()
 indexBySel tree sel = do
-  t <- inSubTM (FuncSelector $ FuncArgSelector 0) tree (evalTM >> getTMTree)
+  t <- inSubTM (FuncSelector $ FuncArgSelector 0) tree (exhaustTM >> getTMTree)
   withDumpInfo $ \path _ ->
     dump $
       printf
@@ -972,7 +980,7 @@ indexBySel tree sel = do
 -- Index the tree with the un-evaluated selector.
 indexByTree :: (TreeMonad s m) => Tree -> Tree -> m ()
 indexByTree tree selTree = do
-  sel <- inSubTM (FuncSelector $ FuncArgSelector 1) selTree (evalTM >> getTMTree)
+  sel <- inSubTM (FuncSelector $ FuncArgSelector 1) selTree (exhaustTM >> getTMTree)
   withDumpInfo $ \path _ ->
     dump $
       printf
@@ -1006,7 +1014,7 @@ indexByTree tree selTree = do
 -- Reference the target node when the target node is not an atom or a cycle head.
 -- It returns a function that when called, will return the latest value of the target node.
 mkReference :: (TreeMonad s m) => Path -> Maybe Tree -> AST.UnaryExpr -> m Func
-mkReference tp tM ue = withCtxTree $ \ct -> do
+mkReference tp _ ue = withCtxTree $ \ct -> do
   -- add notifier. If the referenced value changes, then the reference should be updated.
   putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
   return $ mkRefFunc tp ue
@@ -1221,14 +1229,14 @@ validateCnstr c = withTree $ \t -> do
 
   -- run the function in a sub context.
   pushTMSub unaryOpSelector fn
-  x <- evalTM >> getTMTree
+  x <- exhaustTM >> getTMTree
   discardTMAndPop
 
   when (isTreeAtom x) $ do
     when (x /= origAtomT) $
       throwError $
         printf
-          "evalTM: constraint not satisfied, %s != %s"
+          "validateCnstr: constraint not satisfied, %s != %s"
           (show x)
           (show origAtomT)
     putTMTree origAtomT
@@ -1505,8 +1513,7 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func -> m ()
 evalFunc fn = do
-  let
-    name = fncName fn
+  let name = fncName fn
   withDumpInfo $ \path t ->
     dump $
       printf
@@ -1527,10 +1534,13 @@ evalFunc fn = do
         (show t)
 
 -- Evaluate the sub node of the tree. The node must be a function.
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
-evalFuncArg sel sub = withTN $ \case
+-- Notice that the argument is a function and the result of the function is not reducible, the result is still returned.
+-- This works because we do not reduce the argument. Next time the parent function is evaluated, the argument function
+-- will be evaluated again.
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m () -> m Tree
+evalFuncArg sel sub f = withTN $ \case
   TNFunc _ -> do
-    res <- inSubTM sel sub (evalTM >> getTMTree)
+    res <- inSubTM sel sub (f >> getTMTree)
     withDumpInfo $ \path _ ->
       dump $ printf "evalSubTM: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
     return $ getFuncResOrTree res
@@ -2015,8 +2025,6 @@ goLowestAncPathTM dst f = do
 descendTM :: (TreeMonad s m) => Path -> m Bool
 descendTM dst = do
   tc <- getTMCursor
-  -- withDumpInfo $ \_ _ ->
-  --   dump $ printf "goTMAbsPath, %s -> %s, proped tc: %s" (show origPath) (show dst) (show tc)
   maybe
     (return False)
     (\r -> putTMCursor r >> return True)
@@ -2104,6 +2112,19 @@ traverseTM f = f >> traverseSub (traverseTM f)
 setOrigNodes :: forall s m. (TreeMonad s m) => m ()
 setOrigNodes = traverseTM $ withTree $ \t ->
   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
+
+-- Exhaust the tree by evaluating dereferenced functions.
+exhaustTM :: (TreeMonad s m) => m ()
+exhaustTM = do
+  wasRef <- withTN $ \case
+    TNFunc fn | isFuncRef fn -> return True
+    _ -> return False
+  evalTM
+  withTN $ \case
+    -- If previous node was a reference, and the current node has been evaluated to a new function, then we need to
+    -- evaluate the new function.
+    TNFunc fn | wasRef && not (isFuncRef fn) -> evalTM
+    _ -> return ()
 
 -- Evaluate the tree.
 evalTM :: (TreeMonad s m) => m ()

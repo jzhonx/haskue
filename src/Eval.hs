@@ -432,7 +432,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   case (treeNode t1, t2) of
     (TNFunc fn, _)
       | isFuncRef fn -> do
-          et1 <- evalFuncArg (toBinOpSelector d1) t1
+          et1 <- evalFuncArg (toBinOpSelector d1) t1 exhaustTM
           regBinDir op (d1, et1) (d2, t2)
       | otherwise -> evalOrDelay
     (TNRefCycle _, _) -> evalOrDelay
@@ -448,7 +448,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   evalOrDelay :: (TreeMonad s m) => m ()
   evalOrDelay = do
     dump $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1
+    et1 <- evalFuncArg (toBinOpSelector d1) t1 exhaustTM
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m ()
@@ -496,8 +496,8 @@ evalDisj e1 e2 = do
  where
   evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   evalDisjAdapt unt1 unt2 = do
-    t1 <- evalFuncArg binOpLeftSelector unt1
-    t2 <- evalFuncArg binOpRightSelector unt2
+    t1 <- evalFuncArg binOpLeftSelector unt1 exhaustTM
+    t2 <- evalFuncArg binOpRightSelector unt2 exhaustTM
     u <-
       if not (isTreeValue t1) || not (isTreeValue t2)
         then do

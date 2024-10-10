@@ -506,7 +506,7 @@ testSelector1 = do
       , ("d", mkAtomTree $ Int 4)
       , ("e", structE)
       , -- , ("f", mkNewTree . TNFunc $ mkReference (pathFromList [strSel "e", strSel "a"]) disjF undefined)
-        ("f", undefined)
+        ("f", disjF)
       ]
 
 testUnify1 :: IO ()
@@ -808,17 +808,12 @@ testRef3 = do
                 ["y"]
                 [
                   ( "y"
-                  , undefined
-                  -- , mkNewTree . TNFunc $
-                  --     mkReference
-                  --       undefined
-                  --       ( newSimpleStruct
-                  --           ["a", "c"]
-                  --           [ ("a", mkAtomTree $ Int 1)
-                  --           , ("c", mkAtomTree $ Int 2)
-                  --           ]
-                  --       )
-                  --       undefined
+                  , ( newSimpleStruct
+                        ["a", "c"]
+                        [ ("a", mkAtomTree $ Int 1)
+                        , ("c", mkAtomTree $ Int 2)
+                        ]
+                    )
                   )
                 ]
             )
