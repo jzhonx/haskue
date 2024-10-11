@@ -486,7 +486,6 @@ instance Eq TreeNode where
   (==) TNTop TNTop = True
   (==) _ _ = False
 
--- TODO: should add Constraint
 isTreeAtom :: Tree -> Bool
 isTreeAtom t = case treeNode t of
   TNAtom _ -> True
@@ -1285,13 +1284,6 @@ data Func = Func
 
 instance BuildASTExpr Func where
   buildASTExpr c fn = do
-    -- dump $
-    --   printf
-    --     "buildASTExpr: Func: %s, %s, c: %s, require: %s"
-    --     (fncName fn)
-    --     (show $ fncType fn)
-    --     (show c)
-    --     (show $ requireFuncConcrete fn)
     if
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       | (c || requireFuncConcrete fn) -> fncExprGen fn
