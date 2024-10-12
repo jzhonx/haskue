@@ -29,7 +29,6 @@ library
         EvalVal,
         Parser,
         Path,
-        Tree,
         Value.Atom,
         Value.Bottom,
         Value.Bounds,

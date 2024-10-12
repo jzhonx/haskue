@@ -7,7 +7,6 @@ import Eval (EvalConfig (..), runIO)
 import Options.Applicative
 import Parser (parseCUE)
 import System.IO (readFile, stdout)
-import Tree
 
 options :: Parser EvalConfig
 options =
