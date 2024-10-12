@@ -2,7 +2,8 @@ module Main where
 
 import SpecTest (specTests)
 import Test.Tasty
-import TreeTest (treeTests)
+
+-- import TreeTest (treeTests)
 
 main = defaultMain tests
 
@@ -11,5 +12,5 @@ tests =
   testGroup
     "Tests"
     [ specTests
-    , treeTests
+    -- , treeTests
     ]

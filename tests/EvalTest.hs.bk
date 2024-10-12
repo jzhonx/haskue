@@ -1,26 +1,43 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase       #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 
 module EvalTest where
 
 import qualified AST
-import           Control.Monad.Except       (Except, MonadError, runExcept,
-                                             runExceptT, throwError)
-import           Control.Monad.IO.Class     (MonadIO, liftIO)
-import           Control.Monad.Logger       (LoggingT, MonadLogger,
-                                             runStderrLoggingT)
-import           Control.Monad.State        (State, StateT (runStateT),
-                                             evalState, evalStateT, runState)
-import           Control.Monad.State.Strict (MonadState, get, put)
-import qualified Data.Map.Strict            as Map
-import qualified Data.Set                   as Set
-import           Eval
-import           Path
-import           Test.Tasty                 (TestTree, testGroup)
-import           Test.Tasty.HUnit           (assertBool, assertEqual,
-                                             assertFailure, testCase)
-import           Value
+import Control.Monad.Except (
+  Except,
+  MonadError,
+  runExcept,
+  runExceptT,
+  throwError,
+ )
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Logger (
+  LoggingT,
+  MonadLogger,
+  runStderrLoggingT,
+ )
+import Control.Monad.State (
+  State,
+  StateT (runStateT),
+  evalState,
+  evalStateT,
+  runState,
+ )
+import Control.Monad.State.Strict (MonadState, get, put)
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import Eval
+import Path
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (
+  assertBool,
+  assertEqual,
+  assertFailure,
+  testCase,
+ )
+import Value.Tree
 
 selY = StringSelector "y"
 
@@ -59,40 +76,40 @@ propagateTest =
   runExceptT compareContext >>= \case
     Left err -> assertFailure err
     Right _ -> return ()
-  where
-    ctx = Context (blockVal, []) revDeps
-    {-
-     { x1: y; x2: x1 }
-    -}
-    blockVal =
-      StructValue
-        ["x1", "x2"]
-        ( Map.fromList
-            [ ("x1", mkPending bottomExpr pathX1 pathY),
-              ("x2", mkPending bottomExpr pathX2 pathX1)
-            ]
-        )
-        Set.empty
-        Set.empty
-    newVal = Int 1
-    revDeps = Map.fromList [(pathY, pathX1), (pathX1, pathX2)]
-    expectedBlockVal =
-      StructValue
-        ["x1", "x2"]
-        ( Map.fromList
-            [ ("x1", Int 1),
-              ("x2", Int 1)
-            ]
-        )
-        Set.empty
-        Set.empty
+ where
+  ctx = Context (blockVal, []) revDeps
+  {-
+   { x1: y; x2: x1 }
+  -}
+  blockVal =
+    StructValue
+      ["x1", "x2"]
+      ( Map.fromList
+          [ ("x1", mkPending bottomExpr pathX1 pathY)
+          , ("x2", mkPending bottomExpr pathX2 pathX1)
+          ]
+      )
+      Set.empty
+      Set.empty
+  newVal = Int 1
+  revDeps = Map.fromList [(pathY, pathX1), (pathX1, pathX2)]
+  expectedBlockVal =
+    StructValue
+      ["x1", "x2"]
+      ( Map.fromList
+          [ ("x1", Int 1)
+          , ("x2", Int 1)
+          ]
+      )
+      Set.empty
+      Set.empty
 
-    compareContext :: (MonadError String m, MonadIO m) => m ()
-    compareContext = do
-      (_, Context (resBlock, _) resRev) <- runKeep ctx $ propagate (pathY, newVal)
-      liftIO $ assertEqual "check block" expectedBlockVal resBlock
-      -- resRev should be empty because all values are evaluated to atoms.
-      liftIO $ assertBool "check rev" $ resRev == Map.empty
+  compareContext :: (MonadError String m, MonadIO m) => m ()
+  compareContext = do
+    (_, Context (resBlock, _) resRev) <- runKeep ctx $ propagate (pathY, newVal)
+    liftIO $ assertEqual "check block" expectedBlockVal resBlock
+    -- resRev should be empty because all values are evaluated to atoms.
+    liftIO $ assertBool "check rev" $ resRev == Map.empty
 
 -- -- | binFuncTest1 tests the case that two pending values depend on the same value.
 -- binFuncTest1 :: IO ()

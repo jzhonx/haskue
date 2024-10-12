@@ -29,7 +29,8 @@ import Test.Tasty.HUnit (
   testCase,
  )
 import Tree
-import Unify (unify)
+
+-- import Unify (unify)
 
 strSel :: String -> Selector
 strSel = StructSelector . StringSelector

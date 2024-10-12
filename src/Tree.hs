@@ -1515,6 +1515,8 @@ mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
 
 -- step down the tree with the given selector.
 -- This should only be used by TreeCursor.
+--
+-- TODO: add TNDisj handling.
 goTreeSel :: Selector -> Tree -> Maybe Tree
 goTreeSel sel t =
   case (sel, treeNode t) of

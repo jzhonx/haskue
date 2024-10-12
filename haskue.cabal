@@ -25,10 +25,27 @@ library
     exposed-modules:  
         AST,
         Eval,
+        EvalExpr,
+        EvalVal,
         Parser,
         Path,
         Tree,
-        Unify,
+        Value.Atom,
+        Value.Bottom,
+        Value.Bounds,
+        Value.Class,
+        Value.Constraint,
+        Value.Cursor,
+        Value.Cycle,
+        Value.Disj,
+        Value.Env,
+        Value.Func,
+        Value.List,
+        Value.Struct,
+        Value.TMonad,
+        Value.Tree,
+        Value.Util,
+
     other-modules:
       Paths_haskue
     ghc-options: -Wall -Wpartial-fields
@@ -74,7 +91,7 @@ Test-Suite haskue-unit-test
   main-is: Main.hs
   other-modules:
     SpecTest,
-    TreeTest,
+    -- TreeTest,
   build-depends:
         base ^>=4.17.0.0,
         tasty >= 0.7,

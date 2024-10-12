@@ -7,13 +7,14 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
 import Eval (eval, runTreeIO)
+import EvalVal (mkRefFunc)
 import Parser
 import Path
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Printf (printf)
-import Tree
+import Value.Tree
 
 newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
 newStruct lbls ow subs =
