@@ -1,7 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -10,15 +8,9 @@ module EvalExpr where
 
 import AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
-import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (evalStateT, execStateT)
+import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
 import EvalVal
-import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
 import Value.Tree

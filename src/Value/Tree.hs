@@ -1,6 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -23,15 +22,14 @@ module Value.Tree (
 where
 
 import qualified AST
-import Control.Monad (foldM, unless, when)
+import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (
   MonadState,
  )
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
-import qualified Data.Set as Set
+import Data.Maybe (fromJust, isNothing)
 import Path
 import Text.Printf (printf)
 import Value.Atom

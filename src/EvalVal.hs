@@ -10,15 +10,9 @@ module EvalVal where
 import qualified AST
 import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.Reader (MonadReader, ask, runReaderT)
-import Control.Monad.State.Strict (
-  MonadState,
-  evalState,
-  evalStateT,
-  gets,
-  modify,
- )
-import Data.List (intercalate, sort)
+import Control.Monad.Reader (ask)
+import Control.Monad.State.Strict (evalState)
+import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
