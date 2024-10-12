@@ -20,7 +20,7 @@ data Selector
 instance Show Selector where
   show RootSelector = "/"
   show (StructSelector s) = show s
-  show (IndexSelector i) = show i
+  show (IndexSelector i) = "i" ++ show i
   show (FuncSelector f) = show f
   show DisjDefaultSelector = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i

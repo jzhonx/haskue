@@ -111,13 +111,13 @@ _goTreeSel sel t =
   indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
 _setSubTree :: (Env m c) => Selector -> Tree -> Tree -> m Tree
-_setSubTree sel subT parT = do
-  n <- go
-  return $ substTN n parT
+_setSubTree sel subT _parT = do
+  n <- prop _parT
+  return $ substTN n _parT
  where
-  go :: (Env m c) => m TreeNode
-  go = case (sel, treeNode parT) of
-    (StructSelector s, _) -> updateParStruct parT s subT
+  prop :: (Env m c) => Tree -> m TreeNode
+  prop parT = case (sel, treeNode parT) of
+    (StructSelector s, TNStruct _) -> updateParStruct parT s subT
     (IndexSelector i, TNList vs) ->
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
@@ -131,10 +131,20 @@ _setSubTree sel subT parT = do
       FuncResSelector -> do
         let l = TNFunc $ fn{fncRes = Just subT}
         return l
-    (DisjDefaultSelector, TNDisj d) ->
-      return (TNDisj $ d{dsjDefault = dsjDefault d})
-    (DisjDisjunctSelector i, TNDisj d) ->
-      return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+    (_, TNDisj d)
+      | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
+      | DisjDisjunctSelector i <- sel ->
+          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+      -- If the selector is not a disjunction selector, then the sub value must have been the default disjunction
+      -- value.
+      | otherwise ->
+          maybe
+            (throwError "propValUp: default disjunction value not found for non-disjunction selector")
+            ( \dft -> do
+                updatedDftT <- _setSubTree sel subT dft
+                return (TNDisj $ d{dsjDefault = Just updatedDftT})
+            )
+            (dsjDefault d)
     (FuncSelector _, TNConstraint c) ->
       return (TNConstraint $ c{cnsValidator = subT})
     (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
@@ -184,10 +194,10 @@ _setSubTree sel subT parT = do
     printf
       "propValUp: cannot insert child %s to parent %s, selector: %s, child:\n%s\nparent:\n%s"
       (showTreeSymbol subT)
-      (showTreeSymbol parT)
+      (showTreeSymbol _parT)
       (show sel)
       (show subT)
-      (show parT)
+      (show _parT)
 
 _getVarField :: StructSelector -> Tree -> Maybe Tree
 _getVarField ssel (Tree{treeNode = (TNStruct struct)}) = do
