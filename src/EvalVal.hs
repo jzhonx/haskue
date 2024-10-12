@@ -352,7 +352,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
       case treeNode label of
         TNAtom (AtomV (String s)) -> do
           let
-            mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s) unify
+            mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
             sSel = StructSelector $ StringSelector s
 
           pushTMSub sSel (ssfField mergedSF)
@@ -402,9 +402,8 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
   dynToStaticField ::
     DynamicStructField Tree ->
     Maybe (StaticStructField Tree) ->
-    (forall s m. (TreeMonad s m) => Tree -> Tree -> m ()) ->
     StaticStructField Tree
-  dynToStaticField dsf sfM unify = case sfM of
+  dynToStaticField dsf sfM = case sfM of
     Just sf ->
       StaticStructField
         { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfValue dsf))
@@ -1002,16 +1001,16 @@ unifyLeftAtom :: (TreeMonad s m) => (Path.BinOpDirect, AtomV, Tree) -> (Path.Bin
 unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
   case (amvAtom l1, treeNode t2) of
     (String x, TNAtom s) -> case amvAtom s of
-      String y -> putTree $ if x == y then TNAtom l1 else mismatch x y
+      String y -> putTree $ if x == y then TNAtom l1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Int x, TNAtom s) -> case amvAtom s of
-      Int y -> putTree $ if x == y then TNAtom l1 else mismatch x y
+      Int y -> putTree $ if x == y then TNAtom l1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Bool x, TNAtom s) -> case amvAtom s of
-      Bool y -> putTree $ if x == y then TNAtom l1 else mismatch x y
+      Bool y -> putTree $ if x == y then TNAtom l1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Float x, TNAtom s) -> case amvAtom s of
-      Float y -> putTree $ if x == y then TNAtom l1 else mismatch x y
+      Float y -> putTree $ if x == y then TNAtom l1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Null, TNAtom s) -> case amvAtom s of
       Null -> putTree $ TNAtom l1
@@ -1043,8 +1042,8 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
   putTree :: (TreeMonad s m) => TreeNode -> m ()
   putTree n = withTree $ \t -> putTMTree $ substTN n t
 
-  mismatch :: (Show a) => a -> a -> TreeNode
-  mismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
+  amismatch :: (Show a) => a -> a -> TreeNode
+  amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
   procOther :: (TreeMonad s m) => m ()
   procOther = do
