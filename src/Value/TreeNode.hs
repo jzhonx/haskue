@@ -21,8 +21,9 @@ import Value.Func
 import Value.List
 import Value.Struct
 
-class TreeNodeGetter t where
+class HasTreeNode t where
   getTreeNode :: t -> TreeNode t
+  setTreeNode :: t -> TreeNode t -> t
 
 -- | TreeNode represents a tree structure that contains values.
 data TreeNode t
@@ -39,7 +40,7 @@ data TreeNode t
   | TNTop
   | TNBottom Bottom
 
-instance (Eq t, TreeOp t, TreeNodeGetter t) => Eq (TreeNode t) where
+instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNStruct s1) (TNStruct s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
@@ -59,7 +60,7 @@ instance (Eq t, TreeOp t, TreeNodeGetter t) => Eq (TreeNode t) where
 
 -- step down the tree with the given selector.
 -- This should only be used by TreeCursor.
-subTreeTN :: (TreeOp t, TreeNodeGetter t) => Selector -> t -> Maybe t
+subTreeTN :: (TreeOp t, HasTreeNode t) => Selector -> t -> Maybe t
 subTreeTN sel t = case (sel, getTreeNode t) of
   (RootSelector, _) -> Just t
   (StructSelector s, TNStruct struct) -> case s of
@@ -84,41 +85,43 @@ subTreeTN sel t = case (sel, getTreeNode t) of
   indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
 setSubTreeTN ::
-  forall m c t. (Env m c, TreeOp t, Show t, TreeNodeGetter t) => Selector -> t -> t -> m (TreeNode t)
-setSubTreeTN sel subT _parT = case (sel, getTreeNode _parT) of
-  (StructSelector s, TNStruct struct) -> updateParStruct struct s
-  (IndexSelector i, TNList vs) ->
-    let subs = lstSubs vs
-        l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-     in return l
-  (FuncSelector f, TNFunc fn) -> case f of
-    FuncArgSelector i -> do
-      let
-        args = fncArgs fn
-        l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
-      return l
-    FuncResSelector -> do
-      let l = TNFunc $ fn{fncRes = Just subT}
-      return l
-  (_, TNDisj d)
-    | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
-    | DisjDisjunctSelector i <- sel ->
-        return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    -- If the selector is not a disjunction selector, then the sub value must have been the default disjunction
-    -- value.
-    | otherwise ->
-        maybe
-          (throwError "propValUp: default disjunction value not found for non-disjunction selector")
-          ( \dft -> do
-              updatedDftT <- setSubTree sel subT dft
-              return (TNDisj $ d{dsjDefault = Just updatedDftT})
-          )
-          (dsjDefault d)
-  (FuncSelector _, TNConstraint c) ->
-    return (TNConstraint $ c{cnsValidator = subT})
-  (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
-  (RootSelector, _) -> throwError "propValUp: RootSelector is not allowed"
-  _ -> throwError insertErrMsg
+  forall m c t. (Env m c, TreeOp t, Show t, HasTreeNode t) => Selector -> t -> t -> m t
+setSubTreeTN sel subT parT = do
+  n <- case (sel, getTreeNode parT) of
+    (StructSelector s, TNStruct struct) -> updateParStruct struct s
+    (IndexSelector i, TNList vs) ->
+      let subs = lstSubs vs
+          l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
+       in return l
+    (FuncSelector f, TNFunc fn) -> case f of
+      FuncArgSelector i -> do
+        let
+          args = fncArgs fn
+          l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
+        return l
+      FuncResSelector -> do
+        let l = TNFunc $ fn{fncRes = Just subT}
+        return l
+    (_, TNDisj d)
+      | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
+      | DisjDisjunctSelector i <- sel ->
+          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+      -- If the selector is not a disjunction selector, then the sub value must have been the default disjunction
+      -- value.
+      | otherwise ->
+          maybe
+            (throwError "propValUp: default disjunction value not found for non-disjunction selector")
+            ( \dft -> do
+                updatedDftT <- setSubTree sel subT dft
+                return (TNDisj $ d{dsjDefault = Just updatedDftT})
+            )
+            (dsjDefault d)
+    (FuncSelector _, TNConstraint c) ->
+      return (TNConstraint $ c{cnsValidator = subT})
+    (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
+    (RootSelector, _) -> throwError "propValUp: RootSelector is not allowed"
+    _ -> throwError insertErrMsg
+  return $ setTreeNode parT n
  where
   updateParStruct :: (MonadError String m) => Struct t -> StructSelector -> m (TreeNode t)
   updateParStruct parStruct label =
@@ -162,12 +165,13 @@ setSubTreeTN sel subT _parT = case (sel, getTreeNode _parT) of
       "propValUp: cannot insert child to parent, selector: %s, child:\n%s\nparent:\n%s"
       (show sel)
       (show subT)
-      (show _parT)
+      (show parT)
 
-getVarFieldTN :: StructSelector -> TreeNode t -> Maybe t
-getVarFieldTN ssel (TNStruct struct) = do
-  sf <- Map.lookup ssel (stcSubs struct)
-  if lbAttrIsVar (ssfAttr sf)
-    then Just (ssfField sf)
-    else Nothing
-getVarFieldTN _ _ = Nothing
+getVarFieldTN :: (HasTreeNode t) => StructSelector -> t -> Maybe t
+getVarFieldTN ssel t = case getTreeNode t of
+  (TNStruct struct) -> do
+    sf <- Map.lookup ssel (stcSubs struct)
+    if lbAttrIsVar (ssfAttr sf)
+      then Just (ssfField sf)
+      else Nothing
+  _ -> Nothing

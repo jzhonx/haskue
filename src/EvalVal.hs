@@ -87,7 +87,7 @@ forceEvalCV = do
   case ctxCycle ctx of
     Just (cycleStart, cycleTail) | cycleStart == path -> do
       dump $ printf "evalTM: path: %s, cycle head found" (show path)
-      putTMTree $ mkRefCycleTree cycleTail origT
+      putTMTree $ convRefCycleTree origT cycleTail
       putTMContext $ ctx{ctxCycle = Nothing}
     _ -> return ()
 
@@ -1040,7 +1040,7 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
   dt1 = (d1, t1)
 
   putTree :: (TreeMonad s m) => TreeNode Tree -> m ()
-  putTree n = withTree $ \t -> putTMTree $ substTN n t
+  putTree n = withTree $ \t -> putTMTree $ setTN t n
 
   amismatch :: (Show a) => a -> a -> TreeNode Tree
   amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)

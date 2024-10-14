@@ -59,15 +59,14 @@ data Tree = Tree
   , treeEvaled :: Bool
   }
 
-instance TreeNodeGetter Tree where
+instance HasTreeNode Tree where
   getTreeNode = treeNode
+  setTreeNode = setTN
 
 instance TreeOp Tree where
   subTree = subTreeTN
-  setSubTree sel sub par = do
-    n <- setSubTreeTN sel sub par
-    return $ substTN n par
-  getVarField ssel t = getVarFieldTN ssel (treeNode t)
+  setSubTree = setSubTreeTN
+  getVarField = getVarFieldTN
 
 instance TreeRepBuilder Tree where
   repTree = treeToSimpleStr
@@ -360,11 +359,8 @@ isTreeValue n = case treeNode n of
   TNRefCycle _ -> False
   TNFunc _ -> False
 
-substTN :: TreeNode Tree -> Tree -> Tree
-substTN n t = t{treeNode = n}
-
-setTN :: TreeNode Tree -> Tree -> Tree
-setTN n t = t{treeNode = n}
+setTN :: Tree -> TreeNode Tree -> Tree
+setTN t n = t{treeNode = n}
 
 setOrig :: Tree -> Tree -> Tree
 setOrig t o = t{treeOrig = Just o}
@@ -399,8 +395,8 @@ mkFuncTree fn = mkNewTree (TNFunc fn)
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
-mkRefCycleTree :: Path -> Tree -> Tree
-mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
+convRefCycleTree :: Tree -> Path -> Tree
+convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
 
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)
