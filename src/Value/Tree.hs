@@ -18,15 +18,14 @@ module Value.Tree (
   module Value.TMonad,
   module Value.Tree,
   module Value.Util,
+  module Value.TreeNode,
 )
 where
 
 import qualified AST
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (
-  MonadState,
- )
+import Control.Monad.State.Strict (MonadState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isNothing)
@@ -45,6 +44,7 @@ import Value.Func
 import Value.List
 import Value.Struct
 import Value.TMonad
+import Value.TreeNode
 import Value.Util
 
 type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
@@ -54,156 +54,20 @@ type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
 -- changing the dependencies.
 -- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
-  { treeNode :: TreeNode
+  { treeNode :: TreeNode Tree
   , treeOrig :: Maybe Tree
   , treeEvaled :: Bool
   }
 
--- | TreeNode represents a tree structure that contains values.
-data TreeNode
-  = -- | TNStruct is a struct that contains a value and a map of selectors to Tree.
-    TNStruct (Struct Tree)
-  | TNList (List Tree)
-  | TNDisj (Disj Tree)
-  | --  TNAtom contains an atom value.
-    TNAtom AtomV
-  | TNBounds Bounds
-  | TNConstraint (Constraint Tree)
-  | TNRefCycle RefCycle
-  | TNFunc (Func Tree)
-  | TNTop
-  | TNBottom Bottom
+instance TreeNodeGetter Tree where
+  getTreeNode = treeNode
 
---
-
-instance TreeC Tree where
-  goTreeSel = _goTreeSel
-  setSubTree = _setSubTree
-  getVarField = _getVarField
-
--- step down the tree with the given selector.
--- This should only be used by TreeCursor.
-_goTreeSel :: Selector -> Tree -> Maybe Tree
-_goTreeSel sel t =
-  case (sel, treeNode t) of
-    (RootSelector, _) -> Just t
-    (StructSelector s, TNStruct struct) -> case s of
-      StringSelector _ -> ssfField <$> Map.lookup s (stcSubs struct)
-      PatternSelector i -> Just (psfValue $ stcPatterns struct !! i)
-      PendingSelector i -> case stcPendSubs struct !! i of
-        DynamicField dsf -> Just (dsfValue dsf)
-        PatternField _ val -> Just val
-    (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
-    (FuncSelector f, TNFunc fn) -> case f of
-      FuncArgSelector i -> fncArgs fn `indexList` i
-      FuncResSelector -> fncRes fn
-    (_, TNDisj d)
-      | DisjDefaultSelector <- sel -> dsjDefault d
-      | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
-      -- This has to be the last case because the explicit disjunct selector has the highest priority.
-      | otherwise -> dsjDefault d >>= _goTreeSel sel
-    (_, TNConstraint c) | sel == unaryOpSelector -> Just (cnsValidator c)
-    _ -> Nothing
- where
-  indexList :: [a] -> Int -> Maybe a
-  indexList xs i = if i < length xs then Just (xs !! i) else Nothing
-
-_setSubTree :: (Env m c) => Selector -> Tree -> Tree -> m Tree
-_setSubTree sel subT _parT = do
-  n <- prop _parT
-  return $ substTN n _parT
- where
-  prop :: (Env m c) => Tree -> m TreeNode
-  prop parT = case (sel, treeNode parT) of
-    (StructSelector s, TNStruct _) -> updateParStruct parT s subT
-    (IndexSelector i, TNList vs) ->
-      let subs = lstSubs vs
-          l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-       in return l
-    (FuncSelector f, TNFunc fn) -> case f of
-      FuncArgSelector i -> do
-        let
-          args = fncArgs fn
-          l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
-        return l
-      FuncResSelector -> do
-        let l = TNFunc $ fn{fncRes = Just subT}
-        return l
-    (_, TNDisj d)
-      | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
-      | DisjDisjunctSelector i <- sel ->
-          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-      -- If the selector is not a disjunction selector, then the sub value must have been the default disjunction
-      -- value.
-      | otherwise ->
-          maybe
-            (throwError "propValUp: default disjunction value not found for non-disjunction selector")
-            ( \dft -> do
-                updatedDftT <- _setSubTree sel subT dft
-                return (TNDisj $ d{dsjDefault = Just updatedDftT})
-            )
-            (dsjDefault d)
-    (FuncSelector _, TNConstraint c) ->
-      return (TNConstraint $ c{cnsValidator = subT})
-    (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
-    (RootSelector, _) -> throwError "propValUp: RootSelector is not allowed"
-    _ -> throwError insertErrMsg
-
-  updateParStruct :: (MonadError String m) => Tree -> StructSelector -> Tree -> m TreeNode
-  updateParStruct par label newSub = case treeNode par of
-    TNStruct parStruct ->
-      if
-        | b@(TNBottom _) <- treeNode newSub -> return b
-        -- the label should already exist in the parent struct.
-        | Map.member label (stcSubs parStruct) ->
-            let
-              sf = stcSubs parStruct Map.! label
-              newSF = sf{ssfField = newSub}
-              newStruct = parStruct{stcSubs = Map.insert label newSF (stcSubs parStruct)}
-             in
-              return (TNStruct newStruct)
-        | otherwise -> case label of
-            PatternSelector i ->
-              let
-                psf = stcPatterns parStruct !! i
-                newPSF = psf{psfValue = newSub}
-                newStruct =
-                  parStruct
-                    { stcPatterns = take i (stcPatterns parStruct) ++ [newPSF] ++ drop (i + 1) (stcPatterns parStruct)
-                    }
-               in
-                return (TNStruct newStruct)
-            PendingSelector i ->
-              let
-                psf = stcPendSubs parStruct !! i
-                newPSF = modifyPSEValue (const newSub) psf
-                newStruct =
-                  parStruct
-                    { stcPendSubs =
-                        take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
-                    }
-               in
-                return (TNStruct newStruct)
-            _ -> throwError insertErrMsg
-    _ -> throwError insertErrMsg
-
-  insertErrMsg :: String
-  insertErrMsg =
-    printf
-      "propValUp: cannot insert child %s to parent %s, selector: %s, child:\n%s\nparent:\n%s"
-      (showTreeSymbol subT)
-      (showTreeSymbol _parT)
-      (show sel)
-      (show subT)
-      (show _parT)
-
-_getVarField :: StructSelector -> Tree -> Maybe Tree
-_getVarField ssel (Tree{treeNode = (TNStruct struct)}) = do
-  sf <- Map.lookup ssel (stcSubs struct)
-  if lbAttrIsVar (ssfAttr sf)
-    then Just (ssfField sf)
-    else Nothing
-_getVarField _ _ = Nothing
+instance TreeOp Tree where
+  subTree = subTreeTN
+  setSubTree sel sub par = do
+    n <- setSubTreeTN sel sub par
+    return $ substTN n par
+  getVarField ssel t = getVarFieldTN ssel (treeNode t)
 
 instance TreeRepBuilder Tree where
   repTree = treeToSimpleStr
@@ -439,24 +303,6 @@ instance BuildASTExpr Tree where
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
 
-instance Eq TreeNode where
-  (==) (TNStruct s1) (TNStruct s2) = s1 == s2
-  (==) (TNList ts1) (TNList ts2) = ts1 == ts2
-  (==) (TNDisj d1) (TNDisj d2) = d1 == d2
-  (==) (TNAtom l1) (TNAtom l2) = l1 == l2
-  (==) (TNConstraint c1) (TNConstraint c2) = c1 == c2
-  (==) (TNRefCycle c1) (TNRefCycle c2) = c1 == c2
-  (==) (TNDisj dj1) n2@(TNAtom _) =
-    if isNothing (dsjDefault dj1)
-      then False
-      else treeNode (fromJust $ dsjDefault dj1) == n2
-  (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
-  (==) (TNFunc f1) (TNFunc f2) = f1 == f2
-  (==) (TNBounds b1) (TNBounds b2) = b1 == b2
-  (==) (TNBottom _) (TNBottom _) = True
-  (==) TNTop TNTop = True
-  (==) _ _ = False
-
 subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
@@ -514,19 +360,19 @@ isTreeValue n = case treeNode n of
   TNRefCycle _ -> False
   TNFunc _ -> False
 
-substTN :: TreeNode -> Tree -> Tree
+substTN :: TreeNode Tree -> Tree -> Tree
 substTN n t = t{treeNode = n}
 
-setTN :: TreeNode -> Tree -> Tree
+setTN :: TreeNode Tree -> Tree -> Tree
 setTN n t = t{treeNode = n}
 
 setOrig :: Tree -> Tree -> Tree
 setOrig t o = t{treeOrig = Just o}
 
-setTNOrig :: TreeNode -> Tree -> Tree
+setTNOrig :: TreeNode Tree -> Tree -> Tree
 setTNOrig tn o = (mkNewTree tn){treeOrig = Just o}
 
-mkNewTree :: TreeNode -> Tree
+mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeEvaled = False}
 
 mkAtomVTree :: AtomV -> Tree
@@ -556,7 +402,7 @@ mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 mkRefCycleTree :: Path -> Tree -> Tree
 mkRefCycleTree p = setTN (TNRefCycle $ RefCycle p)
 
-withTN :: (TreeMonad s m) => (TreeNode -> m a) -> m a
+withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)
 
 whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a

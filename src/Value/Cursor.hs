@@ -146,10 +146,10 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
 mkSubTC :: Selector -> a -> TreeCursor t -> ValCursor t a
 mkSubTC sel a tc = ValCursor a ((sel, vcFocus tc) : vcCrumbs tc)
 
-goDownTCPath :: (TreeC t) => Path -> TreeCursor t -> Maybe (TreeCursor t)
+goDownTCPath :: (TreeOp t) => Path -> TreeCursor t -> Maybe (TreeCursor t)
 goDownTCPath (Path sels) = go (reverse sels)
  where
-  go :: (TreeC t) => [Selector] -> TreeCursor t -> Maybe (TreeCursor t)
+  go :: (TreeOp t) => [Selector] -> TreeCursor t -> Maybe (TreeCursor t)
   go [] cursor = Just cursor
   go (x : xs) cursor = do
     nextCur <- goDownTCSel x cursor
@@ -158,22 +158,22 @@ goDownTCPath (Path sels) = go (reverse sels)
 -- {- | Go down the TreeCursor with the given selector and return the new cursor.
 -- It handles the case when the current node is a disjunction node.
 -- -}
-goDownTCSel :: (TreeC t) => Selector -> TreeCursor t -> Maybe (TreeCursor t)
+goDownTCSel :: (TreeOp t) => Selector -> TreeCursor t -> Maybe (TreeCursor t)
 goDownTCSel sel tc = do
-  nextTree <- goTreeSel sel (vcFocus tc)
+  nextTree <- subTree sel (vcFocus tc)
   return $ mkSubTC sel nextTree tc
 
 {- | propUp propagates the changes made to the tip of the block to the parent block.
 The structure of the tree is not changed.
 -}
-propValUp :: (Env m c, TreeC t) => TreeCursor t -> m (TreeCursor t)
+propValUp :: (Env m c, TreeOp t) => TreeCursor t -> m (TreeCursor t)
 propValUp tc@(ValCursor _ []) = return tc
 propValUp (ValCursor subT ((sel, parT) : cs)) = do
   t <- setSubTree sel subT parT
   return $ ValCursor t cs
 
 -- Propagate the value up until the lowest selector is matched.
-propUpTCUntil :: (Env m c, TreeC t) => Selector -> TreeCursor t -> m (TreeCursor t)
+propUpTCUntil :: (Env m c, TreeOp t) => Selector -> TreeCursor t -> m (TreeCursor t)
 propUpTCUntil _ (ValCursor _ []) = throwError "propUpTCUntil: already at the top"
 propUpTCUntil sel tc@(ValCursor _ ((s, _) : _)) = do
   if s == sel
@@ -183,14 +183,14 @@ propUpTCUntil sel tc@(ValCursor _ ((s, _) : _)) = do
 {- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 The cursor will also be propagated to the parent block.
 -}
-searchTCVar :: (Env m c, TreeC t) => Selector -> TreeCursor t -> m (Maybe (TreeCursor t))
+searchTCVar :: (Env m c, TreeOp t) => Selector -> TreeCursor t -> m (Maybe (TreeCursor t))
 searchTCVar sel@(StructSelector ssel@(StringSelector _)) tc =
   maybe
     (goUp tc)
     (\field -> return . Just $ mkSubTC sel field tc)
     (getVarField ssel $ vcFocus tc)
  where
-  goUp :: (Env m c, TreeC t) => TreeCursor t -> m (Maybe (TreeCursor t))
+  goUp :: (Env m c, TreeOp t) => TreeCursor t -> m (Maybe (TreeCursor t))
   goUp (ValCursor _ [(RootSelector, _)]) = return Nothing
   goUp utc = propValUp utc >>= searchTCVar sel
 searchTCVar _ _ = return Nothing

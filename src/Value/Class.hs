@@ -18,10 +18,10 @@ class TreeRepBuilderIter a where
   -- field : (Label, Attr, Value)
   iterRepTree :: a -> (String, String, [(String, String, a)], [(String, String)])
 
-class TreeC a where
+class TreeOp a where
   -- step down the tree with the given selector.
   -- This should only be used by TreeCursor.
-  goTreeSel :: Selector -> a -> Maybe a
+  subTree :: Selector -> a -> Maybe a
 
   -- Set the subtree to the given tree with the selector. The first argument is the selector, the second argument is the
   -- sub tree, and the third argument is the tree to be updated.

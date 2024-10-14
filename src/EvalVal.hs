@@ -1039,10 +1039,10 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
  where
   dt1 = (d1, t1)
 
-  putTree :: (TreeMonad s m) => TreeNode -> m ()
+  putTree :: (TreeMonad s m) => TreeNode Tree -> m ()
   putTree n = withTree $ \t -> putTMTree $ substTN n t
 
-  amismatch :: (Show a) => a -> a -> TreeNode
+  amismatch :: (Show a) => a -> a -> TreeNode Tree
   amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
   procOther :: (TreeMonad s m) => m ()
