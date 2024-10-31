@@ -18,8 +18,8 @@ import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Path
 import Text.Printf (printf)
-import Value.Tree
 import Util
+import Value.Tree
 
 setOrigNodes :: (TreeMonad s m) => m ()
 setOrigNodes = traverseTM $ withTree $ \t ->
@@ -59,7 +59,7 @@ evalTM = withTree $ \t -> do
         TNFunc fn | isFuncRef fn -> True
         _ -> True
   parHasCycle <- isJust . ctxCycle <$> getTMContext
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $ printf "evalTM: path: %s, cond: %s, parHasCycle: %s" (show path) (show cond) (show parHasCycle)
   when (cond && not parHasCycle) forceEvalCV
 
@@ -79,7 +79,7 @@ forceEvalCV = do
   withTree $ \t -> do
     let nt = setOrig t origT
     putTMTree $ nt{treeEvaled = True}
-  -- withDumpInfo $ \path _ ->
+  -- withDebugInfo $ \path _ ->
   --   logDebugStr $ printf "evalTM: path: %s, set evaled" (show path)
   unmarkTMVisiting
 
@@ -122,7 +122,7 @@ tryPopulateRef nt = do
       resPath = cvPath ct
       notifers = ctxNotifiers . cvCtx $ ct
       deps = fromMaybe [] (Map.lookup resPath notifers)
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       unless (null deps) $
         logDebugStr $
           printf "evalTM: path: %s, using value to update %s" (show path) (show deps)
@@ -150,7 +150,7 @@ of the lowest ancestor Func.
 -}
 populateRef :: (TreeMonad s m) => Tree -> m ()
 populateRef nt = do
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $ printf "populateRef: path: %s, new value: %s" (show path) (show nt)
   withTree $ \tar -> case (treeNode tar, treeNode nt) of
     -- If the new value is a function, just skip the re-evaluation.
@@ -161,7 +161,7 @@ populateRef nt = do
           printf "populateRef: the target node %s is not a reference." (show tar)
 
       reduceFunc fn nt
-      withDumpInfo $ \path v ->
+      withDebugInfo $ \path v ->
         logDebugStr $ printf "populateRef: path: %s, updated value: %s" (show path) (show v)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
 
@@ -172,7 +172,7 @@ populateRef nt = do
           -- If it is a reference, the re-evaluation can be skipped because
           -- 1. The highest function is actually itself.
           -- 2. Re-evaluating the reference would get the same value.
-          withDumpInfo $ \path _ ->
+          withDebugInfo $ \path _ ->
             logDebugStr $
               printf
                 "populateRef: lowest ancestor function is a reference, skip re-evaluation. path: %s, node: %s"
@@ -181,7 +181,7 @@ populateRef nt = do
           tryPopulateRef nt
       -- re-evaluate the highest function when it is not a reference.
       | otherwise -> do
-          withDumpInfo $ \path _ ->
+          withDebugInfo $ \path _ ->
             logDebugStr $ printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
           r <- evalFunc fn >> getTMTree
           tryPopulateRef r
@@ -221,7 +221,7 @@ Function call convention:
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
   let name = fncName fn
-  withDumpInfo $ \path t ->
+  withDebugInfo $ \path t ->
     logDebugStr $
       printf
         "evalFunc: path: %s, evaluate function %s, tip:\n%s"
@@ -232,7 +232,7 @@ evalFunc fn = do
   r <- fncFunc fn (fncArgs fn) >> getTMTree
   reduceFunc fn r
 
-  withDumpInfo $ \path t ->
+  withDebugInfo $ \path t ->
     logDebugStr $
       printf
         "evalFunc: path: %s, function %s evaluated to:\n%s"
@@ -248,7 +248,7 @@ evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m () -> m Tree
 evalFuncArg sel sub reqA f = withTN $ \case
   TNFunc _ -> do
     res <- inSubTM sel sub (f >> getTMTree)
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       logDebugStr $ printf "evalSubTM: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
     return $ getFuncResOrTree reqA res
   _ -> throwError "evalFuncArg: node is not a function"
@@ -280,7 +280,7 @@ reduceFunc fn val = case treeNode val of
     let
       fnHasNoRef = not (funcHasRef fn)
       reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || fnHasNoRef
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       logDebugStr $
         printf
           "reduceFunc: func %s, path: %s, is reducible: %s, fnHasNoRef: %s, args: %s"
@@ -304,7 +304,7 @@ delNotifRecvs :: (TreeMonad s m) => Path -> m ()
 delNotifRecvs pathPrefix = do
   withContext $ \ctx -> do
     putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
-  withDumpInfo $ \path _ -> do
+  withDebugInfo $ \path _ -> do
     notifiers <- ctxNotifiers <$> getTMContext
     logDebugStr $
       printf
@@ -325,7 +325,7 @@ evalStruct origStruct = do
 
   whenStruct () $ \struct -> do
     let newStruct = mk struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       logDebugStr $ printf "evalStruct: path: %s, new struct: %s" (show path) (show newStruct)
     putTMTree newStruct
  where
@@ -344,7 +344,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
     (PendingSelector i, DynamicField dsf) -> do
       -- evaluate the dynamic label.
       label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ exhaustTM >> getTMTree
-      withDumpInfo $ \path _ ->
+      withDebugInfo $ \path _ ->
         logDebugStr $
           printf
             "evalPendSE: path: %s, dynamic label is evaluated to %s"
@@ -368,7 +368,7 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
     (PendingSelector i, PatternField pattern val) -> do
       -- evaluate the pattern.
       evaledPattern <- inSubTM (StructSelector sel) pattern (exhaustTM >> getTMTree)
-      withDumpInfo $ \path _ ->
+      withDebugInfo $ \path _ ->
         logDebugStr $
           printf
             "evalPendSE: path: %s, pattern is evaluated to %s"
@@ -492,7 +492,7 @@ index ue ts@(t : _)
             (throwError $ printf "index: %s is not found" (show idxPath))
             (putTMTree . vcFocus)
             (goDownTCPath idxPath tc)
-          withDumpInfo $ \_ r ->
+          withDebugInfo $ \_ r ->
             logDebugStr $ printf "index: the indexed is %s" (show r)
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
@@ -537,10 +537,10 @@ mkRefFunc tp ue =
 deref :: (TreeMonad s m) => Path -> m Bool
 deref tp = do
   path <- getTMAbsPath
-  withDumpInfo $ \_ r -> logDebugStr $ printf "deref: start, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
+  withDebugInfo $ \_ r -> logDebugStr $ printf "deref: start, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
   follow tp >>= \case
     (Just tar) -> do
-      withDumpInfo $ \_ r -> logDebugStr $ printf "deref: done, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
+      withDebugInfo $ \_ r -> logDebugStr $ printf "deref: done, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
       putTMTree tar
       return True
     Nothing -> return False
@@ -560,7 +560,7 @@ deref tp = do
       Right origM
         | Nothing <- origM -> return Nothing
         | (Just orig) <- origM -> do
-            withDumpInfo $ \path _ -> do
+            withDebugInfo $ \path _ -> do
               logDebugStr $ printf "deref: path: %s, substitutes with orig: %s" (show path) (show orig)
             -- substitute the reference with the target node.
             putTMTree orig
@@ -640,7 +640,7 @@ validateCnstrs = do
 -- will be assigned to the constraint in the propValUp.
 validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
 validateCnstr c = withTree $ \t -> do
-  withDumpInfo $ \path _ -> do
+  withDebugInfo $ \path _ -> do
     tc <- getTMCursor
     logDebugStr $ printf "evalConstraint: path: %s, constraint unify tc:\n%s" (show path) (show tc)
 
@@ -721,7 +721,7 @@ regBin op t1 t2 = regBinDir op (L, t1) (R, t2)
 
 regBinDir :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinDir op (d1, _t1) (d2, _t2) = do
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
@@ -846,7 +846,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
 
 regBinLeftOther :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftOther op (d1, t1) (d2, t2) = do
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $ printf "regBinLeftOther: path: %s, %s: %s, %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
     (TNFunc fn, _)
@@ -878,7 +878,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
     TNConstraint _ -> regBinLeftOther op (d1, x) (d2, t2)
     _ -> do
       let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, x) (d2, t2))
-      withDumpInfo $ \path _ ->
+      withDebugInfo $ \path _ ->
         logDebugStr $ printf "regBinLeftOther: path: %s, %s is incomplete, delaying to %s" (show path) (show x) (show v)
       putTMTree v
 
@@ -960,7 +960,7 @@ unifyToTree t1 t2 = unifyWithDir (Path.L, t1) (Path.R, t2)
 -- For example, {a: b + 100, b: a - 100} & {b: 50}. The "b" in the first struct will have to see the atom 50.
 unifyWithDir :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $
       printf
         ("unifying start, path: %s:, %s:\n%s" ++ "\n" ++ "with %s:\n%s")
@@ -983,7 +983,7 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
     (TNBounds b1, _) -> unifyLeftBound (d1, b1, t1) dt2
     _ -> unifyLeftOther dt1 dt2
 
-  withDumpInfo $ \path res ->
+  withDebugInfo $ \path res ->
     logDebugStr $
       printf
         "unifying done, path: %s, %s: %s, with %s: %s, res: %s"
@@ -1287,7 +1287,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 unifyLeftOther :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m ()
 unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
   (TNFunc fn1, _) -> do
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       logDebugStr $
         printf
           "unifyLeftOther starts, path: %s, %s: %s, %s: %s"
@@ -1297,7 +1297,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show d2)
           (show t2)
     r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False exhaustTM
-    withDumpInfo $ \path _ ->
+    withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 
     case treeNode r1 of
@@ -1335,7 +1335,7 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
 unifyStructs :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m ()
 unifyStructs (_, s1) (_, s2) = do
   let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
-  withDumpInfo $ \path _ ->
+  withDebugInfo $ \path _ ->
     logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
   exhaustTM
@@ -1426,7 +1426,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
       (Disj{dsjDefault = Nothing}, Disj{}) -> unifyLeftDisj (d2, dj2, t2) (d1, t1)
       -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
       (Disj{dsjDefault = Just df1, dsjDisjuncts = ds1}, Disj{dsjDefault = Just df2, dsjDisjuncts = ds2}) -> do
-        withDumpInfo $ \path _ ->
+        withDebugInfo $ \path _ ->
           logDebugStr $
             printf
               "unifyLeftDisj: path: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
@@ -1438,7 +1438,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
               (show ds2)
         df <- unifyWithDir (d1, df1) (d2, df2) >> getTMTree
         dss <- manyToMany (d1, ds1) (d2, ds2)
-        withDumpInfo $ \path _ ->
+        withDebugInfo $ \path _ ->
           logDebugStr $ printf "unifyLeftDisj: path: %s, U2, df: %s, dss: %s" (show path) (show df) (show dss)
         treeFromNodes (Just df) dss >>= putTMTree
     -- this is the case for a disjunction unified with a value.

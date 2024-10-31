@@ -87,8 +87,8 @@ withContext f = getTMContext >>= f
 withCtxTree :: (TMonad s m t) => (CtxTree t -> m a) -> m a
 withCtxTree f = gets getCtxVal >>= f
 
-withDumpInfo :: (TMonad s m t) => (Path -> t -> m a) -> m a
-withDumpInfo f = do
+withDebugInfo :: (TMonad s m t) => (Path -> t -> m a) -> m a
+withDebugInfo f = do
   path <- getTMAbsPath
   withTree (f path)
 
