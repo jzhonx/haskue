@@ -29,6 +29,7 @@ library
         EvalVal,
         Parser,
         Path,
+        Util,
         Value.Atom,
         Value.Bottom,
         Value.Bounds,
@@ -43,7 +44,6 @@ library
         Value.Struct,
         Value.TMonad,
         Value.Tree,
-        Value.Util,
         Value.TreeNode,
 
     other-modules:

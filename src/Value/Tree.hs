@@ -17,7 +17,6 @@ module Value.Tree (
   module Value.Struct,
   module Value.TMonad,
   module Value.Tree,
-  module Value.Util,
   module Value.TreeNode,
 )
 where
@@ -45,7 +44,6 @@ import Value.List
 import Value.Struct
 import Value.TMonad
 import Value.TreeNode
-import Value.Util
 
 type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
 

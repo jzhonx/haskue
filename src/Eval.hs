@@ -25,6 +25,7 @@ import Parser (parseCUE)
 import Path
 import Text.Printf (printf)
 import Value.Tree
+import Util
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
@@ -58,14 +59,14 @@ eval expr mermaid = do
     runReaderT
       ( do
           root <- evalStateT (evalExpr expr) emptyContext
-          dump $ printf "---- evaluated to rootTC: ----\n%s" (show root)
+          logDebugStr $ printf "---- evaluated to rootTC: ----\n%s" (show root)
           let
             rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
             cv = cvFromCur rootTC
           r2 <- execStateT setOrigNodes cv
-          dump $ printf "---- start resolving links ----"
+          logDebugStr $ printf "---- start resolving links ----"
           res <- execStateT evalTM r2
-          dump $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
+          logDebugStr $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
           return res
       )
       Config{cfCreateCnstr = True, cfMermaid = mermaid}
@@ -74,5 +75,5 @@ eval expr mermaid = do
     runReaderT
       (execStateT validateCnstrs rootTC)
       Config{cfCreateCnstr = False, cfMermaid = mermaid}
-  dump $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
+  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

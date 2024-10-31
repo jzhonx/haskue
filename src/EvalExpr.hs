@@ -14,6 +14,7 @@ import EvalVal
 import Path
 import Text.Printf (printf)
 import Value.Tree
+import Util
 
 type EvalEnv m = EvalEnvState (Context Tree) m Config
 
@@ -71,18 +72,18 @@ evalStructLit decls = do
       [] -> throwError "empty labels"
       [l1] ->
         do
-          dump $ printf "evalFdLabels: lb1: %s" (show l1)
+          logDebugStr $ printf "evalFdLabels: lb1: %s" (show l1)
           val <- evalExpr e
           adder <- mkAdder l1 val
-          dump $ printf "evalFdLabels: adder: %s" (show adder)
+          logDebugStr $ printf "evalFdLabels: adder: %s" (show adder)
           return adder
       l1 : l2 : rs ->
         do
-          dump $ printf "evalFdLabels, nested: lb1: %s" (show l1)
+          logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
           sf2 <- evalFdLabels (l2 : rs) e
           let val = mkNewTree . TNStruct $ mkStructFromAdders [sf2]
           adder <- mkAdder l1 val
-          dump $ printf "evalFdLabels, nested: adder: %s" (show adder)
+          logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
           return adder
 
   mkAdder :: (EvalEnv m) => Label -> Tree -> m (StructElemAdder Tree)
@@ -240,7 +241,7 @@ evalDisj e1 e2 = do
     u <-
       if not (isTreeValue t1) || not (isTreeValue t2)
         then do
-          dump $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
+          logDebugStr $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
           getTMTree
         else do
           case (e1, e2) of
@@ -251,5 +252,5 @@ evalDisj e1 e2 = do
             (_, AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
               evalDisjPair (DisjRegular t1) (DisjDefault t2)
             (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-    dump $ printf "evalDisjAdapt: evaluated to %s" (show u)
+    logDebugStr $ printf "evalDisjAdapt: evaluated to %s" (show u)
     putTMTree u
