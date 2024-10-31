@@ -1449,7 +1449,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
         treeFromNodes Nothing [ds2] >>= putTMTree
       Disj{dsjDefault = Just df1, dsjDisjuncts = ds1} -> do
         logDebugStr $ printf "unifyLeftDisj: U1, unify with atom %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
-        df2 <- unifyWithDir (d2, df1) (d2, t2) >> getTMTree
+        df2 <- unifyWithDir (d1, df1) (d2, t2) >> getTMTree
         ds2 <- oneToMany (d2, t2) (d1, ds1)
         logDebugStr $ printf "unifyLeftDisj: U1, df2: %s, ds2: %s" (show df2) (show ds2)
         r <- treeFromNodes (Just df2) [ds2]
