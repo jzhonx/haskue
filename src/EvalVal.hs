@@ -647,10 +647,9 @@ validateCnstr c = withTree $ \t -> do
   let
     origAtomT = mkAtomVTree $ cnsAtom c
     orig = fromJust $ treeOrig t
-    fn = mkFuncTree (mkBinaryOp AST.Unify unify origAtomT orig)
 
   -- run the function in a sub context.
-  pushTMSub unaryOpSelector fn
+  pushTMSub unaryOpSelector orig
   x <- exhaustTM >> getTMTree
   discardTMAndPop
 
