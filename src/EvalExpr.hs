@@ -162,7 +162,7 @@ evalPrimExpr e@(PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing -> return $ mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
+    Nothing -> mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
     Just b -> return $ mkBoundsTree [b]
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr

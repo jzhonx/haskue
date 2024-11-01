@@ -430,8 +430,10 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
 -- | Create a new identifier reference.
-mkVarLinkTree :: String -> AST.UnaryExpr -> Tree
-mkVarLinkTree var ue = mkFuncTree $ mkRefFunc (Path [StructSelector $ StringSelector var]) ue
+mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
+mkVarLinkTree var ue = do
+  fn <- mkRefFunc (Path [StructSelector $ StringSelector var]) ue
+  return $ mkFuncTree fn
 
 -- | Create an index function node.
 mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
@@ -464,6 +466,15 @@ treesToPath ts = pathFromList <$> mapM treeToSel ts
       va = amvAtom a
     -- If a disjunct has a default, then we should try to use the default.
     TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
+    _ -> Nothing
+
+pathToTrees :: Path -> Maybe [Tree]
+pathToTrees p = mapM selToTree (pathToList p)
+ where
+  selToTree :: Selector -> Maybe Tree
+  selToTree sel = case sel of
+    StructSelector (StringSelector s) -> Just $ mkAtomTree (String s)
+    IndexSelector j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
@@ -505,10 +516,16 @@ index ue ts@(t : _)
 index _ _ = throwError "index: invalid arguments"
 
 appendRefFuncPath :: (TreeMonad s m) => Func Tree -> Path -> AST.UnaryExpr -> m (Func Tree)
-appendRefFuncPath Func{fncType = RefFunc origTP} p ue = do
-  -- remove original receiver because origP would not exist.
-  delNotifRecvs origTP
-  mkReference (appendPath p origTP) Nothing ue
+appendRefFuncPath fn p ue
+  | isFuncRef fn = do
+      origTP <-
+        maybe
+          (throwError "appendRefFuncPath: can not generate path from the arguments")
+          return
+          (treesToPath (fncArgs fn))
+      -- remove original receiver because origP would not exist.
+      delNotifRecvs origTP
+      mkReference (appendPath p origTP) Nothing ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
 
 -- Reference the target node when the target node is not an atom or a cycle head.
@@ -517,22 +534,28 @@ mkReference :: (TreeMonad s m) => Path -> Maybe Tree -> AST.UnaryExpr -> m (Func
 mkReference tp tM ue = withCtxTree $ \ct -> do
   -- add notifier. If the referenced value changes, then the reference should be updated.
   putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
-  let fn = mkRefFunc tp ue
+  fn <- mkRefFunc tp ue
   return $ fn{fncRes = tM}
 
-mkRefFunc :: Path -> AST.UnaryExpr -> Func Tree
-mkRefFunc tp ue =
-  Func
-    { fncName = printf "&%s" (show tp)
-    , fncType = RefFunc tp
-    , fncArgs = []
-    , fncExprGen = return $ AST.ExprUnaryExpr ue
-    , fncFunc = \_ -> do
-        ok <- deref tp
-        when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
-        return ok
-    , fncRes = Nothing
-    }
+mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Func Tree)
+mkRefFunc tp ue = do
+  args <-
+    maybe
+      (throwError "mkRefFunc: can not generate path from the arguments")
+      return
+      (pathToTrees tp)
+  return $
+    Func
+      { fncName = printf "&%s" (show tp)
+      , fncType = RefFunc
+      , fncArgs = args
+      , fncExprGen = return $ AST.ExprUnaryExpr ue
+      , fncFunc = \_ -> do
+          ok <- deref tp
+          when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
+          return ok
+      , fncRes = Nothing
+      }
 
 -- Dereference the reference. It keeps dereferencing until the target node is not a reference node.
 -- If the target is not found, the current node is kept.
@@ -569,7 +592,12 @@ deref tp = do
             putTMTree orig
             withTN $ \case
               -- follow the reference.
-              TNFunc fn | RefFunc nextDst <- fncType fn -> do
+              TNFunc fn | isFuncRef fn -> do
+                nextDst <-
+                  maybe
+                    (throwError "deref: can not generate path from the arguments")
+                    return
+                    (treesToPath (fncArgs fn))
                 follow nextDst
               _ -> Just <$> getTMTree
 

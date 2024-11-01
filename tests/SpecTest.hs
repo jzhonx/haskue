@@ -1,7 +1,7 @@
 module SpecTest where
 
 import qualified AST
-import Control.Monad.Except (runExceptT)
+import Control.Monad.Except (runExcept, runExceptT)
 import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -47,7 +47,9 @@ newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
 newSimpleStruct lbls subs = newStruct lbls [] subs
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = mkNewTree . TNFunc $ mkRefFunc p undefined
+mkSimpleLink p = case runExcept (mkRefFunc p undefined) of
+  Left err -> error err
+  Right v -> mkFuncTree v
 
 startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ runTreeIO s

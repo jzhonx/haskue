@@ -23,7 +23,7 @@ data Func t = Func
     fncRes :: Maybe t
   }
 
-data FuncType = RegularFunc | DisjFunc | RefFunc Path | IndexFunc
+data FuncType = RegularFunc | DisjFunc | RefFunc | IndexFunc
   deriving (Eq, Show)
 
 instance (Eq t) => Eq (Func t) where
@@ -41,14 +41,10 @@ instance (BuildASTExpr t) => BuildASTExpr (Func t) where
       else maybe (fncExprGen fn) (buildASTExpr c) (fncRes fn)
 
 isFuncRef :: Func t -> Bool
-isFuncRef fn = case fncType fn of
-  RefFunc _ -> True
-  _ -> False
+isFuncRef fn = fncType fn == RefFunc
 
 isFuncIndex :: Func t -> Bool
-isFuncIndex fn = case fncType fn of
-  IndexFunc -> True
-  _ -> False
+isFuncIndex fn = fncType fn == IndexFunc
 
 requireFuncConcrete :: Func t -> Bool
 requireFuncConcrete fn = case fncType fn of

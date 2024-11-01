@@ -97,6 +97,9 @@ isPathEmpty _ = False
 pathFromList :: [Selector] -> Path
 pathFromList sels = Path (reverse sels)
 
+pathToList :: Path -> [Selector]
+pathToList (Path sels) = reverse sels
+
 appendSel :: Selector -> Path -> Path
 appendSel sel (Path xs) = Path (sel : xs)
 
