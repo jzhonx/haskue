@@ -13,8 +13,8 @@ import qualified Data.Map.Strict as Map
 import EvalVal
 import Path
 import Text.Printf (printf)
-import Value.Tree
 import Util
+import Value.Tree
 
 type EvalEnv m = EvalEnvState (Context Tree) m Config
 
@@ -234,23 +234,23 @@ evalDisj e1 e2 = do
       return (l, r)
   return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction evalDisjAdapt lt rt)
  where
-  evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
+  evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
   evalDisjAdapt unt1 unt2 = do
     t1 <- evalFuncArg binOpLeftSelector unt1 False exhaustTM
     t2 <- evalFuncArg binOpRightSelector unt2 False exhaustTM
-    u <-
-      if not (isTreeValue t1) || not (isTreeValue t2)
-        then do
-          logDebugStr $ printf "evalDisjAdapt: %s, %s are not value nodes, return original disj" (show t1) (show t2)
-          getTMTree
-        else do
-          case (e1, e2) of
-            (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-              evalDisjPair (DisjDefault t1) (DisjDefault t2)
-            (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), _) ->
-              evalDisjPair (DisjDefault t1) (DisjRegular t2)
-            (_, AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-              evalDisjPair (DisjRegular t1) (DisjDefault t2)
-            (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-    logDebugStr $ printf "evalDisjAdapt: evaluated to %s" (show u)
-    putTMTree u
+    if not (isTreeValue t1) || not (isTreeValue t2)
+      then do
+        logDebugStr $ printf "evalDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
+        return False
+      else do
+        u <- case (e1, e2) of
+          (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
+            evalDisjPair (DisjDefault t1) (DisjDefault t2)
+          (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), _) ->
+            evalDisjPair (DisjDefault t1) (DisjRegular t2)
+          (_, AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
+            evalDisjPair (DisjRegular t1) (DisjDefault t2)
+          (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
+        logDebugStr $ printf "evalDisjAdapt: evaluated to %s" (show u)
+        putTMTree u
+        return True

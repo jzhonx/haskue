@@ -45,6 +45,7 @@ import Value.Struct
 import Value.TMonad
 import Value.TreeNode
 
+-- TreeMonad stores the tree structure in its state.
 type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
 
 -- Some rules:

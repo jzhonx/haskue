@@ -18,7 +18,7 @@ data Func t = Func
     fncArgs :: [t]
   , fncExprGen :: forall m c. (Env m c) => m AST.Expression
   , -- Note that the return value of the function should be stored in the tree.
-    fncFunc :: forall s m. (TMonad s m t) => [t] -> m ()
+    fncFunc :: forall s m. (TMonad s m t) => [t] -> m Bool
   , -- fncRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
     fncRes :: Maybe t
   }
@@ -56,7 +56,7 @@ requireFuncConcrete fn = case fncType fn of
   _ -> False
 
 mkUnaryOp ::
-  forall t. (BuildASTExpr t) => AST.UnaryOp -> (forall s m. (TMonad s m t) => t -> m ()) -> t -> Func t
+  forall t. (BuildASTExpr t) => AST.UnaryOp -> (forall s m. (TMonad s m t) => t -> m Bool) -> t -> Func t
 mkUnaryOp op f n =
   Func
     { fncFunc = g
@@ -67,7 +67,7 @@ mkUnaryOp op f n =
     , fncRes = Nothing
     }
  where
-  g :: (TMonad s m t) => [t] -> m ()
+  g :: (TMonad s m t) => [t] -> m Bool
   g [x] = f x
   g _ = throwError "invalid number of arguments for unary function"
 
@@ -88,7 +88,7 @@ mkUnaryOp op f n =
               (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
 
 mkBinaryOp ::
-  forall t. (BuildASTExpr t) => AST.BinaryOp -> (forall s m. (TMonad s m t) => t -> t -> m ()) -> t -> t -> Func t
+  forall t. (BuildASTExpr t) => AST.BinaryOp -> (forall s m. (TMonad s m t) => t -> t -> m Bool) -> t -> t -> Func t
 mkBinaryOp op f l r =
   Func
     { fncFunc = g
@@ -101,7 +101,7 @@ mkBinaryOp op f l r =
     , fncRes = Nothing
     }
  where
-  g :: (TMonad s m t) => [t] -> m ()
+  g :: (TMonad s m t) => [t] -> m Bool
   g [x, y] = f x y
   g _ = throwError "invalid number of arguments for binary function"
 
@@ -116,7 +116,7 @@ mkBinaryOpDir ::
   forall t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (TMonad s m t) => t -> t -> m ()) ->
+  (forall s m. (TMonad s m t) => t -> t -> m Bool) ->
   (BinOpDirect, t) ->
   (BinOpDirect, t) ->
   Func t
