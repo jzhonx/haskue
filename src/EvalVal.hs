@@ -65,8 +65,6 @@ forceEvalCV = do
   withTree $ \t -> do
     let nt = setOrig t origT
     putTMTree $ nt{treeEvaled = True}
-  -- withDebugInfo $ \path _ ->
-  --   logDebugStr $ printf "evalTM: path: %s, set evaled" (show path)
   unmarkTMVisiting
 
   ctx <- getTMContext
@@ -900,13 +898,13 @@ dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc)
 newDisj :: (TreeMonad s m) => Maybe Tree -> [Tree] -> Maybe Tree -> [Tree] -> m Tree
 newDisj df1 ds1 df2 ds2 =
   let
-    subTree :: Maybe Tree
-    subTree = case map fromJust (filter isJust [df1, df2]) of
+    st :: Maybe Tree
+    st = case map fromJust (filter isJust [df1, df2]) of
       [x] -> Just x
       [x, y] -> Just $ mkDisjTree Nothing [x, y]
       _ -> Nothing
    in
-    return $ mkDisjTree subTree (dedupAppend ds1 ds2)
+    return $ mkDisjTree st (dedupAppend ds1 ds2)
 
 unify :: (TreeMonad s m) => Tree -> Tree -> m Bool
 unify = unifyToTree

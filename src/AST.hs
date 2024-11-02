@@ -301,7 +301,7 @@ labelExprBld e = case e of
     RegularLabel -> labelNameBld ln
     OptionalLabel -> labelNameBld ln <> string7 "?"
     RequiredLabel -> labelNameBld ln <> string7 "!"
-  LabelPattern ex -> undefined
+  LabelPattern _ -> undefined
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case e of
