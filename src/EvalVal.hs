@@ -160,7 +160,12 @@ populateRef nt = do
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
-      reduceFunc fn nt
+      reduced <- reduceFunc fn nt mkFuncTree
+      when reduced $ do
+        path <- getTMAbsPath
+        -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+        -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+        delNotifRecvs path
       withDebugInfo $ \path v ->
         logDebugStr $ printf "populateRef: path: %s, updated value: %s" (show path) (show v)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
@@ -220,24 +225,19 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
-  let name = fncName fn
-  withDebugInfo $ \path t ->
-    logDebugStr $
-      printf
-        "evalFunc: path: %s, evaluate function %s, tip:\n%s"
-        (show path)
-        (show name)
-        (show t)
-
-  r <- fncFunc fn (fncArgs fn) >> getTMTree
-  reduceFunc fn r
+  reduced <- callFunc fn mkFuncTree
+  when reduced $ do
+    path <- getTMAbsPath
+    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+    delNotifRecvs path
 
   withDebugInfo $ \path t ->
     logDebugStr $
       printf
         "evalFunc: path: %s, function %s evaluated to:\n%s"
         (show path)
-        (show name)
+        (show $ fncName fn)
         (show t)
 
 -- Evaluate the sub node of the tree. The node must be a function.
@@ -269,34 +269,6 @@ getFuncResOrTree reqA t = case treeNode t of
       )
       (fncRes fn)
   _ -> t
-
-{- | Try to reduce the function by using the function result to replace the function node.
- - This should be called after the function is evaluated.
--}
-reduceFunc :: (TreeMonad s m) => Func Tree -> Tree -> m ()
-reduceFunc fn val = case treeNode val of
-  TNFunc newFn -> putTMTree $ mkFuncTree newFn
-  _ -> do
-    let
-      fnHasNoRef = not (funcHasRef fn)
-      reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || fnHasNoRef
-    withDebugInfo $ \path _ ->
-      logDebugStr $
-        printf
-          "reduceFunc: func %s, path: %s, is reducible: %s, fnHasNoRef: %s, args: %s"
-          (show $ fncName fn)
-          (show path)
-          (show reducible)
-          (show fnHasNoRef)
-          (show $ fncArgs fn)
-    if reducible
-      then do
-        path <- getTMAbsPath
-        -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-        -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-        delNotifRecvs path
-        putTMTree val
-      else putTMTree . mkFuncTree $ fn{fncRes = Just val}
 
 -- Delete the notification receiver.
 -- This should be called when the reference becomes invalid.

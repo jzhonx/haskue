@@ -66,6 +66,28 @@ instance TreeOp Tree where
   subTree = subTreeTN
   setSubTree = setSubTreeTN
   getVarField = getVarFieldTN
+  isTreeAtom t = case treeNode t of
+    TNAtom _ -> True
+    _ -> False
+  isTreeBottom t = case treeNode t of
+    TNBottom _ -> True
+    _ -> False
+  isTreeCnstr t = case treeNode t of
+    TNConstraint _ -> True
+    _ -> False
+  isTreeRefCycle t = case treeNode t of
+    TNRefCycle _ -> True
+    _ -> False
+  isTreeValue t = case treeNode t of
+    TNRefCycle _ -> False
+    TNFunc _ -> False
+    _ -> True
+  isTreeFunc t = case treeNode t of
+    TNFunc _ -> True
+    _ -> False
+  treeHasRef t = case treeNode t of
+    TNFunc fn -> funcHasRef fn
+    _ -> False
 
 instance TreeRepBuilder Tree where
   repTree = treeToSimpleStr
@@ -165,6 +187,35 @@ instance TreeRepBuilderIter Tree where
 
     symbol :: String
     symbol = showTreeSymbol t
+
+instance Show Tree where
+  show = treeToSimpleStr 0
+
+instance BuildASTExpr Tree where
+  buildASTExpr cr t = case treeNode t of
+    TNTop -> return $ AST.litCons AST.TopLit
+    TNBottom _ -> return $ AST.litCons AST.BottomLit
+    TNAtom s -> buildASTExpr cr s
+    TNBounds b -> buildASTExpr cr b
+    TNStruct s -> buildASTExpr cr s
+    TNList l -> buildASTExpr cr l
+    TNDisj d -> buildASTExpr cr d
+    TNFunc fn -> buildASTExpr cr fn
+    TNConstraint c ->
+      maybe
+        (throwError $ printf "orig expr for %s does not exist" (show (cnsAtom c)))
+        (buildASTExpr cr)
+        (treeOrig t)
+    TNRefCycle c -> case c of
+      RefCycle p -> do
+        if isPathEmpty p
+          -- If the path is empty, then it is a reference to the itself.
+          then return $ AST.litCons AST.TopLit
+          else buildASTExpr cr (fromJust $ treeOrig t)
+      RefCycleTail -> return $ AST.litCons AST.TopLit
+
+instance Eq Tree where
+  (==) t1 t2 = treeNode t1 == treeNode t2
 
 treeToSimpleStr :: Int -> Tree -> String
 treeToSimpleStr toff t =
@@ -272,35 +323,6 @@ showTreeSymbol t = case treeNode t of
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
-instance Show Tree where
-  show = treeToSimpleStr 0
-
-instance BuildASTExpr Tree where
-  buildASTExpr cr t = case treeNode t of
-    TNTop -> return $ AST.litCons AST.TopLit
-    TNBottom _ -> return $ AST.litCons AST.BottomLit
-    TNAtom s -> buildASTExpr cr s
-    TNBounds b -> buildASTExpr cr b
-    TNStruct s -> buildASTExpr cr s
-    TNList l -> buildASTExpr cr l
-    TNDisj d -> buildASTExpr cr d
-    TNFunc fn -> buildASTExpr cr fn
-    TNConstraint c ->
-      maybe
-        (throwError $ printf "orig expr for %s does not exist" (show (cnsAtom c)))
-        (buildASTExpr cr)
-        (treeOrig t)
-    TNRefCycle c -> case c of
-      RefCycle p -> do
-        if isPathEmpty p
-          -- If the path is empty, then it is a reference to the itself.
-          then return $ AST.litCons AST.TopLit
-          else buildASTExpr cr (fromJust $ treeOrig t)
-      RefCycleTail -> return $ AST.litCons AST.TopLit
-
-instance Eq Tree where
-  (==) t1 t2 = treeNode t1 == treeNode t2
-
 subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
@@ -324,39 +346,6 @@ funcHasRef fn = isFuncRef fn || argsHaveRef (fncArgs fn)
       )
 
 -- Helpers
-
-isTreeAtom :: Tree -> Bool
-isTreeAtom t = case treeNode t of
-  TNAtom _ -> True
-  _ -> False
-
-isTreeBottom :: Tree -> Bool
-isTreeBottom t = case treeNode t of
-  TNBottom _ -> True
-  _ -> False
-
-isTreeCnstr :: Tree -> Bool
-isTreeCnstr t = case treeNode t of
-  TNConstraint _ -> True
-  _ -> False
-
-isTreeRefCycle :: Tree -> Bool
-isTreeRefCycle t = case treeNode t of
-  TNRefCycle _ -> True
-  _ -> False
-
-isTreeValue :: Tree -> Bool
-isTreeValue n = case treeNode n of
-  TNAtom _ -> True
-  TNBounds _ -> True
-  TNStruct _ -> True
-  TNList _ -> True
-  TNDisj _ -> True
-  TNConstraint _ -> True
-  TNBottom _ -> True
-  TNTop -> True
-  TNRefCycle _ -> False
-  TNFunc _ -> False
 
 setTN :: Tree -> TreeNode Tree -> Tree
 setTN t n = t{treeNode = n}

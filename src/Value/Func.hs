@@ -5,8 +5,11 @@
 module Value.Func where
 
 import qualified AST
+import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Path
+import Text.Printf (printf)
+import Util
 import Value.Class
 import Value.Env
 import Value.TMonad
@@ -120,3 +123,57 @@ mkBinaryOpDir rep op (d1, t1) (_, t2) =
   case d1 of
     L -> mkBinaryOp rep op t1 t2
     R -> mkBinaryOp rep op t2 t1
+
+{- | Call the function.
+ - Returns whether the function has been reduced.
+ -
+ - It also tries to reduce the function by using the function result to replace the function node.
+ - This should be called after the function is evaluated.
+-}
+callFunc :: (TMonad s m t, Show t) => Func t -> (Func t -> t) -> m Bool
+callFunc fn newFuncTree = do
+  let name = fncName fn
+  withDebugInfo $ \path t ->
+    logDebugStr $ printf "callFunc: path: %s, function %s, tip:\n%s" (show path) (show name) (show t)
+
+  -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
+  -- enough to replace the function with the new struct.
+  modified <- fncFunc fn (fncArgs fn)
+
+  withDebugInfo $ \path t ->
+    logDebugStr $
+      printf
+        "callFunc: path: %s, function %s, modified: %s, result:\n%s"
+        (show path)
+        (show name)
+        (show modified)
+        (show t)
+  if modified
+    then do
+      val <- getTMTree
+      reduceFunc fn val newFuncTree
+    else return False
+
+-- Try to reduce the function by using the function result to replace the function node.
+-- This should be called after the function is evaluated.
+reduceFunc :: (TMonad s m t, Show t) => Func t -> t -> (Func t -> t) -> m Bool
+reduceFunc fn val newFuncTree =
+  if isTreeFunc val
+    -- If the function returns another function, then the function is not reducible.
+    then putTMTree val >> return False
+    else do
+      let
+        -- the original function can not have references.
+        hasNoRef = not (treeHasRef (newFuncTree fn))
+        reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || hasNoRef
+      withDebugInfo $ \path _ ->
+        logDebugStr $
+          printf
+            "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
+            (show $ fncName fn)
+            (show path)
+            (show reducible)
+            (show hasNoRef)
+            (show $ fncArgs fn)
+      unless reducible $ putTMTree . newFuncTree $ fn{fncRes = Just val}
+      return reducible

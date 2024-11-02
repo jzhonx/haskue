@@ -29,3 +29,11 @@ class TreeOp a where
 
   -- Get the var field with the given selector when the tree is a struct.
   getVarField :: StructSelector -> a -> Maybe a
+
+  isTreeAtom :: a -> Bool
+  isTreeBottom :: a -> Bool
+  isTreeCnstr :: a -> Bool
+  isTreeRefCycle :: a -> Bool
+  isTreeFunc :: a -> Bool
+  isTreeValue :: a -> Bool
+  treeHasRef :: a -> Bool

@@ -18,7 +18,12 @@ type CommonEnv m = Env m Config
 
 type EvalEnvState s m c = (CommonEnv m, MonadState s m)
 
-type TMonad s m t = (TreeOp t, CommonEnv m, MonadState s m, HasCtxVal s t t)
+type TMonad s m t =
+  ( TreeOp t
+  , CommonEnv m
+  , MonadState s m
+  , HasCtxVal s t t
+  )
 
 data Config = Config
   { cfCreateCnstr :: Bool
