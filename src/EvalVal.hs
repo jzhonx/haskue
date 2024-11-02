@@ -17,6 +17,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Path
+import Ref
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -76,7 +77,7 @@ forceEvalCV = do
       putTMContext $ ctx{ctxCycle = Nothing}
     _ -> return ()
 
-  withTree tryPopulateRef
+  withTree $ \t -> tryPopulateRef t evalFunc
 
   logDebugStr $ printf "evalTM: path: %s, done" (show path)
   dumpEntireTree "evalTM done"
@@ -99,19 +100,6 @@ forceEvalCV = do
         newCtx = ctx{ctxVisiting = Set.delete path (ctxVisiting ctx)}
       putTMContext newCtx
 
-tryPopulateRef :: (TreeMonad s m) => Tree -> m ()
-tryPopulateRef nt = do
-  withCtxTree $ \ct -> do
-    let
-      resPath = cvPath ct
-      notifers = ctxNotifiers . cvCtx $ ct
-      deps = fromMaybe [] (Map.lookup resPath notifers)
-    withDebugInfo $ \path _ ->
-      unless (null deps) $
-        logDebugStr $
-          printf "evalTM: path: %s, using value to update %s" (show path) (show deps)
-    mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt)) deps
-
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
   Config{cfMermaid = mermaid} <- ask
@@ -129,75 +117,6 @@ dumpEntireTree msg = do
           s = evalState (treeToMermaid msg evalPath t) 0
         logDebugStr $ printf "entire tree:\n```mermaid\n%s\n```" s
 
-{- | Substitute the cached result of the Func node pointed by the path with the new value. Then trigger the re-evluation
-of the lowest ancestor Func.
--}
-populateRef :: (TreeMonad s m) => Tree -> m ()
-populateRef nt = do
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "populateRef: path: %s, new value: %s" (show path) (show nt)
-  withTree $ \tar -> case (treeNode tar, treeNode nt) of
-    -- If the new value is a function, just skip the re-evaluation.
-    (TNFunc _, TNFunc _) -> return ()
-    (TNFunc fn, _) -> do
-      unless (isFuncRef fn) $
-        throwError $
-          printf "populateRef: the target node %s is not a reference." (show tar)
-
-      reduced <- reduceFunc fn nt mkFuncTree
-      when reduced $ do
-        path <- getTMAbsPath
-        -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-        -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-        delNotifRecvs path
-      withDebugInfo $ \path v ->
-        logDebugStr $ printf "populateRef: path: %s, updated value: %s" (show path) (show v)
-    _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
-
-  locateLAFunc
-  withTree $ \t -> case treeNode t of
-    TNFunc fn
-      | isFuncRef fn -> do
-          -- If it is a reference, the re-evaluation can be skipped because
-          -- 1. The highest function is actually itself.
-          -- 2. Re-evaluating the reference would get the same value.
-          withDebugInfo $ \path _ ->
-            logDebugStr $
-              printf
-                "populateRef: lowest ancestor function is a reference, skip re-evaluation. path: %s, node: %s"
-                (show path)
-                (show t)
-          tryPopulateRef nt
-      -- re-evaluate the highest function when it is not a reference.
-      | otherwise -> do
-          withDebugInfo $ \path _ ->
-            logDebugStr $ printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
-          r <- evalFunc fn >> getTMTree
-          tryPopulateRef r
-    _ -> throwError "populateRef: the target node is not a function"
-
--- Locate the lowest ancestor node of type regular function.
-locateLAFunc :: (TreeMonad s m) => m ()
-locateLAFunc = do
-  path <- getTMAbsPath
-  if hasEmptyPath path || not (hasFuncSel path)
-    then return ()
-    else propUpTM >> locateLAFunc
- where
-  hasEmptyPath (Path.Path sels) = null sels
-  hasFuncSel (Path.Path sels) =
-    any
-      ( \case
-          (FuncSelector (FuncArgSelector _)) -> True
-          _ -> False
-      )
-      sels
-
-eliminateTMCycle :: (TreeMonad s m) => m ()
-eliminateTMCycle = do
-  ctx <- getTMContext
-  putTMContext ctx{ctxCycle = Nothing}
-
 -- Evaluate tree nodes
 
 {- | Evaluate the function.
@@ -209,12 +128,7 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
-  reduced <- callFunc fn mkFuncTree
-  when reduced $ do
-    path <- getTMAbsPath
-    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-    delNotifRecvs path
+  _ <- callFunc fn mkFuncTree
 
   withDebugInfo $ \path t ->
     logDebugStr $
@@ -223,24 +137,6 @@ evalFunc fn = do
         (show path)
         (show $ fncName fn)
         (show t)
-
--- Delete the notification receiver.
--- This should be called when the reference becomes invalid.
-delNotifRecvs :: (TreeMonad s m) => Path -> m ()
-delNotifRecvs pathPrefix = do
-  withContext $ \ctx -> do
-    putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
-  withDebugInfo $ \path _ -> do
-    notifiers <- ctxNotifiers <$> getTMContext
-    logDebugStr $
-      printf
-        "delNotifRecvs: path: %s delete receiver prefix: %s, updated notifiers: %s"
-        (show path)
-        (show pathPrefix)
-        (show notifiers)
- where
-  del :: Map.Map Path [Path] -> Map.Map Path [Path]
-  del = Map.map (filter (\p -> not (isPrefix pathPrefix p)))
 
 evalStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
 evalStruct origStruct = do
@@ -637,7 +533,6 @@ dispUnaryFunc op _t = do
         _ -> putConflict
       _ -> putConflict
     -- The unary op is operating on a non-atom.
-    -- TNFunc _ -> putTMTree $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
     TNFunc _ -> return False
     _ -> putConflict
  where
@@ -1273,8 +1168,6 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
         | isFuncRef fn1 && isFuncRef xfn
         , not (isFuncRef fn1) && not (isFuncRef xfn) ->
             return False
-      -- mkUnification dt1 dt2
-
       _ -> unifyWithDir (d1, r1) dt2
 
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
@@ -1297,6 +1190,11 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
     putTMTree t2
     return True
   _ -> notUnifiable dt1 dt2
+
+eliminateTMCycle :: (TreeMonad s m) => m ()
+eliminateTMCycle = do
+  ctx <- getTMContext
+  putTMContext ctx{ctxCycle = Nothing}
 
 unifyLeftStruct :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
@@ -1373,9 +1271,6 @@ notUnifiable dt1 dt2 = mkNodeWithDir dt1 dt2 f >> return False
   f :: (TreeMonad s m) => Tree -> Tree -> m ()
   f x y = putTMTree $ mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
--- mkUnification :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
--- mkUnification dt1 dt2 = putTMTree $ mkNewTree (TNFunc $ mkBinaryOpDir AST.Unify unify dt1 dt2)
-
 unifyLeftDisj :: (TreeMonad s m) => (Path.BinOpDirect, Disj Tree, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
   case treeNode t2 of
@@ -1445,7 +1340,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
 
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
 treeFromNodes dfM ds = case (excludeDefault dfM, concatExclude ds) of
-  (_, []) -> throwError $ "empty disjuncts"
+  (_, []) -> throwError "empty disjuncts"
   (Nothing, [_d]) -> return $ mkNewTree (treeNode _d)
   (Nothing, _ds) ->
     let

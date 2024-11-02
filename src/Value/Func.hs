@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,9 +23,9 @@ data Func t = Func
   , fncExprGen :: forall m c. (Env m c) => m AST.Expression
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (TMonad s m t) => [t] -> m Bool
-  , -- fncRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
-    -- The result should be stored internally.
-    fncRes :: Maybe t
+  , -- fncTempRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
+    -- It is only used for showing purpose. It is not used for evaluation.
+    fncTempRes :: Maybe t
   }
 
 data FuncType = RegularFunc | DisjFunc | RefFunc | IndexFunc
@@ -37,14 +36,14 @@ instance (Eq t) => Eq (Func t) where
     fncName f1 == fncName f2
       && fncType f1 == fncType f2
       && fncArgs f1 == fncArgs f2
-      && fncRes f1 == fncRes f2
+      && fncTempRes f1 == fncTempRes f2
 
 instance (BuildASTExpr t) => BuildASTExpr (Func t) where
   buildASTExpr c fn = do
     if c || requireFuncConcrete fn
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       then fncExprGen fn
-      else maybe (fncExprGen fn) (buildASTExpr c) (fncRes fn)
+      else maybe (fncExprGen fn) (buildASTExpr c) (fncTempRes fn)
 
 isFuncRef :: Func t -> Bool
 isFuncRef fn = fncType fn == RefFunc
@@ -65,7 +64,7 @@ mkStubFunc f =
     , fncArgs = []
     , fncExprGen = return $ AST.litCons AST.BottomLit
     , fncFunc = f
-    , fncRes = Nothing
+    , fncTempRes = Nothing
     }
 
 mkUnaryOp ::
@@ -77,7 +76,7 @@ mkUnaryOp op f n =
     , fncExprGen = gen
     , fncName = show op
     , fncArgs = [n]
-    , fncRes = Nothing
+    , fncTempRes = Nothing
     }
  where
   g :: (TMonad s m t) => [t] -> m Bool
@@ -111,7 +110,7 @@ mkBinaryOp op f l r =
     , fncExprGen = gen
     , fncName = show op
     , fncArgs = [l, r]
-    , fncRes = Nothing
+    , fncTempRes = Nothing
     }
  where
   g :: (TMonad s m t) => [t] -> m Bool
@@ -189,7 +188,13 @@ reduceFunc fn val newFuncTree =
             (show reducible)
             (show hasNoRef)
             (show $ fncArgs fn)
-      unless reducible $ putTMTree . newFuncTree $ fn{fncRes = Just val}
+      if reducible
+        then do
+          path <- getTMAbsPath
+          -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+          -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+          delNotifRecvs path
+        else putTMTree . newFuncTree $ fn{fncTempRes = Just val}
       return reducible
 
 -- Evaluate the sub node of the tree. The node must be a function.
@@ -220,4 +225,4 @@ getFuncResOrTree mustAtom t getFunc =
           | mustAtom -> t
           | otherwise -> r
     )
-    (getFunc t >>= fncRes)
+    (getFunc t >>= fncTempRes)

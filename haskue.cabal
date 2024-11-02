@@ -29,6 +29,7 @@ library
         EvalVal,
         Parser,
         Path,
+        Ref,
         Util,
         Value.Atom,
         Value.Bottom,

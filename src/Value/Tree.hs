@@ -170,7 +170,7 @@ instance TreeRepBuilderIter Tree where
     TNFunc f ->
       let
         args = map (\(j, v) -> (show (FuncArgSelector j), mempty, v)) (zip [0 ..] (fncArgs f))
-        res = maybe mempty (\s -> [("res", mempty, s)]) (fncRes f)
+        res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
        in
         ( symbol
         , fncName f
@@ -455,5 +455,5 @@ original function node is kept.
 snapshotTM :: (TreeMonad s m) => m ()
 snapshotTM =
   traverseTM $ withTN $ \case
-    TNFunc fn -> maybe (return ()) putTMTree (fncRes fn)
+    TNFunc fn -> maybe (return ()) putTMTree (fncTempRes fn)
     _ -> return ()

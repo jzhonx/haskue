@@ -7,9 +7,11 @@ module Value.TMonad where
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState, gets, modify)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import Path
 import Text.Printf (printf)
+import Util
 import Value.Class
 import Value.Cursor
 import Value.Env
@@ -190,3 +192,21 @@ whenJustM :: (Monad m) => m (Maybe a) -> (a -> m (Maybe b)) -> m (Maybe b)
 whenJustM m f = do
   ma <- m
   maybe (return Nothing) f ma
+
+-- Delete the notification receiver.
+-- This should be called when the reference becomes invalid.
+delNotifRecvs :: (TMonad s m t) => Path -> m ()
+delNotifRecvs pathPrefix = do
+  withContext $ \ctx -> do
+    putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
+  withDebugInfo $ \path _ -> do
+    notifiers <- ctxNotifiers <$> getTMContext
+    logDebugStr $
+      printf
+        "delNotifRecvs: path: %s delete receiver prefix: %s, updated notifiers: %s"
+        (show path)
+        (show pathPrefix)
+        (show notifiers)
+ where
+  del :: Map.Map Path [Path] -> Map.Map Path [Path]
+  del = Map.map (filter (\p -> not (isPrefix pathPrefix p)))
