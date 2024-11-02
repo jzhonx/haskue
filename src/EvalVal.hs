@@ -25,20 +25,6 @@ setOrigNodes :: (TreeMonad s m) => m ()
 setOrigNodes = traverseTM $ withTree $ \t ->
   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
 
--- | Traverse all the one-level sub nodes of the tree.
-traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
- where
-  go :: (TreeMonad s m) => (Selector, Tree) -> m ()
-  go (sel, sub) = whenNotBottom () $ inSubTM sel sub f
-
-{- | Traverse the leaves of the tree cursor in the following order
-1. Traverse the current node.
-2. Traverse the sub-tree with the selector.
--}
-traverseTM :: (TreeMonad s m) => m () -> m ()
-traverseTM f = f >> traverseSub (traverseTM f)
-
 -- Exhaust the tree by evaluating dereferenced functions.
 exhaustTM :: (TreeMonad s m) => m ()
 exhaustTM = do
@@ -240,36 +226,6 @@ evalFunc fn = do
         (show $ fncName fn)
         (show t)
 
--- Evaluate the sub node of the tree. The node must be a function.
--- Notice that the argument is a function and the result of the function is not reducible, the result is still returned.
--- This works because we do not reduce the argument. Next time the parent function is evaluated, the argument function
--- will be evaluated again.
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m () -> m Tree
-evalFuncArg sel sub reqA f = withTN $ \case
-  TNFunc _ -> do
-    res <- inSubTM sel sub (f >> getTMTree)
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "evalSubTM: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
-    return $ getFuncResOrTree reqA res
-  _ -> throwError "evalFuncArg: node is not a function"
-
-{- | Get the result of the function. If the result is not found, return the original tree.
-If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
--}
-getFuncResOrTree :: Bool -> Tree -> Tree
-getFuncResOrTree reqA t = case treeNode t of
-  TNFunc fn ->
-    maybe
-      t
-      ( \r ->
-          if
-            | reqA && isTreeAtom r -> r
-            | reqA -> t
-            | otherwise -> r
-      )
-      (fncRes fn)
-  _ -> t
-
 -- Delete the notification receiver.
 -- This should be called when the reference becomes invalid.
 delNotifRecvs :: (TreeMonad s m) => Path -> m ()
@@ -417,13 +373,11 @@ mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
           , fncExprGen = return $ AST.ExprUnaryExpr ue
           }
   _ ->
-    Func
+    (mkStubFunc (index ue))
       { fncName = "index"
       , fncType = IndexFunc
       , fncArgs = [treeArg, selArg]
       , fncExprGen = return $ AST.ExprUnaryExpr ue
-      , fncFunc = index ue
-      , fncRes = Nothing
       }
 
 treesToPath :: [Tree] -> Maybe Path
@@ -465,7 +419,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc) >> exhaustTM
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False exhaustTM
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False exhaustTM getFuncFromTree
           putTMTree res
           logDebugStr $ printf "index: tree is evaluated to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -497,17 +451,13 @@ appendRefFuncPath fn p ue
           (treesToPath (fncArgs fn))
       -- remove original receiver because origP would not exist.
       delNotifRecvs origTP
-      mkReference (appendPath p origTP) Nothing ue
+      withCtxTree $ \ct -> do
+        let tp = appendPath p origTP
+        -- add notifier. If the referenced value changes, then the reference should be updated.
+        putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
+        -- Reference the target node when the target node is not an atom or a cycle head.
+        mkRefFunc tp ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
-
--- Reference the target node when the target node is not an atom or a cycle head.
--- It returns a function that when called, will return the latest value of the target node.
-mkReference :: (TreeMonad s m) => Path -> Maybe Tree -> AST.UnaryExpr -> m (Func Tree)
-mkReference tp tM ue = withCtxTree $ \ct -> do
-  -- add notifier. If the referenced value changes, then the reference should be updated.
-  putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
-  fn <- mkRefFunc tp ue
-  return $ fn{fncRes = tM}
 
 mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Func Tree)
 mkRefFunc tp ue = do
@@ -517,16 +467,17 @@ mkRefFunc tp ue = do
       return
       (pathToTrees tp)
   return $
-    Func
+    ( mkStubFunc
+        ( \_ -> do
+            ok <- deref tp
+            when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
+            return ok
+        )
+    )
       { fncName = printf "&%s" (show tp)
       , fncType = RefFunc
       , fncArgs = args
       , fncExprGen = return $ AST.ExprUnaryExpr ue
-      , fncFunc = \_ -> do
-          ok <- deref tp
-          when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
-          return ok
-      , fncRes = Nothing
       }
 
 -- Dereference the reference. It keeps dereferencing until the target node is not a reference node.
@@ -630,9 +581,7 @@ validateCnstrs = do
   -- remove all notifiers.
   putTMContext $ ctx{ctxNotifiers = Map.empty}
   -- first rewrite all functions to their results if the results exist.
-  traverseTM $ withTN $ \case
-    TNFunc fn -> maybe (return ()) putTMTree (fncRes fn)
-    _ -> return ()
+  snapshotTM
 
   -- then validate all constraints.
   traverseTM $ withTN $ \case
@@ -667,7 +616,7 @@ validateCnstr c = withTree $ \t -> do
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  t <- evalFuncArg unaryOpSelector _t True exhaustTM
+  t <- evalFuncArg unaryOpSelector _t True exhaustTM getFuncFromTree
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
       (AST.Plus, Int i) -> ia i id
@@ -729,8 +678,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True exhaustTM
-  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True exhaustTM
+  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True exhaustTM getFuncFromTree
+  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True exhaustTM getFuncFromTree
 
   case (treeNode t1, treeNode t2) of
     (TNBottom _, _) -> putTMTree t1 >> return True
@@ -873,7 +822,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   evalOrDelay :: (TreeMonad s m) => m Bool
   evalOrDelay = do
     logDebugStr $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1 True exhaustTM
+    et1 <- evalFuncArg (toBinOpSelector d1) t1 True exhaustTM getFuncFromTree
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m Bool
@@ -1315,7 +1264,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False exhaustTM
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False exhaustTM getFuncFromTree
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 

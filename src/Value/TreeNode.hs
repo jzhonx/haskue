@@ -72,7 +72,7 @@ subTreeTN sel t = case (sel, getTreeNode t) of
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
   (FuncSelector f, TNFunc fn) -> case f of
     FuncArgSelector i -> fncArgs fn `indexList` i
-    FuncResSelector -> fncRes fn
+  -- FuncResSelector -> fncRes fn
   (_, TNDisj d)
     | DisjDefaultSelector <- sel -> dsjDefault d
     | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
@@ -99,9 +99,9 @@ setSubTreeTN sel subT parT = do
           args = fncArgs fn
           l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
         return l
-      FuncResSelector -> do
-        let l = TNFunc $ fn{fncRes = Just subT}
-        return l
+    -- FuncResSelector -> do
+    --   let l = TNFunc $ fn{fncRes = Just subT}
+    --   return l
     (_, TNDisj d)
       | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjDisjunctSelector i <- sel ->

@@ -1,11 +1,13 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Value.Func where
 
 import qualified AST
-import Control.Monad (unless, when)
+import Control.Monad (unless)
 import Control.Monad.Except (throwError)
 import Path
 import Text.Printf (printf)
@@ -23,6 +25,7 @@ data Func t = Func
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (TMonad s m t) => [t] -> m Bool
   , -- fncRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
+    -- The result should be stored internally.
     fncRes :: Maybe t
   }
 
@@ -53,6 +56,17 @@ requireFuncConcrete :: Func t -> Bool
 requireFuncConcrete fn = case fncType fn of
   RegularFunc -> fncName fn `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   _ -> False
+
+mkStubFunc :: (forall s m. (TMonad s m t) => [t] -> m Bool) -> Func t
+mkStubFunc f =
+  Func
+    { fncName = ""
+    , fncType = RegularFunc
+    , fncArgs = []
+    , fncExprGen = return $ AST.litCons AST.BottomLit
+    , fncFunc = f
+    , fncRes = Nothing
+    }
 
 mkUnaryOp ::
   forall t. (BuildASTExpr t) => AST.UnaryOp -> (forall s m. (TMonad s m t) => t -> m Bool) -> t -> Func t
@@ -177,3 +191,33 @@ reduceFunc fn val newFuncTree =
             (show $ fncArgs fn)
       unless reducible $ putTMTree . newFuncTree $ fn{fncRes = Just val}
       return reducible
+
+-- Evaluate the sub node of the tree. The node must be a function.
+-- Notice that if the argument is a function and the result of the function is not reducible, the result is still
+-- returned.
+-- This works because we do not reduce the argument. Next time the parent function is evaluated, the argument function
+-- will be evaluated again.
+evalFuncArg :: (TMonad s m t, Show t) => Selector -> t -> Bool -> m () -> (t -> Maybe (Func t)) -> m t
+evalFuncArg sel sub mustAtom f getFunc = withTree $ \t -> do
+  if isTreeFunc t
+    then do
+      res <- inSubTM sel sub (f >> getTMTree)
+      withDebugInfo $ \path _ ->
+        logDebugStr $ printf "evalFuncArg: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
+      return $ getFuncResOrTree mustAtom res getFunc
+    else throwError "evalFuncArg: node is not a function"
+
+{- | Get the result of the function. If the result is not found, return the original tree.
+If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
+-}
+getFuncResOrTree :: (TreeOp t) => Bool -> t -> (t -> Maybe (Func t)) -> t
+getFuncResOrTree mustAtom t getFunc =
+  maybe
+    t
+    ( \r ->
+        if
+          | mustAtom && isTreeAtom r -> r
+          | mustAtom -> t
+          | otherwise -> r
+    )
+    (getFunc t >>= fncRes)

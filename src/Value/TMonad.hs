@@ -83,9 +83,6 @@ propUpTM = getTMCursor >>= propValUp >>= putTMCursor
 withTree :: (TMonad s m t) => (t -> m a) -> m a
 withTree f = getTMTree >>= f
 
--- withTN :: (TMonad s m t) => (t -> m a) -> m a
--- withTN f = withTree (f . treeNode)
-
 withContext :: (TMonad s m t) => (Context t -> m a) -> m a
 withContext f = getTMContext >>= f
 

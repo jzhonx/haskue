@@ -1,7 +1,8 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Value.Tree (
   module Value.Atom,
@@ -12,22 +13,36 @@ module Value.Tree (
   module Value.Cursor,
   module Value.Cycle,
   module Value.Disj,
-  module Value.Func,
   module Value.List,
   module Value.Struct,
   module Value.TMonad,
   module Value.Tree,
   module Value.TreeNode,
+  Func,
+  fncName,
+  fncType,
+  fncArgs,
+  fncExprGen,
+  FuncType (..),
+  isFuncRef,
+  isFuncIndex,
+  mkUnaryOp,
+  mkBinaryOp,
+  mkBinaryOpDir,
+  mkStubFunc,
+  callFunc,
+  reduceFunc,
+  evalFuncArg,
 )
 where
 
 import qualified AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isNothing)
+import Data.Maybe (fromJust, isJust)
 import Path
 import Text.Printf (printf)
 import Value.Atom
@@ -38,7 +53,6 @@ import Value.Constraint
 import Value.Cursor
 import Value.Cycle
 import Value.Disj
-import Value.Env
 import Value.Func
 import Value.List
 import Value.Struct
@@ -66,25 +80,15 @@ instance TreeOp Tree where
   subTree = subTreeTN
   setSubTree = setSubTreeTN
   getVarField = getVarFieldTN
-  isTreeAtom t = case treeNode t of
-    TNAtom _ -> True
-    _ -> False
-  isTreeBottom t = case treeNode t of
-    TNBottom _ -> True
-    _ -> False
-  isTreeCnstr t = case treeNode t of
-    TNConstraint _ -> True
-    _ -> False
-  isTreeRefCycle t = case treeNode t of
-    TNRefCycle _ -> True
-    _ -> False
+  isTreeAtom = isJust . getAtomVFromTree
+  isTreeBottom = isJust . getBottomFromTree
+  isTreeCnstr = isJust . getCnstrFromTree
+  isTreeRefCycle = isJust . getRefCycleFromTree
+  isTreeFunc = isJust . getFuncFromTree
   isTreeValue t = case treeNode t of
     TNRefCycle _ -> False
     TNFunc _ -> False
     _ -> True
-  isTreeFunc t = case treeNode t of
-    TNFunc _ -> True
-    _ -> False
   treeHasRef t = case treeNode t of
     TNFunc fn -> funcHasRef fn
     _ -> False
@@ -356,6 +360,31 @@ setOrig t o = t{treeOrig = Just o}
 setTNOrig :: TreeNode Tree -> Tree -> Tree
 setTNOrig tn o = (mkNewTree tn){treeOrig = Just o}
 
+getAtomVFromTree :: Tree -> Maybe AtomV
+getAtomVFromTree t = case treeNode t of
+  TNAtom a -> Just a
+  _ -> Nothing
+
+getBottomFromTree :: Tree -> Maybe Bottom
+getBottomFromTree t = case treeNode t of
+  TNBottom b -> Just b
+  _ -> Nothing
+
+getCnstrFromTree :: Tree -> Maybe (Constraint Tree)
+getCnstrFromTree t = case treeNode t of
+  TNConstraint c -> Just c
+  _ -> Nothing
+
+getRefCycleFromTree :: Tree -> Maybe RefCycle
+getRefCycleFromTree t = case treeNode t of
+  TNRefCycle c -> Just c
+  _ -> Nothing
+
+getFuncFromTree :: Tree -> Maybe (Func Tree)
+getFuncFromTree t = case treeNode t of
+  TNFunc f -> Just f
+  _ -> Nothing
+
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeEvaled = False}
 
@@ -405,3 +434,26 @@ whenNotBottom a f = do
   case treeNode t of
     TNBottom _ -> return a
     _ -> f
+
+-- | Traverse all the one-level sub nodes of the tree.
+traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
+traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
+ where
+  go :: (TreeMonad s m) => (Selector, Tree) -> m ()
+  go (sel, sub) = whenNotBottom () $ inSubTM sel sub f
+
+{- | Traverse the leaves of the tree cursor in the following order
+1. Traverse the current node.
+2. Traverse the sub-tree with the selector.
+-}
+traverseTM :: (TreeMonad s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)
+
+{- | Traverse the tree and replace the function node with the result of the function if it exists, otherwise the
+original function node is kept.
+-}
+snapshotTM :: (TreeMonad s m) => m ()
+snapshotTM =
+  traverseTM $ withTN $ \case
+    TNFunc fn -> maybe (return ()) putTMTree (fncRes fn)
+    _ -> return ()
