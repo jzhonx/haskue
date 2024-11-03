@@ -44,6 +44,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import Path
 import Text.Printf (printf)
+import Util
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
@@ -487,3 +488,76 @@ snapshotTM =
   traverseTM $ withTN $ \case
     TNFunc fn -> maybe (return ()) putTMTree (fncTempRes fn)
     _ -> return ()
+
+{- | Call the function. It returns the result of the function.
+ - This does not modify the tree, i.e. the function is not reduced.
+ -
+ - TODO: consider whether putting back the fn accidentally left the unwanted changes in Monad.
+-}
+callFunc :: (TreeMonad s m) => m (Maybe Tree)
+callFunc = withTree $ \t -> case getFuncFromTree t of
+  Just fn -> do
+    let name = fncName fn
+    withDebugInfo $ \path _ ->
+      logDebugStr $ printf "callFunc: path: %s, function %s, tip:\n%s" (show path) (show name) (show t)
+
+    -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
+    -- enough to replace the function with the new struct.
+    modified <- fncFunc fn (fncArgs fn)
+
+    res <- getTMTree
+    withDebugInfo $ \path _ ->
+      logDebugStr $
+        printf
+          "callFunc: path: %s, function %s, modified: %s, result:\n%s"
+          (show path)
+          (show name)
+          (show modified)
+          (show res)
+
+    if modified
+      then case getFuncFromTree res of
+        Just _ -> do
+          -- recursively call the function until the result is not a function.
+          -- the tip is already the res.
+          callFunc
+        Nothing -> do
+          -- we need to restore the original tree with the new function result.
+          putTMTree (mkFuncTree $ fn{fncTempRes = Just res})
+          return (Just res)
+      else return Nothing
+  Nothing -> throwError "callFunc: function not found"
+
+-- Try to reduce the function by using the function result to replace the function node.
+-- This should be called after the function is evaluated.
+reduceFunc :: (TreeMonad s m) => Tree -> m Bool
+reduceFunc val = withTree $ \t -> case getFuncFromTree t of
+  Just fn ->
+    if isTreeFunc val
+      -- If the function returns another function, then the function is not reducible.
+      then putTMTree val >> return False
+      else do
+        let
+          -- the original function can not have references.
+          hasNoRef = not (treeHasRef t)
+          reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || hasNoRef
+        withDebugInfo $ \path _ ->
+          logDebugStr $
+            printf
+              "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
+              (show $ fncName fn)
+              (show path)
+              (show reducible)
+              (show hasNoRef)
+              (show $ fncArgs fn)
+        if reducible
+          then do
+            putTMTree val
+            path <- getTMAbsPath
+            -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+            -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+            delNotifRecvs path
+          -- restore the original function
+          else putTMTree . mkFuncTree $ fn
+        return reducible
+  Nothing -> throwError "reduceFunc: function not found"

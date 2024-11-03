@@ -128,8 +128,8 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
-  rM <- callFunc getFuncFromTree mkFuncTree
-  maybe (return ()) (\r -> void $ reduceFunc getFuncFromTree r mkFuncTree) rM
+  rM <- callFunc
+  maybe (return ()) (\r -> void $ reduceFunc r) rM
 
   withDebugInfo $ \path t ->
     logDebugStr $
@@ -169,7 +169,7 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
           sub
           ( withTree $ \x -> case treeNode x of
               TNFunc _ -> do
-                rM <- callFunc getFuncFromTree mkFuncTree
+                rM <- callFunc
                 -- return $ maybe x id rM
                 return $ getFuncRes x rM
               _ -> exhaustTM >> getTMTree

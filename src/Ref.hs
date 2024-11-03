@@ -45,7 +45,7 @@ populateRef nt evalFunc = do
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
-      _ <- reduceFunc getFuncFromTree nt mkFuncTree
+      _ <- reduceFunc nt
       withDebugInfo $ \path v ->
         logDebugStr $ printf "populateRef: path: %s, updated value: %s" (show path) (show v)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)

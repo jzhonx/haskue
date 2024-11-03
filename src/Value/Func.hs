@@ -1,16 +1,12 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Value.Func where
 
 import qualified AST
-import Control.Monad (unless)
 import Control.Monad.Except (throwError)
 import Path
-import Text.Printf (printf)
-import Util
 import Value.Class
 import Value.Env
 import Value.TMonad
@@ -136,76 +132,3 @@ mkBinaryOpDir rep op (d1, t1) (_, t2) =
   case d1 of
     L -> mkBinaryOp rep op t1 t2
     R -> mkBinaryOp rep op t2 t1
-
-{- | Call the function. It returns the result of the function.
- - This does not modify the tree, i.e. the function is not reduced.
- -
- - TODO: consider whether putting back the fn accidentally left the unwanted changes in Monad.
--}
-callFunc :: (TMonad s m t, Show t) => (t -> Maybe (Func t)) -> (Func t -> t) -> m (Maybe t)
-callFunc getFunc newFnTree = withTree $ \t -> case getFunc t of
-  Just fn -> do
-    let name = fncName fn
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "callFunc: path: %s, function %s, tip:\n%s" (show path) (show name) (show t)
-
-    -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
-    -- enough to replace the function with the new struct.
-    modified <- fncFunc fn (fncArgs fn)
-
-    res <- getTMTree
-    withDebugInfo $ \path _ ->
-      logDebugStr $
-        printf
-          "callFunc: path: %s, function %s, modified: %s, result:\n%s"
-          (show path)
-          (show name)
-          (show modified)
-          (show res)
-
-    if modified
-      then case getFunc res of
-        Just _ -> do
-          -- recursively call the function until the result is not a function.
-          -- the tip is already the res.
-          callFunc getFunc newFnTree
-        Nothing -> do
-          -- we need to restore the original tree with the new function result.
-          putTMTree (newFnTree $ fn{fncTempRes = Just res})
-          return (Just res)
-      else return Nothing
-  Nothing -> throwError "callFunc: function not found"
-
--- Try to reduce the function by using the function result to replace the function node.
--- This should be called after the function is evaluated.
-reduceFunc :: (TMonad s m t, Show t) => (t -> Maybe (Func t)) -> t -> (Func t -> t) -> m Bool
-reduceFunc getFunc val newFuncTree = withTree $ \t -> case getFunc t of
-  Just fn ->
-    if isTreeFunc val
-      -- If the function returns another function, then the function is not reducible.
-      then putTMTree val >> return False
-      else do
-        let
-          -- the original function can not have references.
-          hasNoRef = not (treeHasRef (newFuncTree fn))
-          reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || hasNoRef
-        withDebugInfo $ \path _ ->
-          logDebugStr $
-            printf
-              "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
-              (show $ fncName fn)
-              (show path)
-              (show reducible)
-              (show hasNoRef)
-              (show $ fncArgs fn)
-        if reducible
-          then do
-            putTMTree val
-            path <- getTMAbsPath
-            -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-            -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-            delNotifRecvs path
-          -- restore the original function
-          else putTMTree . newFuncTree $ fn
-        return reducible
-  Nothing -> throwError "reduceFunc: function not found"
