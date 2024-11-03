@@ -32,7 +32,6 @@ module Value.Tree (
   mkStubFunc,
   callFunc,
   reduceFunc,
-  evalFuncArg,
 )
 where
 
@@ -91,6 +90,11 @@ instance TreeOp Tree where
     _ -> True
   treeHasRef t = case treeNode t of
     TNFunc fn -> funcHasRef fn
+    _ -> False
+  treeHasAtom t = case treeNode t of
+    TNAtom _ -> True
+    TNConstraint _ -> True
+    TNDisj dj -> maybe False treeHasAtom (dsjDefault dj)
     _ -> False
 
 instance TreeRepBuilder Tree where
@@ -167,22 +171,25 @@ instance TreeRepBuilderIter Tree where
     TNRefCycle c -> case c of
       RefCycle p -> (symbol, show p, emptyTreeFields, [])
       RefCycleTail -> (symbol, "tail", emptyTreeFields, [])
-    TNFunc f ->
-      let
-        args = map (\(j, v) -> (show (FuncArgSelector j), mempty, v)) (zip [0 ..] (fncArgs f))
-        res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
-       in
-        ( symbol
-        , fncName f
-            <> ( if isFuncRef f
-                  then mempty
-                  else
-                    printf ", args:%s" (show . length $ fncArgs f)
-                      <> (if funcHasRef f then ", hasRef" else mempty)
-               )
-        , args ++ res
-        , []
-        )
+    TNFunc f -> case fncType f of
+      RefFunc ->
+        let
+          res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
+         in
+          (symbol, fncName f, res, [])
+      _ ->
+        let
+          args = map (\(j, v) -> (show (FuncArgSelector j), mempty, v)) (zip [0 ..] (fncArgs f))
+          res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
+         in
+          ( symbol
+          , fncName f
+              <> ( printf ", args:%s" (show . length $ fncArgs f)
+                    <> (if funcHasRef f then ", hasRef" else mempty)
+                 )
+          , args ++ res
+          , []
+          )
     TNBottom b -> (symbol, show b, emptyTreeFields, [])
     TNTop -> (symbol, mempty, emptyTreeFields, [])
    where
@@ -434,6 +441,29 @@ whenNotBottom a f = do
   case treeNode t of
     TNBottom _ -> return a
     _ -> f
+
+treesToPath :: [Tree] -> Maybe Path
+treesToPath ts = pathFromList <$> mapM treeToSel ts
+ where
+  treeToSel :: Tree -> Maybe Selector
+  treeToSel t = case treeNode t of
+    TNAtom a
+      | (String s) <- va -> Just (StructSelector $ StringSelector s)
+      | (Int j) <- va -> Just (IndexSelector $ fromIntegral j)
+     where
+      va = amvAtom a
+    -- If a disjunct has a default, then we should try to use the default.
+    TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
+    _ -> Nothing
+
+pathToTrees :: Path -> Maybe [Tree]
+pathToTrees p = mapM selToTree (pathToList p)
+ where
+  selToTree :: Selector -> Maybe Tree
+  selToTree sel = case sel of
+    StructSelector (StringSelector s) -> Just $ mkAtomTree (String s)
+    IndexSelector j -> Just $ mkAtomTree (Int (fromIntegral j))
+    _ -> Nothing
 
 -- | Traverse all the one-level sub nodes of the tree.
 traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()

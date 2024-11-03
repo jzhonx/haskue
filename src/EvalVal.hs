@@ -8,7 +8,7 @@
 module EvalVal where
 
 import qualified AST
-import Control.Monad (foldM, forM, unless, when)
+import Control.Monad (foldM, forM, void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import Control.Monad.State.Strict (evalState)
@@ -128,7 +128,8 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
-  _ <- callFunc fn mkFuncTree
+  rM <- callFunc getFuncFromTree mkFuncTree
+  maybe (return ()) (\r -> void $ reduceFunc getFuncFromTree r mkFuncTree) rM
 
   withDebugInfo $ \path t ->
     logDebugStr $
@@ -152,6 +153,47 @@ evalStruct origStruct = do
     putTMTree newStruct
  where
   mk = mkNewTree . TNStruct
+
+-- Evaluate the sub node of the tree. The node must be a function.
+-- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
+-- reducible, the result is still returned because the parent function needs to be evaluated.
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
+evalFuncArg sel sub mustAtom = withTree $ \t -> do
+  withDebugInfo $ \path _ ->
+    logDebugStr $ printf "evalFuncArg: path: %s, start evaluate %s" (show path) (show sub)
+  if isTreeFunc t
+    then do
+      res <-
+        inSubTM
+          sel
+          sub
+          ( withTree $ \x -> case treeNode x of
+              TNFunc _ -> do
+                rM <- callFunc getFuncFromTree mkFuncTree
+                -- return $ maybe x id rM
+                return $ getFuncRes x rM
+              _ -> exhaustTM >> getTMTree
+          )
+      withDebugInfo $ \path _ ->
+        logDebugStr $ printf "evalFuncArg: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
+      -- return $ getFuncResOrTree mustAtom res getFunc
+      return res
+    else throwError "evalFuncArg: node is not a function"
+ where
+  -- Get the result of the function. If the result is not found, return the original tree.
+  -- If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
+  getFuncRes :: Tree -> Maybe Tree -> Tree
+  getFuncRes ft =
+    maybe
+      ft
+      ( \res ->
+          if
+            | mustAtom && treeHasAtom res -> res
+            -- The result of the function is not an atom while an atom is required. The function itself is returned to
+            -- represent incompleteness.
+            | mustAtom -> ft
+            | otherwise -> res
+      )
 
 evalStaticSF :: (TreeMonad s m) => StructSelector -> m ()
 evalStaticSF sel = whenStruct () $ \struct ->
@@ -274,29 +316,6 @@ mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
       , fncExprGen = return $ AST.ExprUnaryExpr ue
       }
 
-treesToPath :: [Tree] -> Maybe Path
-treesToPath ts = pathFromList <$> mapM treeToSel ts
- where
-  treeToSel :: Tree -> Maybe Selector
-  treeToSel t = case treeNode t of
-    TNAtom a
-      | (String s) <- va -> Just (StructSelector $ StringSelector s)
-      | (Int j) <- va -> Just (IndexSelector $ fromIntegral j)
-     where
-      va = amvAtom a
-    -- If a disjunct has a default, then we should try to use the default.
-    TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
-    _ -> Nothing
-
-pathToTrees :: Path -> Maybe [Tree]
-pathToTrees p = mapM selToTree (pathToList p)
- where
-  selToTree :: Selector -> Maybe Tree
-  selToTree sel = case sel of
-    StructSelector (StringSelector s) -> Just $ mkAtomTree (String s)
-    IndexSelector j -> Just $ mkAtomTree (Int (fromIntegral j))
-    _ -> Nothing
-
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
 -}
@@ -313,7 +332,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc) >> exhaustTM
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False exhaustTM getFuncFromTree
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False
           putTMTree res
           logDebugStr $ printf "index: tree is evaluated to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -374,99 +393,6 @@ mkRefFunc tp ue = do
       , fncExprGen = return $ AST.ExprUnaryExpr ue
       }
 
--- Dereference the reference. It keeps dereferencing until the target node is not a reference node.
--- If the target is not found, the current node is kept.
--- No more evaluation is done after the dereference.
-deref :: (TreeMonad s m) => Path -> m Bool
-deref tp = do
-  path <- getTMAbsPath
-  withDebugInfo $ \_ r -> logDebugStr $ printf "deref: start, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
-  follow tp >>= \case
-    (Just tar) -> do
-      withDebugInfo $ \_ r -> logDebugStr $ printf "deref: done, path: %s, tp: %s, tip: %s" (show path) (show tp) (show r)
-      putTMTree tar
-      return True
-    Nothing -> return False
- where
-  -- Keep dereferencing until the target node is not a reference node.
-  -- returns the target node.
-  follow :: (TreeMonad s m) => Path -> m (Maybe Tree)
-  follow dst = do
-    srcPath <- getTMAbsPath
-    logDebugStr $ printf "deref: path: %s, dereferencing: %s" (show srcPath) (show dst)
-    resE <- getDstVal srcPath dst
-    case resE of
-      Left (cycleStartPath, cycleTailRelPath) -> do
-        ctx <- getTMContext
-        putTMContext $ ctx{ctxCycle = Just (cycleStartPath, cycleTailRelPath)}
-        return $ Just (mkNewTree $ TNRefCycle RefCycleTail)
-      Right origM
-        | Nothing <- origM -> return Nothing
-        | (Just orig) <- origM -> do
-            withDebugInfo $ \path _ -> do
-              logDebugStr $ printf "deref: path: %s, substitutes with orig: %s" (show path) (show orig)
-            -- substitute the reference with the target node.
-            putTMTree orig
-            withTN $ \case
-              -- follow the reference.
-              TNFunc fn | isFuncRef fn -> do
-                nextDst <-
-                  maybe
-                    (throwError "deref: can not generate path from the arguments")
-                    return
-                    (treesToPath (fncArgs fn))
-                follow nextDst
-              _ -> Just <$> getTMTree
-
-  -- Get the value pointed by the reference.
-  -- If the reference path is self or visited, then return the tuple of the absolute path of the start of the cycle and
-  -- the cycle tail relative path.
-  getDstVal :: (TreeMonad s m) => Path -> Path -> m (Either (Path, Path) (Maybe Tree))
-  getDstVal srcPath dst = inRemoteTMMaybe dst $ do
-    dstPath <- getTMAbsPath
-    visitingSet <- ctxVisiting <$> getTMContext
-    let
-      canSrcPath = canonicalizePath srcPath
-      canDstPath = canonicalizePath dstPath
-    if
-      | Set.member dstPath visitingSet -> do
-          delNotifRecvs dstPath
-          logDebugStr $ printf "deref: reference cycle detected: %s, set: %s" (show dstPath) (show $ Set.toList visitingSet)
-          return $ Left (dstPath, relPath dstPath srcPath)
-      | canDstPath == canSrcPath -> do
-          logDebugStr $ printf "deref: reference self cycle detected: %s == %s." (show dstPath) (show srcPath)
-          return $ Left (dstPath, relPath dstPath srcPath)
-      | isPrefix canDstPath canSrcPath ->
-          throwError $ printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)
-      -- The value of a reference is a copy of the expression associated with the field that it is bound to, with
-      -- any references within that expression bound to the respective copies of the fields they were originally
-      -- bound to.
-      | otherwise -> withTree $ \tar -> case treeNode tar of
-          -- The atom value is final, so we can return it directly.
-          TNAtom _ -> return . Right $ Just tar
-          TNConstraint c -> return . Right $ Just (mkAtomVTree $ cnsAtom c)
-          _ -> do
-            let x = fromMaybe tar (treeOrig tar)
-                -- back up the original tree.
-                orig = x{treeOrig = Just x}
-            logDebugStr $
-              printf
-                "deref: path: %s, deref'd orig is: %s, set: %s, tar: %s"
-                (show dstPath)
-                (show orig)
-                (show $ Set.toList visitingSet)
-                (show tar)
-            return . Right $ Just orig
-
-  inRemoteTMMaybe :: (TreeMonad s m) => Path -> m (Either a (Maybe b)) -> m (Either a (Maybe b))
-  inRemoteTMMaybe p f = do
-    origAbsPath <- getTMAbsPath
-    tarM <- goLowestAncPathTM p (Just <$> getTMTree)
-    res <- maybe (return (Right Nothing)) (\x -> putTMTree x >> f) tarM
-    backM <- goTMAbsPath origAbsPath
-    unless backM $ throwError "inRemoteTMMaybe: failed to go back to the original path"
-    return res
-
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
   logDebugStr $ printf "validateCnstrs: start"
@@ -510,7 +436,7 @@ validateCnstr c = withTree $ \t -> do
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  t <- evalFuncArg unaryOpSelector _t True exhaustTM getFuncFromTree
+  t <- evalFuncArg unaryOpSelector _t True
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
       (AST.Plus, Int i) -> ia i id
@@ -571,8 +497,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True exhaustTM getFuncFromTree
-  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True exhaustTM getFuncFromTree
+  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True
+  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True
 
   case (treeNode t1, treeNode t2) of
     (TNBottom _, _) -> putTMTree t1 >> return True
@@ -715,7 +641,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   evalOrDelay :: (TreeMonad s m) => m Bool
   evalOrDelay = do
     logDebugStr $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1 True exhaustTM getFuncFromTree
+    et1 <- evalFuncArg (toBinOpSelector d1) t1 True
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m Bool
@@ -1157,7 +1083,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False exhaustTM getFuncFromTree
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
 
