@@ -53,7 +53,7 @@ data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxNotifiers :: Map.Map Path [Path]
   , ctxVisiting :: Set.Set Path
-  , -- The tuple is the absolute path of the start of the cycle and the cycle tail relative path.
+  , -- The tuple is the absolute path of the start of the cycle and the relative path of the cycle tail.
     ctxCycle :: Maybe (Path, Path)
   }
   deriving (Eq, Show)
@@ -85,6 +85,10 @@ emptyContext =
     , ctxCycle = Nothing
     }
 
+{- | Add a notifier pair to the context.
+The first element is the source path, which is the path that is being watched.
+The second element is the dependent path, which is the path that is watching the source path.
+-}
 addCtxNotifier :: (Path, Path) -> Context t -> Context t
 addCtxNotifier (src, dep) ctx = ctx{ctxNotifiers = new}
  where

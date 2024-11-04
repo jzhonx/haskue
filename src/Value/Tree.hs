@@ -30,15 +30,14 @@ module Value.Tree (
   mkBinaryOp,
   mkBinaryOpDir,
   mkStubFunc,
-  callFunc,
-  reduceFunc,
 )
 where
 
 import qualified AST
-import Control.Monad (foldM)
+import Control.Monad (foldM, when)
 import Control.Monad.Except (throwError)
-import Control.Monad.State.Strict (MonadState)
+import Control.Monad.Reader (ask)
+import Control.Monad.State.Strict (MonadState, evalState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
@@ -171,7 +170,7 @@ instance TreeRepBuilderIter Tree where
     TNBounds b -> (symbol, mempty, [], map (\(j, v) -> (show j, repTree 0 v)) (zip [0 ..] (bdsList b)))
     TNRefCycle c -> case c of
       RefCycle p -> (symbol, show p, emptyTreeFields, [])
-      RefCycleTail -> (symbol, "tail", emptyTreeFields, [])
+      RefCycleTail p -> (symbol, "tail " ++ show p, emptyTreeFields, [])
     TNFunc f -> case fncType f of
       RefFunc ->
         let
@@ -220,11 +219,11 @@ instance BuildASTExpr Tree where
         (treeOrig t)
     TNRefCycle c -> case c of
       RefCycle p -> do
-        if isPathEmpty p
-          -- If the path is empty, then it is a reference to the itself.
+        if p
+          -- If the path is empty, then it is a self-reference.
           then return $ AST.litCons AST.TopLit
           else buildASTExpr cr (fromJust $ treeOrig t)
-      RefCycleTail -> return $ AST.litCons AST.TopLit
+      RefCycleTail _ -> throwError "RefCycleTail should have been converted to RefCycle"
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -393,6 +392,11 @@ getFuncFromTree t = case treeNode t of
   TNFunc f -> Just f
   _ -> Nothing
 
+isTreeRefCycleTail :: Tree -> Bool
+isTreeRefCycleTail t = case treeNode t of
+  TNRefCycle (RefCycleTail _) -> True
+  _ -> False
+
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeEvaled = False}
 
@@ -420,7 +424,7 @@ mkFuncTree fn = mkNewTree (TNFunc fn)
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
-convRefCycleTree :: Tree -> Path -> Tree
+convRefCycleTree :: Tree -> Bool -> Tree
 convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
 
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
@@ -498,6 +502,7 @@ callFunc :: (TreeMonad s m) => m (Maybe Tree)
 callFunc = withTree $ \t -> case getFuncFromTree t of
   Just fn -> do
     let name = fncName fn
+    dumpEntireTree ("callFunc " ++ name ++ " start")
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "callFunc: path: %s, function %s, tip:\n%s" (show path) (show name) (show t)
 
@@ -515,17 +520,20 @@ callFunc = withTree $ \t -> case getFuncFromTree t of
           (show modified)
           (show res)
 
-    if modified
-      then case getFuncFromTree res of
-        Just _ -> do
-          -- recursively call the function until the result is not a function.
-          -- the tip is already the res.
-          callFunc
-        Nothing -> do
-          -- we need to restore the original tree with the new function result.
-          putTMTree (mkFuncTree $ fn{fncTempRes = Just res})
-          return (Just res)
-      else return Nothing
+    r <-
+      if modified
+        then case getFuncFromTree res of
+          Just _ -> do
+            -- recursively call the function until the result is not a function.
+            -- the tip is already the res.
+            callFunc
+          Nothing -> do
+            -- we need to restore the original tree with the new function result.
+            putTMTree (mkFuncTree $ fn{fncTempRes = Just res})
+            return (Just res)
+        else return Nothing
+    dumpEntireTree ("callFunc " ++ name ++ " done")
+    return r
   Nothing -> throwError "callFunc: function not found"
 
 -- Try to reduce the function by using the function result to replace the function node.
@@ -540,7 +548,7 @@ reduceFunc val = withTree $ \t -> case getFuncFromTree t of
         let
           -- the original function can not have references.
           hasNoRef = not (treeHasRef t)
-          reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycle val || hasNoRef
+          reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
         withDebugInfo $ \path _ ->
           logDebugStr $
             printf
@@ -552,7 +560,7 @@ reduceFunc val = withTree $ \t -> case getFuncFromTree t of
               (show $ fncArgs fn)
         if reducible
           then do
-            putTMTree val
+            handleReduceRes val
             path <- getTMAbsPath
             -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
             -- index and the first argument is a reference, then the first argument dependency should also be deleted.
@@ -560,4 +568,40 @@ reduceFunc val = withTree $ \t -> case getFuncFromTree t of
           -- restore the original function
           else putTMTree . mkFuncTree $ fn
         return reducible
-  Nothing -> throwError "reduceFunc: function not found"
+  Nothing -> throwError "reduceFunc: focus is not a function"
+
+dumpEntireTree :: (TreeMonad s m) => String -> m ()
+dumpEntireTree msg = do
+  logDebugStr "dump entire tree states:"
+  notifiers <- ctxNotifiers <$> getTMContext
+  logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
+  Config{cfMermaid = mermaid} <- ask
+  when mermaid $ do
+    withTN $ \case
+      TNAtom _ -> return ()
+      TNBottom _ -> return ()
+      TNTop -> return ()
+      _ -> do
+        tc <- getTMCursor
+        rtc <- propUpTCUntil Path.RootSelector tc
+        let
+          t = vcFocus rtc
+          evalPath = pathFromCrumbs (vcCrumbs tc)
+          s = evalState (treeToMermaid msg evalPath t) 0
+        logDebugStr $ printf "\n```mermaid\n%s\n```" s
+  logDebugStr "dump entire tree done ---"
+
+{- | Convert the RefCycleTail to RefCycle if the path is the same as the cycle start path.
+RefCycleTail is like Bottom.
+-}
+handleReduceRes :: (TreeMonad s m) => Tree -> m ()
+handleReduceRes val = case treeNode val of
+  TNRefCycle (RefCycleTail (cycleStartPath, _)) -> do
+    path <- getTMAbsPath
+    if cycleStartPath == path
+      then do
+        logDebugStr $ printf "handleRefCycle: path: %s, cycle head found" (show path)
+        -- The ref cycle tree must record the original tree.
+        withTree $ \t -> putTMTree $ convRefCycleTree t False
+      else putTMTree val
+  _ -> putTMTree val

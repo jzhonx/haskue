@@ -546,7 +546,7 @@ testCycles1 = do
           , ("d", selfCycle)
           ]
  where
-  selfCycle = mkNewTree (TNRefCycle (RefCycle emptyPath))
+  selfCycle = mkNewTree (TNRefCycle (RefCycle True))
 
 testCycles2 :: IO ()
 testCycles2 = do
@@ -560,11 +560,11 @@ testCycles2 = do
           ["a", "b"]
           [
             ( "a"
-            , mkNewTree (TNRefCycle (RefCycle emptyPath))
+            , mkNewTree (TNRefCycle (RefCycle False))
             )
           ,
             ( "b"
-            , mkNewTree (TNRefCycle (RefCycle emptyPath))
+            , mkNewTree (TNRefCycle (RefCycle False))
             )
           ]
 
@@ -598,11 +598,11 @@ testCycles4 = do
                 ["a", "b"]
                 [
                   ( "a"
-                  , mkNewTree (TNRefCycle (RefCycle emptyPath))
+                  , mkNewTree (TNRefCycle (RefCycle False))
                   )
                 ,
                   ( "b"
-                  , mkNewTree (TNRefCycle (RefCycle emptyPath))
+                  , mkNewTree (TNRefCycle (RefCycle False))
                   )
                 ]
             )

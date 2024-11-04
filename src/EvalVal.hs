@@ -11,7 +11,6 @@ import qualified AST
 import Control.Monad (foldM, forM, void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
-import Control.Monad.State.Strict (evalState)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
@@ -68,14 +67,14 @@ forceEvalCV = do
     putTMTree $ nt{treeEvaled = True}
   unmarkTMVisiting
 
-  ctx <- getTMContext
+  -- ctx <- getTMContext
   path <- getTMAbsPath
-  case ctxCycle ctx of
-    Just (cycleStart, cycleTail) | cycleStart == path -> do
-      logDebugStr $ printf "evalTM: path: %s, cycle head found" (show path)
-      putTMTree $ convRefCycleTree origT cycleTail
-      putTMContext $ ctx{ctxCycle = Nothing}
-    _ -> return ()
+  -- case ctxCycle ctx of
+  --   Just (cycleStart, cycleTail) | cycleStart == path -> do
+  --     logDebugStr $ printf "evalTM: path: %s, cycle head found" (show path)
+  --     putTMTree $ convRefCycleTree origT cycleTail
+  --     putTMContext $ ctx{ctxCycle = Nothing}
+  --   _ -> return ()
 
   withTree $ \t -> tryPopulateRef t evalFunc
 
@@ -99,23 +98,6 @@ forceEvalCV = do
         ctx = cvCtx ct
         newCtx = ctx{ctxVisiting = Set.delete path (ctxVisiting ctx)}
       putTMContext newCtx
-
-dumpEntireTree :: (TreeMonad s m) => String -> m ()
-dumpEntireTree msg = do
-  Config{cfMermaid = mermaid} <- ask
-  when mermaid $ do
-    withTN $ \case
-      TNAtom _ -> return ()
-      TNBottom _ -> return ()
-      TNTop -> return ()
-      _ -> do
-        tc <- getTMCursor
-        rtc <- propUpTCUntil Path.RootSelector tc
-        let
-          t = vcFocus rtc
-          evalPath = pathFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid msg evalPath t) 0
-        logDebugStr $ printf "entire tree:\n```mermaid\n%s\n```" s
 
 -- Evaluate tree nodes
 
@@ -188,7 +170,8 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
       ft
       ( \res ->
           if
-            | mustAtom && treeHasAtom res -> res
+            -- If the result is ref cycle tail, then the function must handle the tail to find the cycle head.
+            | mustAtom && (treeHasAtom res || isTreeBottom res || isTreeRefCycleTail res) -> res
             -- The result of the function is not an atom while an atom is required. The function itself is returned to
             -- represent incompleteness.
             | mustAtom -> ft
@@ -363,11 +346,9 @@ appendRefFuncPath fn p ue
           return
           (treesToPath (fncArgs fn))
       -- remove original receiver because origP would not exist.
-      delNotifRecvs origTP
+      -- delNotifRecvs origTP
       withCtxTree $ \ct -> do
         let tp = appendPath p origTP
-        -- add notifier. If the referenced value changes, then the reference should be updated.
-        putTMContext $ addCtxNotifier (tp, cvPath ct) (cvCtx ct)
         -- Reference the target node when the target node is not an atom or a cycle head.
         mkRefFunc tp ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
@@ -460,6 +441,7 @@ dispUnaryFunc op _t = do
       _ -> putConflict
     -- The unary op is operating on a non-atom.
     TNFunc _ -> return False
+    TNRefCycle (RefCycleTail _) -> putTMTree t >> return True
     _ -> putConflict
  where
   conflict :: Tree
@@ -500,9 +482,15 @@ regBinDir op (d1, _t1) (d2, _t2) = do
   t1 <- evalFuncArg (toBinOpSelector d1) _t1 True
   t2 <- evalFuncArg (toBinOpSelector d2) _t2 True
 
+  withDebugInfo $ \path _ ->
+    logDebugStr $
+      printf "regBinDir: path: %s, evaluated args, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
+
   case (treeNode t1, treeNode t2) of
     (TNBottom _, _) -> putTMTree t1 >> return True
     (_, TNBottom _) -> putTMTree t2 >> return True
+    (TNRefCycle (RefCycleTail _), _) -> putTMTree t1 >> return True
+    (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2 >> return True
     (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
     (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
     (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
