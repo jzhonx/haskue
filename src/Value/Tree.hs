@@ -539,36 +539,52 @@ callFunc = withTree $ \t -> case getFuncFromTree t of
 -- Try to reduce the function by using the function result to replace the function node.
 -- This should be called after the function is evaluated.
 reduceFunc :: (TreeMonad s m) => Tree -> m Bool
-reduceFunc val = withTree $ \t -> case getFuncFromTree t of
-  Just fn ->
-    if isTreeFunc val
-      -- If the function returns another function, then the function is not reducible.
-      then putTMTree val >> return False
-      else do
-        let
-          -- the original function can not have references.
-          hasNoRef = not (treeHasRef t)
-          reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
-        withDebugInfo $ \path _ ->
-          logDebugStr $
-            printf
-              "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
-              (show $ fncName fn)
-              (show path)
-              (show reducible)
-              (show hasNoRef)
-              (show $ fncArgs fn)
-        if reducible
-          then do
-            handleReduceRes val
-            path <- getTMAbsPath
-            -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-            -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-            delNotifRecvs path
-          -- restore the original function
-          else putTMTree . mkFuncTree $ fn
-        return reducible
-  Nothing -> throwError "reduceFunc: focus is not a function"
+reduceFunc val = do
+  reducible <-
+    withTree
+      ( \t -> case getFuncFromTree t of
+          Just fn ->
+            if isTreeFunc val
+              -- If the function returns another function, then the function is not reducible.
+              then putTMTree val >> return False
+              else do
+                let
+                  -- the original function can not have references.
+                  hasNoRef = not (treeHasRef t)
+                  reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
+                withDebugInfo $ \path _ ->
+                  logDebugStr $
+                    printf
+                      "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
+                      (show $ fncName fn)
+                      (show path)
+                      (show reducible)
+                      (show hasNoRef)
+                      (show $ fncArgs fn)
+                if reducible
+                  then do
+                    handleReduceRes val
+                    path <- getTMAbsPath
+                    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+                    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+                    delNotifRecvs path
+                  -- restore the original function
+                  else do
+                    putTMTree . mkFuncTree $ fn
+                return reducible
+          Nothing -> throwError "reduceFunc: focus is not a function"
+      )
+  withTree $ \t -> case getFuncFromTree t of
+    -- The result is reduced to a reference.
+    Just fn | isFuncRef fn -> do
+      -- add notifier. If the referenced value changes, then the reference should be updated.
+      withCtxTree $ \ct -> do
+        tarPath <- getRefTarAbsPath fn
+        logDebugStr $ printf "reduceFunc: add notifier: (%s, %s)" (show tarPath) (show $ cvPath ct)
+        putTMContext $ addCtxNotifier (tarPath, cvPath ct) (cvCtx ct)
+    _ -> return ()
+
+  return reducible
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
@@ -605,3 +621,25 @@ handleReduceRes val = case treeNode val of
         withTree $ \t -> putTMTree $ convRefCycleTree t False
       else putTMTree val
   _ -> putTMTree val
+
+{- | Get the reference target absolute path. The target might not exist at the time, but the path should be valid as the
+first selector is a locatable var.
+-}
+getRefTarAbsPath :: (TreeMonad s m) => Func Tree -> m Path
+getRefTarAbsPath fn =
+  if isFuncRef fn
+    then do
+      case treesToPath (fncArgs fn) of
+        Just ref -> do
+          let fstSel = fromJust $ headSel ref
+          tc <- getTMCursor
+          varTC <-
+            maybeM
+              (throwError $ printf "reference %s is not found" (show fstSel))
+              return
+              (searchTCVar fstSel tc)
+          let fstSelAbsPath = tcPath varTC
+          return $ maybe fstSelAbsPath (`appendPath` fstSelAbsPath) (tailPath ref)
+        -- return $ Just $ appendPath (fromJust $ tailPath ref) fstSelAbsPath
+        Nothing -> throwError "getTarAbsPath: can not generate path from the arguments"
+    else throwError "getTarAbsPath: the function is not a reference"

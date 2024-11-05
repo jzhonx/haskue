@@ -103,10 +103,11 @@ pathToList (Path sels) = reverse sels
 appendSel :: Selector -> Path -> Path
 appendSel sel (Path xs) = Path (sel : xs)
 
--- | Append the new path to old path.
+{- | Append the new path to old path.
+new and old are reversed, such as [z, y, x] and [b, a]. The appended path should be [z, y, x, b, a], which is
+a.b.x.y.z.
+-}
 appendPath :: Path -> Path -> Path
--- new and old are reversed, such as [z, y, x] and [b, a]. The appended path should be [z, y, x, b, a], which is
--- a.b.x.y.z.
 appendPath (Path new) (Path old) = Path (new ++ old)
 
 -- | Get the parent path of a path by removing the last selector.

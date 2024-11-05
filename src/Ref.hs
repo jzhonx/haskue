@@ -11,7 +11,7 @@ module Ref where
 import Control.Monad (unless)
 import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Path
 import Text.Printf (printf)
@@ -50,9 +50,12 @@ populateRef nt evalFunc = do
           printf "populateRef: the target node %s is not a reference." (show tar)
 
       _ <- reduceFunc nt
-      withDebugInfo $ \path v ->
-        logDebugStr $ printf "populateRef: path: %s, updated value: %s" (show path) (show v)
+      return ()
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
+
+  res <- getTMTree
+  withDebugInfo $ \path _ ->
+    logDebugStr $ printf "populateRef: path: %s, function reduced to: %s" (show path) (show res)
 
   -- Locate the lowest ancestor function to trigger the re-evaluation of the ancestor function.
   locateLAFunc
@@ -74,7 +77,10 @@ populateRef nt evalFunc = do
             logDebugStr $ printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
           r <- evalFunc fn >> getTMTree
           tryPopulateRef r evalFunc
-    _ -> throwError "populateRef: the target node is not a function"
+    _ ->
+      if isTreeFunc res
+        then throwError $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)
+        else logDebugStr "populateRef: the lowest ancestor node is not found"
 
 -- Locate the lowest ancestor node of type regular function.
 locateLAFunc :: (TreeMonad s m) => m ()
@@ -117,9 +123,6 @@ deref tp = do
             (show t)
             (show tar)
 
-      -- add notifier. If the referenced value changes, then the reference should be updated.
-      withCtxTree $ \ct -> do
-        putTMContext $ addCtxNotifier (tarPath, cvPath ct) (cvCtx ct)
       putTMTree tar
       return True
     Nothing -> return False
@@ -157,7 +160,7 @@ deref tp = do
   --             return . Just $ mkNewTree $ TNRefCycle (RefCycle cycleTailRelPath)
   --           else return resM
   --   _ -> return resM
-
+  --
   -- Get the value pointed by the reference.
   -- If the reference path is self or visited, then return the tuple of the absolute path of the start of the cycle and
   -- the cycle tail relative path.
