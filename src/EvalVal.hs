@@ -121,21 +121,6 @@ evalFunc fn = do
         (show $ fncName fn)
         (show t)
 
-evalStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
-evalStruct origStruct = do
-  delIdxes <- do
-    mapM_ (evalStaticSF . fst) (Map.toList . stcSubs $ origStruct)
-    mapM_ evalPattern (zip (map PatternSelector [0 ..]) (stcPatterns origStruct))
-    foldM evalPendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct))
-
-  whenStruct () $ \struct -> do
-    let newStruct = mk struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "evalStruct: path: %s, new struct: %s" (show path) (show newStruct)
-    putTMTree newStruct
- where
-  mk = mkNewTree . TNStruct
-
 -- Evaluate the sub node of the tree. The node must be a function.
 -- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
 -- reducible, the result is still returned because the parent function needs to be evaluated.
@@ -178,6 +163,36 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
             | otherwise -> res
       )
 
+evalStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
+evalStruct origStruct = do
+  delIdxes <- do
+    mapM_ (evalStaticSF . fst) (Map.toList . stcSubs $ origStruct)
+    mapM_ evalPattern (zip (map PatternSelector [0 ..]) (stcPatterns origStruct))
+    foldM evalPendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct))
+
+  whenStruct () $ \struct -> do
+    let newStruct = mk struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
+    withDebugInfo $ \path _ ->
+      logDebugStr $ printf "evalStruct: path: %s, new struct: %s" (show path) (show newStruct)
+    putTMTree newStruct
+ where
+  mk = mkNewTree . TNStruct
+
+whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a
+whenStruct a f = do
+  t <- getTMTree
+  case treeNode t of
+    TNBottom _ -> return a
+    TNStruct struct -> f struct
+    _ -> do
+      putTMTree $ mkBottomTree "not a struct"
+      return a
+
+mustStruct :: (TreeMonad s m) => (Struct Tree -> m a) -> m a
+mustStruct f = withTree $ \t -> case treeNode t of
+  TNStruct struct -> f struct
+  _ -> throwError $ printf "mustStruct: %s is not a struct" (show t)
+
 evalStaticSF :: (TreeMonad s m) => StructSelector -> m ()
 evalStaticSF sel = whenStruct () $ \struct ->
   inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) exhaustTM
@@ -186,7 +201,7 @@ evalPattern :: (TreeMonad s m) => (StructSelector, PatternStructField Tree) -> m
 evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) exhaustTM
 
 evalPendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem Tree) -> m [Int]
-evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
+evalPendSE idxes (sel, pse) = do
   case (sel, pse) of
     (PendingSelector i, DynamicField dsf) -> do
       -- evaluate the dynamic label.
@@ -199,15 +214,18 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
             (show label)
       case treeNode label of
         TNAtom (AtomV (String s)) -> do
-          let
-            mergedSF = dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
-            sSel = StructSelector $ StringSelector s
+          newSF <- mustStruct $ \struct ->
+            return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
 
-          pushTMSub sSel (ssfField mergedSF)
+          let sSel = StructSelector $ StringSelector s
+          pushTMSub sSel (ssfField newSF)
           mergedT <- exhaustTM >> getTMTree
-          -- do not use propUpTCSel here because the field was not in the original struct.
-          let nstruct = mkNewTree (TNStruct $ addStatic s (mergedSF{ssfField = mergedT}) struct)
-          discardTMAndPut nstruct
+          -- do not use propUpTCSel here because the field might not be in the original struct.
+          discardTMAndPop
+          -- TODO: use whenStruct because mergedT could be a bottom.
+          nstruct <- mustStruct $ \struct ->
+            return $ mkNewTree (TNStruct $ addStatic s (newSF{ssfField = mergedT}) struct)
+          putTMTree nstruct
           return (i : idxes)
 
         -- TODO: pending label
@@ -230,8 +248,8 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
               defaultVal <- exhaustTM >> getTMTree
               -- apply the pattern to all existing fields.
               -- TODO: apply the pattern to filtered fields.
-              let
-                nodes =
+              nodes <- mustStruct $ \struct ->
+                return $
                   [ mkNewTree . TNFunc $
                     mkBinaryOp AST.Unify unify (ssfField n) defaultVal
                   | n <- Map.elems (stcSubs struct)
@@ -239,7 +257,8 @@ evalPendSE idxes (sel, pse) = whenStruct idxes $ \struct -> do
               mapM_ (\x -> whenNotBottom () (putTMTree x >> exhaustTM)) nodes
               -- r <- foldM (\acc n -> whenNotBottom acc (exhaustTM n)) defaultVal nodes
               whenNotBottom idxes $ do
-                let newStruct = mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
+                newStruct <- mustStruct $ \struct ->
+                  return $ mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
                 discardTMAndPut newStruct
                 return (i : idxes)
         _ ->

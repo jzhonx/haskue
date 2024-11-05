@@ -430,16 +430,6 @@ convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)
 
-whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a
-whenStruct a f = do
-  t <- getTMTree
-  case treeNode t of
-    TNBottom _ -> return a
-    TNStruct struct -> f struct
-    _ -> do
-      putTMTree $ mkBottomTree "not a struct"
-      return a
-
 whenNotBottom :: (TreeMonad s m) => a -> m a -> m a
 whenNotBottom a f = do
   t <- getTMTree
