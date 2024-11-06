@@ -44,7 +44,10 @@ newStruct lbls ow subs =
     Nothing -> (StringSelector s, defaultLabelAttr)
 
 newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
-newSimpleStruct lbls subs = newStruct lbls [] subs
+newSimpleStruct lbls = newStruct lbls []
+
+newFieldsStruct :: [(String, Tree)] -> Tree
+newFieldsStruct subs = newSimpleStruct (map fst subs) subs
 
 mkSimpleLink :: Path -> Tree
 mkSimpleLink p = case runExcept (mkRefFunc p undefined) of
@@ -668,6 +671,25 @@ testCycles6 = do
   xzy = innerStructGen ["x", "z", "y"]
   xyz = innerStructGen ["x", "y", "z"]
 
+testCycles7 :: IO ()
+testCycles7 = do
+  s <- readFile "tests/spec/cycles7.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newSimpleStruct
+          ["x", "y", "z", "dfa", "z2"]
+          [ ("x", newSimpleStruct ["a", "b"] [("a", selfCycle), ("b", selfCycle)])
+          , ("y", newSimpleStruct ["a", "b"] [("a", selfCycle), ("b", mkAtomTree $ Int 2)])
+          , ("z", newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
+          , ("dfa", mkAtomTree $ String "a")
+          , ("z2", newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
+          ]
+ where
+  selfCycle = mkNewTree (TNRefCycle (RefCycle True))
+
 testIncomplete :: IO ()
 testIncomplete = do
   s <- readFile "tests/spec/incomplete.cue"
@@ -1011,6 +1033,7 @@ specTests =
     , testCase "cycles4" testCycles4
     , testCase "cycles5" testCycles5
     , testCase "cycles6" testCycles6
+    , testCase "cycles7" testCycles7
     , testCase "incomplete" testIncomplete
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2

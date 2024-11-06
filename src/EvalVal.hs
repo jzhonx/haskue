@@ -110,8 +110,7 @@ Function call convention:
 -}
 evalFunc :: (TreeMonad s m) => Func Tree -> m ()
 evalFunc fn = do
-  rM <- callFunc
-  maybe (return ()) (\r -> void $ reduceFunc r) rM
+  void $ callFunc >>= reduceFunc
 
   withDebugInfo $ \path t ->
     logDebugStr $

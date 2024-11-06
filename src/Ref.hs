@@ -8,7 +8,7 @@
 
 module Ref where
 
-import Control.Monad (unless)
+import Control.Monad (unless, void)
 import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
@@ -39,8 +39,8 @@ tryPopulateRef nt evalFunc = do
 -}
 populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
 populateRef nt evalFunc = do
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "populateRef: path: %s, new value: %s" (show path) (show nt)
+  withDebugInfo $ \path t ->
+    logDebugStr $ printf "populateRef: path: %s, focus: %s, new value: %s" (show path) (show t) (show nt)
   withTree $ \tar -> case (treeNode tar, treeNode nt) of
     -- If the new value is a function, just skip the reduction.
     (TNFunc _, TNFunc _) -> return ()
@@ -49,8 +49,7 @@ populateRef nt evalFunc = do
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
-      _ <- reduceFunc nt
-      return ()
+      void $ reduceFunc (Just nt)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
 
   res <- getTMTree
@@ -150,17 +149,7 @@ deref tp = do
                 (treesToPath (fncArgs fn))
             follow nextDst (Set.insert ref refsSeen)
           _ -> return resM
-  -- case resM of
-  --   Just res
-  --     | Tree{treeNode = TNRefCycle (RefCycleTail (cycleStartPath, cycleTailRelPath))} <- res -> do
-  --         path <- getTMAbsPath
-  --         if cycleStartPath == path
-  --           then do
-  --             logDebugStr $ printf "deref: path: %s, cycle head found" (show path)
-  --             return . Just $ mkNewTree $ TNRefCycle (RefCycle cycleTailRelPath)
-  --           else return resM
-  --   _ -> return resM
-  --
+
   -- Get the value pointed by the reference.
   -- If the reference path is self or visited, then return the tuple of the absolute path of the start of the cycle and
   -- the cycle tail relative path.

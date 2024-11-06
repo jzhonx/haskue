@@ -528,42 +528,44 @@ callFunc = withTree $ \t -> case getFuncFromTree t of
 
 -- Try to reduce the function by using the function result to replace the function node.
 -- This should be called after the function is evaluated.
-reduceFunc :: (TreeMonad s m) => Tree -> m Bool
-reduceFunc val = do
-  reducible <-
-    withTree
-      ( \t -> case getFuncFromTree t of
-          Just fn ->
-            if isTreeFunc val
-              -- If the function returns another function, then the function is not reducible.
-              then putTMTree val >> return False
-              else do
-                let
-                  -- the original function can not have references.
-                  hasNoRef = not (treeHasRef t)
-                  reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
-                withDebugInfo $ \path _ ->
-                  logDebugStr $
-                    printf
-                      "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
-                      (show $ fncName fn)
-                      (show path)
-                      (show reducible)
-                      (show hasNoRef)
-                      (show $ fncArgs fn)
-                if reducible
-                  then do
-                    handleReduceRes val
-                    path <- getTMAbsPath
-                    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-                    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-                    delNotifRecvs path
-                  -- restore the original function
-                  else do
-                    putTMTree . mkFuncTree $ fn
-                return reducible
-          Nothing -> throwError "reduceFunc: focus is not a function"
-      )
+reduceFunc :: (TreeMonad s m) => Maybe Tree -> m Bool
+reduceFunc valM = do
+  reducible <- case valM of
+    Nothing -> return False
+    Just val ->
+      withTree
+        ( \t -> case getFuncFromTree t of
+            Just fn ->
+              if isTreeFunc val
+                -- If the function returns another function, then the function is not reducible.
+                then putTMTree val >> return False
+                else do
+                  let
+                    -- the original function can not have references.
+                    hasNoRef = not (treeHasRef t)
+                    reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
+                  withDebugInfo $ \path _ ->
+                    logDebugStr $
+                      printf
+                        "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
+                        (show $ fncName fn)
+                        (show path)
+                        (show reducible)
+                        (show hasNoRef)
+                        (show $ fncArgs fn)
+                  if reducible
+                    then do
+                      handleReduceRes val
+                      path <- getTMAbsPath
+                      -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+                      -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+                      delNotifRecvs path
+                    -- restore the original function
+                    else do
+                      putTMTree . mkFuncTree $ fn
+                  return reducible
+            Nothing -> throwError "reduceFunc: focus is not a function"
+        )
   withTree $ \t -> case getFuncFromTree t of
     -- The result is reduced to a reference.
     Just fn | isFuncRef fn -> do
@@ -578,7 +580,7 @@ reduceFunc val = do
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
-  logDebugStr "dump entire tree states:"
+  logDebugStr "--- dump entire tree states: ---"
   notifiers <- ctxNotifiers <$> getTMContext
   logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
   Config{cfMermaid = mermaid} <- ask
@@ -595,7 +597,7 @@ dumpEntireTree msg = do
           evalPath = pathFromCrumbs (vcCrumbs tc)
           s = evalState (treeToMermaid msg evalPath t) 0
         logDebugStr $ printf "\n```mermaid\n%s\n```" s
-  logDebugStr "dump entire tree done ---"
+  logDebugStr "--- dump entire tree done ---"
 
 {- | Convert the RefCycleTail to RefCycle if the path is the same as the cycle start path.
 RefCycleTail is like Bottom.
