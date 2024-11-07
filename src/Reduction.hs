@@ -31,8 +31,8 @@ reduce = do
 
   origT <- getTMTree
   withTree $ \t -> case treeNode t of
-    TNFunc fn -> evalFunc fn
-    TNStruct struct -> evalStruct struct
+    TNFunc fn -> reduceFunc fn
+    TNStruct struct -> reduceStruct struct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
     _ -> return ()
@@ -42,28 +42,28 @@ reduce = do
     putTMTree $ nt{treeEvaled = True}
 
   path <- getTMAbsPath
-  withTree $ \t -> tryPopulateRef t evalFunc
+  withTree $ \t -> tryPopulateRef t reduceFunc
 
   logDebugStr $ printf "reduce: path: %s, done" (show path)
   dumpEntireTree "reduce done"
 
 -- Evaluate tree nodes
 
-{- | Evaluate the function.
- - Function evaluation is a top-down process, unlike other languages where the arguments are evaluated first.
+{- | Reduce the function.
+ - Function reduction is a top-down process, unlike other languages where the arguments are evaluated first.
 Function call convention:
 1. The result of a function is stored in the fncRes.
 2. If the result can be used to replace the function itself, then the function is replaced by the result.
 3. Otherwise, the function is kept.
 -}
-evalFunc :: (TreeMonad s m) => Func Tree -> m ()
-evalFunc fn = do
-  void $ callFunc >>= reduceFunc
+reduceFunc :: (TreeMonad s m) => Func Tree -> m ()
+reduceFunc fn = do
+  void $ callFunc >>= handleFuncRes
 
   withDebugInfo $ \path t ->
     logDebugStr $
       printf
-        "evalFunc: path: %s, function %s evaluated to:\n%s"
+        "reduceFunc: path: %s, function %s reduced to:\n%s"
         (show path)
         (show $ fncName fn)
         (show t)
@@ -71,10 +71,10 @@ evalFunc fn = do
 -- Evaluate the sub node of the tree. The node must be a function.
 -- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
 -- reducible, the result is still returned because the parent function needs to be evaluated.
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
-evalFuncArg sel sub mustAtom = withTree $ \t -> do
+reduceFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
+reduceFuncArg sel sub mustAtom = withTree $ \t -> do
   withDebugInfo $ \path _ ->
-    logDebugStr $ printf "evalFuncArg: path: %s, start evaluate %s" (show path) (show sub)
+    logDebugStr $ printf "reduceFuncArg: path: %s, start reduction %s" (show path) (show sub)
   if isTreeFunc t
     then do
       res <-
@@ -88,10 +88,10 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
               _ -> reduce >> getTMTree
           )
       withDebugInfo $ \path _ ->
-        logDebugStr $ printf "evalFuncArg: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
+        logDebugStr $ printf "reduceFuncArg: path: %s, %s is reduced to:\n%s" (show path) (show sub) (show res)
       -- return $ getFuncResOrTree mustAtom res getFunc
       return res
-    else throwError "evalFuncArg: node is not a function"
+    else throwError "reduceFuncArg: node is not a function"
  where
   -- Get the result of the function. If the result is not found, return the original tree.
   -- If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
@@ -109,17 +109,17 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
             | otherwise -> res
       )
 
-evalStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
-evalStruct origStruct = do
+reduceStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
+reduceStruct origStruct = do
   delIdxes <- do
-    mapM_ (evalStaticSF . fst) (Map.toList . stcSubs $ origStruct)
-    mapM_ evalPattern (zip (map PatternSelector [0 ..]) (stcPatterns origStruct))
-    foldM evalPendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct))
+    mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ origStruct)
+    mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns origStruct))
+    foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct))
 
   whenStruct () $ \struct -> do
     let newStruct = mk struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
     withDebugInfo $ \path _ ->
-      logDebugStr $ printf "evalStruct: path: %s, new struct: %s" (show path) (show newStruct)
+      logDebugStr $ printf "reduceStruct: path: %s, new struct: %s" (show path) (show newStruct)
     putTMTree newStruct
  where
   mk = mkNewTree . TNStruct
@@ -139,15 +139,15 @@ mustStruct f = withTree $ \t -> case treeNode t of
   TNStruct struct -> f struct
   _ -> throwError $ printf "mustStruct: %s is not a struct" (show t)
 
-evalStaticSF :: (TreeMonad s m) => StructSelector -> m ()
-evalStaticSF sel = whenStruct () $ \struct ->
+reduceStaticSF :: (TreeMonad s m) => StructSelector -> m ()
+reduceStaticSF sel = whenStruct () $ \struct ->
   inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) reduce
 
-evalPattern :: (TreeMonad s m) => (StructSelector, PatternStructField Tree) -> m ()
-evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) reduce
+reducePattern :: (TreeMonad s m) => (StructSelector, PatternStructField Tree) -> m ()
+reducePattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) reduce
 
-evalPendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem Tree) -> m [Int]
-evalPendSE idxes (sel, pse) = do
+reducePendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem Tree) -> m [Int]
+reducePendSE idxes (sel, pse) = do
   case (sel, pse) of
     (PendingSelector i, DynamicField dsf) -> do
       -- evaluate the dynamic label.
@@ -155,7 +155,7 @@ evalPendSE idxes (sel, pse) = do
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf
-            "evalPendSE: path: %s, dynamic label is evaluated to %s"
+            "reducePendSE: path: %s, dynamic label is evaluated to %s"
             (show path)
             (show label)
       case treeNode label of
@@ -182,7 +182,7 @@ evalPendSE idxes (sel, pse) = do
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf
-            "evalPendSE: path: %s, pattern is evaluated to %s"
+            "reducePendSE: path: %s, pattern is evaluated to %s"
             (show path)
             (show evaledPattern)
       case treeNode evaledPattern of
@@ -280,9 +280,9 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False
+          res <- reduceFuncArg (FuncSelector $ FuncArgSelector 0) t False
           putTMTree res
-          logDebugStr $ printf "index: tree is evaluated to %s, idxPath: %s" (show res) (show idxPath)
+          logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
 
           -- descendTM can not be used here because it would change the tree cursor.
           tc <- getTMCursor
@@ -379,7 +379,7 @@ validateCnstr c = withTree $ \t -> do
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  t <- evalFuncArg unaryOpSelector _t True
+  t <- reduceFuncArg unaryOpSelector _t True
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
       (AST.Plus, Int i) -> ia i id
@@ -441,12 +441,12 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True
-  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True
+  t1 <- reduceFuncArg (toBinOpSelector d1) _t1 True
+  t2 <- reduceFuncArg (toBinOpSelector d2) _t2 True
 
   withDebugInfo $ \path _ ->
     logDebugStr $
-      printf "regBinDir: path: %s, evaluated args, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
+      printf "regBinDir: path: %s, reduced args, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
 
   case (treeNode t1, treeNode t2) of
     (TNBottom _, _) -> putTMTree t1 >> return True
@@ -578,7 +578,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
       -- unresolved reference
       | isFuncRef fn -> return False
       | otherwise -> return False
-    (TNRefCycle _, _) -> evalOrDelay
+    (TNRefCycle _, _) -> reduceOrDelay
     (TNConstraint c, _) -> do
       na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
       case treeNode na of
@@ -586,12 +586,12 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
         _ -> undefined
     _ -> putTMTree (mkBottomTree mismatchErr) >> return True
  where
-  -- evalOrDelay tries to evaluate the left side of the binary operation. If it is not possible to evaluate it, it
-  -- returns a delayed evaluation.
-  evalOrDelay :: (TreeMonad s m) => m Bool
-  evalOrDelay = do
-    logDebugStr $ printf "evalOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1 True
+  -- reduceOrDelay tries to reduce the left side of the binary operation. If it is not possible to reduce it, it
+  -- returns a delayed reduction.
+  reduceOrDelay :: (TreeMonad s m) => m Bool
+  reduceOrDelay = do
+    logDebugStr $ printf "reduceOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
+    et1 <- reduceFuncArg (toBinOpSelector d1) t1 True
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m Bool
@@ -615,47 +615,47 @@ instance Show DisjItem where
   show (DisjDefault t) = show t
   show (DisjRegular t) = show t
 
--- evalDisjPair is used to evaluate a disjunction whose both sides are evaluated.
-evalDisjPair :: (TreeMonad s m) => DisjItem -> DisjItem -> m Tree
-evalDisjPair i1 i2 = case (i1, i2) of
+-- reduceDisjPair is used to evaluate a disjunction whose both sides are evaluated.
+reduceDisjPair :: (TreeMonad s m) => DisjItem -> DisjItem -> m Tree
+reduceDisjPair i1 i2 = case (i1, i2) of
   (DisjDefault v1, _) -> do
-    logDebugStr $ printf "evalDisjPair: *: %s, r: %s" (show v1) (show i2)
-    t <- evalLeftDefault (\(df1, ds1, df2, ds2) -> newDisj df1 ds1 df2 ds2) v1 i2
-    logDebugStr $ printf "evalDisjPair: *: %s, r: %s, resulting to:\n%s" (show v1) (show i2) (show t)
+    logDebugStr $ printf "reduceDisjPair: *: %s, r: %s" (show v1) (show i2)
+    t <- reduceLeftDefault (\(df1, ds1, df2, ds2) -> newDisj df1 ds1 df2 ds2) v1 i2
+    logDebugStr $ printf "reduceDisjPair: *: %s, r: %s, resulting to:\n%s" (show v1) (show i2) (show t)
     return t
   -- reverse v2 r1 and also the order to the disjCons.
   (DisjRegular _, DisjDefault v2) -> do
-    evalLeftDefault (\(df2, ds2, df1, ds1) -> newDisj df1 ds1 df2 ds2) v2 i1
+    reduceLeftDefault (\(df2, ds2, df1, ds1) -> newDisj df1 ds1 df2 ds2) v2 i1
   (DisjRegular v1, DisjRegular v2) -> do
-    logDebugStr $ printf "evalDisjPair: both regulars v1: %s, v2: %s" (show v1) (show v2)
-    r <- evalRegularDisj v1 v2
-    logDebugStr $ printf "evalDisjPair: both regulars results: %s" (show r)
+    logDebugStr $ printf "reduceDisjPair: both regulars v1: %s, v2: %s" (show v1) (show v2)
+    r <- reduceRegularDisj v1 v2
+    logDebugStr $ printf "reduceDisjPair: both regulars results: %s" (show r)
     return r
 
--- evalLeftDefault is used to evaluate a disjunction whose left side is a default.
+-- reduceLeftDefault is used to evaluate a disjunction whose left side is a default.
 -- the first argument is a function that takes the four lists of values and returns a disjunction.
-evalLeftDefault ::
+reduceLeftDefault ::
   (MonadError String m) => ((Maybe Tree, [Tree], Maybe Tree, [Tree]) -> m Tree) -> Tree -> DisjItem -> m Tree
 -- Below is rule M2 and M3. We eliminate the defaults from the right side.
-evalLeftDefault disjCons (Tree{treeNode = TNDisj dj1}) (DisjRegular (Tree{treeNode = TNDisj dj2})) =
+reduceLeftDefault disjCons (Tree{treeNode = TNDisj dj1}) (DisjRegular (Tree{treeNode = TNDisj dj2})) =
   disjCons (dsjDefault dj1, dsjDisjuncts dj1, Nothing, dsjDisjuncts dj2)
 -- Below is rule M1.
-evalLeftDefault disjCons v1 (DisjRegular (Tree{treeNode = TNDisj dj2})) =
+reduceLeftDefault disjCons v1 (DisjRegular (Tree{treeNode = TNDisj dj2})) =
   disjCons (Just v1, [v1], dsjDefault dj2, dsjDisjuncts dj2)
-evalLeftDefault disjCons v1 (DisjRegular v2) =
+reduceLeftDefault disjCons v1 (DisjRegular v2) =
   disjCons (Just v1, [v1], Nothing, [v2])
-evalLeftDefault disjCons v1 (DisjDefault v2) =
+reduceLeftDefault disjCons v1 (DisjDefault v2) =
   disjCons (Nothing, [v1], Nothing, [v2])
 
 -- evalFullDisj is used to evaluate a disjunction whose both sides are regular.
 -- Rule: D1, D2
-evalRegularDisj :: (TreeMonad s m) => Tree -> Tree -> m Tree
-evalRegularDisj (Tree{treeNode = TNDisj dj1}) (Tree{treeNode = TNDisj dj2}) =
+reduceRegularDisj :: (TreeMonad s m) => Tree -> Tree -> m Tree
+reduceRegularDisj (Tree{treeNode = TNDisj dj1}) (Tree{treeNode = TNDisj dj2}) =
   newDisj (dsjDefault dj1) (dsjDisjuncts dj1) (dsjDefault dj2) (dsjDisjuncts dj2)
-evalRegularDisj (Tree{treeNode = TNDisj dj}) y = newDisj (dsjDefault dj) (dsjDisjuncts dj) Nothing [y]
-evalRegularDisj x (Tree{treeNode = TNDisj dj}) = newDisj Nothing [x] (dsjDefault dj) (dsjDisjuncts dj)
+reduceRegularDisj (Tree{treeNode = TNDisj dj}) y = newDisj (dsjDefault dj) (dsjDisjuncts dj) Nothing [y]
+reduceRegularDisj x (Tree{treeNode = TNDisj dj}) = newDisj Nothing [x] (dsjDefault dj) (dsjDisjuncts dj)
 -- Rule D0
-evalRegularDisj x y = newDisj Nothing [x] Nothing [y]
+reduceRegularDisj x y = newDisj Nothing [x] Nothing [y]
 
 -- dedupAppend appends unique elements in ys to the xs list, but only if they are not already in xs.
 -- xs and ys are guaranteed to be unique.
@@ -680,7 +680,7 @@ unifyToTree :: (TreeMonad s m) => Tree -> Tree -> m Bool
 unifyToTree t1 t2 = unifyWithDir (Path.L, t1) (Path.R, t2)
 
 -- If there exists a struct beneath the current node, we need to be careful about the references in the struct. We
--- should not further evaluate the values of the references.
+-- should not further reduce the values of the references.
 -- For example, {a: b + 100, b: a - 100} & {b: 50}. The "b" in the first struct will have to see the atom 50.
 unifyWithDir :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
@@ -1029,9 +1029,9 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False
+    r1 <- reduceFuncArg (Path.toBinOpSelector d1) t1 False
     withDebugInfo $ \path _ ->
-      logDebugStr $ printf "unifyLeftOther, path: %s, %s is evaluated to %s" (show path) (show t1) (show r1)
+      logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
 
     case treeNode r1 of
       TNFunc xfn

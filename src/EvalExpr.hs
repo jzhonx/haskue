@@ -232,25 +232,25 @@ evalDisj e1 e2 = do
       l <- evalExpr e1
       r <- evalExpr e2
       return (l, r)
-  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction evalDisjAdapt lt rt)
+  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
-  evalDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
-  evalDisjAdapt unt1 unt2 = do
-    t1 <- evalFuncArg binOpLeftSelector unt1 False
-    t2 <- evalFuncArg binOpRightSelector unt2 False
+  reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
+  reduceDisjAdapt unt1 unt2 = do
+    t1 <- reduceFuncArg binOpLeftSelector unt1 False
+    t2 <- reduceFuncArg binOpRightSelector unt2 False
     if not (isTreeValue t1) || not (isTreeValue t2)
       then do
-        logDebugStr $ printf "evalDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
+        logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
         return False
       else do
         u <- case (e1, e2) of
           (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-            evalDisjPair (DisjDefault t1) (DisjDefault t2)
+            reduceDisjPair (DisjDefault t1) (DisjDefault t2)
           (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), _) ->
-            evalDisjPair (DisjDefault t1) (DisjRegular t2)
+            reduceDisjPair (DisjDefault t1) (DisjRegular t2)
           (_, AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-            evalDisjPair (DisjRegular t1) (DisjDefault t2)
-          (_, _) -> evalDisjPair (DisjRegular t1) (DisjRegular t2)
-        logDebugStr $ printf "evalDisjAdapt: evaluated to %s" (show u)
+            reduceDisjPair (DisjRegular t1) (DisjDefault t2)
+          (_, _) -> reduceDisjPair (DisjRegular t1) (DisjRegular t2)
+        logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
         putTMTree u
         return True

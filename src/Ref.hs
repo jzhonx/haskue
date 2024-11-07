@@ -11,7 +11,7 @@ module Ref where
 import Control.Monad (unless, void)
 import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import Path
 import Text.Printf (printf)
@@ -19,7 +19,7 @@ import Util
 import Value.Tree
 
 tryPopulateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
-tryPopulateRef nt evalFunc = do
+tryPopulateRef nt reduceFunc = do
   withDebugInfo $ \path _ ->
     logDebugStr $
       printf "tryPopulateRef: path: %s, new value: %s" (show path) (show nt)
@@ -32,13 +32,13 @@ tryPopulateRef nt evalFunc = do
       unless (null deps) $
         logDebugStr $
           printf "tryPopulateRef: path: %s, using value to update %s" (show path) (show deps)
-    mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt evalFunc)) deps
+    mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt reduceFunc)) deps
 
 {- | Substitute the cached result of the Func node pointed by the path with the new non-function value. Then trigger the
  - re-evluation of the lowest ancestor Func.
 -}
 populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
-populateRef nt evalFunc = do
+populateRef nt reduceFunc = do
   withDebugInfo $ \path t ->
     logDebugStr $ printf "populateRef: path: %s, focus: %s, new value: %s" (show path) (show t) (show nt)
   withTree $ \tar -> case (treeNode tar, treeNode nt) of
@@ -49,7 +49,7 @@ populateRef nt evalFunc = do
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
-      void $ reduceFunc (Just nt)
+      void $ handleFuncRes (Just nt)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
 
   res <- getTMTree
@@ -74,8 +74,8 @@ populateRef nt evalFunc = do
       | otherwise -> do
           withDebugInfo $ \path _ ->
             logDebugStr $ printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
-          r <- evalFunc fn >> getTMTree
-          tryPopulateRef r evalFunc
+          r <- reduceFunc fn >> getTMTree
+          tryPopulateRef r reduceFunc
     _ ->
       if isTreeFunc res
         then throwError $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)

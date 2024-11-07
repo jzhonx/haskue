@@ -528,8 +528,8 @@ callFunc = withTree $ \t -> case getFuncFromTree t of
 
 -- Try to reduce the function by using the function result to replace the function node.
 -- This should be called after the function is evaluated.
-reduceFunc :: (TreeMonad s m) => Maybe Tree -> m Bool
-reduceFunc valM = do
+handleFuncRes :: (TreeMonad s m) => Maybe Tree -> m Bool
+handleFuncRes valM = do
   reducible <- case valM of
     Nothing -> return False
     Just val ->
