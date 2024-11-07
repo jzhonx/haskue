@@ -16,21 +16,12 @@ import Value.Class
 import Value.Cursor
 import Value.Env
 
-type CommonEnv m = Env m Config
-
-type EvalEnvState s m c = (CommonEnv m, MonadState s m)
-
 type TMonad s m t =
   ( TreeOp t
-  , CommonEnv m
+  , Env m
   , MonadState s m
   , HasCtxVal s t t
   )
-
-data Config = Config
-  { cfCreateCnstr :: Bool
-  , cfMermaid :: Bool
-  }
 
 getTMAbsPath :: (TMonad s m t) => m Path
 getTMAbsPath = gets (cvPath . getCtxVal)
@@ -68,7 +59,7 @@ putTMCursor tc = putTMCrumbs (vcCrumbs tc) >> putTMTree (vcFocus tc)
 propUpTMSel :: (TMonad s m t) => Selector -> m ()
 propUpTMSel sel = getTMCursor >>= go >>= putTMCursor
  where
-  go :: (CommonEnv m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
+  go :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
   go (ValCursor _ []) = throwError "propUpTMSel: already at the top"
   go tc@(ValCursor _ ((s, _) : _)) = do
     if s == sel

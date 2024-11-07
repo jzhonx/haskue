@@ -10,6 +10,7 @@ module Ref where
 
 import Control.Monad (unless, void)
 import Control.Monad.Except (throwError)
+import Control.Monad.Reader (ask)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
@@ -195,9 +196,17 @@ deref tp = do
               TNAtom _ -> return $ Just tar
               TNConstraint c -> return $ Just (mkAtomVTree $ cnsAtom c)
               _ -> do
-                let x = fromMaybe tar (treeOrig tar)
-                    -- back up the original tree.
-                    orig = x{treeOrig = Just x}
+                orig <-
+                  maybe
+                    (return tar)
+                    ( \e -> do
+                        Config{cfEvalExpr = evalExpr} <- ask
+                        evalExpr e
+                    )
+                    (treeOrig tar)
+                -- let x = fromMaybe tar
+                --     -- back up the original tree.
+                --     orig = x{treeOrig = Just x}
                 logDebugStr $
                   printf
                     "deref: path: %s, deref'd orig is: %s, set: %s, tar: %s"

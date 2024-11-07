@@ -6,6 +6,7 @@ module Value.Func where
 
 import qualified AST
 import Control.Monad.Except (throwError)
+import Control.Monad.Reader (MonadReader, ask, runReaderT)
 import Path
 import Value.Class
 import Value.Env
@@ -16,7 +17,7 @@ data Func t = Func
   , fncType :: FuncType
   , -- Args stores the arguments that may or may not need to be evaluated.
     fncArgs :: [t]
-  , fncExprGen :: forall m c. (Env m c) => m AST.Expression
+  , fncExprGen :: forall m c. (Env m) => m AST.Expression
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (TMonad s m t) => [t] -> m Bool
   , -- fncTempRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
@@ -52,20 +53,26 @@ requireFuncConcrete fn = case fncType fn of
   RegularFunc -> fncName fn `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   _ -> False
 
-mkStubFunc :: (forall s m. (TMonad s m t) => [t] -> m Bool) -> Func t
-mkStubFunc f =
+mkStubFunc :: c -> (forall s m. (TMonad s m t, MonadReader c m) => [t] -> m Bool) -> Func t
+mkStubFunc cfg f =
   Func
     { fncName = ""
     , fncType = RegularFunc
     , fncArgs = []
     , fncExprGen = return $ AST.litCons AST.BottomLit
-    , fncFunc = f
+    , fncFunc = \ts -> runReaderT (f ts) cfg
     , fncTempRes = Nothing
     }
 
 mkUnaryOp ::
-  forall t. (BuildASTExpr t) => AST.UnaryOp -> (forall s m. (TMonad s m t) => t -> m Bool) -> t -> Func t
-mkUnaryOp op f n =
+  forall c t.
+  (BuildASTExpr t) =>
+  AST.UnaryOp ->
+  c ->
+  (forall s m. (TMonad s m t, MonadReader c m) => t -> m Bool) ->
+  t ->
+  Func t
+mkUnaryOp op cfg f n =
   Func
     { fncFunc = g
     , fncType = RegularFunc
@@ -76,13 +83,13 @@ mkUnaryOp op f n =
     }
  where
   g :: (TMonad s m t) => [t] -> m Bool
-  g [x] = f x
+  g [x] = runReaderT (f x) cfg
   g _ = throwError "invalid number of arguments for unary function"
 
-  gen :: (Env m c) => m AST.Expression
+  gen :: (Env m) => m AST.Expression
   gen = buildUnaryExpr n
 
-  buildUnaryExpr :: (Env m c) => t -> m AST.Expression
+  buildUnaryExpr :: (Env m) => t -> m AST.Expression
   buildUnaryExpr t = do
     let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
     te <- buildASTExpr c t
@@ -96,8 +103,15 @@ mkUnaryOp op f n =
               (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
 
 mkBinaryOp ::
-  forall t. (BuildASTExpr t) => AST.BinaryOp -> (forall s m. (TMonad s m t) => t -> t -> m Bool) -> t -> t -> Func t
-mkBinaryOp op f l r =
+  forall c t.
+  (BuildASTExpr t) =>
+  AST.BinaryOp ->
+  c ->
+  (forall s m. (TMonad s m t, MonadReader c m) => t -> t -> m Bool) ->
+  t ->
+  t ->
+  Func t
+mkBinaryOp op cfg f l r =
   Func
     { fncFunc = g
     , fncType = case op of
@@ -110,10 +124,10 @@ mkBinaryOp op f l r =
     }
  where
   g :: (TMonad s m t) => [t] -> m Bool
-  g [x, y] = f x y
+  g [x, y] = runReaderT (f x y) cfg
   g _ = throwError "invalid number of arguments for binary function"
 
-  gen :: (Env e c) => e AST.Expression
+  gen :: (Env e) => e AST.Expression
   gen = do
     let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
     xe <- buildASTExpr c l
@@ -121,14 +135,15 @@ mkBinaryOp op f l r =
     return $ AST.ExprBinaryOp op xe ye
 
 mkBinaryOpDir ::
-  forall t.
+  forall c t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (TMonad s m t) => t -> t -> m Bool) ->
+  c ->
+  (forall s m. (TMonad s m t, MonadReader c m) => t -> t -> m Bool) ->
   (BinOpDirect, t) ->
   (BinOpDirect, t) ->
   Func t
-mkBinaryOpDir rep op (d1, t1) (_, t2) =
+mkBinaryOpDir rep op cfg (d1, t1) (_, t2) =
   case d1 of
-    L -> mkBinaryOp rep op t1 t2
-    R -> mkBinaryOp rep op t2 t1
+    L -> mkBinaryOp rep op cfg t1 t2
+    R -> mkBinaryOp rep op cfg t2 t1

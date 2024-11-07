@@ -36,7 +36,7 @@ where
 import qualified AST
 import Control.Monad (foldM, when)
 import Control.Monad.Except (throwError)
-import Control.Monad.Reader (ask)
+import Control.Monad.Reader (MonadReader, ask)
 import Control.Monad.State.Strict (MonadState, evalState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
@@ -52,6 +52,7 @@ import Value.Constraint
 import Value.Cursor
 import Value.Cycle
 import Value.Disj
+import Value.Env
 import Value.Func
 import Value.List
 import Value.Struct
@@ -59,7 +60,29 @@ import Value.TMonad
 import Value.TreeNode
 
 -- TreeMonad stores the tree structure in its state.
-type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
+type TreeMonad s m =
+  ( Env m
+  , MonadState s m
+  , HasCtxVal s Tree Tree
+  , MonadReader Config m
+  )
+
+data Config = Config
+  { cfCreateCnstr :: Bool
+  , cfMermaid :: Bool
+  , cfEvalExpr :: forall m. (Env m, MonadReader Config m) => AST.Expression -> m Tree
+  }
+
+instance Show Config where
+  show c = printf "Config{cfCreateCnstr: %s, cfMermaid: %s}" (show $ cfCreateCnstr c) (show $ cfMermaid c)
+
+emptyConfig :: Config
+emptyConfig =
+  Config
+    { cfCreateCnstr = False
+    , cfMermaid = False
+    , cfEvalExpr = \_ -> throwError "cfEvalExpr not set"
+    }
 
 -- Some rules:
 -- 1. If a node is a Func that contains references, then the node should not be supplanted to other places without
@@ -67,7 +90,7 @@ type TreeMonad s m = (CommonEnv m, MonadState s m, HasCtxVal s Tree Tree)
 -- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
   { treeNode :: TreeNode Tree
-  , treeOrig :: Maybe Tree
+  , treeOrig :: Maybe AST.Expression
   , treeEvaled :: Bool
   }
 
@@ -214,15 +237,15 @@ instance BuildASTExpr Tree where
     TNFunc fn -> buildASTExpr cr fn
     TNConstraint c ->
       maybe
-        (throwError $ printf "orig expr for %s does not exist" (show (cnsAtom c)))
-        (buildASTExpr cr)
+        (buildASTExpr cr (cnsValidator c))
+        return
         (treeOrig t)
     TNRefCycle c -> case c of
       RefCycle p -> do
         if p
           -- If the path is empty, then it is a self-reference.
           then return $ AST.litCons AST.TopLit
-          else buildASTExpr cr (fromJust $ treeOrig t)
+          else maybe (throwError "RefCycle: original expression not found") return (treeOrig t)
       RefCycleTail _ -> throwError "RefCycleTail should have been converted to RefCycle"
 
 instance Eq Tree where
@@ -304,7 +327,8 @@ treeToMermaid msg evalPath root = do
               "%s[\"`%s`\"]"
               path
               ( symbol
-                  -- <> printf ", O:%s" (if (isJust $ treeOrig t) then "Y" else "N")
+                  -- print whether the node has an original expression.
+                  <> printf ", %s" (if (isJust $ treeOrig t) then "Y" else "N")
                   <> if null meta then mempty else " " <> meta
               )
           )
@@ -361,11 +385,8 @@ funcHasRef fn = isFuncRef fn || argsHaveRef (fncArgs fn)
 setTN :: Tree -> TreeNode Tree -> Tree
 setTN t n = t{treeNode = n}
 
-setOrig :: Tree -> Tree -> Tree
-setOrig t o = t{treeOrig = Just o}
-
-setTNOrig :: TreeNode Tree -> Tree -> Tree
-setTNOrig tn o = (mkNewTree tn){treeOrig = Just o}
+setOrig :: Tree -> Maybe AST.Expression -> Tree
+setOrig t eM = t{treeOrig = eM}
 
 getAtomVFromTree :: Tree -> Maybe AtomV
 getAtomVFromTree t = case treeNode t of
@@ -413,7 +434,7 @@ mkBoundsTree :: [Bound] -> Tree
 mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
 mkCnstrTree :: AtomV -> Tree -> Tree
-mkCnstrTree a = setTNOrig (TNConstraint $ Constraint a (mkBottomTree "validator not initialized"))
+mkCnstrTree a t = mkNewTree . TNConstraint $ Constraint a t
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})

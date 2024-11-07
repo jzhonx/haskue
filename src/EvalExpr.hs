@@ -9,14 +9,16 @@ module EvalExpr where
 import AST
 import Control.Monad (foldM)
 import Control.Monad.Except (throwError)
+import Control.Monad.Reader (MonadReader, ask)
 import qualified Data.Map.Strict as Map
 import Path
 import Reduction
 import Text.Printf (printf)
 import Util
+import Value.Env
 import Value.Tree
 
-type EvalEnv m = EvalEnvState (Context Tree) m Config
+type EvalEnv m = (Env m, MonadReader Config m)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -26,8 +28,11 @@ For example, if the path of the input tree is {a: b: {}} with cursor pointing to
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
 evalExpr :: (EvalEnv m) => Expression -> m Tree
-evalExpr (ExprUnaryExpr e) = evalUnaryExpr e
-evalExpr (ExprBinaryOp op e1 e2) = evalBinary op e1 e2
+evalExpr e = do
+  t <- case e of
+    (ExprUnaryExpr ue) -> evalUnaryExpr ue
+    (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
+  return $ setOrig t (Just e)
 
 evalLiteral :: (EvalEnv m) => Literal -> m Tree
 evalLiteral (StructLit s) = evalStructLit s
@@ -46,12 +51,16 @@ evalLiteral lit = return v
 -- | The struct is guaranteed to have unique labels by transform.
 evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
 evalStructLit decls = do
+  cfg <- ask
   (struct, ts) <- foldM evalDecl (emptyStruct, []) decls
   let v =
         if null ts
           then mkNewTree (TNStruct struct)
           else
-            foldl (\acc t -> mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify acc t)) (mkNewTree (TNStruct struct)) ts
+            foldl
+              (\acc t -> mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify acc t))
+              (mkNewTree (TNStruct struct))
+              ts
   return v
  where
   --  Evaluates a declaration in a struct.
@@ -62,8 +71,9 @@ evalStructLit decls = do
     return (scp, v : ts)
   evalDecl (struct, ts) (FieldDecl fd) = case fd of
     Field ls e -> do
+      cfg <- ask
       sfa <- evalFdLabels ls e
-      let newStruct = insertUnifyStruct sfa struct
+      let newStruct = insertUnifyStruct sfa struct cfg
       return (newStruct, ts)
 
   evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
@@ -123,14 +133,14 @@ evalStructLit decls = do
 
 -- Insert a new field into the struct. If the field is already in the struct, then unify the field with the new field.
 insertUnifyStruct ::
-  StructElemAdder Tree -> Struct Tree -> Struct Tree
-insertUnifyStruct adder struct = case adder of
+  StructElemAdder Tree -> Struct Tree -> Config -> Struct Tree
+insertUnifyStruct adder struct cfg = case adder of
   (Static sel sf) -> case subs Map.!? sel of
     Just extSF ->
       let
         unifySFOp =
           StaticStructField
-            { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
+            { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify (ssfField extSF) (ssfField sf))
             , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
             }
        in
@@ -162,7 +172,9 @@ evalPrimExpr e@(PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing -> mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
+    Nothing -> do
+      cfg <- ask
+      mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e) cfg
     Just b -> return $ mkBoundsTree [b]
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
@@ -181,9 +193,10 @@ If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x"
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
-evalSelector pe astSel tree =
+evalSelector pe astSel tree = do
+  cfg <- ask
   return $
-    mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
+    mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe) cfg
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -192,16 +205,18 @@ evalSelector pe astSel tree =
 evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
 evalIndex pe (AST.Index e) tree = do
+  cfg <- ask
   sel <- evalExpr e
-  return $ mkIndexFuncTree tree sel (UnaryExprPrimaryExpr pe)
+  return $ mkIndexFuncTree tree sel (UnaryExprPrimaryExpr pe) cfg
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
 -}
 evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> m Tree
 evalUnaryOp op e = do
+  cfg <- ask
   t <- evalUnaryExpr e
-  return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
+  return $ mkNewTree (TNFunc $ mkUnaryOp op cfg (dispUnaryFunc op) t)
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -209,12 +224,14 @@ evalBinary :: (EvalEnv m) => BinaryOp -> Expression -> Expression -> m Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
+  cfg <- ask
   lt <- evalExpr e1
   rt <- evalExpr e2
-  return $ mkNewTree (TNFunc $ mkBinaryOp op (dispBinFunc op) lt rt)
+  return $ mkNewTree (TNFunc $ mkBinaryOp op cfg (dispBinFunc op) lt rt)
 
 evalDisj :: (EvalEnv m) => Expression -> Expression -> m Tree
 evalDisj e1 e2 = do
+  cfg <- ask
   (lt, rt) <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
       l <- evalUnaryExpr se1
@@ -232,7 +249,7 @@ evalDisj e1 e2 = do
       l <- evalExpr e1
       r <- evalExpr e2
       return (l, r)
-  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
+  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction cfg reduceDisjAdapt lt rt)
  where
   reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
   reduceDisjAdapt unt1 unt2 = do

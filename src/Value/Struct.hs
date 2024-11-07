@@ -69,7 +69,7 @@ instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
   -- Patterns are not included in the AST.
   buildASTExpr concrete s =
     let
-      processStaticField :: (Env m c, BuildASTExpr t) => (Path.StructSelector, StaticStructField t) -> m AST.Declaration
+      processStaticField :: (Env m, BuildASTExpr t) => (Path.StructSelector, StaticStructField t) -> m AST.Declaration
       processStaticField (label, sf) = case label of
         Path.StringSelector sel -> do
           e <- buildASTExpr concrete (ssfField sf)
@@ -84,7 +84,7 @@ instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
                 e
         _ -> throwError "Only StringSelector is allowed in static fields."
 
-      processDynField :: (Env m c, BuildASTExpr t) => DynamicStructField t -> m AST.Declaration
+      processDynField :: (Env m, BuildASTExpr t) => DynamicStructField t -> m AST.Declaration
       processDynField sf = do
         e <- buildASTExpr concrete (dsfValue sf)
         return $

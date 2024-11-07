@@ -8,12 +8,12 @@
 module Reduction where
 
 import qualified AST
-import Control.Monad (foldM, forM, void, when)
+import Control.Monad (foldM, forM, unless, void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust, isNothing)
+import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Path
 import Ref
@@ -21,9 +21,10 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
-setOrigNodes :: (TreeMonad s m) => m ()
-setOrigNodes = traverseTM $ withTree $ \t ->
-  when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
+-- setOrigNodes :: (TreeMonad s m) => m ()
+-- setOrigNodes = traverseTM $ withTree $ \t ->
+--   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
+--
 
 reduce :: (TreeMonad s m) => m ()
 reduce = do
@@ -32,13 +33,13 @@ reduce = do
   origT <- getTMTree
   withTree $ \t -> case treeNode t of
     TNFunc fn -> reduceFunc fn
-    TNStruct struct -> reduceStruct struct
+    TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
     _ -> return ()
 
   withTree $ \t -> do
-    let nt = setOrig t origT
+    let nt = setOrig t (treeOrig origT)
     putTMTree $ nt{treeEvaled = True}
 
   path <- getTMAbsPath
@@ -47,7 +48,7 @@ reduce = do
   logDebugStr $ printf "reduce: path: %s, done" (show path)
   dumpEntireTree "reduce done"
 
--- Evaluate tree nodes
+-- Reduce tree nodes
 
 {- | Reduce the function.
  - Function reduction is a top-down process, unlike other languages where the arguments are evaluated first.
@@ -109,15 +110,18 @@ reduceFuncArg sel sub mustAtom = withTree $ \t -> do
             | otherwise -> res
       )
 
-reduceStruct :: forall s m. (TreeMonad s m) => Struct Tree -> m ()
-reduceStruct origStruct = do
+reduceStruct :: forall s m. (TreeMonad s m) => m ()
+reduceStruct = do
   delIdxes <- do
-    mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ origStruct)
-    mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns origStruct))
-    foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs origStruct))
+    whenStruct () $ \s ->
+      mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ s)
+    whenStruct () $ \s ->
+      mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns s))
+    whenStruct [] $ \s ->
+      foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs s))
 
-  whenStruct () $ \struct -> do
-    let newStruct = mk struct{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs struct), i `notElem` delIdxes]}
+  whenStruct () $ \s -> do
+    let newStruct = mk s{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs s), i `notElem` delIdxes]}
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "reduceStruct: path: %s, new struct: %s" (show path) (show newStruct)
     putTMTree newStruct
@@ -131,13 +135,13 @@ whenStruct a f = do
     TNBottom _ -> return a
     TNStruct struct -> f struct
     _ -> do
-      putTMTree $ mkBottomTree "not a struct"
+      putTMTree . mkBottomTree $ printf "%s is not a struct" (show t)
       return a
 
 mustStruct :: (TreeMonad s m) => (Struct Tree -> m a) -> m a
 mustStruct f = withTree $ \t -> case treeNode t of
   TNStruct struct -> f struct
-  _ -> throwError $ printf "mustStruct: %s is not a struct" (show t)
+  _ -> throwError $ printf "%s is not a struct" (show t)
 
 reduceStaticSF :: (TreeMonad s m) => StructSelector -> m ()
 reduceStaticSF sel = whenStruct () $ \struct ->
@@ -160,8 +164,7 @@ reducePendSE idxes (sel, pse) = do
             (show label)
       case treeNode label of
         TNAtom (AtomV (String s)) -> do
-          newSF <- mustStruct $ \struct ->
-            return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
+          newSF <- mustStruct $ \struct -> dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
 
           let sSel = StructSelector $ StringSelector s
           pushTMSub sSel (ssfField newSF)
@@ -194,10 +197,11 @@ reducePendSE idxes (sel, pse) = do
               defaultVal <- reduce >> getTMTree
               -- apply the pattern to all existing fields.
               -- TODO: apply the pattern to filtered fields.
+              cfg <- ask
               nodes <- mustStruct $ \struct ->
                 return $
                   [ mkNewTree . TNFunc $
-                    mkBinaryOp AST.Unify unify (ssfField n) defaultVal
+                    mkBinaryOp AST.Unify cfg unify (ssfField n) defaultVal
                   | n <- Map.elems (stcSubs struct)
                   ]
               mapM_ (\x -> whenNotBottom () (putTMTree x >> reduce)) nodes
@@ -213,20 +217,23 @@ reducePendSE idxes (sel, pse) = do
     _ -> throwError "evalStructField: invalid selector field combination"
  where
   dynToStaticField ::
+    (TreeMonad s m) =>
     DynamicStructField Tree ->
     Maybe (StaticStructField Tree) ->
-    StaticStructField Tree
-  dynToStaticField dsf sfM = case sfM of
-    Just sf ->
-      StaticStructField
-        { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfValue dsf))
-        , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
-        }
-    Nothing ->
-      StaticStructField
-        { ssfField = dsfValue dsf
-        , ssfAttr = dsfAttr dsf
-        }
+    m (StaticStructField Tree)
+  dynToStaticField dsf sfM = do
+    cfg <- ask
+    return $ case sfM of
+      Just sf ->
+        StaticStructField
+          { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify (ssfField sf) (dsfValue dsf))
+          , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
+          }
+      Nothing ->
+        StaticStructField
+          { ssfField = dsfValue dsf
+          , ssfAttr = dsfAttr dsf
+          }
 
   addStatic :: String -> StaticStructField Tree -> Struct Tree -> Struct Tree
   addStatic s sf x =
@@ -242,27 +249,28 @@ reducePendSE idxes (sel, pse) = do
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
 -- | Create a new identifier reference.
-mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
-mkVarLinkTree var ue = do
-  fn <- mkRefFunc (Path [StructSelector $ StringSelector var]) ue
+mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> Config -> m Tree
+mkVarLinkTree var ue cfg = do
+  fn <- mkRefFunc (Path [StructSelector $ StringSelector var]) ue cfg
   return $ mkFuncTree fn
 
 -- | Create an index function node.
-mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
-mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
-  TNFunc g
-    | isFuncIndex g ->
-        g
-          { fncArgs = fncArgs g ++ [selArg]
-          , fncExprGen = return $ AST.ExprUnaryExpr ue
-          }
-  _ ->
-    (mkStubFunc (index ue))
-      { fncName = "index"
-      , fncType = IndexFunc
-      , fncArgs = [treeArg, selArg]
-      , fncExprGen = return $ AST.ExprUnaryExpr ue
-      }
+mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Config -> Tree
+mkIndexFuncTree treeArg selArg ue cfg =
+  mkFuncTree $ case treeNode treeArg of
+    TNFunc g
+      | isFuncIndex g ->
+          g
+            { fncArgs = fncArgs g ++ [selArg]
+            , fncExprGen = return $ AST.ExprUnaryExpr ue
+            }
+    _ ->
+      (mkStubFunc cfg (index ue))
+        { fncName = "index"
+        , fncType = IndexFunc
+        , fncArgs = [treeArg, selArg]
+        , fncExprGen = return $ AST.ExprUnaryExpr ue
+        }
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
@@ -311,12 +319,13 @@ appendRefFuncPath fn p ue
           return
           (treesToPath (fncArgs fn))
       let tp = appendPath p origTP
+      cfg <- ask
       -- Reference the target node when the target node is not an atom or a cycle head.
-      mkRefFunc tp ue
+      mkRefFunc tp ue cfg
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
 
-mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Func Tree)
-mkRefFunc tp ue = do
+mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> Config -> m (Func Tree)
+mkRefFunc tp ue cfg = do
   args <-
     maybe
       (throwError "mkRefFunc: can not generate path from the arguments")
@@ -324,6 +333,7 @@ mkRefFunc tp ue = do
       (pathToTrees tp)
   return $
     ( mkStubFunc
+        cfg
         ( \_ -> do
             ok <- deref tp
             when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
@@ -338,7 +348,7 @@ mkRefFunc tp ue = do
 
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
-  logDebugStr $ printf "validateCnstrs: start"
+  logDebugStr "validateCnstrs: start"
 
   ctx <- getTMContext
   -- remove all notifiers.
@@ -354,28 +364,28 @@ validateCnstrs = do
 -- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
 -- will be assigned to the constraint in the propValUp.
 validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
-validateCnstr c = withTree $ \t -> do
+validateCnstr c = withTree $ \_ -> do
   withDebugInfo $ \path _ -> do
     tc <- getTMCursor
-    logDebugStr $ printf "evalConstraint: path: %s, constraint unify tc:\n%s" (show path) (show tc)
+    Config{cfCreateCnstr = cc} <- ask
+    logDebugStr $
+      printf
+        "validateCnstr: path: %s, validator: %s, cc: %s constraint unify tc:\n%s"
+        (show path)
+        (show (cnsValidator c))
+        (show cc)
+        (show tc)
 
-  let
-    origAtomT = mkAtomVTree $ cnsAtom c
-    orig = fromJust $ treeOrig t
-
-  -- run the function in a sub context.
-  pushTMSub unaryOpSelector orig
-  x <- reduce >> getTMTree
+  let atomT = mkAtomVTree $ cnsAtom c
+  -- run the validator in a sub context.
+  pushTMSub unaryOpSelector (cnsValidator c)
+  res <- reduce >> getTMTree
   discardTMAndPop
 
-  when (isTreeAtom x) $ do
-    when (x /= origAtomT) $
-      throwError $
-        printf
-          "validateCnstr: constraint not satisfied, %s != %s"
-          (show x)
-          (show origAtomT)
-    putTMTree origAtomT
+  unless (isTreeAtom res) $
+    throwError $
+      printf "validateCnstr: constraint not satisfied, %s" (show res)
+  putTMTree atomT
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
@@ -726,34 +736,33 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
 parTC points to the bin op node.
 -}
 unifyLeftAtom :: (TreeMonad s m) => (Path.BinOpDirect, AtomV, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
-unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
-  case (amvAtom l1, treeNode t2) of
+unifyLeftAtom (d1, v1, t1) dt2@(d2, t2) = do
+  case (amvAtom v1, treeNode t2) of
     (String x, TNAtom s) -> case amvAtom s of
-      String y -> putTree $ if x == y then TNAtom l1 else amismatch x y
+      String y -> putTree $ if x == y then TNAtom v1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Int x, TNAtom s) -> case amvAtom s of
-      Int y -> putTree $ if x == y then TNAtom l1 else amismatch x y
+      Int y -> putTree $ if x == y then TNAtom v1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Bool x, TNAtom s) -> case amvAtom s of
-      Bool y -> putTree $ if x == y then TNAtom l1 else amismatch x y
+      Bool y -> putTree $ if x == y then TNAtom v1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Float x, TNAtom s) -> case amvAtom s of
-      Float y -> putTree $ if x == y then TNAtom l1 else amismatch x y
+      Float y -> putTree $ if x == y then TNAtom v1 else amismatch x y
       _ -> notUnifiable dt1 dt2
     (Null, TNAtom s) -> case amvAtom s of
-      Null -> putTree $ TNAtom l1
+      Null -> putTree $ TNAtom v1
       _ -> notUnifiable dt1 dt2
     (_, TNBounds b) -> do
-      logDebugStr $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
-      putTMTree $ unifyAtomBounds (d1, amvAtom l1) (d2, bdsList b)
+      logDebugStr $ printf "unifyLeftAtom, with Bounds: %s, %s" (show t1) (show t2)
+      putTMTree $ unifyAtomBounds (d1, amvAtom v1) (d2, bdsList b)
       return True
     (_, TNConstraint c) ->
-      if l1 == cnsAtom c
+      if v1 == cnsAtom c
         then putCnstr (d2, cnsAtom c) dt1 >> return True
         else do
-          putTMTree $
-            mkBottomTree $
-              printf "values mismatch: %s != %s" (show l1) (show $ cnsAtom c)
+          putTMTree . mkBottomTree $
+            printf "values mismatch: %s != %s" (show v1) (show $ cnsAtom c)
           return True
     (_, TNDisj dj2) -> do
       logDebugStr $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show t1)
@@ -780,8 +789,9 @@ unifyLeftAtom (d1, l1, t1) dt2@(d2, t2) = do
   procOther :: (TreeMonad s m) => m Bool
   procOther = do
     Config{cfCreateCnstr = cc} <- ask
+    logDebugStr $ printf "unifyLeftAtom: cc: %s, procOther: %s, %s" (show cc) (show t1) (show t2)
     if cc
-      then putCnstr (d1, l1) dt2 >> return True
+      then putCnstr (d1, v1) dt2 >> return True
       else unifyLeftOther dt2 dt1
 
   putCnstr :: (TreeMonad s m) => (Path.BinOpDirect, AtomV) -> (Path.BinOpDirect, Tree) -> m ()
@@ -1069,7 +1079,8 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
 
 unifyStructs :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m Bool
 unifyStructs (_, s1) (_, s2) = do
-  let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
+  allSt <- allStatics
+  let merged = nodesToStruct allSt combinedPatterns combinedPendSubs
   withDebugInfo $ \path _ ->
     logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
@@ -1086,31 +1097,35 @@ unifyStructs (_, s1) (_, s2) = do
   combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
   combinedPatterns = stcPatterns s1 ++ stcPatterns s2
 
-  inter :: [(Path.StructSelector, StaticStructField Tree)]
-  inter =
-    Set.foldr
-      ( \key acc ->
-          let sf1 = fields1 Map.! key
-              sf2 = fields2 Map.! key
-              ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
-              -- No original node exists yet
-              unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2))
-           in ( key
-              , StaticStructField
-                  { ssfField = unifyOp
-                  , ssfAttr = ua
-                  }
-              )
-                : acc
-      )
-      []
-      interKeys
+  inter :: (TreeMonad s m) => m [(Path.StructSelector, StaticStructField Tree)]
+  inter = do
+    cfg <- ask
+    return $
+      Set.foldr
+        ( \key acc ->
+            let sf1 = fields1 Map.! key
+                sf2 = fields2 Map.! key
+                ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
+                -- No original node exists yet
+                unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify (ssfField sf1) (ssfField sf2))
+             in ( key
+                , StaticStructField
+                    { ssfField = unifyOp
+                    , ssfAttr = ua
+                    }
+                )
+                  : acc
+        )
+        []
+        interKeys
 
   select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, StaticStructField Tree)]
   select s keys = map (\key -> (key, stcSubs s Map.! key)) (Set.toList keys)
 
-  allStatics :: [(Path.StructSelector, StaticStructField Tree)]
-  allStatics = inter ++ select s1 disjKeys1 ++ select s2 disjKeys2
+  allStatics :: (TreeMonad s m) => m [(Path.StructSelector, StaticStructField Tree)]
+  allStatics = do
+    ir <- inter
+    return $ ir ++ select s1 disjKeys1 ++ select s2 disjKeys2
 
   nodesToStruct ::
     [(Path.StructSelector, StaticStructField Tree)] -> [PatternStructField Tree] -> [PendingStructElem Tree] -> Tree

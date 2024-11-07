@@ -85,7 +85,7 @@ subTreeTN sel t = case (sel, getTreeNode t) of
   indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
 setSubTreeTN ::
-  forall m c t. (Env m c, TreeOp t, Show t, HasTreeNode t) => Selector -> t -> t -> m t
+  forall m t. (Env m, TreeOp t, Show t, HasTreeNode t) => Selector -> t -> t -> m t
 setSubTreeTN sel subT parT = do
   n <- case (sel, getTreeNode parT) of
     (StructSelector s, TNStruct struct) -> updateParStruct struct s

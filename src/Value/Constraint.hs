@@ -4,7 +4,7 @@ import Value.Atom
 
 data Constraint t = Constraint
   { cnsAtom :: AtomV
-  , -- validator is used when validateCnstrs is called.
+  , -- validator is used when validateCnstrs is called. It is the unification operation node.
     cnsValidator :: t
   }
 

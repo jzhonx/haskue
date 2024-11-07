@@ -63,17 +63,17 @@ eval expr mermaid = do
           let
             rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
             cv = cvFromCur rootTC
-          r2 <- execStateT setOrigNodes cv
+          -- r2 <- execStateT setOrigNodes cv
           logDebugStr $ printf "---- start resolving links ----"
-          res <- execStateT reduce r2
+          res <- execStateT reduce cv
           logDebugStr $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      Config{cfCreateCnstr = True, cfMermaid = mermaid}
+      Config{cfCreateCnstr = True, cfMermaid = mermaid, cfEvalExpr = evalExpr}
 
   finalized <-
     runReaderT
       (execStateT validateCnstrs rootTC)
-      Config{cfCreateCnstr = False, cfMermaid = mermaid}
+      Config{cfCreateCnstr = False, cfMermaid = mermaid, cfEvalExpr = evalExpr}
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

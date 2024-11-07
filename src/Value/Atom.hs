@@ -34,7 +34,7 @@ instance Eq Atom where
   (==) _ _ = False
 
 instance BuildASTExpr Atom where
-  buildASTExpr :: (Env m c) => Bool -> Atom -> m AST.Expression
+  buildASTExpr :: (Env m) => Bool -> Atom -> m AST.Expression
   buildASTExpr _ a = return $ (AST.litCons . aToLiteral) a
 
 aToLiteral :: Atom -> AST.Literal
