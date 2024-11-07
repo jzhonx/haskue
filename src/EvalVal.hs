@@ -44,17 +44,15 @@ evalTM = withTree $ \t -> do
   let cond = case treeNode t of
         TNFunc fn | isFuncRef fn -> True
         _ -> True
-  parHasCycle <- isJust . ctxCycle <$> getTMContext
   withDebugInfo $ \path _ ->
-    logDebugStr $ printf "evalTM: path: %s, cond: %s, parHasCycle: %s" (show path) (show cond) (show parHasCycle)
-  when (cond && not parHasCycle) forceEvalCV
+    logDebugStr $ printf "evalTM: path: %s, cond: %s" (show path) (show cond)
+  when cond forceEvalCV
 
 forceEvalCV :: (TreeMonad s m) => m ()
 forceEvalCV = do
   dumpEntireTree "evalTM start"
 
   origT <- getTMTree
-  markTMVisiting
   withTree $ \t -> case treeNode t of
     TNFunc fn -> evalFunc fn
     TNStruct struct -> evalStruct struct
@@ -65,39 +63,12 @@ forceEvalCV = do
   withTree $ \t -> do
     let nt = setOrig t origT
     putTMTree $ nt{treeEvaled = True}
-  unmarkTMVisiting
 
-  -- ctx <- getTMContext
   path <- getTMAbsPath
-  -- case ctxCycle ctx of
-  --   Just (cycleStart, cycleTail) | cycleStart == path -> do
-  --     logDebugStr $ printf "evalTM: path: %s, cycle head found" (show path)
-  --     putTMTree $ convRefCycleTree origT cycleTail
-  --     putTMContext $ ctx{ctxCycle = Nothing}
-  --   _ -> return ()
-
   withTree $ \t -> tryPopulateRef t evalFunc
 
   logDebugStr $ printf "evalTM: path: %s, done" (show path)
   dumpEntireTree "evalTM done"
- where
-  markTMVisiting :: (TreeMonad s m) => m ()
-  markTMVisiting = do
-    path <- getTMAbsPath
-    withCtxTree $ \ct -> do
-      let
-        ctx = cvCtx ct
-        newCtx = ctx{ctxVisiting = Set.insert path (ctxVisiting ctx)}
-      putTMContext newCtx
-
-  unmarkTMVisiting :: (TreeMonad s m) => m ()
-  unmarkTMVisiting = do
-    path <- getTMAbsPath
-    withCtxTree $ \ct -> do
-      let
-        ctx = cvCtx ct
-        newCtx = ctx{ctxVisiting = Set.delete path (ctxVisiting ctx)}
-      putTMContext newCtx
 
 -- Evaluate tree nodes
 
@@ -1118,15 +1089,9 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
   -- unification.
   -- We can just return the second value.
   (TNRefCycle _, _) -> do
-    eliminateTMCycle
     putTMTree t2
     return True
   _ -> notUnifiable dt1 dt2
-
-eliminateTMCycle :: (TreeMonad s m) => m ()
-eliminateTMCycle = do
-  ctx <- getTMContext
-  putTMContext ctx{ctxCycle = Nothing}
 
 unifyLeftStruct :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of

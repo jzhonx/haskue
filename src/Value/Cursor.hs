@@ -42,8 +42,6 @@ cvFromCur cur =
         Context
           { ctxCrumbs = vcCrumbs cur
           , ctxNotifiers = Map.empty
-          , ctxVisiting = Set.empty
-          , ctxCycle = Nothing
           }
     }
 
@@ -52,9 +50,6 @@ type CtxTree t = CtxVal t t
 data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxNotifiers :: Map.Map Path [Path]
-  , ctxVisiting :: Set.Set Path
-  , -- The tuple is the absolute path of the start of the cycle and the relative path of the cycle tail.
-    ctxCycle :: Maybe (Path, Path)
   }
   deriving (Eq, Show)
 
@@ -81,8 +76,6 @@ emptyContext =
   Context
     { ctxCrumbs = []
     , ctxNotifiers = Map.empty
-    , ctxVisiting = Set.empty
-    , ctxCycle = Nothing
     }
 
 {- | Add a notifier pair to the context.
