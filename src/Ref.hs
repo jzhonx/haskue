@@ -112,7 +112,7 @@ deref tp = do
         (show tp)
         (show t)
   follow tp Set.empty >>= \case
-    (Just (tarPath, tar)) -> do
+    (Just (_, tar)) -> do
       withDebugInfo $ \_ t ->
         logDebugStr $
           printf

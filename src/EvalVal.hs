@@ -13,7 +13,7 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust, isNothing)
+import Data.Maybe (fromJust, isJust, isNothing)
 import qualified Data.Set as Set
 import Path
 import Ref
@@ -25,31 +25,8 @@ setOrigNodes :: (TreeMonad s m) => m ()
 setOrigNodes = traverseTM $ withTree $ \t ->
   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
 
--- Exhaust the tree by evaluating dereferenced functions.
-exhaustTM :: (TreeMonad s m) => m ()
-exhaustTM = do
-  wasRef <- withTN $ \case
-    TNFunc fn | isFuncRef fn -> return True
-    _ -> return False
-  evalTM
-  withTN $ \case
-    -- If previous node was a reference, and the current node has been evaluated to a new function, then we need to
-    -- evaluate the new function.
-    TNFunc fn | wasRef && not (isFuncRef fn) -> evalTM
-    _ -> return ()
-
--- Evaluate the tree.
 evalTM :: (TreeMonad s m) => m ()
-evalTM = withTree $ \t -> do
-  let cond = case treeNode t of
-        TNFunc fn | isFuncRef fn -> True
-        _ -> True
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "evalTM: path: %s, cond: %s" (show path) (show cond)
-  when cond forceEvalCV
-
-forceEvalCV :: (TreeMonad s m) => m ()
-forceEvalCV = do
+evalTM = do
   dumpEntireTree "evalTM start"
 
   origT <- getTMTree
@@ -107,9 +84,8 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
           ( withTree $ \x -> case treeNode x of
               TNFunc _ -> do
                 rM <- callFunc
-                -- return $ maybe x id rM
                 return $ getFuncRes x rM
-              _ -> exhaustTM >> getTMTree
+              _ -> evalTM >> getTMTree
           )
       withDebugInfo $ \path _ ->
         logDebugStr $ printf "evalFuncArg: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
@@ -165,17 +141,17 @@ mustStruct f = withTree $ \t -> case treeNode t of
 
 evalStaticSF :: (TreeMonad s m) => StructSelector -> m ()
 evalStaticSF sel = whenStruct () $ \struct ->
-  inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) exhaustTM
+  inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) evalTM
 
 evalPattern :: (TreeMonad s m) => (StructSelector, PatternStructField Tree) -> m ()
-evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) exhaustTM
+evalPattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) evalTM
 
 evalPendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem Tree) -> m [Int]
 evalPendSE idxes (sel, pse) = do
   case (sel, pse) of
     (PendingSelector i, DynamicField dsf) -> do
       -- evaluate the dynamic label.
-      label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ exhaustTM >> getTMTree
+      label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ evalTM >> getTMTree
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf
@@ -189,7 +165,7 @@ evalPendSE idxes (sel, pse) = do
 
           let sSel = StructSelector $ StringSelector s
           pushTMSub sSel (ssfField newSF)
-          mergedT <- exhaustTM >> getTMTree
+          mergedT <- evalTM >> getTMTree
           -- do not use propUpTCSel here because the field might not be in the original struct.
           discardTMAndPop
           -- TODO: use whenStruct because mergedT could be a bottom.
@@ -202,7 +178,7 @@ evalPendSE idxes (sel, pse) = do
         _ -> putTMTree (mkBottomTree "selector can only be a string") >> return idxes
     (PendingSelector i, PatternField pattern val) -> do
       -- evaluate the pattern.
-      evaledPattern <- inSubTM (StructSelector sel) pattern (exhaustTM >> getTMTree)
+      evaledPattern <- inSubTM (StructSelector sel) pattern (evalTM >> getTMTree)
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf
@@ -215,7 +191,7 @@ evalPendSE idxes (sel, pse) = do
             then putTMTree (mkBottomTree "patterns must be non-empty") >> return idxes
             else do
               pushTMSub (StructSelector sel) val
-              defaultVal <- exhaustTM >> getTMTree
+              defaultVal <- evalTM >> getTMTree
               -- apply the pattern to all existing fields.
               -- TODO: apply the pattern to filtered fields.
               nodes <- mustStruct $ \struct ->
@@ -224,8 +200,8 @@ evalPendSE idxes (sel, pse) = do
                     mkBinaryOp AST.Unify unify (ssfField n) defaultVal
                   | n <- Map.elems (stcSubs struct)
                   ]
-              mapM_ (\x -> whenNotBottom () (putTMTree x >> exhaustTM)) nodes
-              -- r <- foldM (\acc n -> whenNotBottom acc (exhaustTM n)) defaultVal nodes
+              mapM_ (\x -> whenNotBottom () (putTMTree x >> evalTM)) nodes
+              -- r <- foldM (\acc n -> whenNotBottom acc (evalTM n)) defaultVal nodes
               whenNotBottom idxes $ do
                 newStruct <- mustStruct $ \struct ->
                   return $ mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
@@ -320,7 +296,7 @@ index ue ts@(t : _)
       return True
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
-  evalIndexArg i = inSubTM (FuncSelector $ FuncArgSelector i) (ts !! i) (exhaustTM >> getTMTree)
+  evalIndexArg i = inSubTM (FuncSelector $ FuncArgSelector i) (ts !! i) (evalTM >> getTMTree)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
@@ -334,12 +310,9 @@ appendRefFuncPath fn p ue
           (throwError "appendRefFuncPath: can not generate path from the arguments")
           return
           (treesToPath (fncArgs fn))
-      -- remove original receiver because origP would not exist.
-      -- delNotifRecvs origTP
-      withCtxTree $ \ct -> do
-        let tp = appendPath p origTP
-        -- Reference the target node when the target node is not an atom or a cycle head.
-        mkRefFunc tp ue
+      let tp = appendPath p origTP
+      -- Reference the target node when the target node is not an atom or a cycle head.
+      mkRefFunc tp ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
 
 mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Func Tree)
@@ -392,7 +365,7 @@ validateCnstr c = withTree $ \t -> do
 
   -- run the function in a sub context.
   pushTMSub unaryOpSelector orig
-  x <- exhaustTM >> getTMTree
+  x <- evalTM >> getTMTree
   discardTMAndPop
 
   when (isTreeAtom x) $ do
@@ -629,10 +602,6 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
     TNList _ -> undefined
     TNConstraint _ -> regBinLeftOther op (d1, x) (d2, t2)
     _ -> do
-      -- let v = mkNewTree (TNFunc $ mkBinaryOpDir op (regBin op) (d1, x) (d2, t2))
-      -- withDebugInfo $ \path _ ->
-      --   logDebugStr $ printf "regBinLeftOther: path: %s, %s is incomplete, delaying to %s" (show path) (show x) (show v)
-      -- putTMTree v
       withDebugInfo $ \path _ ->
         logDebugStr $ printf "regBinLeftOther: path: %s, %s is incomplete, delaying" (show path) (show x)
       return False
@@ -1104,7 +1073,7 @@ unifyStructs (_, s1) (_, s2) = do
   withDebugInfo $ \path _ ->
     logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
-  exhaustTM
+  evalTM
   return True
  where
   fields1 = stcSubs s1
