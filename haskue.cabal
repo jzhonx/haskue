@@ -26,7 +26,7 @@ library
         AST,
         Eval,
         EvalExpr,
-        EvalVal,
+        Reduction,
         Parser,
         Path,
         Ref,

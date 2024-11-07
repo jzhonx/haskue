@@ -10,8 +10,8 @@ import AST
 import Control.Monad (foldM)
 import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
-import EvalVal
 import Path
+import Reduction
 import Text.Printf (printf)
 import Util
 import Value.Tree

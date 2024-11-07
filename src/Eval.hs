@@ -20,12 +20,12 @@ import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
 import EvalExpr
-import EvalVal
 import Parser (parseCUE)
 import Path
+import Reduction
 import Text.Printf (printf)
-import Value.Tree
 import Util
+import Value.Tree
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
@@ -65,7 +65,7 @@ eval expr mermaid = do
             cv = cvFromCur rootTC
           r2 <- execStateT setOrigNodes cv
           logDebugStr $ printf "---- start resolving links ----"
-          res <- execStateT evalTM r2
+          res <- execStateT reduce r2
           logDebugStr $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
           return res
       )

@@ -7,9 +7,9 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
 import Eval (eval, runTreeIO)
-import EvalVal (mkRefFunc)
 import Parser
 import Path
+import Reduction (mkRefFunc)
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
