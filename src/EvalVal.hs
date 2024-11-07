@@ -330,7 +330,7 @@ index ue ts@(t : _)
           -- the path is c, then the new ref should be a.b.c.
           | isFuncRef fn -> do
               refFunc <- appendRefFuncPath fn idxPath ue
-              putTMTree (mkFuncTree refFunc) >> exhaustTM
+              putTMTree (mkFuncTree refFunc)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
           res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False

@@ -484,7 +484,7 @@ snapshotTM =
     _ -> return ()
 
 {- | Call the function. It returns the result of the function.
- - This does not modify the tree, i.e. the function is not reduced.
+ - This must not modify the tree, i.e. the function is not reduced or no evalTM is called.
  -
  - TODO: consider whether putting back the fn accidentally left the unwanted changes in Monad.
 -}

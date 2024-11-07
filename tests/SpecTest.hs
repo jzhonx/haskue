@@ -843,6 +843,27 @@ testRef3 = do
             )
           ]
 
+testRef5 :: IO ()
+testRef5 = do
+  s <- readFile "tests/spec/ref5.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newSimpleStruct
+          ["b", "c", "df"]
+          [ ("b", mkAtomTree $ String "z")
+          , ("df", mkAtomTree $ String "c")
+          ,
+            ( "c"
+            , newSimpleStruct
+                ["z"]
+                [ ("z", mkAtomTree $ String "z")
+                ]
+            )
+          ]
+
 testStruct1 :: IO ()
 testStruct1 = do
   s <- readFile "tests/spec/struct1.cue"
@@ -1041,6 +1062,7 @@ specTests =
     , testCase "ref1" testRef1
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
+    , testCase "ref3" testRef5
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
     , testCase "struct3" testStruct3
