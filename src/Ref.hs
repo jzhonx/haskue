@@ -21,20 +21,20 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
-tryPopulateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
-tryPopulateRef nt reduceFunc = do
+startReduceRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
+startReduceRef nt reduceFunc = do
   withDebugInfo $ \path _ ->
     logDebugStr $
-      printf "tryPopulateRef: path: %s, new value: %s" (show path) (show nt)
+      printf "startReduceRef: path: %s, new value: %s" (show path) (show nt)
   withCtxTree $ \ct -> do
     let
-      resPath = cvPath ct
+      nvPath = cvPath ct
       notifers = ctxNotifiers . cvCtx $ ct
-      deps = fromMaybe [] (Map.lookup resPath notifers)
+      deps = fromMaybe [] (Map.lookup nvPath notifers)
     withDebugInfo $ \path _ ->
       unless (null deps) $
         logDebugStr $
-          printf "tryPopulateRef: path: %s, using value to update %s" (show path) (show deps)
+          printf "startReduceRef: path: %s, using value to update %s" (show path) (show deps)
     mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt reduceFunc)) deps
 
 {- | Substitute the cached result of the Func node pointed by the path with the new non-function value. Then trigger the
@@ -52,7 +52,7 @@ populateRef nt reduceFunc = do
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
-      void $ handleFuncRes (Just nt)
+      void $ handleFuncCall (Just nt)
     _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
 
   res <- getTMTree
@@ -78,7 +78,7 @@ populateRef nt reduceFunc = do
           withDebugInfo $ \path _ ->
             logDebugStr $ printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
           r <- reduceFunc fn >> getTMTree
-          tryPopulateRef r reduceFunc
+          startReduceRef r reduceFunc
     _ ->
       if isTreeFunc res
         then throwError $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)

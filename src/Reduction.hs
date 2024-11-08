@@ -23,11 +23,7 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
--- setOrigNodes :: (TreeMonad s m) => m ()
--- setOrigNodes = traverseTM $ withTree $ \t ->
---   when (isNothing (treeOrig t)) $ putTMTree t{treeOrig = Just t}
---
-
+-- | Reduce the tree to the lowest form.
 reduce :: (TreeMonad s m) => m ()
 reduce = do
   dumpEntireTree "reduce start"
@@ -45,7 +41,7 @@ reduce = do
     putTMTree $ nt{treeEvaled = True}
 
   path <- getTMAbsPath
-  withTree $ \t -> tryPopulateRef t reduceFunc
+  withTree $ \t -> startReduceRef t reduceFunc
 
   logDebugStr $ printf "reduce: path: %s, done" (show path)
   dumpEntireTree "reduce done"
@@ -61,7 +57,7 @@ Function call convention:
 -}
 reduceFunc :: (TreeMonad s m) => Func Tree -> m ()
 reduceFunc fn = do
-  void $ callFunc >>= handleFuncRes
+  void $ callFunc >>= handleFuncCall
 
   withDebugInfo $ \path t ->
     logDebugStr $

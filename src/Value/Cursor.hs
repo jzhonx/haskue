@@ -14,6 +14,7 @@ import Data.ByteString.Builder (
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Env
 import Path
 
@@ -81,13 +82,12 @@ emptyContext =
 The first element is the source path, which is the path that is being watched.
 The second element is the dependent path, which is the path that is watching the source path.
 -}
-addCtxNotifier :: (Path, Path) -> Context t -> Context t
-addCtxNotifier (src, dep) ctx = ctx{ctxNotifiers = new}
+addCtxNotifier :: Context t -> (Path, Path) -> Context t
+addCtxNotifier ctx (src, dep) = ctx{ctxNotifiers = Map.insert src newDepList oldMap}
  where
-  old = ctxNotifiers ctx
-  new = case Map.lookup src old of
-    Nothing -> Map.insert src [dep] old
-    Just ps -> Map.insert src (dep : ps) old
+  oldMap = ctxNotifiers ctx
+  depList = fromMaybe [] $ Map.lookup src oldMap
+  newDepList = if dep `elem` depList then depList else dep : depList
 
 type TreeCursor t = ValCursor t t
 

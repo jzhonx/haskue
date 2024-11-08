@@ -488,7 +488,8 @@ snapshotTM =
     _ -> return ()
 
 {- | Call the function. It returns the result of the function.
- - This must not modify the tree, i.e. the function is not reduced or no evalTM is called.
+ - This must not modify the tree, i.e. the function is not reduced or no reduce is called.
+ - No global states should be changed too.
  -
  - TODO: consider whether putting back the fn accidentally left the unwanted changes in Monad.
 -}
@@ -530,57 +531,64 @@ callFunc = withTree $ \t -> case getFuncFromTree t of
     return r
   Nothing -> throwError "callFunc: function not found"
 
--- Try to reduce the function by using the function result to replace the function node.
--- This should be called after the function is evaluated.
-handleFuncRes :: (TreeMonad s m) => Maybe Tree -> m Bool
-handleFuncRes valM = do
-  reducible <- case valM of
-    Nothing -> return False
-    Just val ->
-      withTree
-        ( \t -> case getFuncFromTree t of
-            Just fn ->
-              if isTreeFunc val
-                -- If the function returns another function, then the function is not reducible.
-                then putTMTree val >> return False
-                else do
-                  let
-                    -- the original function can not have references.
-                    hasNoRef = not (treeHasRef t)
-                    reducible = isTreeAtom val || isTreeBottom val || isTreeCnstr val || isTreeRefCycleTail val || hasNoRef
-                  withDebugInfo $ \path _ ->
-                    logDebugStr $
-                      printf
-                        "reduceFunc: func %s, path: %s, is reducible: %s, hasNoRef: %s, args: %s"
-                        (show $ fncName fn)
-                        (show path)
-                        (show reducible)
-                        (show hasNoRef)
-                        (show $ fncArgs fn)
-                  if reducible
-                    then do
-                      handleReduceRes val
-                      path <- getTMAbsPath
-                      -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-                      -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-                      delNotifRecvs path
+{- | Try to reduce the function by using the function result to replace the function node.
+This should be called after the function is evaluated.
+-}
+handleFuncCall :: (TreeMonad s m) => Maybe Tree -> m Bool
+handleFuncCall valM = do
+  reduced <-
+    maybe
+      (return False)
+      ( \val -> withTree $ \t -> case getFuncFromTree t of
+          Just fn ->
+            if isTreeFunc val
+              -- If the function returns another function, then the function is not reducible.
+              then putTMTree val >> return False
+              else do
+                let
+                  funcHasNoRef = not (treeHasRef t)
+                  reducible =
+                    isTreeAtom val
+                      || isTreeBottom val
+                      || isTreeCnstr val
+                      || isTreeRefCycleTail val
+                      || funcHasNoRef
+                withDebugInfo $ \path _ ->
+                  logDebugStr $
+                    printf
+                      "handleFuncCall: func %s, path: %s, is reducible: %s, funcHasNoRef: %s, args: %s"
+                      (show $ fncName fn)
+                      (show path)
+                      (show reducible)
+                      (show funcHasNoRef)
+                      (show $ fncArgs fn)
+                if reducible
+                  then do
+                    handleReduceRes val
+                    path <- getTMAbsPath
+                    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+                    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+                    delNotifRecvs path
+                  else do
                     -- restore the original function
-                    else do
-                      putTMTree . mkFuncTree $ fn
-                  return reducible
-            Nothing -> throwError "reduceFunc: focus is not a function"
-        )
+                    putTMTree . mkFuncTree $ fn
+                return reducible
+          Nothing -> throwError "handleFuncCall: tree focus is not a function"
+      )
+      valM
+
   withTree $ \t -> case getFuncFromTree t of
-    -- The result is reduced to a reference.
+    -- The result is still reduced to a reference, whether has been reduced to ref or was always ref.
     Just fn | isFuncRef fn -> do
       -- add notifier. If the referenced value changes, then the reference should be updated.
+      -- duplicate cases are handled by the addCtxNotifier.
       withCtxTree $ \ct -> do
         tarPath <- getRefTarAbsPath fn
-        logDebugStr $ printf "reduceFunc: add notifier: (%s, %s)" (show tarPath) (show $ cvPath ct)
-        putTMContext $ addCtxNotifier (tarPath, cvPath ct) (cvCtx ct)
+        logDebugStr $ printf "handleFuncCall: add notifier: (%s, %s)" (show tarPath) (show $ cvPath ct)
+        putTMContext $ addCtxNotifier (cvCtx ct) (tarPath, cvPath ct)
     _ -> return ()
 
-  return reducible
+  return reduced
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
 dumpEntireTree msg = do
