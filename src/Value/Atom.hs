@@ -4,8 +4,8 @@
 module Value.Atom where
 
 import qualified AST
-import Value.Class
-import Value.Env
+import Class
+import Env
 
 data Atom
   = String String

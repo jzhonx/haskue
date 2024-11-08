@@ -4,19 +4,19 @@
 
 module Value.TreeNode where
 
+import Class
 import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isNothing)
+import Env
 import Path
 import Text.Printf (printf)
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
-import Value.Class
 import Value.Constraint
 import Value.Cycle
 import Value.Disj
-import Value.Env
 import Value.Func
 import Value.List
 import Value.Struct

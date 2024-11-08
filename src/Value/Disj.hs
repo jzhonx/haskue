@@ -4,7 +4,7 @@
 module Value.Disj where
 
 import qualified AST
-import Value.Class
+import Class
 
 data Disj t = Disj
   { dsjDefault :: Maybe t

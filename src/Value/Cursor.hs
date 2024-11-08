@@ -4,6 +4,7 @@
 
 module Value.Cursor where
 
+import Class
 import Control.Monad.Except (throwError)
 import Data.ByteString.Builder (
   Builder,
@@ -13,9 +14,8 @@ import Data.ByteString.Builder (
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
+import Env
 import Path
-import Value.Class
-import Value.Env
 
 class HasCtxVal s t a | s -> a, s -> t where
   getCtxVal :: s -> CtxVal t a

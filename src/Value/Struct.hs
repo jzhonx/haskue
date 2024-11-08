@@ -3,12 +3,12 @@
 module Value.Struct where
 
 import qualified AST
+import Class
 import Control.Monad.Except (throwError)
 import qualified Data.Map.Strict as Map
+import Env
 import qualified Path
 import Value.Bounds
-import Value.Class
-import Value.Env
 
 data Struct t = Struct
   { stcOrdLabels :: [Path.StructSelector] -- Should only contain string labels.

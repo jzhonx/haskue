@@ -8,9 +8,11 @@
 module Reduction where
 
 import qualified AST
+import Class
+import Config
 import Control.Monad (foldM, forM, unless, void, when)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.Reader (ask)
+import Control.Monad.Reader (MonadReader, ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
@@ -164,7 +166,7 @@ reducePendSE idxes (sel, pse) = do
             (show label)
       case treeNode label of
         TNAtom (AtomV (String s)) -> do
-          newSF <- mustStruct $ \struct -> dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
+          newSF <- mustStruct $ \struct -> return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
 
           let sSel = StructSelector $ StringSelector s
           pushTMSub sSel (ssfField newSF)
@@ -197,11 +199,9 @@ reducePendSE idxes (sel, pse) = do
               defaultVal <- reduce >> getTMTree
               -- apply the pattern to all existing fields.
               -- TODO: apply the pattern to filtered fields.
-              cfg <- ask
               nodes <- mustStruct $ \struct ->
-                return $
-                  [ mkNewTree . TNFunc $
-                    mkBinaryOp AST.Unify cfg unify (ssfField n) defaultVal
+                return
+                  [ mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField n) defaultVal
                   | n <- Map.elems (stcSubs struct)
                   ]
               mapM_ (\x -> whenNotBottom () (putTMTree x >> reduce)) nodes
@@ -217,23 +217,20 @@ reducePendSE idxes (sel, pse) = do
     _ -> throwError "evalStructField: invalid selector field combination"
  where
   dynToStaticField ::
-    (TreeMonad s m) =>
     DynamicStructField Tree ->
     Maybe (StaticStructField Tree) ->
-    m (StaticStructField Tree)
-  dynToStaticField dsf sfM = do
-    cfg <- ask
-    return $ case sfM of
-      Just sf ->
-        StaticStructField
-          { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify (ssfField sf) (dsfValue dsf))
-          , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
-          }
-      Nothing ->
-        StaticStructField
-          { ssfField = dsfValue dsf
-          , ssfAttr = dsfAttr dsf
-          }
+    StaticStructField Tree
+  dynToStaticField dsf sfM = case sfM of
+    Just sf ->
+      StaticStructField
+        { ssfField = mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField sf) (dsfValue dsf)
+        , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
+        }
+    Nothing ->
+      StaticStructField
+        { ssfField = dsfValue dsf
+        , ssfAttr = dsfAttr dsf
+        }
 
   addStatic :: String -> StaticStructField Tree -> Struct Tree -> Struct Tree
   addStatic s sf x =
@@ -249,28 +246,27 @@ reducePendSE idxes (sel, pse) = do
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
 
 -- | Create a new identifier reference.
-mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> Config -> m Tree
-mkVarLinkTree var ue cfg = do
-  fn <- mkRefFunc (Path [StructSelector $ StringSelector var]) ue cfg
+mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
+mkVarLinkTree var ue = do
+  fn <- mkRefFunc (Path [StructSelector $ StringSelector var]) ue
   return $ mkFuncTree fn
 
 -- | Create an index function node.
-mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Config -> Tree
-mkIndexFuncTree treeArg selArg ue cfg =
-  mkFuncTree $ case treeNode treeArg of
-    TNFunc g
-      | isFuncIndex g ->
-          g
-            { fncArgs = fncArgs g ++ [selArg]
-            , fncExprGen = return $ AST.ExprUnaryExpr ue
-            }
-    _ ->
-      (mkStubFunc cfg (index ue))
-        { fncName = "index"
-        , fncType = IndexFunc
-        , fncArgs = [treeArg, selArg]
-        , fncExprGen = return $ AST.ExprUnaryExpr ue
-        }
+mkIndexFuncTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
+mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
+  TNFunc g
+    | isFuncIndex g ->
+        g
+          { fncArgs = fncArgs g ++ [selArg]
+          , fncExprGen = return $ AST.ExprUnaryExpr ue
+          }
+  _ ->
+    (mkStubFunc (index ue))
+      { fncName = "index"
+      , fncType = IndexFunc
+      , fncArgs = [treeArg, selArg]
+      , fncExprGen = return $ AST.ExprUnaryExpr ue
+      }
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
@@ -319,27 +315,26 @@ appendRefFuncPath fn p ue
           return
           (treesToPath (fncArgs fn))
       let tp = appendPath p origTP
-      cfg <- ask
       -- Reference the target node when the target node is not an atom or a cycle head.
-      mkRefFunc tp ue cfg
+      mkRefFunc tp ue
 appendRefFuncPath _ _ _ = throwError "appendRefFuncPath: invalid function type"
 
-mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> Config -> m (Func Tree)
-mkRefFunc tp ue cfg = do
+mkRefFunc :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Func Tree)
+mkRefFunc tp ue = do
   args <-
     maybe
       (throwError "mkRefFunc: can not generate path from the arguments")
       return
       (pathToTrees tp)
-  return $
-    ( mkStubFunc
-        cfg
-        ( \_ -> do
-            ok <- deref tp
-            when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
-            return ok
-        )
-    )
+  let f =
+        mkStubFunc
+          ( \_ -> do
+              ok <- deref tp
+              when ok $ withTree $ \t -> putTMTree $ t{treeEvaled = False}
+              return ok
+          )
+  return
+    f
       { fncName = printf "&%s" (show tp)
       , fncType = RefFunc
       , fncArgs = args
@@ -1079,8 +1074,7 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
 
 unifyStructs :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m Bool
 unifyStructs (_, s1) (_, s2) = do
-  allSt <- allStatics
-  let merged = nodesToStruct allSt combinedPatterns combinedPendSubs
+  let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
   withDebugInfo $ \path _ ->
     logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
   putTMTree merged
@@ -1097,35 +1091,32 @@ unifyStructs (_, s1) (_, s2) = do
   combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
   combinedPatterns = stcPatterns s1 ++ stcPatterns s2
 
-  inter :: (TreeMonad s m) => m [(Path.StructSelector, StaticStructField Tree)]
-  inter = do
-    cfg <- ask
-    return $
-      Set.foldr
-        ( \key acc ->
-            let sf1 = fields1 Map.! key
+  inter :: [(Path.StructSelector, StaticStructField Tree)]
+  inter =
+    Set.foldr
+      ( \key acc ->
+          ( let sf1 = fields1 Map.! key
                 sf2 = fields2 Map.! key
                 ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
                 -- No original node exists yet
-                unifyOp = mkNewTree (TNFunc $ mkBinaryOp AST.Unify cfg unify (ssfField sf1) (ssfField sf2))
+                f = mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2)
              in ( key
                 , StaticStructField
-                    { ssfField = unifyOp
+                    { ssfField = mkFuncTree f
                     , ssfAttr = ua
                     }
                 )
-                  : acc
-        )
-        []
-        interKeys
+          )
+            : acc
+      )
+      []
+      interKeys
 
   select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, StaticStructField Tree)]
   select s keys = map (\key -> (key, stcSubs s Map.! key)) (Set.toList keys)
 
-  allStatics :: (TreeMonad s m) => m [(Path.StructSelector, StaticStructField Tree)]
-  allStatics = do
-    ir <- inter
-    return $ ir ++ select s1 disjKeys1 ++ select s2 disjKeys2
+  allStatics :: [(Path.StructSelector, StaticStructField Tree)]
+  allStatics = inter ++ select s1 disjKeys1 ++ select s2 disjKeys2
 
   nodesToStruct ::
     [(Path.StructSelector, StaticStructField Tree)] -> [PatternStructField Tree] -> [PendingStructElem Tree] -> Tree

@@ -1,8 +1,8 @@
 module Value.Bounds where
 
 import qualified AST
+import Class
 import Value.Atom
-import Value.Class
 
 newtype Bounds = Bounds {bdsList :: [Bound]}
   deriving (Eq, Show)

@@ -4,17 +4,17 @@
 
 module Value.TMonad where
 
+import Class
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState, gets, modify)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
+import Env
 import Path
 import Text.Printf (printf)
 import Util
-import Value.Class
 import Value.Cursor
-import Value.Env
 
 type TMonad s m t =
   ( TreeOp t

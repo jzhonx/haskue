@@ -1,6 +1,8 @@
 module SpecTest where
 
 import qualified AST
+import Class
+import Config
 import Control.Monad.Except (runExcept, runExceptT, throwError)
 import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
@@ -50,7 +52,7 @@ newFieldsStruct :: [(String, Tree)] -> Tree
 newFieldsStruct subs = newSimpleStruct (map fst subs) subs
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = case runExcept (mkRefFunc p undefined emptyConfig) of
+mkSimpleLink p = case runExcept (mkRefFunc p undefined) of
   Left err -> error err
   Right v -> mkFuncTree v
 
@@ -706,7 +708,6 @@ testIncomplete = do
             , mkNewTree . TNFunc $
                 mkBinaryOp
                   AST.Sub
-                  emptyConfig
                   (\_ _ -> throwError "not implemented")
                   (mkNewTree TNTop)
                   (mkAtomTree $ Int 1)

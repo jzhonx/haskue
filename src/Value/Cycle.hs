@@ -1,8 +1,8 @@
 module Value.Cycle where
 
+import Class
 import Control.Monad.Except (throwError)
 import Path
-import Value.Class
 
 data RefCycle
   = -- The flag indicates whether the cycle is self-reference.

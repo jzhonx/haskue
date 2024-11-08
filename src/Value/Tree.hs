@@ -8,7 +8,6 @@ module Value.Tree (
   module Value.Atom,
   module Value.Bottom,
   module Value.Bounds,
-  module Value.Class,
   module Value.Constraint,
   module Value.Cursor,
   module Value.Cycle,
@@ -34,6 +33,8 @@ module Value.Tree (
 where
 
 import qualified AST
+import Class
+import Config
 import Control.Monad (foldM, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader, ask)
@@ -41,18 +42,17 @@ import Control.Monad.State.Strict (MonadState, evalState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
+import Env
 import Path
 import Text.Printf (printf)
 import Util
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
-import Value.Class
 import Value.Constraint
 import Value.Cursor
 import Value.Cycle
 import Value.Disj
-import Value.Env
 import Value.Func
 import Value.List
 import Value.Struct
@@ -64,25 +64,8 @@ type TreeMonad s m =
   ( Env m
   , MonadState s m
   , HasCtxVal s Tree Tree
-  , MonadReader Config m
+  , MonadReader (Config Tree) m
   )
-
-data Config = Config
-  { cfCreateCnstr :: Bool
-  , cfMermaid :: Bool
-  , cfEvalExpr :: forall m. (Env m, MonadReader Config m) => AST.Expression -> m Tree
-  }
-
-instance Show Config where
-  show c = printf "Config{cfCreateCnstr: %s, cfMermaid: %s}" (show $ cfCreateCnstr c) (show $ cfMermaid c)
-
-emptyConfig :: Config
-emptyConfig =
-  Config
-    { cfCreateCnstr = False
-    , cfMermaid = False
-    , cfEvalExpr = \_ -> throwError "cfEvalExpr not set"
-    }
 
 -- Some rules:
 -- 1. If a node is a Func that contains references, then the node should not be supplanted to other places without

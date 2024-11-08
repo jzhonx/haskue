@@ -8,6 +8,8 @@
 
 module Ref where
 
+import Class
+import Config
 import Control.Monad (unless, void)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (ask)

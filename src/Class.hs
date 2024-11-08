@@ -1,10 +1,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 
-module Value.Class where
+module Class where
 
 import qualified AST
+import Env
 import Path
-import Value.Env
 
 class BuildASTExpr a where
   -- The first argument is a flag to indicate whether the expression is required to be concrete.

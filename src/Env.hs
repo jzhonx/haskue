@@ -1,7 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Value.Env where
+module Env where
 
 import Control.Monad.Except (MonadError)
 import Control.Monad.Logger (MonadLogger)
