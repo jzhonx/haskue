@@ -247,8 +247,8 @@ evalDisj e1 e2 = do
  where
   reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
   reduceDisjAdapt unt1 unt2 = do
-    t1 <- reduceFuncArg binOpLeftSelector unt1 False
-    t2 <- reduceFuncArg binOpRightSelector unt2 False
+    t1 <- evalFuncArg binOpLeftSelector unt1 False
+    t2 <- evalFuncArg binOpRightSelector unt2 False
     if not (isTreeValue t1) || not (isTreeValue t2)
       then do
         logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)

@@ -1028,6 +1028,14 @@ testIndex1 = do
           ]
       )
 
+testCnstr1 :: IO ()
+testCnstr1 = do
+  s <- readFile "tests/spec/cnstr1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1071,7 +1079,8 @@ specTests =
     , testCase "struct4" testStruct4
     , testCase "struct5" testStruct5
     , testCase "list1" testList1
-    -- , testCase "index1" testIndex1
+    , testCase "index1" testIndex1
+    , testCase "cnstr1" testCnstr1
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

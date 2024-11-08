@@ -139,7 +139,12 @@ deref tp = do
       Nothing -> return Nothing
       Just (origPath, orig) -> do
         withDebugInfo $ \path _ -> do
-          logDebugStr $ printf "deref: path: %s, substitutes with orig_path: %s, orig: %s" (show path) (show origPath) (show orig)
+          logDebugStr $
+            printf
+              "deref: path: %s, substitutes with orig_path: %s, orig: %s"
+              (show path)
+              (show origPath)
+              (show orig)
         -- substitute the reference with the target node.
         putTMTree orig
         withTN $ \case
@@ -184,9 +189,12 @@ deref tp = do
           -- (!)
           --  | - unary_op
           -- ref_a
-          | canDstPath == canSrcPath && srcPath /= dstPath -> do
-              logDebugStr $ printf "deref: reference tail cycle detected: %s == %s." (show dstPath) (show srcPath)
-              return $ Just . mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
+          | canDstPath == canSrcPath && srcPath /= dstPath -> withTree $ \tar -> case treeNode tar of
+              -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
+              TNConstraint c -> return $ Just (mkAtomVTree $ cnsOrigAtom c)
+              _ -> do
+                logDebugStr $ printf "deref: reference tail cycle detected: %s == %s." (show dstPath) (show srcPath)
+                return $ Just . mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
           -- return $ Left (dstPath, relPath dstPath srcPath)
           | isPrefix canDstPath canSrcPath && srcPath /= dstPath ->
               throwError $ printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)

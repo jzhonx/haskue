@@ -36,5 +36,7 @@ class TreeOp a where
   isTreeRefCycle :: a -> Bool
   isTreeFunc :: a -> Bool
   isTreeValue :: a -> Bool
+
+  -- isTreeReducible :: a -> Bool
   treeHasRef :: a -> Bool
   treeHasAtom :: a -> Bool

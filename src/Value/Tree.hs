@@ -417,7 +417,7 @@ mkBoundsTree :: [Bound] -> Tree
 mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
 mkCnstrTree :: AtomV -> Tree -> Tree
-mkCnstrTree a t = mkNewTree . TNConstraint $ Constraint a t
+mkCnstrTree a t = mkNewTree . TNConstraint $ Constraint a a t
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
@@ -590,27 +590,6 @@ handleFuncCall valM = do
 
   return reduced
 
-dumpEntireTree :: (TreeMonad s m) => String -> m ()
-dumpEntireTree msg = do
-  logDebugStr "--- dump entire tree states: ---"
-  notifiers <- ctxNotifiers <$> getTMContext
-  logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
-  Config{cfMermaid = mermaid} <- ask
-  when mermaid $ do
-    withTN $ \case
-      TNAtom _ -> return ()
-      TNBottom _ -> return ()
-      TNTop -> return ()
-      _ -> do
-        tc <- getTMCursor
-        rtc <- propUpTCUntil Path.RootSelector tc
-        let
-          t = vcFocus rtc
-          evalPath = pathFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid msg evalPath t) 0
-        logDebugStr $ printf "\n```mermaid\n%s\n```" s
-  logDebugStr "--- dump entire tree done ---"
-
 {- | Convert the RefCycleTail to RefCycle if the path is the same as the cycle start path.
 RefCycleTail is like Bottom.
 -}
@@ -647,3 +626,25 @@ getRefTarAbsPath fn =
         -- return $ Just $ appendPath (fromJust $ tailPath ref) fstSelAbsPath
         Nothing -> throwError "getTarAbsPath: can not generate path from the arguments"
     else throwError "getTarAbsPath: the function is not a reference"
+
+dumpEntireTree :: (TreeMonad s m) => String -> m ()
+dumpEntireTree msg = do
+  withTN $ \case
+    TNAtom _ -> return ()
+    TNBottom _ -> return ()
+    TNTop -> return ()
+    _ -> do
+      logDebugStr "--- dump entire tree states: ---"
+      notifiers <- ctxNotifiers <$> getTMContext
+      logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
+      Config{cfMermaid = mermaid} <- ask
+      when mermaid $ do
+        tc <- getTMCursor
+        rtc <- propUpTCUntil Path.RootSelector tc
+        let
+          t = vcFocus rtc
+          evalPath = pathFromCrumbs (vcCrumbs tc)
+          s = evalState (treeToMermaid msg evalPath t) 0
+        logDebugStr $ printf "\n```mermaid\n%s\n```" s
+
+      logDebugStr "--- dump entire tree done ---"

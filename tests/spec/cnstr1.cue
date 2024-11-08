@@ -1,6 +1,4 @@
 {
-	a: a
-	b: 200 & (a + 100)
-	// b: a
-	// the result of b is incomplete
+	b: 200 & (b + 100)
+	// the result of b is _|_
 }

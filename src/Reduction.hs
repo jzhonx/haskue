@@ -15,7 +15,7 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (MonadReader, ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust)
+import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
 import Path
 import Ref
@@ -68,12 +68,13 @@ reduceFunc fn = do
         (show t)
 
 -- Evaluate the sub node of the tree. The node must be a function.
+-- This does not reduce the function.
 -- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
 -- reducible, the result is still returned because the parent function needs to be evaluated.
-reduceFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
-reduceFuncArg sel sub mustAtom = withTree $ \t -> do
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
+evalFuncArg sel sub mustAtom = withTree $ \t -> do
   withDebugInfo $ \path _ ->
-    logDebugStr $ printf "reduceFuncArg: path: %s, start reduction %s" (show path) (show sub)
+    logDebugStr $ printf "evalFuncArg: path: %s, start reduction %s" (show path) (show sub)
   if isTreeFunc t
     then do
       res <-
@@ -84,13 +85,15 @@ reduceFuncArg sel sub mustAtom = withTree $ \t -> do
               TNFunc _ -> do
                 rM <- callFunc
                 return $ getFuncRes x rM
+              -- return $ fromMaybe x rM
+              -- reduce >> getTMTree
               _ -> reduce >> getTMTree
           )
       withDebugInfo $ \path _ ->
-        logDebugStr $ printf "reduceFuncArg: path: %s, %s is reduced to:\n%s" (show path) (show sub) (show res)
+        logDebugStr $ printf "evalFuncArg: path: %s, %s is reduced to:\n%s" (show path) (show sub) (show res)
       -- return $ getFuncResOrTree mustAtom res getFunc
       return res
-    else throwError "reduceFuncArg: node is not a function"
+    else throwError "evalFuncArg: node is not a function"
  where
   -- Get the result of the function. If the result is not found, return the original tree.
   -- If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
@@ -280,7 +283,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- reduceFuncArg (FuncSelector $ FuncArgSelector 0) t False
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False
           putTMTree res
           logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -373,14 +376,14 @@ validateCnstr c = withTree $ \_ -> do
   res <- reduce >> getTMTree
   discardTMAndPop
 
-  unless (isTreeAtom res) $
-    throwError $
-      printf "validateCnstr: constraint not satisfied, %s" (show res)
-  putTMTree atomT
+  putTMTree $
+    if isTreeAtom res
+      then atomT
+      else mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  t <- reduceFuncArg unaryOpSelector _t True
+  t <- evalFuncArg unaryOpSelector _t True
   case treeNode t of
     TNAtom ta -> case (op, amvAtom ta) of
       (AST.Plus, Int i) -> ia i id
@@ -442,8 +445,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1 <- reduceFuncArg (toBinOpSelector d1) _t1 True
-  t2 <- reduceFuncArg (toBinOpSelector d2) _t2 True
+  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True
+  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True
 
   withDebugInfo $ \path _ ->
     logDebugStr $
@@ -592,7 +595,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   reduceOrDelay :: (TreeMonad s m) => m Bool
   reduceOrDelay = do
     logDebugStr $ printf "reduceOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- reduceFuncArg (toBinOpSelector d1) t1 True
+    et1 <- evalFuncArg (toBinOpSelector d1) t1 True
     procLeftOtherRes et1
 
   procLeftOtherRes :: (TreeMonad s m) => Tree -> m Bool
@@ -1030,7 +1033,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- reduceFuncArg (Path.toBinOpSelector d1) t1 False
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
 
