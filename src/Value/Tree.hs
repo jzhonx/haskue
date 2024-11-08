@@ -21,7 +21,7 @@ module Value.Tree (
   fncName,
   fncType,
   fncArgs,
-  fncExprGen,
+  fncExpr,
   FuncType (..),
   isFuncRef,
   isFuncIndex,

@@ -21,7 +21,9 @@ data Func t = Func
   , fncType :: FuncType
   , -- Args stores the arguments that may or may not need to be evaluated.
     fncArgs :: [t]
-  , fncExprGen :: forall m. (Env m) => m AST.Expression
+  , -- fncExpr is needed because if the function is created dynamically, for example by having a second field in a struct,
+    -- no original expression is available.
+    fncExpr :: forall m. (Env m) => m AST.Expression
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (FuncEnv s m t) => [t] -> m Bool
   , -- fncTempRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
@@ -43,8 +45,8 @@ instance (BuildASTExpr t) => BuildASTExpr (Func t) where
   buildASTExpr c fn = do
     if c || requireFuncConcrete fn
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
-      then fncExprGen fn
-      else maybe (fncExprGen fn) (buildASTExpr c) (fncTempRes fn)
+      then fncExpr fn
+      else maybe (fncExpr fn) (buildASTExpr c) (fncTempRes fn)
 
 isFuncRef :: Func t -> Bool
 isFuncRef fn = fncType fn == RefFunc
@@ -63,7 +65,7 @@ mkStubFunc f =
     { fncName = ""
     , fncType = RegularFunc
     , fncArgs = []
-    , fncExprGen = return $ AST.litCons AST.BottomLit
+    , fncExpr = return $ AST.litCons AST.BottomLit
     , fncFunc = f
     , fncTempRes = Nothing
     }
@@ -79,7 +81,7 @@ mkUnaryOp op f n =
   Func
     { fncFunc = g
     , fncType = RegularFunc
-    , fncExprGen = gen
+    , fncExpr = buildUnaryExpr op n
     , fncName = show op
     , fncArgs = [n]
     , fncTempRes = Nothing
@@ -89,21 +91,18 @@ mkUnaryOp op f n =
   g [x] = f x
   g _ = throwError "invalid number of arguments for unary function"
 
-  gen :: (Env m) => m AST.Expression
-  gen = buildUnaryExpr n
-
-  buildUnaryExpr :: (Env m) => t -> m AST.Expression
-  buildUnaryExpr t = do
-    let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
-    te <- buildASTExpr c t
-    case te of
-      (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr $ AST.UnaryExprUnaryOp op ue
-      e ->
-        return $
-          AST.ExprUnaryExpr $
-            AST.UnaryExprUnaryOp
-              op
-              (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
+buildUnaryExpr :: (Env m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expression
+buildUnaryExpr op t = do
+  let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
+  te <- buildASTExpr c t
+  case te of
+    (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr $ AST.UnaryExprUnaryOp op ue
+    e ->
+      return $
+        AST.ExprUnaryExpr $
+          AST.UnaryExprUnaryOp
+            op
+            (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
 
 mkBinaryOp ::
   forall t.
@@ -119,7 +118,7 @@ mkBinaryOp op f l r =
     , fncType = case op of
         AST.Disjunction -> DisjFunc
         _ -> RegularFunc
-    , fncExprGen = gen
+    , fncExpr = buildBinaryExpr op l r
     , fncName = show op
     , fncArgs = [l, r]
     , fncTempRes = Nothing
@@ -129,12 +128,12 @@ mkBinaryOp op f l r =
   g [x, y] = f x y
   g _ = throwError "invalid number of arguments for binary function"
 
-  gen :: (Env e) => e AST.Expression
-  gen = do
-    let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
-    xe <- buildASTExpr c l
-    ye <- buildASTExpr c r
-    return $ AST.ExprBinaryOp op xe ye
+buildBinaryExpr :: (Env e, BuildASTExpr t) => AST.BinaryOp -> t -> t -> e AST.Expression
+buildBinaryExpr op l r = do
+  let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
+  xe <- buildASTExpr c l
+  ye <- buildASTExpr c r
+  return $ AST.ExprBinaryOp op xe ye
 
 mkBinaryOpDir ::
   forall t.

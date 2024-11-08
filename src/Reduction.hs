@@ -258,14 +258,14 @@ mkIndexFuncTree treeArg selArg ue = mkFuncTree $ case treeNode treeArg of
     | isFuncIndex g ->
         g
           { fncArgs = fncArgs g ++ [selArg]
-          , fncExprGen = return $ AST.ExprUnaryExpr ue
+          , fncExpr = return $ AST.ExprUnaryExpr ue
           }
   _ ->
     (mkStubFunc (index ue))
       { fncName = "index"
       , fncType = IndexFunc
       , fncArgs = [treeArg, selArg]
-      , fncExprGen = return $ AST.ExprUnaryExpr ue
+      , fncExpr = return $ AST.ExprUnaryExpr ue
       }
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
@@ -338,7 +338,7 @@ mkRefFunc tp ue = do
       { fncName = printf "&%s" (show tp)
       , fncType = RefFunc
       , fncArgs = args
-      , fncExprGen = return $ AST.ExprUnaryExpr ue
+      , fncExpr = return $ AST.ExprUnaryExpr ue
       }
 
 validateCnstrs :: (TreeMonad s m) => m ()
