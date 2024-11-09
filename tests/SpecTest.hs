@@ -535,6 +535,49 @@ testUnify1 = do
               ]
           )
 
+testUnify2 :: IO ()
+testUnify2 = do
+  s <- readFile "tests/spec/unify2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpStructs y $
+        newSimpleStruct
+          ["x", "y"]
+          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
+          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 200), ("b", mkAtomTree $ Int 200)])
+          ]
+
+testUnify3 :: IO ()
+testUnify3 = do
+  s <- readFile "tests/spec/unify3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpStructs y $
+        newSimpleStruct
+          ["x", "y"]
+          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
+          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 200), ("b", mkNewTree TNTop)])
+          ]
+
+testUnify4 :: IO ()
+testUnify4 = do
+  s <- readFile "tests/spec/unify4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpStructs y $
+        newSimpleStruct
+          ["x", "y", "df"]
+          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkAtomTree $ Int 1)])
+          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 1)])
+          , ("df", mkAtomTree $ String "x")
+          ]
+
 testCycles1 :: IO ()
 testCycles1 = do
   s <- readFile "tests/spec/cycles1.cue"
@@ -1087,6 +1130,9 @@ specTests =
     , testCase "vars3" testVars3
     , testCase "selector1" testSelector1
     , testCase "unify1" testUnify1
+    , testCase "unify2" testUnify2
+    , testCase "unify3" testUnify3
+    , testCase "unify4" testUnify4
     , testCase "cycles1" testCycles1
     , testCase "cycles2" testCycles2
     , testCase "cycles3" testCycles3

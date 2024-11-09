@@ -67,10 +67,10 @@ reduceFunc fn = do
         (show $ fncName fn)
         (show t)
 
-getAtomOpFuncArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
-getAtomOpFuncArg sel sub = do
+reduceAtomOpArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
+reduceAtomOpArg sel sub = do
   ret <-
-    evalFuncArgMaybe
+    reduceFuncArgMaybe
       sel
       sub
       ( \rM -> case rM of
@@ -80,23 +80,23 @@ getAtomOpFuncArg sel sub = do
               then rM
               else Nothing
       )
-  logDebugStr $ printf "getAtomOpFuncArg: %s is evaluated to %s" (show sub) (show ret)
+  logDebugStr $ printf "reduceAtomOpArg: %s is evaluated to %s" (show sub) (show ret)
   return ret
 
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
-evalFuncArg sel sub = withTree $ \t -> do
-  ret <- evalFuncArgMaybe sel sub (\rM -> Just $ fromMaybe t rM)
-  logDebugStr $ printf "evalFuncArg: %s is evaluated to %s" (show sub) (show ret)
+reduceFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
+reduceFuncArg sel sub = withTree $ \t -> do
+  ret <- reduceFuncArgMaybe sel sub (\rM -> Just $ fromMaybe t rM)
+  logDebugStr $ printf "reduceFuncArg: %s is evaluated to %s" (show sub) (show ret)
   return $ fromJust ret
 
 -- Evaluate the argument of the function.
 -- This does not reduce the argument whose type is function.
 -- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
 -- reducible, the result is still returned because the parent function needs the concrete value.
-evalFuncArgMaybe :: (TreeMonad s m) => Selector -> Tree -> (Maybe Tree -> Maybe Tree) -> m (Maybe Tree)
-evalFuncArgMaybe sel sub csHandler = withTree $ \t -> do
+reduceFuncArgMaybe :: (TreeMonad s m) => Selector -> Tree -> (Maybe Tree -> Maybe Tree) -> m (Maybe Tree)
+reduceFuncArgMaybe sel sub csHandler = withTree $ \t -> do
   withDebugInfo $ \path _ ->
-    logDebugStr $ printf "evalFuncArgMaybe: path: %s, start evaluation %s" (show path) (show sub)
+    logDebugStr $ printf "reduceFuncArgMaybe: path: %s, start evaluation %s" (show path) (show sub)
   if isTreeFunc t
     then do
       res <-
@@ -104,16 +104,19 @@ evalFuncArgMaybe sel sub csHandler = withTree $ \t -> do
           sel
           sub
           ( withTree $ \x -> case treeNode x of
-              -- reduce should not be used here because if the function is reduced to a ref, the ref itself will be
-              -- returned instead of the desired value of the ref points to, due to that getting the value from the ref
-              -- is not allowed.
-              TNFunc _ -> csHandler <$> callFunc
+              -- reduce should not be directly called here because if the function is reduced to a ref, the ref itself
+              -- will be returned instead of the desired value of the ref points to, due to that getting the value from
+              -- the ref is not allowed. We need to apply the csHandler to the result of calling the function.
+              TNFunc _ -> do
+                r <- callFunc
+                _ <- handleFuncCall r
+                return $ csHandler r
               _ -> reduce >> Just <$> getTMTree
           )
       withDebugInfo $ \path _ ->
-        logDebugStr $ printf "evalFuncArgMaybe: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
+        logDebugStr $ printf "reduceFuncArgMaybe: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
       return res
-    else throwError "evalFuncArgMaybe: node is not a function"
+    else throwError "reduceFuncArgMaybe: node is not a function"
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
@@ -286,7 +289,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t
+          res <- reduceFuncArg (FuncSelector $ FuncArgSelector 0) t
           putTMTree res
           logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -389,7 +392,7 @@ validateCnstr c = withTree $ \_ -> do
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  tM <- getAtomOpFuncArg unaryOpSelector _t
+  tM <- reduceAtomOpArg unaryOpSelector _t
   case tM of
     Just t -> case treeNode t of
       TNAtom ta -> case (op, amvAtom ta) of
@@ -451,8 +454,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1M <- getAtomOpFuncArg (toBinOpSelector d1) _t1
-  t2M <- getAtomOpFuncArg (toBinOpSelector d2) _t2
+  t1M <- reduceAtomOpArg (toBinOpSelector d1) _t1
+  t2M <- reduceAtomOpArg (toBinOpSelector d2) _t2
 
   withDebugInfo $ \path _ ->
     logDebugStr $
@@ -1014,7 +1017,7 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1
+    r1 <- reduceFuncArg (Path.toBinOpSelector d1) t1
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
 
