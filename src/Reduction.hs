@@ -17,6 +17,7 @@ import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
+import FuncCall
 import Path
 import Ref
 import Text.Printf (printf)
@@ -49,11 +50,8 @@ reduce = do
 -- Reduce tree nodes
 
 {- | Reduce the function.
- - Function reduction is a top-down process, unlike other languages where the arguments are evaluated first.
-Function call convention:
-1. The result of a function is stored in the fncRes.
-2. If the result can be used to replace the function itself, then the function is replaced by the result.
-3. Otherwise, the function is kept.
+- If the result can be used to replace the function itself, then the function is replaced by the result.
+- Otherwise, the function is kept.
 -}
 reduceFunc :: (TreeMonad s m) => Func Tree -> m ()
 reduceFunc fn = do

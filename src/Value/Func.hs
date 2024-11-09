@@ -58,6 +58,12 @@ requireFuncConcrete fn = case fncType fn of
   RegularFunc -> fncName fn `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   _ -> False
 
+setFuncTempRes :: Func t -> t -> Func t
+setFuncTempRes fn t = fn{fncTempRes = Just t}
+
+invokeFunc :: (FuncEnv s m t) => Func t -> m Bool
+invokeFunc fn = fncFunc fn (fncArgs fn)
+
 mkStubFunc :: (forall s m. (FuncEnv s m t) => [t] -> m Bool) -> Func t
 mkStubFunc f =
   Func

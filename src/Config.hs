@@ -5,7 +5,7 @@ module Config where
 
 import AST
 import Class
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import Env
 import Text.Printf (printf)

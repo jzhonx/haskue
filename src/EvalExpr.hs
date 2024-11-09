@@ -11,7 +11,7 @@ import Class
 import Config
 import Control.Monad (foldM)
 import Control.Monad.Except (throwError)
-import Control.Monad.Reader (MonadReader, ask)
+import Control.Monad.Reader (MonadReader)
 import qualified Data.Map.Strict as Map
 import Env
 import Path
