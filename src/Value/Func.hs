@@ -9,7 +9,7 @@ import qualified AST
 import Class
 import Config
 import Control.Monad.Except (throwError)
-import Control.Monad.Reader (MonadReader, ask, runReaderT)
+import Control.Monad.Reader (MonadReader)
 import Env
 import Path
 import Value.TMonad
@@ -39,7 +39,6 @@ instance (Eq t) => Eq (Func t) where
     fncName f1 == fncName f2
       && fncType f1 == fncType f2
       && fncArgs f1 == fncArgs f2
-      && fncTempRes f1 == fncTempRes f2
 
 instance (BuildASTExpr t) => BuildASTExpr (Func t) where
   buildASTExpr c fn = do

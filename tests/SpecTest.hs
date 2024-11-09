@@ -705,7 +705,7 @@ testIncomplete = do
           [ ("a", mkNewTree TNTop)
           ,
             ( "b"
-            , mkNewTree . TNFunc $
+            , mkFuncTree $
                 mkBinaryOp
                   AST.Sub
                   (\_ _ -> throwError "not implemented")
@@ -1036,6 +1036,35 @@ testCnstr1 = do
     Left err -> assertFailure err
     Right y -> y @?= mkBottomTree ""
 
+testCnstr2 :: IO ()
+testCnstr2 = do
+  s <- readFile "tests/spec/cnstr2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newSimpleStruct
+      ["a", "b"]
+      [ ("a", mkNewTree (TNRefCycle (RefCycle True)))
+      ,
+        ( "b"
+        , mkFuncTree $
+            mkBinaryOp
+              AST.Unify
+              (\_ _ -> throwError "not implemented")
+              (mkAtomTree $ Int 200)
+              ( mkNewTree . TNFunc $
+                  mkBinaryOp
+                    AST.Add
+                    (\_ _ -> throwError "not implemented")
+                    (mkSimpleLink $ pathFromList [strSel "a"])
+                    (mkAtomTree $ Int 100)
+              )
+        )
+      ]
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1081,6 +1110,7 @@ specTests =
     , testCase "list1" testList1
     , testCase "index1" testIndex1
     , testCase "cnstr1" testCnstr1
+    , testCase "cnstr2" testCnstr2
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

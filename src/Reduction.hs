@@ -10,9 +10,9 @@ module Reduction where
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, forM, unless, void, when)
+import Control.Monad (foldM, forM, void, when)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.Reader (MonadReader, ask)
+import Control.Monad.Reader (ask)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
@@ -67,14 +67,36 @@ reduceFunc fn = do
         (show $ fncName fn)
         (show t)
 
--- Evaluate the sub node of the tree. The node must be a function.
--- This does not reduce the function.
+getAtomOpFuncArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
+getAtomOpFuncArg sel sub = do
+  ret <-
+    evalFuncArgMaybe
+      sel
+      sub
+      ( \rM -> case rM of
+          Nothing -> Nothing
+          Just r ->
+            if (treeHasAtom r || isTreeBottom r || isTreeRefCycleTail r)
+              then rM
+              else Nothing
+      )
+  logDebugStr $ printf "getAtomOpFuncArg: %s is evaluated to %s" (show sub) (show ret)
+  return ret
+
+evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
+evalFuncArg sel sub = withTree $ \t -> do
+  ret <- evalFuncArgMaybe sel sub (\rM -> Just $ fromMaybe t rM)
+  logDebugStr $ printf "evalFuncArg: %s is evaluated to %s" (show sub) (show ret)
+  return $ fromJust ret
+
+-- Evaluate the argument of the function.
+-- This does not reduce the argument whose type is function.
 -- Notice that if the argument is a function and the result of the function, such as struct or disjunction, is not
--- reducible, the result is still returned because the parent function needs to be evaluated.
-evalFuncArg :: (TreeMonad s m) => Selector -> Tree -> Bool -> m Tree
-evalFuncArg sel sub mustAtom = withTree $ \t -> do
+-- reducible, the result is still returned because the parent function needs the concrete value.
+evalFuncArgMaybe :: (TreeMonad s m) => Selector -> Tree -> (Maybe Tree -> Maybe Tree) -> m (Maybe Tree)
+evalFuncArgMaybe sel sub csHandler = withTree $ \t -> do
   withDebugInfo $ \path _ ->
-    logDebugStr $ printf "evalFuncArg: path: %s, start reduction %s" (show path) (show sub)
+    logDebugStr $ printf "evalFuncArgMaybe: path: %s, start evaluation %s" (show path) (show sub)
   if isTreeFunc t
     then do
       res <-
@@ -82,34 +104,16 @@ evalFuncArg sel sub mustAtom = withTree $ \t -> do
           sel
           sub
           ( withTree $ \x -> case treeNode x of
-              TNFunc _ -> do
-                rM <- callFunc
-                return $ getFuncRes x rM
-              -- return $ fromMaybe x rM
-              -- reduce >> getTMTree
-              _ -> reduce >> getTMTree
+              -- reduce should not be used here because if the function is reduced to a ref, the ref itself will be
+              -- returned instead of the desired value of the ref points to, due to that getting the value from the ref
+              -- is not allowed.
+              TNFunc _ -> csHandler <$> callFunc
+              _ -> reduce >> Just <$> getTMTree
           )
       withDebugInfo $ \path _ ->
-        logDebugStr $ printf "evalFuncArg: path: %s, %s is reduced to:\n%s" (show path) (show sub) (show res)
-      -- return $ getFuncResOrTree mustAtom res getFunc
+        logDebugStr $ printf "evalFuncArgMaybe: path: %s, %s is evaluated to:\n%s" (show path) (show sub) (show res)
       return res
-    else throwError "evalFuncArg: node is not a function"
- where
-  -- Get the result of the function. If the result is not found, return the original tree.
-  -- If the require Atom is true, then the result must be an atom. Otherwise, the function itself is returned.
-  getFuncRes :: Tree -> Maybe Tree -> Tree
-  getFuncRes ft =
-    maybe
-      ft
-      ( \res ->
-          if
-            -- If the result is ref cycle tail, then the function must handle the tail to find the cycle head.
-            | mustAtom && (treeHasAtom res || isTreeBottom res || isTreeRefCycleTail res) -> res
-            -- The result of the function is not an atom while an atom is required. The function itself is returned to
-            -- represent incompleteness.
-            | mustAtom -> ft
-            | otherwise -> res
-      )
+    else throwError "evalFuncArgMaybe: node is not a function"
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
@@ -204,7 +208,6 @@ reducePendSE idxes (sel, pse) = do
                   | n <- Map.elems (stcSubs struct)
                   ]
               mapM_ (\x -> whenNotBottom () (putTMTree x >> reduce)) nodes
-              -- r <- foldM (\acc n -> whenNotBottom acc (reduce n)) defaultVal nodes
               whenNotBottom idxes $ do
                 newStruct <- mustStruct $ \struct ->
                   return $ mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
@@ -283,7 +286,7 @@ index ue ts@(t : _)
               putTMTree (mkFuncTree refFunc)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t False
+          res <- evalFuncArg (FuncSelector $ FuncArgSelector 0) t
           putTMTree res
           logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
 
@@ -370,6 +373,7 @@ validateCnstr c = withTree $ \_ -> do
         (show cc)
         (show tc)
 
+  -- make sure return the latest atom
   let atomT = mkAtomVTree $ cnsAtom c
   -- run the validator in a sub context.
   pushTMSub unaryOpSelector (cnsValidator c)
@@ -377,38 +381,40 @@ validateCnstr c = withTree $ \_ -> do
   discardTMAndPop
 
   putTMTree $
-    if isTreeAtom res
-      then atomT
-      else mkBottomTree $ printf "constraint not satisfied, %s" (show res)
+    if
+      | isTreeAtom res -> atomT
+      -- incomplete case
+      | isTreeFunc res -> res
+      | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
 dispUnaryFunc :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
 dispUnaryFunc op _t = do
-  t <- evalFuncArg unaryOpSelector _t True
-  case treeNode t of
-    TNAtom ta -> case (op, amvAtom ta) of
-      (AST.Plus, Int i) -> ia i id
-      (AST.Plus, Float i) -> fa i id
-      (AST.Minus, Int i) -> ia i negate
-      (AST.Minus, Float i) -> fa i negate
-      (AST.Not, Bool b) -> putTMTree (mkAtomTree (Bool (not b))) >> return True
-      (AST.UnaRelOp uop, _) -> case (uop, amvAtom ta) of
-        (AST.NE, a) -> mkb (BdNE a)
-        (AST.LT, Int i) -> mkib BdLT i
-        (AST.LT, Float f) -> mkfb BdLT f
-        (AST.LE, Int i) -> mkib BdLE i
-        (AST.LE, Float f) -> mkfb BdLE f
-        (AST.GT, Int i) -> mkib BdGT i
-        (AST.GT, Float f) -> mkfb BdGT f
-        (AST.GE, Int i) -> mkib BdGE i
-        (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReMatch p]) >> return True
-        (AST.ReNotMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReNotMatch p]) >> return True
+  tM <- getAtomOpFuncArg unaryOpSelector _t
+  case tM of
+    Just t -> case treeNode t of
+      TNAtom ta -> case (op, amvAtom ta) of
+        (AST.Plus, Int i) -> ia i id
+        (AST.Plus, Float i) -> fa i id
+        (AST.Minus, Int i) -> ia i negate
+        (AST.Minus, Float i) -> fa i negate
+        (AST.Not, Bool b) -> putTMTree (mkAtomTree (Bool (not b))) >> return True
+        (AST.UnaRelOp uop, _) -> case (uop, amvAtom ta) of
+          (AST.NE, a) -> mkb (BdNE a)
+          (AST.LT, Int i) -> mkib BdLT i
+          (AST.LT, Float f) -> mkfb BdLT f
+          (AST.LE, Int i) -> mkib BdLE i
+          (AST.LE, Float f) -> mkfb BdLE f
+          (AST.GT, Int i) -> mkib BdGT i
+          (AST.GT, Float f) -> mkfb BdGT f
+          (AST.GE, Int i) -> mkib BdGE i
+          (AST.GE, Float f) -> mkfb BdGE f
+          (AST.ReMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReMatch p]) >> return True
+          (AST.ReNotMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReNotMatch p]) >> return True
+          _ -> putConflict
         _ -> putConflict
+      TNRefCycle (RefCycleTail _) -> putTMTree t >> return True
       _ -> putConflict
-    -- The unary op is operating on a non-atom.
-    TNFunc _ -> return False
-    TNRefCycle (RefCycleTail _) -> putTMTree t >> return True
-    _ -> putConflict
+    Nothing -> return False
  where
   conflict :: Tree
   conflict = mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
@@ -445,25 +451,27 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1 <- evalFuncArg (toBinOpSelector d1) _t1 True
-  t2 <- evalFuncArg (toBinOpSelector d2) _t2 True
+  t1M <- getAtomOpFuncArg (toBinOpSelector d1) _t1
+  t2M <- getAtomOpFuncArg (toBinOpSelector d2) _t2
 
   withDebugInfo $ \path _ ->
     logDebugStr $
-      printf "regBinDir: path: %s, reduced args, %s: %s with %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
+      printf "regBinDir: path: %s, reduced args, %s: %s with %s: %s" (show path) (show d1) (show t1M) (show d2) (show t2M)
 
-  case (treeNode t1, treeNode t2) of
-    (TNBottom _, _) -> putTMTree t1 >> return True
-    (_, TNBottom _) -> putTMTree t2 >> return True
-    (TNRefCycle (RefCycleTail _), _) -> putTMTree t1 >> return True
-    (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2 >> return True
-    (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
-    (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
-    (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
-    (_, TNStruct s2) -> regBinLeftStruct op (d2, s2, t2) (d1, t1)
-    (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) (d2, t2)
-    (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
-    _ -> regBinLeftOther op (d1, t1) (d2, t2)
+  case (t1M, t2M) of
+    (Just t1, Just t2) -> case (treeNode t1, treeNode t2) of
+      (TNBottom _, _) -> putTMTree t1 >> return True
+      (_, TNBottom _) -> putTMTree t2 >> return True
+      (TNRefCycle (RefCycleTail _), _) -> putTMTree t1 >> return True
+      (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2 >> return True
+      (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
+      (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
+      (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
+      (_, TNStruct s2) -> regBinLeftStruct op (d2, s2, t2) (d1, t1)
+      (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) (d2, t2)
+      (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
+      _ -> regBinLeftOther op (d1, t1) (d2, t2)
+    _ -> return False
 
 regBinLeftAtom :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m Bool
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
@@ -578,11 +586,7 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
   withDebugInfo $ \path _ ->
     logDebugStr $ printf "regBinLeftOther: path: %s, %s: %s, %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
-    (TNFunc fn, _)
-      -- unresolved reference
-      | isFuncRef fn -> return False
-      | otherwise -> return False
-    (TNRefCycle _, _) -> reduceOrDelay
+    (TNRefCycle _, _) -> return False
     (TNConstraint c, _) -> do
       na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
       case treeNode na of
@@ -590,26 +594,6 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
         _ -> undefined
     _ -> putTMTree (mkBottomTree mismatchErr) >> return True
  where
-  -- reduceOrDelay tries to reduce the left side of the binary operation. If it is not possible to reduce it, it
-  -- returns a delayed reduction.
-  reduceOrDelay :: (TreeMonad s m) => m Bool
-  reduceOrDelay = do
-    logDebugStr $ printf "reduceOrDelay: %s: %s, %s: %s" (show d1) (show t1) (show d2) (show t2)
-    et1 <- evalFuncArg (toBinOpSelector d1) t1 True
-    procLeftOtherRes et1
-
-  procLeftOtherRes :: (TreeMonad s m) => Tree -> m Bool
-  procLeftOtherRes x = case treeNode x of
-    TNAtom a1 -> regBinLeftAtom op (d1, a1, x) (d2, t2)
-    TNDisj dj1 -> regBinLeftDisj op (d1, dj1, x) (d2, t2)
-    TNStruct s1 -> regBinLeftStruct op (d1, s1, x) (d2, t2)
-    TNList _ -> undefined
-    TNConstraint _ -> regBinLeftOther op (d1, x) (d2, t2)
-    _ -> do
-      withDebugInfo $ \path _ ->
-        logDebugStr $ printf "regBinLeftOther: path: %s, %s is incomplete, delaying" (show path) (show x)
-      return False
-
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
 
@@ -726,9 +710,6 @@ unifyWithDir dt1@(d1, t1) dt2@(d2, t2) = do
   putTree :: (TreeMonad s m) => Tree -> m Bool
   putTree x = putTMTree x >> return True
 
-{- |
-parTC points to the bin op node.
--}
 unifyLeftAtom :: (TreeMonad s m) => (Path.BinOpDirect, AtomV, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyLeftAtom (d1, v1, t1) dt2@(d2, t2) = do
   case (amvAtom v1, treeNode t2) of
@@ -1023,7 +1004,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 
 unifyLeftOther :: (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> m Bool
 unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
-  (TNFunc fn1, _) -> do
+  (TNFunc _, _) -> do
     withDebugInfo $ \path _ ->
       logDebugStr $
         printf
@@ -1033,17 +1014,12 @@ unifyLeftOther dt1@(d1, t1) dt2@(d2, t2) = case (treeNode t1, treeNode t2) of
           (show t1)
           (show d2)
           (show t2)
-    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1 False
+    r1 <- evalFuncArg (Path.toBinOpSelector d1) t1
     withDebugInfo $ \path _ ->
       logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
 
     case treeNode r1 of
-      TNFunc xfn
-        -- If the function type changes from the reference to regular, we need to evaluate the regular function.
-        -- Otherwise, leave the unification.
-        | isFuncRef fn1 && isFuncRef xfn
-        , not (isFuncRef fn1) && not (isFuncRef xfn) ->
-            return False
+      TNFunc _ -> return False
       _ -> unifyWithDir (d1, r1) dt2
 
   -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
