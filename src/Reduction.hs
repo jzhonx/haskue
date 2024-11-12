@@ -74,7 +74,7 @@ reduceAtomOpArg sel sub = do
       ( \rM -> case rM of
           Nothing -> Nothing
           Just r ->
-            if (treeHasAtom r || isTreeBottom r || isTreeRefCycleTail r)
+            if isFuncTreeReducible sub r
               then rM
               else Nothing
       )

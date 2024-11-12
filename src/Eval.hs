@@ -65,7 +65,6 @@ eval expr mermaid = do
           let
             rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
             cv = cvFromCur rootTC
-          -- r2 <- execStateT setOrigNodes cv
           logDebugStr $ printf "---- start resolving links ----"
           res <- execStateT reduce cv
           logDebugStr $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)

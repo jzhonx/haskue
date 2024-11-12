@@ -384,7 +384,7 @@ testDisj1 = do
     Right v ->
       cmpStructs v $
         newSimpleStruct
-          (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"])
+          (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"] ++ ["z1"])
           [ ("x1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
           , ("x2", newSimpleAtomDisj [Int 1] [Int 1, Int 2, Int 3])
           , ("x3", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
@@ -394,6 +394,7 @@ testDisj1 = do
           , ("y0", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
           , ("y1", newSimpleAtomDisj [Int 2] [Int 1, Int 2, Int 3])
           , ("y2", newSimpleAtomDisj [Int 3] [Int 1, Int 2, Int 3])
+          , ("z1", mkAtomTree $ Int 3)
           ]
 
 newSimpleAtomDisj :: [Atom] -> [Atom] -> Tree

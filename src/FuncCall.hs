@@ -13,6 +13,17 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
+{- | Check whether the function is reducible.
+The first argument is the function node, and the second argument is the result of the function.
+-}
+isFuncTreeReducible :: Tree -> Tree -> Bool
+isFuncTreeReducible fnt res =
+  treeHasAtom res
+    || isTreeBottom res
+    || isTreeRefCycleTail res
+    -- If the function tree does not have any references, then we can safely replace the function with the result.
+    || not (treeHasRef fnt)
+
 {- | Call the function. It returns the result of the function.
  - This must not modify the tree, i.e. the function is not reduced or no reduce is called.
  - No global states should be changed too.
@@ -72,21 +83,14 @@ handleFuncCall valM = do
               then putTMTree val >> return False
               else do
                 let
-                  funcHasNoRef = not (treeHasRef t)
-                  reducible =
-                    isTreeAtom val
-                      || isTreeBottom val
-                      || isTreeCnstr val
-                      || isTreeRefCycleTail val
-                      || funcHasNoRef
+                  reducible = isFuncTreeReducible t val
                 withDebugInfo $ \path _ ->
                   logDebugStr $
                     printf
-                      "handleFuncCall: func %s, path: %s, is reducible: %s, funcHasNoRef: %s, args: %s"
+                      "handleFuncCall: func %s, path: %s, is reducible: %s, args: %s"
                       (show $ fncName fn)
                       (show path)
                       (show reducible)
-                      (show funcHasNoRef)
                       (show $ fncArgs fn)
                 if reducible
                   then do
@@ -149,6 +153,5 @@ getRefTarAbsPath fn =
               (searchTCVar fstSel tc)
           let fstSelAbsPath = tcPath varTC
           return $ maybe fstSelAbsPath (`appendPath` fstSelAbsPath) (tailPath ref)
-        -- return $ Just $ appendPath (fromJust $ tailPath ref) fstSelAbsPath
         Nothing -> throwError "getTarAbsPath: can not generate path from the arguments"
     else throwError "getTarAbsPath: the function is not a reference"
