@@ -1,24 +1,16 @@
 cabal-version:      3.0
 name:               haskue
 version:            0.1.0.0
+synopsis:           A Haskell implementation of the CUE configuration language.
+description:        Please see the README on GitHub.
 
--- A short (one-line) description of the package.
--- synopsis:
-
--- A longer description of the package.
--- description:
-
--- A URL where users can report bugs.
--- bug-reports:
-
--- The license under which the package is released.
--- license:
+bug-reports:        https://github.com/jzhonx/haskue/issues
+license:            Apache-2.0
+license-file:       LICENSE
 author:             Junxiang Zhou
 maintainer:         junzhou365@gmail.com
 
--- A copyright notice.
--- copyright:
--- category:
+category:           Development
 extra-source-files: CHANGELOG.md
 
 library
@@ -59,13 +51,14 @@ library
     -- other-extensions:
     build-depends:    
       base ^>=4.17.0.0,
-      parsec,
-      containers,
-      mtl,
-      bytestring,
-      transformers,
-      monad-logger,
-      text,
+      bytestring >= 0.11.5 && < 0.12,
+      containers >= 0.6.7 && < 0.7,
+      monad-logger >= 0.3.40 && < 0.4,
+      mtl >= 2.2.2 && < 2.3,
+      transformers >= 0.5.6 && < 0.6,
+      text >= 2.0.2 && < 2.1,
+      parsec >= 3.1.16 && < 3.2,
+      optparse-applicative >= 0.18.1 && < 0.19,
 
     hs-source-dirs:   src
     default-language: Haskell2010

@@ -17,7 +17,7 @@ Here is a list of features that are either implemented or planned to be implemen
     - [x] lists
     - [x] disjunctions
     - [x] bounds
-    - [] structs
+    - [ ] structs
 - [ ] Evaluating operators.
     - [x] unary
     - [x] binary
