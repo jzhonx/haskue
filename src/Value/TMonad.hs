@@ -156,12 +156,14 @@ descendTM dst = do
     (\r -> putTMCursor r >> return True)
     (goDownTCPath dst tc)
 
+-- | discard the current focus, pop up and put the new focus.
 discardTMAndPut :: (TMonad s m t) => t -> m ()
-discardTMAndPut t = modify $ \s ->
+discardTMAndPut new = modify $ \s ->
   let ct = getCtxVal s
       ctx = cvCtx ct
-   in setCtxVal s (ct{cvVal = t, cvCtx = ctx{ctxCrumbs = tail (ctxCrumbs ctx)}})
+   in setCtxVal s (ct{cvVal = new, cvCtx = ctx{ctxCrumbs = tail (ctxCrumbs ctx)}})
 
+-- | discard the current focus, pop up and put the original focus in the crumbs back.
 discardTMAndPop :: (TMonad s m t) => m ()
 discardTMAndPop = do
   ctx <- getTMContext
@@ -170,6 +172,13 @@ discardTMAndPop = do
     t = head crumbs
   putTMContext ctx{ctxCrumbs = tail crumbs}
   putTMTree (snd t)
+
+inDiscardSubTM :: (TMonad s m t) => Selector -> t -> m a -> m a
+inDiscardSubTM sel t f = do
+  pushTMSub sel t
+  r <- f
+  discardTMAndPop
+  return r
 
 maybeM :: (Monad m) => m b -> (a -> m b) -> m (Maybe a) -> m b
 maybeM b f m = do

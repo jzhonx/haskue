@@ -11,7 +11,7 @@ import qualified Path
 import Value.Bounds
 
 data Struct t = Struct
-  { stcOrdLabels :: [Path.StructSelector] -- Should only contain string labels.
+  { stcOrdLabels :: [Path.StructSelector] -- Should only contain StringSelector labels.
   , stcSubs :: Map.Map Path.StructSelector (StaticStructField t)
   , stcPatterns :: [PatternStructField t]
   , stcPendSubs :: [PendingStructElem t]

@@ -301,7 +301,8 @@ labelExprBld e = case e of
     RegularLabel -> labelNameBld ln
     OptionalLabel -> labelNameBld ln <> string7 "?"
     RequiredLabel -> labelNameBld ln <> string7 "!"
-  LabelPattern _ -> undefined
+  -- The LabelPattern should not be exported.
+  LabelPattern le -> string7 "[" <> exprBldIdent 0 le <> string7 "]"
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case e of

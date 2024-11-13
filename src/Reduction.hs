@@ -175,7 +175,7 @@ reducePendSE idxes (sel, pse) = do
           let sSel = StructSelector $ StringSelector s
           pushTMSub sSel (ssfField newSF)
           mergedT <- reduce >> getTMTree
-          -- do not use propUpTCSel here because the field might not be in the original struct.
+          -- propUpTCSel is not used here because the field might not be in the original struct.
           discardTMAndPop
           -- TODO: use whenStruct because mergedT could be a bottom.
           nstruct <- mustStruct $ \struct ->
@@ -199,21 +199,18 @@ reducePendSE idxes (sel, pse) = do
           if null (bdsList bds)
             then putTMTree (mkBottomTree "patterns must be non-empty") >> return idxes
             else do
-              pushTMSub (StructSelector sel) val
-              defaultVal <- reduce >> getTMTree
-              -- apply the pattern to all existing fields.
-              -- TODO: apply the pattern to filtered fields.
-              nodes <- mustStruct $ \struct ->
-                return
-                  [ mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField n) defaultVal
-                  | n <- Map.elems (stcSubs struct)
-                  ]
-              mapM_ (\x -> whenNotBottom () (putTMTree x >> reduce)) nodes
+              patternsLen <- mustStruct $ \struct -> return $ length (stcPatterns struct)
+              let
+                pSel = PatternSelector patternsLen
+              fieldCnstr <- inDiscardSubTM (StructSelector pSel) val (reduce >> getTMTree)
+              let psf = PatternStructField bds fieldCnstr
+              validateExtStaticFields pSel psf
               whenNotBottom idxes $ do
-                newStruct <- mustStruct $ \struct ->
-                  return $ mkNewTree . TNStruct $ addPattern (PatternStructField bds defaultVal) struct
-                discardTMAndPut newStruct
+                newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
+                putTMTree newStruct
                 return (i : idxes)
+        -- The label expression does not evaluate to a bounds.
+        TNFunc _ -> return idxes
         _ ->
           putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show evaledPattern)))
             >> return idxes
@@ -247,6 +244,52 @@ reducePendSE idxes (sel, pse) = do
 
   addPattern :: PatternStructField Tree -> Struct Tree -> Struct Tree
   addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
+
+-- Validate the existing statis fields of the struct.
+validateExtStaticFields ::
+  (TreeMonad s m) =>
+  StructSelector ->
+  PatternStructField Tree ->
+  m ()
+validateExtStaticFields pSel@(PatternSelector _) psf = mustStruct $ \struct -> do
+  let
+    selPattern = psfPattern psf
+    toValSels =
+      [ mkFuncTree $ mkBinaryOp AST.Unify unify (mkAtomTree $ String s) (mkNewTree $ TNBounds selPattern)
+      | (StringSelector s) <- stcOrdLabels struct
+      ]
+  -- cnstrSels <- mapM (\x -> putTMTree x >> reduce) toValSels
+  cnstrSels <-
+    mapM (\x -> inDiscardSubTM (StructSelector pSel) x (reduce >> getTMTree)) toValSels
+      >>= return
+        . map
+          ( \x -> case treeNode x of
+              TNAtom (AtomV (String s)) -> s
+              _ -> ""
+          )
+      >>= return . filter (/= "")
+
+  reults <-
+    mapM
+      ( \s -> do
+          let
+            fieldCnstr = psfValue psf
+            sf = stcSubs struct Map.! StringSelector s
+            f = mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField sf) fieldCnstr
+          inDiscardSubTM (StructSelector pSel) f (reduce >> getTMTree)
+      )
+      cnstrSels
+      >>= return . filter isTreeBottom
+
+  if null reults
+    then return ()
+    else putTMTree (head reults)
+validateExtStaticFields _ _ = throwError "validateExtStaticFields: invalid selector"
+
+-- let nodes =
+--       [ mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField n) fieldCnstr
+--       | n <- Map.elems (stcSubs struct)
+--       ]
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
