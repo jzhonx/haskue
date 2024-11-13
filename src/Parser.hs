@@ -6,7 +6,7 @@ module Parser where
 
 import AST
 import Control.Monad.Except (MonadError, throwError)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isJust)
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -65,18 +65,12 @@ data Lexeme a = Lexeme
   { lex :: a
   , lexType :: TokenType
   , lexNewLine :: Bool
-  , lexCommaFound :: Bool
+  , lexAutoComma :: Bool
   }
   deriving (Show)
 
 instance Functor Lexeme where
   fmap f (Lexeme a t nl c) = Lexeme (f a) t nl c
-
--- getLexeme :: Lexeme a -> a
--- getLexeme = lex
-
--- modLexemeRes :: (a -> b) -> Lexeme a -> Lexeme b
--- modLexemeRes f (a, b, c) = (f a, b, c)
 
 parseCUE :: (MonadError String m) => String -> m Expression
 parseCUE s = case runParser entry () "" s of
@@ -261,7 +255,7 @@ struct = do
     case rbraceMaybe of
       Just _ -> return dLex
       Nothing -> do
-        _ <- comma (lexType dLex) (lexNewLine dLex)
+        _ <- comma dLex
         return dLex
   rLex <- rbrace
   let
@@ -281,7 +275,7 @@ list = do
     case rsquareMaybe of
       Just _ -> return eLex
       Nothing -> do
-        _ <- comma (lexType eLex) (lexNewLine eLex)
+        _ <- comma eLex
         return eLex
   rLex <- rsquare
   let es :: [Embedding]
@@ -294,34 +288,13 @@ lsquare = lexeme $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left squar
 rsquare :: Parser (Lexeme Char)
 rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
 
-comma :: TokenType -> Bool -> Parser (Lexeme ())
-comma tok nl = do
+comma :: Lexeme a -> Parser (Lexeme ())
+comma l = do
   commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
-  case commaMaybe of
-    Just _ -> return (Lexeme () tok nl False)
-    -- According to the cuelang spec, a comma is added to the last token of a line if the token is
-    -- - an identifier, keyword, or bottom
-    -- - a number or string literal, including an interpolation
-    -- - one of the characters ), ], }, or ?
-    -- - an ellipsis ...
-    Nothing ->
-      if nl
-        && tok
-          `elem` [ TokenIdentifier
-                 , TokenTop -- Top is indentifier
-                 , TokenNull -- Null is indentifier
-                 , TokenBottom
-                 , TokenInt
-                 , TokenFloat
-                 , TokenBool
-                 , TokenString
-                 , TokenRBrace
-                 , TokenRParen
-                 , TokenRSquare
-                 , TokenQuestionMark
-                 ]
-        then return (Lexeme () tok nl False)
-        else unexpected "failed to parse comma"
+  if isJust commaMaybe || lexAutoComma l
+    -- reset the autoComma flag because the comma is matched.
+    then return (Lexeme () (lexType l) (lexNewLine l) False)
+    else unexpected "failed to parse comma"
 
 decl :: Parser (Lexeme Declaration)
 decl = (fmap FieldDecl <$> field) <|> (fmap Embedding <$> expr)
@@ -452,6 +425,25 @@ lexeme :: Parser (TokAttr a) -> Parser (Lexeme a)
 lexeme p = do
   (x, ltok) <- p
   hasnl <- skippable <?> "failed to parse white spaces and comments"
-  return $ Lexeme x ltok hasnl False
-
--- return (x, ltok, hasnl)
+  -- According to the cuelang spec, a comma is added to the last token of a line if the token is
+  -- - an identifier, keyword, or bottom
+  -- - a number or string literal, including an interpolation
+  -- - one of the characters ), ], }, or ?
+  -- - an ellipsis ...
+  let commaFound =
+        hasnl
+          && ltok
+            `elem` [ TokenIdentifier
+                   , TokenTop -- Top is indentifier
+                   , TokenNull -- Null is indentifier
+                   , TokenBottom
+                   , TokenInt
+                   , TokenFloat
+                   , TokenBool
+                   , TokenString
+                   , TokenRBrace
+                   , TokenRParen
+                   , TokenRSquare
+                   , TokenQuestionMark
+                   ]
+  return $ Lexeme x ltok hasnl commaFound
