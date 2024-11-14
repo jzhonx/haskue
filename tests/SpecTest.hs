@@ -1109,6 +1109,59 @@ testCnstr2 = do
         )
       ]
 
+testPat1 :: IO ()
+testPat1 = do
+  s <- readFile "tests/spec/pattern1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newFieldsStruct
+      [
+        ( "y"
+        , newFieldsStruct
+            [ ("a", mkAtomTree $ Int 1)
+            , ("b", mkAtomTree $ Int 2)
+            ]
+        )
+      ]
+
+testPat2 :: IO ()
+testPat2 = do
+  s <- readFile "tests/spec/pattern2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newFieldsStruct
+      [
+        ( "nameMap"
+        , newFieldsStruct
+            [
+              ( "hank"
+              , newFieldsStruct
+                  [ ("firstName", mkAtomTree $ String "Hank")
+                  , ("nickName", mkAtomTree $ String "Hank")
+                  ]
+              )
+            ]
+        )
+      ]
+
+testPat3 :: IO ()
+testPat3 = do
+  s <- readFile "tests/spec/pattern3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= exp
+ where
+  exp = mkBottomTree ""
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1158,6 +1211,9 @@ specTests =
     , testCase "index1" testIndex1
     , testCase "cnstr1" testCnstr1
     , testCase "cnstr2" testCnstr2
+    , testCase "pattern1" testPat1
+    , testCase "pattern2" testPat2
+    , testCase "pattern3" testPat3
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()
