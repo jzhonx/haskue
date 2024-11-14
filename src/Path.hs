@@ -38,8 +38,9 @@ viewStructSelector _ = 0
 
 instance Show StructSelector where
   show (StringSelector s) = s
-  show (PendingSelector i) = "sd" ++ show i
-  show (PatternSelector i) = "sp" ++ show i
+  show (PendingSelector i) = "sp" ++ show i
+  -- c stands for constraint.
+  show (PatternSelector i) = "sc" ++ show i
 
 -- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
 data FuncSelector

@@ -61,13 +61,13 @@ eval expr mermaid = do
     runReaderT
       ( do
           root <- evalStateT (evalExpr expr) emptyContext
-          logDebugStr $ printf "---- evaluated to rootTC: ----\n%s" (show root)
+          logDebugStr $ printf "---- string evaluated to tree: ----\n%s" (show root)
           let
             rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
             cv = cvFromCur rootTC
-          logDebugStr $ printf "---- start resolving links ----"
+          logDebugStr $ printf "---- start reduce tree ----"
           res <- execStateT reduce cv
-          logDebugStr $ printf "---- resolved: ----\n%s" (show . getCVCursor $ res)
+          logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )
       Config{cfCreateCnstr = True, cfMermaid = mermaid, cfEvalExpr = evalExpr}

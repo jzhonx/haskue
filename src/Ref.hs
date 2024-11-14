@@ -77,7 +77,7 @@ populateRef nt reduceFunc = do
       -- re-evaluate the highest function when it is not a reference.
       | otherwise -> do
           withDebugInfo $ \path _ ->
-            logDebugStr $ 
+            logDebugStr $
               printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
           r <- reduceFunc fn >> getTMTree
           startReduceRef r reduceFunc
@@ -181,7 +181,7 @@ deref tp = do
           -- The returned RC would be a self-reference cycle, which has empty path because the cycle is formed by all
           -- references.
           | Set.member ref refsSeen -> do
-              logDebugStr $ 
+              logDebugStr $
                 printf "deref: reference cycle detected: %s, seen: %s" (show ref) (show $ Set.toList refsSeen)
               return $ Just . mkNewTree $ TNRefCycle (RefCycle True)
           -- This handles the case when the reference refers to itself that is the ancestor.
@@ -233,5 +233,5 @@ deref tp = do
     tarM <- goLowestAncPathTM p (Just <$> getTMTree)
     res <- maybe (return Nothing) (\x -> putTMTree x >> f) tarM
     backM <- goTMAbsPath origAbsPath
-    unless backM $ throwError "inRemoteTMMaybe: failed to go back to the original path"
+    unless backM $ throwError $ printf "inRemoteTMMaybe: failed to go back to the original path %s" (show origAbsPath)
     return res

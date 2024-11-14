@@ -17,6 +17,7 @@ import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
+import Debug.Trace
 import FuncCall
 import Path
 import Ref
@@ -27,6 +28,8 @@ import Value.Tree
 -- | Reduce the tree to the lowest form.
 reduce :: (TreeMonad s m) => m ()
 reduce = do
+  path <- getTMAbsPath
+  logDebugStr $ printf "reduce: path: %s, start" (show path)
   dumpEntireTree "reduce start"
 
   origT <- getTMTree
@@ -41,7 +44,6 @@ reduce = do
     let nt = setOrig t (treeOrig origT)
     putTMTree $ nt{treeEvaled = True}
 
-  path <- getTMAbsPath
   withTree $ \t -> startReduceRef t reduceFunc
 
   logDebugStr $ printf "reduce: path: %s, done" (show path)
@@ -83,7 +85,7 @@ reduceAtomOpArg sel sub = do
 
 reduceFuncArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
 reduceFuncArg sel sub = withTree $ \t -> do
-  ret <- reduceFuncArgMaybe sel sub (\rM -> Just $ fromMaybe t rM)
+  ret <- reduceFuncArgMaybe sel sub (Just . fromMaybe t)
   logDebugStr $ printf "reduceFuncArg: %s is evaluated to %s" (show sub) (show ret)
   return $ fromJust ret
 
@@ -121,10 +123,11 @@ reduceStruct = do
   delIdxes <- do
     whenStruct () $ \s ->
       mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ s)
+    delIdxes <- whenStruct [] $ \s ->
+      foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs s))
     whenStruct () $ \s ->
       mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns s))
-    whenStruct [] $ \s ->
-      foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs s))
+    return delIdxes
 
   whenStruct () $ \s -> do
     let newStruct = mk s{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs s), i `notElem` delIdxes]}
@@ -187,32 +190,39 @@ reducePendSE idxes (sel, pse) = do
         _ -> putTMTree (mkBottomTree "selector can only be a string") >> return idxes
     (PendingSelector i, PatternField pattern val) -> do
       -- evaluate the pattern.
-      evaledPattern <- inSubTM (StructSelector sel) pattern (reduce >> getTMTree)
+      pat <- inDiscardSubTM (StructSelector sel) pattern (reduce >> getTMTree)
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf
             "reducePendSE: path: %s, pattern is evaluated to %s"
             (show path)
-            (show evaledPattern)
-      case treeNode evaledPattern of
+            (show pat)
+      case treeNode pat of
         TNBounds bds ->
           if null (bdsList bds)
             then putTMTree (mkBottomTree "patterns must be non-empty") >> return idxes
             else do
-              patternsLen <- mustStruct $ \struct -> return $ length (stcPatterns struct)
-              let
-                pSel = PatternSelector patternsLen
-              fieldCnstr <- inDiscardSubTM (StructSelector pSel) val (reduce >> getTMTree)
+              fieldCnstr <- inDiscardSubTM (StructSelector sel) val (reduce >> getTMTree)
+              withDebugInfo $ \path _ ->
+                logDebugStr $
+                  printf
+                    "reducePendSE: path: %s, constraint is evaluated to %s"
+                    (show path)
+                    (show fieldCnstr)
+
               let psf = PatternStructField bds fieldCnstr
-              validateExtStaticFields pSel psf
+              validateExtStaticFields sel psf
               whenNotBottom idxes $ do
                 newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
                 putTMTree newStruct
+                withDebugInfo $ \path _ ->
+                  logDebugStr $
+                    printf "reducePendSE: path: %s, newStruct %s" (show path) (show newStruct)
                 return (i : idxes)
         -- The label expression does not evaluate to a bounds.
         TNFunc _ -> return idxes
         _ ->
-          putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show evaledPattern)))
+          putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
             >> return idxes
     _ -> throwError "evalStructField: invalid selector field combination"
  where
@@ -242,8 +252,9 @@ reducePendSE idxes (sel, pse) = do
             else stcOrdLabels x ++ [StringSelector s]
       }
 
+  -- Add the pattern to the struct. Return the new struct and the index of the pattern.
   addPattern :: PatternStructField Tree -> Struct Tree -> Struct Tree
-  addPattern psf x = x{stcPatterns = stcPatterns x ++ [psf]}
+  addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
 
 -- Validate the existing statis fields of the struct.
 validateExtStaticFields ::
@@ -251,16 +262,15 @@ validateExtStaticFields ::
   StructSelector ->
   PatternStructField Tree ->
   m ()
-validateExtStaticFields pSel@(PatternSelector _) psf = mustStruct $ \struct -> do
+validateExtStaticFields sel psf = mustStruct $ \struct -> do
   let
     selPattern = psfPattern psf
     toValSels =
       [ mkFuncTree $ mkBinaryOp AST.Unify unify (mkAtomTree $ String s) (mkNewTree $ TNBounds selPattern)
       | (StringSelector s) <- stcOrdLabels struct
       ]
-  -- cnstrSels <- mapM (\x -> putTMTree x >> reduce) toValSels
   cnstrSels <-
-    mapM (\x -> inDiscardSubTM (StructSelector pSel) x (reduce >> getTMTree)) toValSels
+    mapM (\x -> inDiscardSubTM (StructSelector sel) x (reduce >> getTMTree)) toValSels
       >>= return
         . map
           ( \x -> case treeNode x of
@@ -269,6 +279,8 @@ validateExtStaticFields pSel@(PatternSelector _) psf = mustStruct $ \struct -> d
           )
       >>= return . filter (/= "")
 
+  logDebugStr $ printf "validateExtStaticFields: start, cnstrSels: %s" (show cnstrSels)
+
   reults <-
     mapM
       ( \s -> do
@@ -276,7 +288,7 @@ validateExtStaticFields pSel@(PatternSelector _) psf = mustStruct $ \struct -> d
             fieldCnstr = psfValue psf
             sf = stcSubs struct Map.! StringSelector s
             f = mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField sf) fieldCnstr
-          inDiscardSubTM (StructSelector pSel) f (reduce >> getTMTree)
+          inDiscardSubTM (StructSelector sel) f (reduce >> getTMTree)
       )
       cnstrSels
       >>= return . filter isTreeBottom
@@ -284,12 +296,6 @@ validateExtStaticFields pSel@(PatternSelector _) psf = mustStruct $ \struct -> d
   if null reults
     then return ()
     else putTMTree (head reults)
-validateExtStaticFields _ _ = throwError "validateExtStaticFields: invalid selector"
-
--- let nodes =
---       [ mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField n) fieldCnstr
---       | n <- Map.elems (stcSubs struct)
---       ]
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
@@ -773,7 +779,7 @@ unifyLeftAtom (d1, v1, t1) dt2@(d2, t2) = do
       Null -> putTree $ TNAtom v1
       _ -> notUnifiable dt1 dt2
     (_, TNBounds b) -> do
-      logDebugStr $ printf "unifyLeftAtom, with Bounds: %s, %s" (show t1) (show t2)
+      logDebugStr $ printf "unifyLeftAtom, %s with Bounds: %s" (show t1) (show t2)
       putTMTree $ unifyAtomBounds (d1, amvAtom v1) (d2, bdsList b)
       return True
     (_, TNConstraint c) ->
@@ -847,24 +853,28 @@ unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
   TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1)
   _ -> notUnifiable (d1, t1) (d2, t2)
 
+traceWith :: (Show a) => (a -> String) -> a -> a
+traceWith f x = trace (f x) x
+
 unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tree
-unifyAtomBounds (d1, a1) (_, bs) =
-  let
-    cs = map withBound bs
-    ta1 = mkAtomTree a1
-   in
-    foldl (\_ x -> if x == ta1 then ta1 else x) (mkAtomTree a1) cs
+unifyAtomBounds (d1, a1) (d2, bs) =
+  -- try to find the atom in the bounds list.
+  foldl1 findAtom (map withBound bs)
  where
+  ta1 = mkAtomTree a1
+
+  findAtom acc x = if acc == ta1 || x == ta1 then acc else x
+
   withBound :: Bound -> Tree
   withBound b =
     let
-      r = unifyBounds (d1, BdIsAtom a1) (Path.R, b)
+      r = unifyBounds (d1, BdIsAtom a1) (d2, b)
      in
       case r of
         Left s -> mkBottomTree s
         Right v -> case v of
           [x] -> case x of
-            BdIsAtom a -> mkNewTree $ TNAtom $ AtomV a
+            BdIsAtom a -> mkAtomTree a
             _ -> mkBottomTree $ printf "unexpected bounds unification result: %s" (show x)
           _ -> mkBottomTree $ printf "unexpected bounds unification result: %s" (show v)
 
@@ -884,7 +894,7 @@ unifyBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of
   (_, []) -> return bs1
   _ -> do
     bss <- manyToMany (d1, bs1) (d2, bs2)
-    let bsMap = Map.fromListWith (\x y -> x ++ y) (map (\b -> (bdRep b, [b])) (concat bss))
+    let bsMap = Map.fromListWith (++) (map (\b -> (bdRep b, [b])) (concat bss))
     norm <- forM bsMap narrowBounds
     let m = Map.toList norm
     return $ concat $ map snd m
@@ -950,7 +960,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     _ -> unifyBounds db2 db1
   BdIsAtom a1 -> case b2 of
     BdIsAtom a2 -> if a1 == a2 then return [b1] else Left conflict
-    _ -> unifyBounds db2 db1
+    _ -> traceWith (\_ -> "yoyyoo") $ unifyBounds db2 db1
  where
   uNENumCmp :: Atom -> BdNumCmp -> Either String [Bound]
   uNENumCmp a1 (BdNumCmpCons o2 y) = do
@@ -1032,13 +1042,13 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 
   uTypeAtom :: BdType -> Atom -> Either String [Bound]
   uTypeAtom t1 a2 =
-    let r = case a2 of
+    let r = case (traceWith (\_ -> printf "uTypeAtom %s %s" (show t1) (show a2)) a2) of
           Bool _ -> t1 == BdBool
-          Int _ -> BdInt `elem` [BdInt, BdNumber]
-          Float _ -> BdFloat `elem` [BdFloat, BdNumber]
+          Int _ -> t1 `elem` [BdInt, BdNumber]
+          Float _ -> t1 `elem` [BdFloat, BdNumber]
           String _ -> t1 == BdString
           _ -> False
-     in if r then return [b2] else Left conflict
+     in if (traceWith (\_ -> printf "uTypeAtom result: %s" (show r)) r) then return [b2] else Left conflict
 
   conflict :: String
   conflict = printf "bounds %s and %s conflict" (show b1) (show b2)

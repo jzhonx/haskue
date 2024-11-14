@@ -131,30 +131,31 @@ instance TreeRepBuilderIter Tree where
              in attr (ssfAttr sf) <> isVar (ssfAttr sf)
 
           dlabelAttr :: DynamicStructField Tree -> String
-          dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dsf"
+          dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
 
           plabelAttr :: String
-          plabelAttr = "e,psf"
+          plabelAttr = ",e,patpend"
 
           psfLabelAttr :: PatternStructField Tree -> String
-          psfLabelAttr psf =
-            "["
-              <> show (psfPattern psf)
-              <> "]"
-              <> ",psf"
+          psfLabelAttr psf = "[" <> show (psfPattern psf) <> "]" <> ",pattern"
 
           fields :: [(String, String, Tree)]
           fields =
             map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
               ++ map
-                (\(j, k) -> (show (StructSelector $ PatternSelector j), psfLabelAttr k, psfValue k))
+                ( \(j, k) ->
+                    ( (show (StructSelector $ PatternSelector j))
+                    , psfLabelAttr k
+                    , psfValue k
+                    )
+                )
                 (zip [0 ..] (stcPatterns s))
               ++ map
                 ( \j ->
                     let a = stcPendSubs s !! j
                      in case a of
                           DynamicField dsf -> (show (StructSelector $ PendingSelector j), dlabelAttr dsf, dsfValue dsf)
-                          PatternField _ val -> (show (StructSelector $ PatternSelector j), plabelAttr, val)
+                          PatternField _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
                 )
                 (structPendIndexes s)
        in (symbol, ordLabels, fields, [])
@@ -313,7 +314,8 @@ treeToMermaid msg evalPath root = do
               path
               ( symbol
                   -- print whether the node has an original expression.
-                  <> printf ", %s" (if (isJust $ treeOrig t) then "Y" else "N")
+                  -- Currently disabled.
+                  -- <> printf ", %s" (if isJust $ treeOrig t then "Y" else "N")
                   <> if null meta then mempty else " " <> meta
               )
           )
@@ -347,7 +349,6 @@ subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
   TNList l -> [(IndexSelector i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  -- TODO: do we need this?
   TNFunc fn -> [(FuncSelector $ FuncArgSelector i, v) | (i, v) <- zip [0 ..] (fncArgs fn)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultSelector, x)]) (dsjDefault d)
@@ -496,12 +497,13 @@ dumpEntireTree msg = do
     TNBottom _ -> return ()
     TNTop -> return ()
     _ -> do
-      logDebugStr "--- dump entire tree states: ---"
-      notifiers <- ctxNotifiers <$> getTMContext
-      logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
       Config{cfMermaid = mermaid} <- ask
       when mermaid $ do
+        logDebugStr "--- dump entire tree states: ---"
+        notifiers <- ctxNotifiers <$> getTMContext
+        logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
         tc <- getTMCursor
+        logDebugStr $ printf "tc: %s" (show tc)
         rtc <- propUpTCUntil Path.RootSelector tc
         let
           t = vcFocus rtc
@@ -509,4 +511,4 @@ dumpEntireTree msg = do
           s = evalState (treeToMermaid msg evalPath t) 0
         logDebugStr $ printf "\n```mermaid\n%s\n```" s
 
-      logDebugStr "--- dump entire tree done ---"
+        logDebugStr "--- dump entire tree done ---"

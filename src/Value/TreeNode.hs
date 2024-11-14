@@ -124,18 +124,18 @@ setSubTreeTN sel subT parT = do
   return $ setTreeNode parT n
  where
   updateParStruct :: (MonadError String m) => Struct t -> StructSelector -> m (TreeNode t)
-  updateParStruct parStruct label =
+  updateParStruct parStruct labelSel =
     if
       | b@(TNBottom _) <- getTreeNode subT -> return b
-      -- the label should already exist in the parent struct.
-      | Map.member label (stcSubs parStruct) ->
+      -- the label selector should already exist in the parent struct.
+      | Map.member labelSel (stcSubs parStruct) ->
           let
-            sf = stcSubs parStruct Map.! label
+            sf = stcSubs parStruct Map.! labelSel
             newSF = sf{ssfField = subT}
-            newStruct = parStruct{stcSubs = Map.insert label newSF (stcSubs parStruct)}
+            newStruct = parStruct{stcSubs = Map.insert labelSel newSF (stcSubs parStruct)}
            in
             return (TNStruct newStruct)
-      | otherwise -> case label of
+      | otherwise -> case labelSel of
           PatternSelector i ->
             let
               psf = stcPatterns parStruct !! i

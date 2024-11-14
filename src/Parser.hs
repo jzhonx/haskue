@@ -5,6 +5,7 @@
 module Parser where
 
 import AST
+import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Data.Maybe (fromJust, isJust)
 import Text.Parsec (
@@ -12,16 +13,16 @@ import Text.Parsec (
   chainl1,
   char,
   digit,
+  getInput,
   lookAhead,
   many,
   many1,
   noneOf,
   oneOf,
   optionMaybe,
-  parserTrace,
-  parserTraced,
   runParser,
   satisfy,
+  setInput,
   skipMany,
   string,
   try,
@@ -59,18 +60,15 @@ data TokenType
 
 type TokAttr a = (a, TokenType)
 
--- type Lexeme a = (a, TokenType, Bool)
-
 data Lexeme a = Lexeme
   { lex :: a
   , lexType :: TokenType
   , lexNewLine :: Bool
-  , lexAutoComma :: Bool
   }
   deriving (Show)
 
 instance Functor Lexeme where
-  fmap f (Lexeme a t nl c) = Lexeme (f a) t nl c
+  fmap f (Lexeme a t nl) = Lexeme (f a) t nl
 
 parseCUE :: (MonadError String m) => String -> m Expression
 parseCUE s = case runParser entry () "" s of
@@ -250,7 +248,7 @@ struct :: Parser (Lexeme Literal)
 struct = do
   _ <- lexeme $ (,TokenLBrace) <$> char '{'
   decls <- many $ do
-    dLex <- parserTraced "decl" decl
+    dLex <- decl
     rbraceMaybe <- lookAhead $ optionMaybe rbrace
     case rbraceMaybe of
       Just _ -> return dLex
@@ -291,9 +289,8 @@ rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right squa
 comma :: Lexeme a -> Parser (Lexeme ())
 comma l = do
   commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
-  if isJust commaMaybe || lexAutoComma l
-    -- reset the autoComma flag because the comma is matched.
-    then return (Lexeme () (lexType l) (lexNewLine l) False)
+  if isJust commaMaybe
+    then return (Lexeme () (lexType l) (lexNewLine l))
     else unexpected "failed to parse comma"
 
 decl :: Parser (Lexeme Declaration)
@@ -301,11 +298,10 @@ decl = (fmap FieldDecl <$> field) <|> (fmap Embedding <$> expr)
 
 field :: Parser (Lexeme FieldDecl)
 field = do
-  lnx <- parserTraced "label" label
+  lnx <- label
   -- labels might be in the form of "a: b: c: val". We need to try to match the b and c.
   otherxs <- try $ many (try label)
-  eLex <- parserTraced "fieldExpr" expr
-  -- parserTrace ("fieldExpr nl: " ++ show nl ++ ", tok: " ++ show tok ++ ", e: " ++ show e)
+  eLex <- expr
   let
     ln = lex lnx
     otherLns = map lex otherxs
@@ -318,7 +314,7 @@ field = do
     return $ Label (lex lLex) <$ rLex
 
 labelExpr :: Parser (Lexeme LabelExpr)
-labelExpr = labelPattern <|> parserTraced "labelNameConstraint" labelNameConstraint
+labelExpr = labelPattern <|> labelNameConstraint
 
 labelNameConstraint :: Parser (Lexeme LabelExpr)
 labelNameConstraint = do
@@ -332,7 +328,7 @@ labelNameConstraint = do
 
 labelPattern :: Parser (Lexeme LabelExpr)
 labelPattern = do
-  _ <- parserTraced "labelPatternL" lsquare
+  _ <- lsquare
   e <- expr
   r <- rsquare
   return $ LabelPattern (lex e) <$ r
@@ -446,4 +442,7 @@ lexeme p = do
                    , TokenRSquare
                    , TokenQuestionMark
                    ]
-  return $ Lexeme x ltok hasnl commaFound
+  when commaFound $ do
+    s <- getInput
+    setInput $ "," ++ s
+  return $ Lexeme x ltok hasnl
