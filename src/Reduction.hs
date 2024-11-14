@@ -17,7 +17,6 @@ import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
-import Debug.Trace
 import FuncCall
 import Path
 import Ref
@@ -120,22 +119,25 @@ reduceFuncArgMaybe sel sub csHandler = withTree $ \t -> do
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
-  delIdxes <- do
-    whenStruct () $ \s ->
-      mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ s)
-    delIdxes <- whenStruct [] $ \s ->
-      foldM reducePendSE [] (zip (map PendingSelector [0 ..]) (stcPendSubs s))
-    whenStruct () $ \s ->
-      mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns s))
-    return delIdxes
-
+  whenStruct () $ \s -> mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ s)
+  -- reduce the pendings.
+  delIdxes <- whenStruct [] $ \s ->
+    foldM
+      (\acc (i, pend) -> reducePendSE (PendingSelector i, pend) >>= \r -> return $ if r then i : acc else acc)
+      []
+      (zip [0 ..] (stcPendSubs s))
   whenStruct () $ \s -> do
-    let newStruct = mk s{stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs s), i `notElem` delIdxes]}
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "reduceStruct: path: %s, new struct: %s" (show path) (show newStruct)
-    putTMTree newStruct
- where
-  mk = mkNewTree . TNStruct
+    putTMTree . mkStructTree $
+      s
+        { stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs s), i `notElem` delIdxes]
+        }
+
+  -- reduce the patterns.
+  whenStruct () $ \s ->
+    mapM_ reducePattern (zip (map PatternSelector [0 ..]) (stcPatterns s))
+
+  withDebugInfo $ \path t ->
+    logDebugStr $ printf "reduceStruct: path: %s, new struct: %s" (show path) (show t)
 
 whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a
 whenStruct a f = do
@@ -157,74 +159,69 @@ reduceStaticSF sel = whenStruct () $ \struct ->
   inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) reduce
 
 reducePattern :: (TreeMonad s m) => (StructSelector, PatternStructField Tree) -> m ()
-reducePattern (sel, psf) = whenStruct () $ \_ -> inSubTM (StructSelector sel) (psfValue psf) reduce
+reducePattern (sel, psf) = whenStruct () $ \_ -> do
+  inSubTM (StructSelector sel) (psfValue psf) reduce
+  checkOrExtendStaticFields sel psf
 
-reducePendSE :: (TreeMonad s m) => [Int] -> (StructSelector, PendingStructElem Tree) -> m [Int]
-reducePendSE idxes (sel, pse) = do
-  case (sel, pse) of
-    (PendingSelector i, DynamicField dsf) -> do
-      -- evaluate the dynamic label.
-      label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ reduce >> getTMTree
-      withDebugInfo $ \path _ ->
-        logDebugStr $
-          printf
-            "reducePendSE: path: %s, dynamic label is evaluated to %s"
-            (show path)
-            (show label)
-      case treeNode label of
-        TNAtom (AtomV (String s)) -> do
-          newSF <- mustStruct $ \struct -> return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
+reducePendSE :: (TreeMonad s m) => (StructSelector, PendingStructElem Tree) -> m Bool
+reducePendSE (sel@(PendingSelector _), pse) = case pse of
+  DynamicField dsf -> do
+    -- evaluate the dynamic label.
+    label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ reduce >> getTMTree
+    withDebugInfo $ \path _ ->
+      logDebugStr $
+        printf
+          "reducePendSE: path: %s, dynamic label is evaluated to %s"
+          (show path)
+          (show label)
+    case treeNode label of
+      TNAtom (AtomV (String s)) -> do
+        newSF <- mustStruct $ \struct -> return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
 
-          let sSel = StructSelector $ StringSelector s
-          pushTMSub sSel (ssfField newSF)
-          mergedT <- reduce >> getTMTree
-          -- propUpTCSel is not used here because the field might not be in the original struct.
-          discardTMAndPop
-          -- TODO: use whenStruct because mergedT could be a bottom.
-          nstruct <- mustStruct $ \struct ->
-            return $ mkNewTree (TNStruct $ addStatic s (newSF{ssfField = mergedT}) struct)
-          putTMTree nstruct
-          return (i : idxes)
+        let sSel = StructSelector $ StringSelector s
+        mergedT <- inDiscardSubTM sSel (ssfField newSF) (reduce >> getTMTree)
+        -- TODO: use whenStruct because mergedT could be a bottom.
+        mustStruct $ \struct ->
+          putTMTree $ mkStructTree $ addStatic struct s (newSF{ssfField = mergedT})
+        return True
 
-        -- TODO: pending label
-        _ -> putTMTree (mkBottomTree "selector can only be a string") >> return idxes
-    (PendingSelector i, PatternField pattern val) -> do
-      -- evaluate the pattern.
-      pat <- inDiscardSubTM (StructSelector sel) pattern (reduce >> getTMTree)
-      withDebugInfo $ \path _ ->
-        logDebugStr $
-          printf
-            "reducePendSE: path: %s, pattern is evaluated to %s"
-            (show path)
-            (show pat)
-      case treeNode pat of
-        TNBounds bds ->
-          if null (bdsList bds)
-            then putTMTree (mkBottomTree "patterns must be non-empty") >> return idxes
-            else do
-              fieldCnstr <- inDiscardSubTM (StructSelector sel) val (reduce >> getTMTree)
+      -- TODO: pending label
+      _ -> putTMTree (mkBottomTree "selector can only be a string") >> return False
+  PatternField pattern val -> do
+    -- evaluate the pattern.
+    pat <- inDiscardSubTM (StructSelector sel) pattern (reduce >> getTMTree)
+    withDebugInfo $ \path _ ->
+      logDebugStr $
+        printf
+          "reducePendSE: path: %s, pattern is evaluated to %s"
+          (show path)
+          (show pat)
+    case treeNode pat of
+      TNBounds bds ->
+        if null (bdsList bds)
+          then putTMTree (mkBottomTree "patterns must be non-empty") >> return False
+          else do
+            fieldCnstr <- inDiscardSubTM (StructSelector sel) val (reduce >> getTMTree)
+            withDebugInfo $ \path _ ->
+              logDebugStr $
+                printf
+                  "reducePendSE: path: %s, constraint is evaluated to %s"
+                  (show path)
+                  (show fieldCnstr)
+
+            let psf = PatternStructField bds fieldCnstr
+            checkOrExtendStaticFields sel psf
+            whenNotBottom False $ do
+              newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
+              putTMTree newStruct
               withDebugInfo $ \path _ ->
-                logDebugStr $
-                  printf
-                    "reducePendSE: path: %s, constraint is evaluated to %s"
-                    (show path)
-                    (show fieldCnstr)
-
-              let psf = PatternStructField bds fieldCnstr
-              validateExtStaticFields sel psf
-              whenNotBottom idxes $ do
-                newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
-                putTMTree newStruct
-                withDebugInfo $ \path _ ->
-                  logDebugStr $
-                    printf "reducePendSE: path: %s, newStruct %s" (show path) (show newStruct)
-                return (i : idxes)
-        -- The label expression does not evaluate to a bounds.
-        TNFunc _ -> return idxes
-        _ ->
-          putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
-            >> return idxes
-    _ -> throwError "evalStructField: invalid selector field combination"
+                logDebugStr $ printf "reducePendSE: path: %s, newStruct %s" (show path) (show newStruct)
+              return True
+      -- The label expression does not evaluate to a bounds.
+      TNFunc _ -> return False
+      _ ->
+        putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
+          >> return False
  where
   dynToStaticField ::
     DynamicStructField Tree ->
@@ -242,27 +239,18 @@ reducePendSE idxes (sel, pse) = do
         , ssfAttr = dsfAttr dsf
         }
 
-  addStatic :: String -> StaticStructField Tree -> Struct Tree -> Struct Tree
-  addStatic s sf x =
-    x
-      { stcSubs = Map.insert (StringSelector s) sf (stcSubs x)
-      , stcOrdLabels =
-          if StringSelector s `elem` stcOrdLabels x
-            then stcOrdLabels x
-            else stcOrdLabels x ++ [StringSelector s]
-      }
-
   -- Add the pattern to the struct. Return the new struct and the index of the pattern.
   addPattern :: PatternStructField Tree -> Struct Tree -> Struct Tree
   addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
+reducePendSE _ = throwError "evalStructField: invalid selector field combination"
 
 -- Validate the existing statis fields of the struct.
-validateExtStaticFields ::
+checkOrExtendStaticFields ::
   (TreeMonad s m) =>
   StructSelector ->
   PatternStructField Tree ->
   m ()
-validateExtStaticFields sel psf = mustStruct $ \struct -> do
+checkOrExtendStaticFields sel psf = mustStruct $ \struct -> do
   let
     selPattern = psfPattern psf
     toValSels =
@@ -279,23 +267,32 @@ validateExtStaticFields sel psf = mustStruct $ \struct -> do
           )
       >>= return . filter (/= "")
 
-  logDebugStr $ printf "validateExtStaticFields: start, cnstrSels: %s" (show cnstrSels)
+  logDebugStr $ printf "checkOrExtendStaticFields: start, cnstrSels: %s" (show cnstrSels)
 
-  reults <-
+  results <-
     mapM
       ( \s -> do
           let
             fieldCnstr = psfValue psf
             sf = stcSubs struct Map.! StringSelector s
             f = mkFuncTree $ mkBinaryOp AST.Unify unify (ssfField sf) fieldCnstr
-          inDiscardSubTM (StructSelector sel) f (reduce >> getTMTree)
+          nf <- inDiscardSubTM (StructSelector sel) f (reduce >> getTMTree)
+          return (s, nf)
       )
       cnstrSels
-      >>= return . filter isTreeBottom
 
-  if null reults
-    then return ()
-    else putTMTree (head reults)
+  let bottoms = filter (isTreeBottom . snd) results
+  if not $ null bottoms
+    then putTMTree (snd . head $ bottoms)
+    else do
+      newStruct <-
+        foldM
+          (\acc (s, nf) -> updateStatic acc s nf)
+          struct
+          results
+      putTMTree $ mkStructTree newStruct
+      withDebugInfo $ \path r ->
+        logDebugStr $ printf "checkOrExtendStaticFields: path: %s, newStruct %s" (show path) (show r)
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
@@ -853,9 +850,6 @@ unifyLeftBound (d1, b1, t1) (d2, t2) = case treeNode t2 of
   TNDisj _ -> unifyLeftOther (d2, t2) (d1, t1)
   _ -> notUnifiable (d1, t1) (d2, t2)
 
-traceWith :: (Show a) => (a -> String) -> a -> a
-traceWith f x = trace (f x) x
-
 unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tree
 unifyAtomBounds (d1, a1) (d2, bs) =
   -- try to find the atom in the bounds list.
@@ -960,7 +954,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     _ -> unifyBounds db2 db1
   BdIsAtom a1 -> case b2 of
     BdIsAtom a2 -> if a1 == a2 then return [b1] else Left conflict
-    _ -> traceWith (\_ -> "yoyyoo") $ unifyBounds db2 db1
+    _ -> unifyBounds db2 db1
  where
   uNENumCmp :: Atom -> BdNumCmp -> Either String [Bound]
   uNENumCmp a1 (BdNumCmpCons o2 y) = do
@@ -1042,13 +1036,13 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 
   uTypeAtom :: BdType -> Atom -> Either String [Bound]
   uTypeAtom t1 a2 =
-    let r = case (traceWith (\_ -> printf "uTypeAtom %s %s" (show t1) (show a2)) a2) of
+    let r = case a2 of
           Bool _ -> t1 == BdBool
           Int _ -> t1 `elem` [BdInt, BdNumber]
           Float _ -> t1 `elem` [BdFloat, BdNumber]
           String _ -> t1 == BdString
           _ -> False
-     in if (traceWith (\_ -> printf "uTypeAtom result: %s" (show r)) r) then return [b2] else Left conflict
+     in if r then return [b2] else Left conflict
 
   conflict :: String
   conflict = printf "bounds %s and %s conflict" (show b1) (show b2)

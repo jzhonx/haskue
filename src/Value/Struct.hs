@@ -4,7 +4,7 @@ module Value.Struct where
 
 import qualified AST
 import Class
-import Control.Monad.Except (throwError)
+import Control.Monad.Except (MonadError, throwError)
 import qualified Data.Map.Strict as Map
 import Env
 import qualified Path
@@ -182,3 +182,20 @@ emptyStruct =
     , stcPendSubs = []
     , stcPatterns = []
     }
+
+addStatic :: Struct t -> String -> StaticStructField t -> Struct t
+addStatic struct s sf =
+  struct
+    { stcSubs = Map.insert (Path.StringSelector s) sf (stcSubs struct)
+    , stcOrdLabels =
+        if Path.StringSelector s `elem` stcOrdLabels struct
+          then stcOrdLabels struct
+          else stcOrdLabels struct ++ [Path.StringSelector s]
+    }
+
+-- | Update the value of a static field in the struct.
+updateStatic :: (MonadError String m) => Struct t -> String -> t -> m (Struct t)
+updateStatic struct s t =
+  case Map.lookup (Path.StringSelector s) (stcSubs struct) of
+    Just sf -> return $ addStatic struct s (sf{ssfField = t})
+    Nothing -> throwError "updateStatic: the static field is not found"

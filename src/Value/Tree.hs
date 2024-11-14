@@ -431,6 +431,9 @@ mkFuncTree fn = mkNewTree (TNFunc fn)
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
+mkStructTree :: Struct Tree -> Tree
+mkStructTree s = mkNewTree (TNStruct s)
+
 convRefCycleTree :: Tree -> Bool -> Tree
 convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
 
