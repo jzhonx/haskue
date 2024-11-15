@@ -61,6 +61,9 @@ import Value.Struct
 import Value.TMonad
 import Value.TreeNode
 
+class TreeRepBuilderIter a where
+  iterRepTree :: a -> TreeRep
+
 -- TreeMonad stores the tree structure in its state.
 type TreeMonad s m =
   ( Env m
@@ -77,6 +80,24 @@ data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeOrig :: Maybe AST.Expression
   , treeEvaled :: Bool
+  }
+
+data TreeRep = TreeRep
+  { trSymbol :: String
+  , trMeta :: String
+  , trFields :: [TreeRepField]
+  , trMetas :: [TreeRepMeta]
+  }
+
+data TreeRepField = TreeRepField
+  { trfLabel :: String
+  , trfAttr :: String
+  , trfValue :: Tree
+  }
+
+data TreeRepMeta = TreeRepMeta
+  { trmLabel :: String
+  , trmAttr :: String
   }
 
 instance HasTreeNode Tree where
@@ -110,7 +131,7 @@ instance TreeRepBuilder Tree where
 
 instance TreeRepBuilderIter Tree where
   iterRepTree t = case treeNode t of
-    TNAtom leaf -> (symbol, show (amvAtom leaf), emptyTreeFields, [])
+    TNAtom leaf -> consRep (symbol, show (amvAtom leaf), [], [])
     TNStruct s ->
       let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
           attr :: LabelAttr -> String
@@ -136,20 +157,21 @@ instance TreeRepBuilderIter Tree where
           plabelAttr :: String
           plabelAttr = ",e,patpend"
 
-          psfLabelAttr :: PatternStructField Tree -> String
-          psfLabelAttr psf = "[" <> show (psfPattern psf) <> "]" <> ",pattern"
+          -- psfLabelAttr :: PatternStructField Tree -> String
+          -- psfLabelAttr psf = "[" <> show (psfPattern psf) <> "]" <> ",pattern"
 
           fields :: [(String, String, Tree)]
           fields =
             map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
-              ++ map
-                ( \(j, k) ->
-                    ( (show (StructSelector $ PatternSelector j))
-                    , psfLabelAttr k
+              ++ zipWith
+                ( \j k ->
+                    ( show (StructSelector $ PatternSelector j)
+                    , ""
                     , psfValue k
                     )
                 )
-                (zip [0 ..] (stcPatterns s))
+                [0 ..]
+                (stcPatterns s)
               ++ map
                 ( \j ->
                     let a = stcPendSubs s !! j
@@ -158,55 +180,76 @@ instance TreeRepBuilderIter Tree where
                           PatternField _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
                 )
                 (structPendIndexes s)
-       in (symbol, ordLabels, fields, [])
+
+          metas :: [(String, String)]
+          metas =
+            zipWith
+              (\j psf -> (show (StructSelector $ PatternSelector j), show (psfPattern psf)))
+              [0 ..]
+              (stcPatterns s)
+       in consRep (symbol, ordLabels, consFields fields, consMetas metas)
     TNList vs ->
-      let fields = map (\(j, v) -> (show (IndexSelector j), mempty, v)) (zip [0 ..] (lstSubs vs))
-       in (symbol, mempty, fields, [])
+      let fields = zipWith (\j v -> (show (IndexSelector j), mempty, v)) [0 ..] (lstSubs vs)
+       in consRep (symbol, mempty, consFields fields, [])
     TNDisj d ->
       let dfField = maybe [] (\v -> [(show DisjDefaultSelector, mempty, v)]) (dsjDefault d)
-          djFields = map (\(j, v) -> (show $ DisjDisjunctSelector j, mempty, v)) (zip [0 ..] (dsjDisjuncts d))
-       in (symbol, mempty, dfField ++ djFields, [])
+          djFields = zipWith (\j v -> (show $ DisjDisjunctSelector j, mempty, v)) [0 ..] (dsjDisjuncts d)
+       in consRep (symbol, mempty, consFields dfField ++ consFields djFields, [])
     TNConstraint c ->
-      ( symbol
-      , mempty
-      ,
-        [ ("Atom", mempty, mkAtomVTree (cnsAtom c))
-        , (show unaryOpSelector, mempty, cnsValidator c)
-        ]
-      , []
-      )
+      consRep
+        ( symbol
+        , mempty
+        , consFields
+            [ ("Atom", mempty, mkAtomVTree (cnsAtom c))
+            , (show unaryOpSelector, mempty, cnsValidator c)
+            ]
+        , []
+        )
     -- TODO: selector
-    TNBounds b -> (symbol, mempty, [], map (\(j, v) -> (show j, repTree 0 v)) (zip [0 ..] (bdsList b)))
+    TNBounds b ->
+      consRep
+        ( symbol
+        , mempty
+        , []
+        , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
+        )
     TNRefCycle c -> case c of
-      RefCycle p -> (symbol, show p, emptyTreeFields, [])
-      RefCycleTail p -> (symbol, "tail " ++ show p, emptyTreeFields, [])
+      RefCycle p -> consRep (symbol, show p, [], [])
+      RefCycleTail p -> consRep (symbol, "tail " ++ show p, [], [])
     TNFunc f -> case fncType f of
       RefFunc ->
         let
           res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
          in
-          (symbol, fncName f, res, [])
+          consRep (symbol, fncName f, consFields res, [])
       _ ->
         let
-          args = map (\(j, v) -> (show (FuncArgSelector j), mempty, v)) (zip [0 ..] (fncArgs f))
+          args = zipWith (\j v -> (show (FuncArgSelector j), mempty, v)) [0 ..] (fncArgs f)
           res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
          in
-          ( symbol
-          , fncName f
-              <> ( printf ", args:%s" (show . length $ fncArgs f)
-                    <> (if funcHasRef f then ", hasRef" else mempty)
-                 )
-          , args ++ res
-          , []
-          )
-    TNBottom b -> (symbol, show b, emptyTreeFields, [])
-    TNTop -> (symbol, mempty, emptyTreeFields, [])
+          consRep
+            ( symbol
+            , fncName f
+                <> ( printf ", args:%s" (show . length $ fncArgs f)
+                      <> (if funcHasRef f then ", hasRef" else mempty)
+                   )
+            , consFields (args ++ res)
+            , []
+            )
+    TNBottom b -> consRep (symbol, show b, [], [])
+    TNTop -> consRep (symbol, mempty, [], [])
    where
-    emptyTreeFields :: forall a. (TreeRepBuilder a) => [(String, String, a)]
-    emptyTreeFields = []
-
     symbol :: String
     symbol = showTreeSymbol t
+
+    consRep :: (String, String, [TreeRepField], [TreeRepMeta]) -> TreeRep
+    consRep (s, m, f, l) = TreeRep s m f l
+
+    consFields :: [(String, String, Tree)] -> [TreeRepField]
+    consFields = map (\(l, a, v) -> TreeRepField l a v)
+
+    consMetas :: [(String, String)] -> [TreeRepMeta]
+    consMetas = map (\(l, a) -> TreeRepMeta l a)
 
 instance Show Tree where
   show = treeToSimpleStr 0
@@ -239,7 +282,7 @@ instance Eq Tree where
 
 treeToSimpleStr :: Int -> Tree -> String
 treeToSimpleStr toff t =
-  let (symbol, meta, fields, listedMetas) = iterRepTree t
+  let TreeRep symbol meta fields listedMetas = iterRepTree t
    in "("
         <> (symbol <> " " <> meta)
         <> ( if null fields
@@ -248,7 +291,7 @@ treeToSimpleStr toff t =
                 -- we need to add a newline for the fields block.
                 "\n"
                   <> foldl
-                    ( \acc (label, attr, sub) ->
+                    ( \acc (TreeRepField label attr sub) ->
                         let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
                          in acc
                               <> pre
@@ -266,7 +309,7 @@ treeToSimpleStr toff t =
               else
                 "\n"
                   <> foldl
-                    ( \acc (label, lmeta) ->
+                    ( \acc (TreeRepMeta label lmeta) ->
                         let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
                          in acc
                               <> pre
@@ -304,7 +347,7 @@ treeToMermaid msg evalPath root = do
   subgraph :: (MonadState Int m) => Int -> Tree -> String -> m String
   subgraph toff t path = do
     let
-      (symbol, meta, fields, _) = iterRepTree t
+      (TreeRep symbol meta fields _) = iterRepTree t
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
       writer =
@@ -321,7 +364,7 @@ treeToMermaid msg evalPath root = do
           )
 
     foldM
-      ( \acc (label, _, sub) -> do
+      ( \acc (TreeRepField label _ sub) -> do
           let subName = path ++ "_" ++ label
           rest <- subgraph (toff + 2) sub subName
           return $

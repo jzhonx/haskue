@@ -13,11 +13,6 @@ class BuildASTExpr a where
 class TreeRepBuilder a where
   repTree :: Int -> a -> String
 
-class TreeRepBuilderIter a where
-  -- (symbol, meta, fields, listedMetas)
-  -- field : (Label, Attr, Value)
-  iterRepTree :: a -> (String, String, [(String, String, a)], [(String, String)])
-
 class TreeOp a where
   -- step down the tree with the given selector.
   -- This should only be used by TreeCursor.
