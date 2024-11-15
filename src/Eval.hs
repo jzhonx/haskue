@@ -16,7 +16,7 @@ where
 import AST
 import Class
 import Config
-import Control.Monad.Except (MonadError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
@@ -35,14 +35,19 @@ data EvalConfig = EvalConfig
   , ecFilePath :: String
   }
 
-runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m AST.Expression
+runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m [AST.Declaration]
 runIO s conf =
   if ecDebugLogging conf
     then runStderrLoggingT res
     else runNoLoggingT res
  where
-  res :: (MonadError String m, MonadLogger m) => m AST.Expression
-  res = runStr s (ecMermaidGraph conf)
+  res :: (MonadError String m, MonadLogger m) => m [AST.Declaration]
+  res = do
+    ast <- runStr s (ecMermaidGraph conf)
+    case ast of
+      AST.ExprUnaryExpr
+        (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls)))) -> return decls
+      _ -> throwError "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
 runTreeIO s = runNoLoggingT $ runTreeStr s False

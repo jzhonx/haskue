@@ -31,6 +31,7 @@ module AST (
   idCons,
   litCons,
   unaryOpCons,
+  declsBld,
 )
 where
 
@@ -271,17 +272,17 @@ structBld ident lit =
     then string7 "{}"
     else
       string7 "{\n"
-        <> goFields ident lit
-        <> string7 (replicate (ident * 2) ' ')
+        <> declsBld (ident + 1) lit
+        <> string7 (replicate ident ' ')
         <> char7 '}'
- where
-  goFields :: Int -> [Declaration] -> Builder
-  goFields _ [] = string7 ""
-  goFields i (x : xs) =
-    string7 (replicate ((i + 1) * 2) ' ')
-      <> declBld i x
-      <> char7 '\n'
-      <> goFields i xs
+
+declsBld :: Int -> [Declaration] -> Builder
+declsBld _ [] = string7 ""
+declsBld i (x : xs) =
+  string7 (replicate i ' ')
+    <> declBld i x
+    <> char7 '\n'
+    <> declsBld i xs
 
 declBld :: Int -> Declaration -> Builder
 declBld i e = case e of

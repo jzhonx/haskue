@@ -1,6 +1,6 @@
 module Main where
 
-import AST (exprBld)
+import AST (declsBld)
 import Control.Monad.Except (MonadError, runExceptT, throwError)
 import Data.ByteString.Builder (hPutBuilder)
 import Eval (EvalConfig (..), runIO)
@@ -33,4 +33,4 @@ main = do
   x <- runExceptT $ runIO file opts
   case x of
     Left err -> putStrLn err
-    Right expr -> hPutBuilder stdout (exprBld expr)
+    Right decls -> hPutBuilder stdout (declsBld 0 decls)
