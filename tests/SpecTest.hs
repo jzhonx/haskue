@@ -447,34 +447,71 @@ testDisj3 = do
     Right v ->
       cmpStructs v $
         newSimpleStruct
-          ( ["a" ++ (show i) | i <- [0 .. 2]]
-              ++ ["b" ++ (show i) | i <- [0 .. 1]]
-              ++ ["c" ++ (show i) | i <- [0 .. 3]]
-              ++ ["d" ++ (show i) | i <- [0 .. 0]]
-              ++ ["e" ++ (show i) | i <- [0 .. 4]]
+          ( ["a" ++ show i | i <- [0 .. 2]]
+              ++ ["b" ++ show i | i <- [0 .. 1]]
+              ++ ["c" ++ show i | i <- [0 .. 3]]
+              ++ ["d" ++ show i | i <- [0 .. 0]]
+              ++ ["e" ++ show i | i <- [0 .. 4]]
           )
-          ( [ ("a0", newSimpleAtomDisj [] [String "tcp", String "udp"])
-            , ("a1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("a2", mkAtomTree $ Int 4)
-            , ("b0", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-            , ("b1", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
-            , ("c0", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("c1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-            , ("c2", newSimpleAtomDisj [String "tcp"] [String "tcp"])
-            , ("c3", newSimpleAtomDisj [] [String "tcp", String "udp"])
-            , ("d0", newSimpleAtomDisj [Bool True] [Bool True, Bool False])
-            , ("e0", newSimpleDisj [] [sa, sb])
-            , ("e1", newSimpleDisj [sb] [sa, sb])
-            , ("e2", newSimpleDisj [] [sa, sb])
-            , ("e3", newSimpleDisj [] [sa, sba])
-            , ("e4", newSimpleDisj [sb] [sa, sba, sab, sb])
-            ]
-          )
+          [ ("a0", newSimpleAtomDisj [] [String "tcp", String "udp"])
+          , ("a1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("a2", mkAtomTree $ Int 4)
+          , ("b0", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("b1", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
+          , ("c0", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("c1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("c2", newSimpleAtomDisj [String "tcp"] [String "tcp"])
+          , ("c3", newSimpleAtomDisj [] [String "tcp", String "udp"])
+          , ("d0", newSimpleAtomDisj [Bool True] [Bool True, Bool False])
+          , ("e0", newSimpleDisj [] [sa, sb])
+          , ("e1", newSimpleDisj [sb] [sa, sb])
+          , ("e2", newSimpleDisj [] [sa, sb])
+          , ("e3", newSimpleDisj [] [sa, sba])
+          , ("e4", newSimpleDisj [sb] [sa, sba, sab, sb])
+          ]
  where
   sa = newSimpleStruct ["a"] [("a", mkAtomTree $ Int 1)]
   sb = newSimpleStruct ["b"] [("b", mkAtomTree $ Int 1)]
   sba = newSimpleStruct ["b", "a"] [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 1)]
   sab = newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 1)]
+
+testDisj4 :: IO ()
+testDisj4 = do
+  s <- readFile "tests/spec/disj4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpExpStructs y $
+        newFieldsStruct
+          [
+            ( "x"
+            , mkNewTree . TNDisj $
+                Disj
+                  (Just $ mkAtomTree $ String "h")
+                  [ mkAtomTree $ String "h"
+                  , mkBoundsTree [BdType BdString]
+                  ]
+            )
+          ,
+            ( "y"
+            , mkNewTree . TNDisj $
+                Disj
+                  (Just $ mkAtomTree $ String "h")
+                  [ mkAtomTree $ String "h"
+                  , mkBoundsTree [BdType BdString]
+                  ]
+            )
+          ,
+            ( "z"
+            , mkNewTree . TNDisj $
+                Disj
+                  (Just $ mkAtomTree $ String "h")
+                  [ mkAtomTree $ String "h"
+                  , mkBoundsTree [BdType BdString]
+                  ]
+            )
+          ]
 
 testSelector1 :: IO ()
 testSelector1 = do
@@ -1109,6 +1146,15 @@ testCnstr2 = do
         )
       ]
 
+expandWithPatterns :: [PatternStructField Tree] -> Tree -> Tree
+expandWithPatterns ps t = case t of
+  Tree{treeNode = TNStruct s} ->
+    mkStructTree $
+      s
+        { stcPatterns = ps
+        }
+  _ -> error "Not a struct"
+
 testPat1 :: IO ()
 testPat1 = do
   s <- readFile "tests/spec/pattern1.cue"
@@ -1118,15 +1164,22 @@ testPat1 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newFieldsStruct
-      [
-        ( "y"
-        , newFieldsStruct
-            [ ("a", mkAtomTree $ Int 1)
-            , ("b", mkAtomTree $ Int 2)
-            ]
-        )
+    expandWithPatterns
+      [ PatternStructField
+          { psfPattern = Bounds{bdsList = [BdType BdString]}
+          , psfValue = newFieldsStruct [("a", mkAtomTree $ Int 1)]
+          }
       ]
+      ( newFieldsStruct
+          [
+            ( "y"
+            , newFieldsStruct
+                [ ("a", mkAtomTree $ Int 1)
+                , ("b", mkAtomTree $ Int 2)
+                ]
+            )
+          ]
+      )
 
 testPat2 :: IO ()
 testPat2 = do
@@ -1140,15 +1193,41 @@ testPat2 = do
     newFieldsStruct
       [
         ( "nameMap"
-        , newFieldsStruct
-            [
-              ( "hank"
-              , newFieldsStruct
-                  [ ("firstName", mkAtomTree $ String "Hank")
-                  , ("nickName", mkAtomTree $ String "Hank")
-                  ]
-              )
+        , expandWithPatterns
+            [ PatternStructField
+                { psfPattern = Bounds{bdsList = [BdType BdString]}
+                , psfValue =
+                    newFieldsStruct
+                      [ ("firstName", mkBoundsTree [BdType BdString])
+                      ,
+                        ( "nickName"
+                        , mkFuncTree $
+                            mkBinaryOp
+                              AST.Disjunction
+                              (\_ _ -> throwError "not implemented")
+                              (mkSimpleLink $ pathFromList [strSel "firstName"])
+                              (mkBoundsTree [BdType BdString])
+                        )
+                      ]
+                }
             ]
+            $ newFieldsStruct
+              [
+                ( "hank"
+                , newFieldsStruct
+                    [ ("firstName", mkAtomTree $ String "Hank")
+                    ,
+                      ( "nickName"
+                      , mkNewTree . TNDisj $
+                          Disj
+                            (Just $ mkAtomTree $ String "Hank")
+                            [ mkAtomTree $ String "Hank"
+                            , mkBoundsTree [BdType BdString]
+                            ]
+                      )
+                    ]
+                )
+              ]
         )
       ]
 
@@ -1179,6 +1258,7 @@ specTests =
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
+    , testCase "disj4" testDisj4
     , testCase "vars1" testVars1
     , testCase "vars2" testVars2
     , testCase "vars3" testVars3
@@ -1222,6 +1302,8 @@ cmpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
   assertEqual "fields-length" (length $ stcSubs exp) (length $ stcSubs act)
   mapM_ (\(k, v) -> assertEqual (show k) v (stcSubs act Map.! k)) (Map.toList $ stcSubs exp)
   mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
+  assertEqual "patterns" (stcPatterns exp) (stcPatterns act)
+  assertEqual "pendings" (stcPendSubs exp) (stcPendSubs act)
 cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
 
 cmpExpStructs :: Tree -> Tree -> IO ()

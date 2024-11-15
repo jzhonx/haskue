@@ -1234,7 +1234,7 @@ unifyLeftDisj (d1, dj1, t1) (d2, t2) = do
       else mapM (\x -> oneToMany (ld1, x) (ld2, ts2)) ts1
 
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
-treeFromNodes dfM ds = case (excludeDefault dfM, concatExclude ds) of
+treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
   (_, []) -> throwError "empty disjuncts"
   (Nothing, [_d]) -> return $ mkNewTree (treeNode _d)
   (Nothing, _ds) ->
@@ -1248,19 +1248,14 @@ treeFromNodes dfM ds = case (excludeDefault dfM, concatExclude ds) of
      in
       return $ mkNewTree node
  where
-  -- concat the disjuncts and exclude the disjuncts with Bottom values.
-  concatExclude :: [[Tree]] -> [Tree]
-  concatExclude xs =
-    filter
-      ( \x ->
-          case treeNode x of
-            TNBottom _ -> False
-            _ -> True
-      )
-      (concat xs)
+  -- concat and dedup the non-bottom disjuncts
+  concatDedupNonBottoms :: [[Tree]] -> [Tree]
+  concatDedupNonBottoms xs =
+    dedup $
+      concatMap (filter (not . isTreeBottom)) xs
 
-  excludeDefault :: Maybe Tree -> Maybe Tree
-  excludeDefault Nothing = Nothing
-  excludeDefault (Just x) = case treeNode x of
-    TNBottom _ -> Nothing
-    _ -> Just x
+  excludeBottomM :: Maybe Tree -> Maybe Tree
+  excludeBottomM = maybe Nothing (\x -> if isTreeBottom x then Nothing else Just x)
+
+  dedup :: [Tree] -> [Tree]
+  dedup = foldr (\y acc -> if y `elem` acc then acc else y : acc) []

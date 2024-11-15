@@ -157,9 +157,6 @@ instance TreeRepBuilderIter Tree where
           plabelAttr :: String
           plabelAttr = ",e,patpend"
 
-          -- psfLabelAttr :: PatternStructField Tree -> String
-          -- psfLabelAttr psf = "[" <> show (psfPattern psf) <> "]" <> ",pattern"
-
           fields :: [(String, String, Tree)]
           fields =
             map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
@@ -549,7 +546,7 @@ dumpEntireTree msg = do
         notifiers <- ctxNotifiers <$> getTMContext
         logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
         tc <- getTMCursor
-        logDebugStr $ printf "tc: %s" (show tc)
+        -- logDebugStr $ printf "tc: %s" (show tc)
         rtc <- propUpTCUntil Path.RootSelector tc
         let
           t = vcFocus rtc
