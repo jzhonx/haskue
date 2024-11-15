@@ -76,8 +76,7 @@ testBottom = do
   n <- startEval s
   case n of
     Left err -> assertFailure err
-    Right y ->
-      y @?= (mkBottomTree "")
+    Right y -> y @?= mkBottomTree ""
 
 testBasic :: IO ()
 testBasic = do
@@ -91,8 +90,8 @@ testBasic = do
           ["a", "b", "c", "d"]
           [ ("a", mkAtomTree $ Bool True)
           , ("b", mkAtomTree $ Bool False)
-          , ("c", mkNewTree $ TNTop)
-          , ("d", mkAtomTree $ Null)
+          , ("c", mkNewTree TNTop)
+          , ("d", mkAtomTree Null)
           ]
 
 testUnaryOp :: IO ()
@@ -181,11 +180,11 @@ testBinOpCmpEq = do
     Right y ->
       y
         @?= newSimpleStruct
-          ( ["i" ++ (show i) | i <- [0 .. 2]]
-              ++ ["f" ++ (show i) | i <- [0 .. 5]]
-              ++ ["b" ++ (show i) | i <- [0 .. 2]]
-              ++ ["s" ++ (show i) | i <- [0 .. 2]]
-              ++ ["n" ++ (show i) | i <- [0 .. 6]]
+          ( ["i" ++ show i | i <- [0 .. 2]]
+              ++ ["f" ++ show i | i <- [0 .. 5]]
+              ++ ["b" ++ show i | i <- [0 .. 2]]
+              ++ ["s" ++ show i | i <- [0 .. 2]]
+              ++ ["n" ++ show i | i <- [0 .. 6]]
           )
           ( map
               (\(k, v) -> (k, mkAtomTree (Bool v)))
@@ -223,10 +222,10 @@ testBinOpCmpNE = do
     Right y ->
       y
         @?= newSimpleStruct
-          ( ["i" ++ (show i) | i <- [0 .. 2]]
-              ++ ["b" ++ (show i) | i <- [0 .. 2]]
-              ++ ["s" ++ (show i) | i <- [0 .. 2]]
-              ++ ["n" ++ (show i) | i <- [0 .. 6]]
+          ( ["i" ++ show i | i <- [0 .. 2]]
+              ++ ["b" ++ show i | i <- [0 .. 2]]
+              ++ ["s" ++ show i | i <- [0 .. 2]]
+              ++ ["n" ++ show i | i <- [0 .. 6]]
           )
           ( map
               (\(k, v) -> (k, mkAtomTree (Bool v)))
@@ -280,7 +279,7 @@ testBounds2 = do
     Right y ->
       y
         @?= newSimpleStruct
-          ( ["x" ++ (show i) | i <- [0 .. 6]]
+          ( ["x" ++ show i | i <- [0 .. 6]]
           )
           ( map
               (\(k, v) -> (k, mkAtomTree v))
@@ -346,11 +345,10 @@ testVars2 = do
   structTop =
     newSimpleStruct
       ["x", "y", "z"]
-      ( [ ("x", structX)
-        , ("y", structY)
-        , ("z", mkAtomTree $ Int 12)
-        ]
-      )
+      [ ("x", structX)
+      , ("y", structY)
+      , ("z", mkAtomTree $ Int 12)
+      ]
 
 testVars3 :: IO ()
 testVars3 = do
@@ -433,7 +431,7 @@ testDisj2 = do
                   [ newSimpleStruct
                       ["y", "z"]
                       [("y", mkAtomTree $ Int 1), ("z", mkAtomTree $ Int 3)]
-                  , newSimpleStruct ["y"] ([("y", mkAtomTree $ Int 2)])
+                  , newSimpleStruct ["y"] [("y", mkAtomTree $ Int 2)]
                   ]
             )
           ]
@@ -886,7 +884,7 @@ testRef2 = do
             , newSimpleStruct
                 ["c", "d"]
                 [ ("c", mkAtomTree $ Int 1)
-                , ("d", mkNewTree $ TNTop)
+                , ("d", mkNewTree TNTop)
                 ]
             )
           ]
@@ -915,12 +913,11 @@ testRef3 = do
                 ["y"]
                 [
                   ( "y"
-                  , ( newSimpleStruct
-                        ["a", "c"]
-                        [ ("a", mkAtomTree $ Int 1)
-                        , ("c", mkAtomTree $ Int 2)
-                        ]
-                    )
+                  , newSimpleStruct
+                      ["a", "c"]
+                      [ ("a", mkAtomTree $ Int 1)
+                      , ("c", mkAtomTree $ Int 2)
+                      ]
                   )
                 ]
             )
@@ -1082,10 +1079,9 @@ testList1 = do
   exp =
     newSimpleStruct
       ["x0", "x1"]
-      ( [ ("x0", mkNewTree . TNList $ List (map mkAtomTree [Int 1, Int 4, Int 9]))
-        , ("x1", mkNewTree . TNList $ List (map mkAtomTree [Float 1.0, Bool True, String "hello"]))
-        ]
-      )
+      [ ("x0", mkNewTree . TNList $ List (map mkAtomTree [Int 1, Int 4, Int 9]))
+      , ("x1", mkNewTree . TNList $ List (map mkAtomTree [Float 1.0, Bool True, String "hello"]))
+      ]
 
 testIndex1 :: IO ()
 testIndex1 = do
