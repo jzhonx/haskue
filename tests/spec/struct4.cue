@@ -1,11 +1,9 @@
 // dynamic fields
-{
-	a:   "foo"
-	b:   "bar"
-	(a): "baz"
+a:   "foo"
+b:   "bar"
+(a): "baz"
 
-	(a + b): "qux"
+(a + b): "qux"
 
-	(a)?: string
-	(b)!: string
-}
+(a)?: string
+(b)!: string

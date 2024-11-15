@@ -131,7 +131,10 @@ unaryOpTable =
 
 sourceFile :: Parser (Lexeme SourceFile)
 sourceFile = do
-  declLexes <- many decl
+  declLexes <- many $ do
+    dLex <- decl
+    _ <- comma dLex
+    return dLex
   -- null was hidden, so use the dumb way to check if the declLexes is empty.
   if length declLexes == 0
     then return $ SourceFile [] <$ emptyLexeme

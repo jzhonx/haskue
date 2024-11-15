@@ -1,6 +1,4 @@
-{
-	a: true
-	b: false
-	c: _
-	d: null
-}
+a: true
+b: false
+c: _
+d: null
