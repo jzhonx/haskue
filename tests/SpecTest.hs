@@ -8,7 +8,7 @@ import Data.ByteString.Builder
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
-import Eval (eval, runTreeIO)
+import Eval (runTreeIO)
 import Parser
 import Path
 import Reduction (mkRefFunc)
@@ -561,7 +561,7 @@ testUnify1 = do
     Right val' ->
       val'
         @?= newSimpleStruct
-          ["a", "b", "d", "z"]
+          ["a", "d", "b", "z"]
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("a", Int 123)
@@ -708,9 +708,9 @@ testCycles5 = do
       val'
         @?= newSimpleStruct
           ["a", "b", "c"]
-          [ ("a", innerStructGen ["y", "z", "x"])
+          [ ("a", innerStructGen ["z", "y", "x"])
           , ("b", innerStructGen ["x", "z", "y"])
-          , ("c", innerStructGen ["x", "y", "z"])
+          , ("c", innerStructGen ["y", "x", "z"])
           ]
  where
   innerStructGen labels =
@@ -733,7 +733,7 @@ testCycles6 = do
           ["a", "b", "c"]
           [ ("a", newSimpleDisj [] [yzx, sy1])
           , ("b", newSimpleDisj [] [sx2, xyz])
-          , ("c", newSimpleDisj [] [xzy, sz3])
+          , ("c", newSimpleDisj [] [zxy, sz3])
           ]
  where
   innerStructGen labels =
@@ -749,8 +749,8 @@ testCycles6 = do
   sz3 = newSimpleStruct ["z"] [("z", mkAtomTree $ Int 3)]
 
   yzx = innerStructGen ["y", "z", "x"]
-  xzy = innerStructGen ["x", "z", "y"]
   xyz = innerStructGen ["x", "y", "z"]
+  zxy = innerStructGen ["z", "x", "y"]
 
 testCycles7 :: IO ()
 testCycles7 = do

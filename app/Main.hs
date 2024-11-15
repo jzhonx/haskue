@@ -5,7 +5,6 @@ import Control.Monad.Except (MonadError, runExceptT, throwError)
 import Data.ByteString.Builder (hPutBuilder)
 import Eval (EvalConfig (..), runIO)
 import Options.Applicative
-import Parser (parseCUE)
 import System.IO (readFile, stdout)
 
 options :: Parser EvalConfig

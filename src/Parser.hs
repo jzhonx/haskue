@@ -35,7 +35,8 @@ import Prelude hiding (GT, LT, lex, null)
 type Parser a = Parsec String () a
 
 data TokenType
-  = TokenUnaryOp
+  = TokenNone
+  | TokenUnaryOp
   | TokenBinOp
   | TokenString
   | TokenInt
@@ -71,8 +72,16 @@ data Lexeme a = Lexeme
 instance Functor Lexeme where
   fmap f (Lexeme a t nl) = Lexeme (f a) t nl
 
-parseCUE :: (MonadError String m) => String -> m Expression
-parseCUE s = case runParser entry () "" s of
+emptyLexeme :: Lexeme ()
+emptyLexeme = Lexeme () TokenNone False
+
+parseExpr :: (MonadError String m) => String -> m Expression
+parseExpr s = case runParser (entry expr) () "" s of
+  Left err -> throwError $ show err
+  Right res -> return $ lex res
+
+parseSourceFile :: (MonadError String m) => String -> m SourceFile
+parseSourceFile s = case runParser (entry sourceFile) () "" s of
   Left err -> throwError $ show err
   Right res -> return $ lex res
 
@@ -120,10 +129,18 @@ unaryOpTable =
   , ("!~", UnaRelOp ReNotMatch)
   ]
 
-entry :: Parser (Lexeme Expression)
-entry = do
+sourceFile :: Parser (Lexeme SourceFile)
+sourceFile = do
+  declLexes <- many decl
+  -- null was hidden, so use the dumb way to check if the declLexes is empty.
+  if length declLexes == 0
+    then return $ SourceFile [] <$ emptyLexeme
+    else return $ SourceFile (map lex declLexes) <$ last declLexes
+
+entry :: Parser (Lexeme a) -> Parser (Lexeme a)
+entry p = do
   _ <- skippable
-  expr
+  p
 
 expr :: Parser (Lexeme Expression)
 expr = prec1

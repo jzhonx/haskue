@@ -20,6 +20,7 @@ module AST (
   RelOp (..),
   Selector (..),
   SimpleStringLit,
+  SourceFile (..),
   StringLit (..),
   UnaryExpr (..),
   UnaryOp (..),
@@ -41,6 +42,11 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import Prelude hiding (GT, LT)
+
+data SourceFile = SourceFile
+  { sfDecls :: [Declaration]
+  }
+  deriving (Eq, Show)
 
 data Expression
   = ExprUnaryExpr UnaryExpr

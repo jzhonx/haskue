@@ -22,6 +22,11 @@ import Value.Tree
 
 type EvalEnv m = (Env m, MonadReader (Config Tree) m)
 
+evalSourceFile :: (EvalEnv m) => SourceFile -> m Tree
+evalSourceFile (SourceFile decls) = do
+  logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
+  evalDecls decls
+
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
 level deeper with the label as the key.
@@ -37,7 +42,7 @@ evalExpr e = do
   return $ setOrig t (Just e)
 
 evalLiteral :: (EvalEnv m) => Literal -> m Tree
-evalLiteral (StructLit s) = evalStructLit s
+evalLiteral (StructLit s) = evalDecls s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
@@ -50,9 +55,8 @@ evalLiteral lit = return v
     TopLit -> mkNewTree TNTop
     BottomLit -> mkBottomTree ""
 
--- | The struct is guaranteed to have unique labels by transform.
-evalStructLit :: (EvalEnv m) => [Declaration] -> m Tree
-evalStructLit decls = do
+evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
+evalDecls decls = do
   (struct, ts) <- foldM evalDecl (emptyStruct, []) decls
   let v =
         if null ts
@@ -63,44 +67,44 @@ evalStructLit decls = do
               (mkNewTree (TNStruct struct))
               ts
   return v
+
+--  Evaluates a declaration in a struct.
+--  It returns the updated struct and the list of trees to be unified , which are embeddings.
+evalDecl :: (EvalEnv m) => (Struct Tree, [Tree]) -> Declaration -> m (Struct Tree, [Tree])
+evalDecl (scp, ts) (Embedding e) = do
+  v <- evalExpr e
+  return (scp, v : ts)
+evalDecl (scp, ts) (EllipsisDecl (Ellipsis cM)) =
+  maybe
+    (return (scp, ts))
+    (\_ -> throwError "default constraints are not implemented yet")
+    cM
+evalDecl (struct, ts) (FieldDecl fd) = case fd of
+  Field ls e -> do
+    sfa <- evalFdLabels ls e
+    let newStruct = insertUnifyStruct sfa struct
+    return (newStruct, ts)
+
+evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
+evalFdLabels lbls e =
+  case lbls of
+    [] -> throwError "empty labels"
+    [l1] ->
+      do
+        logDebugStr $ printf "evalFdLabels: lb1: %s" (show l1)
+        val <- evalExpr e
+        adder <- mkAdder l1 val
+        logDebugStr $ printf "evalFdLabels: adder: %s" (show adder)
+        return adder
+    l1 : l2 : rs ->
+      do
+        logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
+        sf2 <- evalFdLabels (l2 : rs) e
+        let val = mkNewTree . TNStruct $ mkStructFromAdders [sf2]
+        adder <- mkAdder l1 val
+        logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
+        return adder
  where
-  --  Evaluates a declaration in a struct.
-  --  It returns the updated struct and the list of trees to be unified , which are embeddings.
-  evalDecl :: (EvalEnv m) => (Struct Tree, [Tree]) -> Declaration -> m (Struct Tree, [Tree])
-  evalDecl (scp, ts) (Embedding e) = do
-    v <- evalExpr e
-    return (scp, v : ts)
-  evalDecl (scp, ts) (EllipsisDecl (Ellipsis cM)) =
-    maybe
-      (return (scp, ts))
-      (\_ -> throwError "default constraints are not implemented yet")
-      cM
-  evalDecl (struct, ts) (FieldDecl fd) = case fd of
-    Field ls e -> do
-      sfa <- evalFdLabels ls e
-      let newStruct = insertUnifyStruct sfa struct
-      return (newStruct, ts)
-
-  evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
-  evalFdLabels lbls e =
-    case lbls of
-      [] -> throwError "empty labels"
-      [l1] ->
-        do
-          logDebugStr $ printf "evalFdLabels: lb1: %s" (show l1)
-          val <- evalExpr e
-          adder <- mkAdder l1 val
-          logDebugStr $ printf "evalFdLabels: adder: %s" (show adder)
-          return adder
-      l1 : l2 : rs ->
-        do
-          logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
-          sf2 <- evalFdLabels (l2 : rs) e
-          let val = mkNewTree . TNStruct $ mkStructFromAdders [sf2]
-          adder <- mkAdder l1 val
-          logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
-          return adder
-
   mkAdder :: (EvalEnv m) => Label -> Tree -> m (StructElemAdder Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
@@ -122,7 +126,7 @@ evalStructLit decls = do
   sselFrom _ = Nothing
 
   dselFrom :: LabelName -> Maybe AST.Expression
-  dselFrom (LabelNameExpr e) = Just e
+  dselFrom (LabelNameExpr lne) = Just lne
   dselFrom _ = Nothing
 
   slFrom :: AST.LabelConstraint -> StructLabelType

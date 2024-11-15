@@ -9,7 +9,7 @@ module Eval (
   EvalConfig (..),
   runIO,
   runTreeIO,
-  eval,
+  evalFile,
 )
 where
 
@@ -22,7 +22,7 @@ import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
 import EvalExpr
-import Parser (parseCUE)
+import Parser (parseSourceFile)
 import Path
 import Reduction
 import Text.Printf (printf)
@@ -53,15 +53,15 @@ runStr s mermaid = do
   runReaderT (buildASTExpr False t) emptyConfig
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree
-runTreeStr s conf = parseCUE s >>= flip eval conf
+runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
-eval :: (MonadError String m, MonadLogger m) => Expression -> Bool -> m Tree
-eval expr mermaid = do
+evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> Bool -> m Tree
+evalFile sf mermaid = do
   rootTC <-
     runReaderT
       ( do
-          root <- evalStateT (evalExpr expr) emptyContext
-          logDebugStr $ printf "---- string evaluated to tree: ----\n%s" (show root)
+          root <- evalStateT (evalSourceFile sf) emptyContext
+          logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (show root)
           let
             rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
             cv = cvFromCur rootTC

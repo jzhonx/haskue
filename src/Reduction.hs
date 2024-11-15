@@ -1108,38 +1108,46 @@ unifyStructs (_, s1) (_, s2) = do
   fields2 = stcSubs s2
   l1Set = Map.keysSet fields1
   l2Set = Map.keysSet fields2
-  interKeys = Set.intersection l1Set l2Set
-  disjKeys1 = Set.difference l1Set interKeys
-  disjKeys2 = Set.difference l2Set interKeys
+  interKeysSet = Set.intersection l1Set l2Set
+  disjKeysSet1 = Set.difference l1Set interKeysSet
+  disjKeysSet2 = Set.difference l2Set interKeysSet
   combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
   combinedPatterns = stcPatterns s1 ++ stcPatterns s2
 
+  -- Returns the intersection fields of the two structs. The relative order of the fields is preserved.
   inter :: [(Path.StructSelector, StaticStructField Tree)]
   inter =
-    Set.foldr
-      ( \key acc ->
-          ( let sf1 = fields1 Map.! key
-                sf2 = fields2 Map.! key
-                ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
-                -- No original node exists yet
-                f = mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2)
-             in ( key
-                , StaticStructField
-                    { ssfField = mkFuncTree f
-                    , ssfAttr = ua
-                    }
-                )
-          )
-            : acc
-      )
-      []
-      interKeys
+    fst $
+      foldr
+        ( \key (l, visited) ->
+            let
+              sf1 = fields1 Map.! key
+              sf2 = fields2 Map.! key
+              ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
+              -- No original node exists yet
+              f = mkBinaryOp AST.Unify unify (ssfField sf1) (ssfField sf2)
+              field =
+                StaticStructField
+                  { ssfField = mkFuncTree f
+                  , ssfAttr = ua
+                  }
+             in
+              -- If the key is in the intersection set and not visited, we add the field to the list. This prevents same
+              -- keys in second ordLabels from being added multiple times.
+              if (key `Set.member` interKeysSet) && not (key `Set.member` visited)
+                then ((key, field) : l, Set.insert key visited)
+                else (l, visited)
+        )
+        -- first element is the pairs, the second element is the visited keys set.
+        ([], Set.empty)
+        (stcOrdLabels s1 ++ stcOrdLabels s2)
 
+  -- select the fields in the struct that are in the keysSet.
   select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, StaticStructField Tree)]
-  select s keys = map (\key -> (key, stcSubs s Map.! key)) (Set.toList keys)
+  select s keysSet = [(key, stcSubs s Map.! key) | key <- stcOrdLabels s, key `Set.member` keysSet]
 
   allStatics :: [(Path.StructSelector, StaticStructField Tree)]
-  allStatics = inter ++ select s1 disjKeys1 ++ select s2 disjKeys2
+  allStatics = inter ++ select s1 disjKeysSet1 ++ select s2 disjKeysSet2
 
   nodesToStruct ::
     [(Path.StructSelector, StaticStructField Tree)] -> [PatternStructField Tree] -> [PendingStructElem Tree] -> Tree
