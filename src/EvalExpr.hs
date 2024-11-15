@@ -65,11 +65,16 @@ evalStructLit decls = do
   return v
  where
   --  Evaluates a declaration in a struct.
-  --  It returns the updated struct and the list of to be unified trees, which are embeddings.
+  --  It returns the updated struct and the list of trees to be unified , which are embeddings.
   evalDecl :: (EvalEnv m) => (Struct Tree, [Tree]) -> Declaration -> m (Struct Tree, [Tree])
   evalDecl (scp, ts) (Embedding e) = do
     v <- evalExpr e
     return (scp, v : ts)
+  evalDecl (scp, ts) (EllipsisDecl (Ellipsis cM)) =
+    maybe
+      (return (scp, ts))
+      (\_ -> throwError "default constraints are not implemented yet")
+      cM
   evalDecl (struct, ts) (FieldDecl fd) = case fd of
     Field ls e -> do
       sfa <- evalFdLabels ls e

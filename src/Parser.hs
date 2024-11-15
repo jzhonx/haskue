@@ -56,6 +56,7 @@ data TokenType
   | TokenComma
   | TokenExclamation
   | TokenQuestionMark
+  | TokenEllipsis
   deriving (Show, Eq, Enum)
 
 type TokAttr a = (a, TokenType)
@@ -294,7 +295,7 @@ comma l = do
     else unexpected "failed to parse comma"
 
 decl :: Parser (Lexeme Declaration)
-decl = (fmap FieldDecl <$> field) <|> (fmap Embedding <$> expr)
+decl = (fmap FieldDecl <$> field) <|> (fmap EllipsisDecl <$> ellipsisDecl) <|> (fmap Embedding <$> expr)
 
 field :: Parser (Lexeme FieldDecl)
 field = do
@@ -338,6 +339,18 @@ questionMark = lexeme $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse 
 
 exclamation :: Parser (Lexeme Char)
 exclamation = lexeme $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !")
+
+ellipsis :: Parser (Lexeme String)
+ellipsis = lexeme $ (,TokenEllipsis) <$> (string "..." <?> "failed to parse ...")
+
+ellipsisDecl :: Parser (Lexeme EllipsisDecl)
+ellipsisDecl = do
+  lLex <- ellipsis
+  eLexM <- optionMaybe expr
+  maybe
+    (return $ Ellipsis Nothing <$ lLex)
+    (\eLex -> return $ Ellipsis (Just $ lex eLex) <$ eLex)
+    eLexM
 
 labelName :: Parser (Lexeme LabelName)
 labelName =
@@ -441,6 +454,7 @@ lexeme p = do
                    , TokenRParen
                    , TokenRSquare
                    , TokenQuestionMark
+                   , TokenEllipsis
                    ]
   when commaFound $ do
     s <- getInput

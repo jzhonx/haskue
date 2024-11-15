@@ -2,6 +2,7 @@ module AST (
   BinaryOp (..),
   Declaration (..),
   ElementList (..),
+  EllipsisDecl (..),
   Embedding,
   Expression (..),
   FieldDecl (..),
@@ -86,6 +87,7 @@ type Embedding = Expression
 
 data Declaration
   = FieldDecl FieldDecl
+  | EllipsisDecl EllipsisDecl
   | Embedding Embedding
   deriving (Eq, Show)
 
@@ -93,7 +95,9 @@ data FieldDecl
   = Field [Label] Expression
   deriving (Eq, Show)
 
-data ElementList = EmbeddingList [Embedding] deriving (Eq, Show)
+newtype EllipsisDecl = Ellipsis (Maybe Expression) deriving (Eq, Show)
+
+newtype ElementList = EmbeddingList [Embedding] deriving (Eq, Show)
 
 newtype OperandName = Identifier Identifer deriving (Eq, Show)
 
@@ -276,6 +280,7 @@ structBld ident lit =
 declBld :: Int -> Declaration -> Builder
 declBld i e = case e of
   FieldDecl f -> fieldDeclBld i f
+  EllipsisDecl (Ellipsis _) -> string7 "..."
   Embedding eb -> exprBldIdent i eb
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
