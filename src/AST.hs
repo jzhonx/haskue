@@ -216,14 +216,15 @@ exprBld :: Expression -> Builder
 exprBld = exprBldIdent 0
 
 exprBldIdent :: Int -> Expression -> Builder
-exprBldIdent ident e = case e of
-  ExprUnaryExpr ue -> unaryBld ident ue
-  ExprBinaryOp op e1 e2 ->
-    exprBldIdent ident e1
-      <> char7 ' '
-      <> string7 (show op)
-      <> char7 ' '
-      <> exprBldIdent ident e2
+exprBldIdent ident e =
+  case e of
+    ExprUnaryExpr ue -> unaryBld ident ue
+    ExprBinaryOp op e1 e2 ->
+      exprBldIdent ident e1
+        <> char7 ' '
+        <> string7 (show op)
+        <> char7 ' '
+        <> exprBldIdent ident e2
 
 unaryBld :: Int -> UnaryExpr -> Builder
 unaryBld ident e = case e of
@@ -273,16 +274,19 @@ structBld ident lit =
     else
       string7 "{\n"
         <> declsBld (ident + 1) lit
-        <> string7 (replicate ident ' ')
+        <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
+
+tabSize :: Int
+tabSize = 4
 
 declsBld :: Int -> [Declaration] -> Builder
 declsBld _ [] = string7 ""
-declsBld i (x : xs) =
-  string7 (replicate i ' ')
-    <> declBld i x
+declsBld ident (x : xs) =
+  string7 (replicate (ident * tabSize) ' ')
+    <> declBld ident x
     <> char7 '\n'
-    <> declsBld i xs
+    <> declsBld ident xs
 
 declBld :: Int -> Declaration -> Builder
 declBld i e = case e of
@@ -294,7 +298,7 @@ fieldDeclBld :: Int -> FieldDecl -> Builder
 fieldDeclBld ident e = case e of
   Field ls fe ->
     foldr (\l acc -> labelBld l <> string7 ": " <> acc) mempty ls
-      <> exprBldIdent (ident + 1) fe
+      <> exprBldIdent ident fe
 
 listBld :: ElementList -> Builder
 listBld (EmbeddingList l) = string7 "[" <> goList l
