@@ -173,23 +173,31 @@ evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> m Tree
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
-builtinOpNameTable :: [(String, Bound)]
-builtinOpNameTable = map (\b -> (show b, BdType b)) [minBound :: BdType .. maxBound :: BdType]
+builtinOpNameTable :: [(String, Tree)]
+builtinOpNameTable =
+  -- bounds
+  map (\b -> (show b, mkBoundsTree [BdType b])) [minBound :: BdType .. maxBound :: BdType]
+    -- built-in function names
+    -- We use the function to distinguish the identifier from the string literal.
+    ++ builtinFuncTable
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> m Tree
 evalPrimExpr e@(PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Nothing -> do
-      mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
-    Just b -> return $ mkBoundsTree [b]
+    Just v -> return v
+    Nothing -> mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
   evalSelector e sel p
 evalPrimExpr e@(PrimExprIndex primExpr idx) = do
   p <- evalPrimExpr primExpr
   evalIndex e idx p
+evalPrimExpr (PrimExprArguments primExpr aes) = do
+  p <- evalPrimExpr primExpr
+  args <- mapM evalExpr aes
+  funcApplier p args
 
 {- | Evaluates the selector.
 Parameters:
@@ -202,8 +210,7 @@ If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x"
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
 evalSelector pe astSel tree =
-  return $
-    mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
+  return $ mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
  where
   sel = case astSel of
     IDSelector ident -> ident

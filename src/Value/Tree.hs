@@ -184,7 +184,7 @@ instance TreeRepBuilderIter Tree where
               (\j psf -> (show (StructSelector $ PatternSelector j), show (psfPattern psf)))
               [0 ..]
               (stcPatterns s)
-       in consRep (symbol, ordLabels, consFields fields, consMetas metas)
+       in consRep ((if stcClosed s then "#" else mempty) <> symbol, ordLabels, consFields fields, consMetas metas)
     TNList vs ->
       let fields = zipWith (\j v -> (show (IndexSelector j), mempty, v)) [0 ..] (lstSubs vs)
        in consRep (symbol, mempty, consFields fields, [])

@@ -21,8 +21,9 @@ data Func t = Func
   , fncType :: FuncType
   , -- Args stores the arguments that may or may not need to be evaluated.
     fncArgs :: [t]
-  , -- fncExpr is needed because if the function is created dynamically, for example by having a second field in a struct,
-    -- no original expression is available.
+  , -- fncExpr is needed when the function is created dynamically, for example, dynamically creating a same field
+    -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
+    -- available.
     fncExpr :: forall m. (Env m) => m AST.Expression
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (FuncEnv s m t) => [t] -> m Bool

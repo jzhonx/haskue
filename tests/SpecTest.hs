@@ -38,6 +38,7 @@ newStruct lbls ow subs =
       , stcOrdLabels = map Path.StringSelector lbls
       , stcPendSubs = []
       , stcPatterns = []
+      , stcClosed = False
       }
  where
   attrWrite :: String -> (StructSelector, LabelAttr)
@@ -1237,6 +1238,60 @@ testPat3 = do
  where
   exp = mkBottomTree ""
 
+testClose1 :: IO ()
+testClose1 = do
+  s <- readFile "tests/spec/close1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testClose2 :: IO ()
+testClose2 = do
+  s <- readFile "tests/spec/close2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testClose3 :: IO ()
+testClose3 = do
+  s <- readFile "tests/spec/close3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newFieldsStruct
+      [ ("c1", newFieldsStruct [("x", sxc), ("y", sycp)])
+      , ("c2", newFieldsStruct [("x", sxc), ("y", sycp)])
+      , ("c3", newFieldsStruct [("x", sxc), ("y", syc), ("z", sycp)])
+      ]
+
+  patterna =
+    [ PatternStructField
+        { psfPattern = Bounds{bdsList = [BdStrMatch $ BdReMatch "a"]}
+        , psfValue = mkBoundsTree [BdType BdInt]
+        }
+    ]
+  sxc =
+    expandWithClosed True $
+      expandWithPatterns patterna $
+        newFieldsStruct []
+  syc =
+    expandWithClosed True $
+      newFieldsStruct [("a", mkAtomTree $ Int 1)]
+  sycp =
+    expandWithClosed True $
+      expandWithPatterns patterna $
+        newFieldsStruct [("a", mkAtomTree $ Int 1)]
+
+expandWithClosed :: Bool -> Tree -> Tree
+expandWithClosed closesd t = case t of
+  Tree{treeNode = TNStruct s} -> mkStructTree $ s{stcClosed = closesd}
+  _ -> error "Not a struct"
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1290,6 +1345,9 @@ specTests =
     , testCase "pattern1" testPat1
     , testCase "pattern2" testPat2
     , testCase "pattern3" testPat3
+    , testCase "close1" testClose1
+    , testCase "close2" testClose2
+    , testCase "close3" testClose3
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

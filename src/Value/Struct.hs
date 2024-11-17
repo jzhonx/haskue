@@ -15,6 +15,7 @@ data Struct t = Struct
   , stcSubs :: Map.Map Path.StructSelector (StaticStructField t)
   , stcPatterns :: [PatternStructField t]
   , stcPendSubs :: [PendingStructElem t]
+  , stcClosed :: Bool
   }
 
 data LabelAttr = LabelAttr
@@ -64,6 +65,7 @@ instance (Eq t) => Eq (Struct t) where
       && stcSubs s1 == stcSubs s2
       && stcPatterns s1 == stcPatterns s2
       && stcPendSubs s1 == stcPendSubs s2
+      && stcClosed s1 == stcClosed s2
 
 instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
   -- Patterns are not included in the AST.
@@ -159,6 +161,7 @@ mkStructFromAdders as =
     , stcSubs = Map.fromList statics
     , stcPatterns = []
     , stcPendSubs = pendings
+    , stcClosed = False
     }
  where
   ordLabels = [l | Static l _ <- as]
@@ -181,6 +184,7 @@ emptyStruct =
     , stcSubs = Map.empty
     , stcPendSubs = []
     , stcPatterns = []
+    , stcClosed = False
     }
 
 addStatic :: Struct t -> String -> StaticStructField t -> Struct t

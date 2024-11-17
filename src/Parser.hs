@@ -190,7 +190,7 @@ unaryExpr = do
       return $ ue <$ ul
 
 primaryExpr :: Parser (Lexeme PrimaryExpr)
-primaryExpr = chainPrimExpr primOperand (selector <|> index)
+primaryExpr = chainPrimExpr primOperand (selector <|> index <|> arguments)
  where
   primOperand :: Parser (Lexeme PrimaryExpr)
   primOperand = fmap PrimExprOperand <$> operand
@@ -209,6 +209,22 @@ primaryExpr = chainPrimExpr primOperand (selector <|> index)
     selLex <- expr
     rLex <- lexeme $ (,TokenRSquare) <$> char ']'
     return $ \pLex -> PrimExprIndex (lex pLex) (Index (lex selLex)) <$ rLex
+
+  arguments :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
+  arguments = do
+    _ <- lexeme $ (,TokenLParen) <$> char '('
+    args <- many $ do
+      eLex <- expr
+      rparenMaybe <- lookAhead $ optionMaybe rparen
+      case rparenMaybe of
+        Just _ -> return eLex
+        Nothing -> do
+          _ <- comma eLex
+          return eLex
+    rLex <- rparen
+    let es :: [Expression]
+        es = map lex args
+    return $ \pLex -> PrimExprArguments (lex pLex) es <$ rLex
 
 chainPrimExpr ::
   Parser (Lexeme PrimaryExpr) ->
@@ -409,25 +425,21 @@ floatLit = do
   f <- many1 digit
   return $ FloatLit (read (i ++ "." ++ f) :: Double)
 
+-- Predeclared identifiers
+
 bool :: Parser Literal
 bool = do
   b <- string "true" <|> string "false"
   return $ BoolLit (b == "true")
 
 top :: Parser Literal
-top = do
-  _ <- string "_"
-  return TopLit
+top = string "_" >> return TopLit
 
 bottom :: Parser Literal
-bottom = do
-  _ <- string "_|_"
-  return BottomLit
+bottom = string "_|_" >> return BottomLit
 
 null :: Parser Literal
-null = do
-  _ <- string "null"
-  return NullLit
+null = string "null" >> return NullLit
 
 -- Match white spaces. Return True if a newline is matched.
 spaces :: Parser Bool

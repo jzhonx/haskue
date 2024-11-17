@@ -1097,11 +1097,18 @@ unifyLeftStruct (d1, s1, t1) (d2, t2) = case treeNode t2 of
 
 unifyStructs :: (TreeMonad s m) => (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m Bool
 unifyStructs (_, s1) (_, s2) = do
-  let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
-  putTMTree merged
-  reduce
+  lE1 <- checkPermittedLabels s1 s2
+  lE2 <- checkPermittedLabels s2 s1
+  case (lE1, lE2) of
+    (Just b1, _) -> putTMTree b1
+    (_, Just b2) -> putTMTree b2
+    _ -> do
+      let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
+      withDebugInfo $ \path _ ->
+        logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
+      putTMTree merged
+      -- in reduce, the new combined fields will be checked by the combined patterns.
+      reduce
   return True
  where
   fields1 = stcSubs s1
@@ -1152,15 +1159,63 @@ unifyStructs (_, s1) (_, s2) = do
   nodesToStruct ::
     [(Path.StructSelector, StaticStructField Tree)] -> [PatternStructField Tree] -> [PendingStructElem Tree] -> Tree
   nodesToStruct nodes patterns pends =
-    mkNewTree
-      ( TNStruct $
-          Struct
-            { stcOrdLabels = map fst nodes
-            , stcSubs = Map.fromList nodes
-            , stcPendSubs = pends
-            , stcPatterns = patterns
-            }
-      )
+    mkStructTree $
+      Struct
+        { stcOrdLabels = map fst nodes
+        , stcSubs = Map.fromList nodes
+        , stcPendSubs = pends
+        , stcPatterns = patterns
+        , stcClosed = stcClosed s1 || stcClosed s2
+        }
+
+-- | Check if the new labels from the new struct are permitted based on the base struct.
+checkPermittedLabels :: (TreeMonad s m) => Struct Tree -> Struct Tree -> m (Maybe Tree)
+checkPermittedLabels base new =
+  if not (stcClosed base)
+    then return Nothing
+    else do
+      let
+        baseLabels = Set.fromList $ stcOrdLabels base
+        basePatterns = map psfPattern (stcPatterns base)
+        newLabels = Set.fromList $ stcOrdLabels new
+        diff = Set.difference newLabels baseLabels
+
+      -- If the new struct has new labels, we need to check if they are in the field patterns of the base struct.
+      res <-
+        mapM
+          ( \sel -> case sel of
+              StringSelector s -> do
+                -- foldM only returns a non-bottom value when the new label is in the patterns.
+                r <-
+                  foldM
+                    ( \iacc (i, pat) ->
+                        if maybe False isTreeBottom iacc
+                          then return iacc
+                          else do
+                            inDiscardSubTM
+                              (StructSelector (PatternSelector i))
+                              ( mkFuncTree $
+                                  mkBinaryOp AST.Unify unify (mkAtomTree $ String s) (mkNewTree $ TNBounds pat)
+                              )
+                              (reduce >> Just <$> getTMTree)
+                    )
+                    Nothing
+                    (zip [0 ..] basePatterns)
+
+                return (sel, r)
+              _ -> throwError $ printf "unexpected selector: %s" (show sel)
+          )
+          (Set.toList diff)
+
+      logDebugStr $ printf "checkPermittedLabels: diff: %s, r: %s" (show diff) (show res)
+
+      -- A field is only disallowed if its unified value is a bottom.
+      let disallowed = map fst $ filter (maybe True isTreeBottom . snd) res
+
+      -- When no new labels or all new labels are in the patterns, we return the new labels.
+      if null disallowed
+        then return Nothing
+        else return . Just $ mkBottomTree $ printf "fields: %s are not allowed" (show disallowed)
 
 mkNodeWithDir ::
   (TreeMonad s m) => (Path.BinOpDirect, Tree) -> (Path.BinOpDirect, Tree) -> (Tree -> Tree -> m ()) -> m ()
@@ -1267,3 +1322,48 @@ treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
 
   dedup :: [Tree] -> [Tree]
   dedup = foldr (\y acc -> if y `elem` acc then acc else y : acc) []
+
+-- funcApplier creates a new function tree for the original function with the arguments applied.
+funcApplier :: (MonadError String m) => Tree -> [Tree] -> m Tree
+funcApplier t args = case treeNode t of
+  TNFunc fn ->
+    return $
+      mkFuncTree $
+        ( mkStubFunc $ \_ -> do
+            putTMTree . mkFuncTree $
+              fn
+                { fncArgs = args
+                }
+            return True
+        )
+          { fncName = "funcApplier"
+          }
+  _ -> throwError $ printf "%s is not a function" (show t)
+
+-- built-in functions
+builtinFuncTable :: [(String, Tree)]
+builtinFuncTable =
+  [
+    ( "close"
+    , mkFuncTree $
+        (mkStubFunc closeStruct)
+          { fncName = "close"
+          , fncArgs = [mkNewTree TNTop]
+          }
+    )
+  ]
+
+closeStruct :: (TreeMonad s m) => [Tree] -> m Bool
+closeStruct args
+  | length args /= 1 = throwError $ printf "expected 1 argument, got %d" (length args)
+  | otherwise = do
+      let a = head args
+      r <- reduceFuncArg unaryOpSelector a
+      case treeNode r of
+        TNBottom _ -> putTMTree r >> return True
+        TNStruct s -> do
+          let closed = s{stcClosed = True}
+          putTMTree $ mkStructTree closed
+          return True
+        TNFunc _ -> return False
+        _ -> return False

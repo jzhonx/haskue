@@ -44,7 +44,7 @@ import Data.ByteString.Builder (
  )
 import Prelude hiding (GT, LT)
 
-data SourceFile = SourceFile
+newtype SourceFile = SourceFile
   { sfDecls :: [Declaration]
   }
   deriving (Eq, Show)
@@ -63,6 +63,7 @@ data PrimaryExpr
   = PrimExprOperand Operand
   | PrimExprSelector PrimaryExpr Selector
   | PrimExprIndex PrimaryExpr Index
+  | PrimExprArguments PrimaryExpr [Expression]
   deriving (Eq, Show)
 
 data Selector
@@ -236,6 +237,11 @@ primBld ident e = case e of
   PrimExprOperand op -> opBld ident op
   PrimExprSelector pe sel -> primBld ident pe <> string7 "." <> selBld sel
   PrimExprIndex pe (Index ie) -> primBld ident pe <> string7 "[" <> exprBldIdent ident ie <> string7 "]"
+  PrimExprArguments pe es ->
+    primBld ident pe
+      <> string7 "("
+      <> foldr (\x acc -> exprBld x <> string7 ", " <> acc) mempty es
+      <> string7 ")"
 
 selBld :: Selector -> Builder
 selBld e = case e of

@@ -55,7 +55,9 @@ runTreeIO s = runNoLoggingT $ runTreeStr s False
 runStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m AST.Expression
 runStr s mermaid = do
   t <- runTreeStr s mermaid
-  runReaderT (buildASTExpr False t) emptyConfig
+  case treeNode t of
+    TNBottom (Bottom msg) -> throwError msg
+    _ -> runReaderT (buildASTExpr False t) emptyConfig
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
