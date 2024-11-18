@@ -19,6 +19,7 @@ import Text.Parsec (
   many1,
   noneOf,
   oneOf,
+  option,
   optionMaybe,
   runParser,
   satisfy,
@@ -274,9 +275,10 @@ literal =
 
 identifier :: Parser (Lexeme String)
 identifier = lexeme $ do
+  prefix <- option "" (string "#" <|> string "_#")
   firstChar <- letter
   rest <- many (letter <|> digit)
-  return (firstChar : rest, TokenIdentifier)
+  return (prefix ++ (firstChar : rest), TokenIdentifier)
 
 letter :: Parser Char
 letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'

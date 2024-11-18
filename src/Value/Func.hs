@@ -12,7 +12,7 @@ import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import Env
 import Path
-import Value.TMonad
+import TMonad
 
 type FuncEnv s m t = (TMonad s m t, MonadReader (Config t) m)
 
@@ -28,7 +28,6 @@ data Func t = Func
   , -- Note that the return value of the function should be stored in the tree.
     fncFunc :: forall s m. (FuncEnv s m t) => [t] -> m Bool
   , -- fncTempRes stores the temporary non-atom, non-function (isTreeValue true) result of the function.
-    -- It is only used for showing purpose. It is not used for evaluation.
     fncTempRes :: Maybe t
   }
 

@@ -6,9 +6,12 @@
 module FuncCall where
 
 import Class
+import Control.Monad (when)
 import Control.Monad.Except (throwError)
+import Cursor
 import Data.Maybe (fromJust)
 import Path
+import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -76,34 +79,30 @@ handleFuncCall valM = do
   reduced <-
     maybe
       (return False)
-      ( \val -> withTree $ \t -> case getFuncFromTree t of
-          Just fn ->
-            if isTreeFunc val
-              -- If the function returns another function, then the function is not reducible.
-              then putTMTree val >> return False
-              else do
-                let
-                  reducible = isFuncTreeReducible t val
-                withDebugInfo $ \path _ ->
-                  logDebugStr $
-                    printf
-                      "handleFuncCall: func %s, path: %s, is reducible: %s, args: %s"
-                      (show $ fncName fn)
-                      (show path)
-                      (show reducible)
-                      (show $ fncArgs fn)
-                if reducible
-                  then do
-                    handleReduceRes val
-                    path <- getTMAbsPath
-                    -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
-                    -- index and the first argument is a reference, then the first argument dependency should also be deleted.
-                    delNotifRecvs path
-                  else do
-                    -- restore the original function
-                    putTMTree . mkFuncTree $ fn
-                return reducible
-          Nothing -> throwError "handleFuncCall: tree focus is not a function"
+      ( \val -> withTree $ \t -> mustFunc $ \fn ->
+          if isTreeFunc val
+            -- If the function returns another function, then the function is not reducible.
+            then putTMTree val >> return False
+            else do
+              -- first update the function with the latest result.
+              putTMTree (mkFuncTree $ setFuncTempRes fn val)
+              let reducible = isFuncTreeReducible t val
+              withDebugInfo $ \path _ ->
+                logDebugStr $
+                  printf
+                    "handleFuncCall: func %s, path: %s, is reducible: %s, args: %s"
+                    (show $ fncName fn)
+                    (show path)
+                    (show reducible)
+                    (show $ fncArgs fn)
+
+              when reducible $ do
+                handleReduceRes val
+                path <- getTMAbsPath
+                -- we need to delete receiver starting with the path, not only is the path. For example, if the function is
+                -- index and the first argument is a reference, then the first argument dependency should also be deleted.
+                delNotifRecvs path
+              return reducible
       )
       valM
 

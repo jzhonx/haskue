@@ -1,12 +1,7 @@
-#MyStruct: {
-	sub: field: string
+#S: {
+	a: c?: bool
 }
 
-#MyStruct: {
-	sub: enabled?: bool
-}
-
-myValue: #MyStruct & {
-	sub: feild:   2    // error, feild not defined in #MyStruct
-	sub: enabled: true // okay
+m: #S & {
+	a: c: true // okay
 }

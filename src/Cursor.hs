@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
-module Value.Cursor where
+module Cursor where
 
 import Class
 import Control.Monad.Except (throwError)

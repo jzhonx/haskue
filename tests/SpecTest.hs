@@ -18,39 +18,60 @@ import Test.Tasty.HUnit
 import Text.Printf (printf)
 import Value.Tree
 
-newStruct :: [String] -> [(String, LabelAttr)] -> [(String, Tree)] -> Tree
-newStruct lbls ow subs =
+newCompleteStruct :: [String] -> [(String, Tree)] -> Tree
+newCompleteStruct labels subs =
   mkNewTree . TNStruct $
     Struct
       { stcSubs =
           Map.fromList
             ( map
                 ( \(k, v) ->
-                    ( Path.StringSelector k
-                    , StaticStructField
-                        { ssfField = v
-                        , ssfAttr = snd $ attrWrite k
-                        }
-                    )
+                    let (s, a) = selAttr k
+                     in ( Path.StringSelector s
+                        , StaticStructField
+                            { ssfField = v
+                            , ssfAttr = a
+                            }
+                        )
                 )
                 subs
             )
-      , stcOrdLabels = map Path.StringSelector lbls
+      , stcOrdLabels =
+          if Prelude.null labels
+            then map (Path.StringSelector . fst . selAttr . fst) subs
+            else map (Path.StringSelector . fst . selAttr) labels
       , stcPendSubs = []
       , stcPatterns = []
       , stcClosed = False
       }
  where
-  attrWrite :: String -> (StructSelector, LabelAttr)
-  attrWrite s = case lookup s ow of
-    Just v -> (StringSelector s, v)
-    Nothing -> (StringSelector s, defaultLabelAttr)
+  selAttr :: String -> (String, LabelAttr)
+  selAttr s
+    | Prelude.null s = (s, defaultLabelAttr)
+    | length s >= 2 && head s == '"' && last s == '"' =
+        let
+          ns = drop 1 $ take (length s - 1) s
+         in
+          (ns, defaultLabelAttr{lbAttrIsVar = False})
+    | last s == '?' =
+        let
+          ns = take (length s - 1) s
+          np = selAttr ns
+         in
+          (fst np, (snd np){lbAttrCnstr = SFCOptional})
+    | last s == '!' =
+        let
+          ns = take (length s - 1) s
+          np = selAttr ns
+         in
+          (fst np, (snd np){lbAttrCnstr = SFCRequired})
+    | otherwise = (s, defaultLabelAttr)
 
-newSimpleStruct :: [String] -> [(String, Tree)] -> Tree
-newSimpleStruct lbls = newStruct lbls []
+newStruct :: [(String, Tree)] -> Tree
+newStruct subs = newCompleteStruct [] subs
 
-newFieldsStruct :: [(String, Tree)] -> Tree
-newFieldsStruct subs = newSimpleStruct (map fst subs) subs
+-- newStruct :: [(String, Tree)] -> Tree
+-- newStruct subs = newStruct (map fst subs) subs
 
 mkSimpleLink :: Path -> Tree
 mkSimpleLink p = case runExcept (mkRefFunc p undefined) of
@@ -87,8 +108,7 @@ testBasic = do
     Left err -> assertFailure err
     Right y ->
       cmpStructs y $
-        newSimpleStruct
-          ["a", "b", "c", "d"]
+        newStruct
           [ ("a", mkAtomTree $ Bool True)
           , ("b", mkAtomTree $ Bool False)
           , ("c", mkNewTree TNTop)
@@ -103,8 +123,7 @@ testUnaryOp = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x", "y", "z"]
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x", Int 1)
@@ -122,8 +141,7 @@ testBinop = do
     Right v ->
       cmpStructs
         v
-        $ newSimpleStruct
-          (map (\i -> "x" ++ show i) [1 .. 10])
+        $ newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x1", Int 3)
@@ -147,8 +165,7 @@ testBinOp2 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ["x1", "x2"]
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x1", Int 7)
@@ -164,8 +181,7 @@ testBinOp3 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ["x1"]
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x1", String "foobar")
@@ -180,13 +196,7 @@ testBinOpCmpEq = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ( ["i" ++ show i | i <- [0 .. 2]]
-              ++ ["f" ++ show i | i <- [0 .. 5]]
-              ++ ["b" ++ show i | i <- [0 .. 2]]
-              ++ ["s" ++ show i | i <- [0 .. 2]]
-              ++ ["n" ++ show i | i <- [0 .. 6]]
-          )
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree (Bool v)))
               [ ("i0", False)
@@ -222,12 +232,7 @@ testBinOpCmpNE = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ( ["i" ++ show i | i <- [0 .. 2]]
-              ++ ["b" ++ show i | i <- [0 .. 2]]
-              ++ ["s" ++ show i | i <- [0 .. 2]]
-              ++ ["n" ++ show i | i <- [0 .. 6]]
-          )
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree (Bool v)))
               [ ("i0", True)
@@ -257,9 +262,7 @@ testBounds1 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ( ["x" ++ (show i) | i <- [0 .. 5]]
-          )
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x0", Int 2)
@@ -279,9 +282,7 @@ testBounds2 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ( ["x" ++ show i | i <- [0 .. 6]]
-          )
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("x0", Int 2)
@@ -302,8 +303,7 @@ testVars1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["z", "x", "y"]
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("z", Int 1)
@@ -323,8 +323,7 @@ testVars2 = do
         @?= structTop
  where
   structX =
-    newSimpleStruct
-      ["a", "b", "c"]
+    newStruct
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [ ("a", Int 1)
@@ -333,8 +332,7 @@ testVars2 = do
           ]
       )
   structY =
-    newSimpleStruct
-      ["e", "f", "g"]
+    newStruct
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [ ("e", Int 3)
@@ -344,8 +342,7 @@ testVars2 = do
       )
 
   structTop =
-    newSimpleStruct
-      ["x", "y", "z"]
+    newStruct
       [ ("x", structX)
       , ("y", structY)
       , ("z", mkAtomTree $ Int 12)
@@ -363,16 +360,12 @@ testVars3 = do
   return ()
  where
   structX =
-    newSimpleStruct
-      ["a", "b"]
+    newStruct
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [("a", Int 2), ("b", Int 2)]
       )
-  structTop =
-    newSimpleStruct
-      ["x"]
-      [("x", structX)]
+  structTop = newStruct [("x", structX)]
 
 testDisj1 :: IO ()
 testDisj1 = do
@@ -382,37 +375,36 @@ testDisj1 = do
     Left err -> assertFailure err
     Right v ->
       cmpStructs v $
-        newSimpleStruct
-          (map (\i -> "x" ++ show i) [1 .. 6] ++ ["y0", "y1", "y2"] ++ ["z1"])
-          [ ("x1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-          , ("x2", newSimpleAtomDisj [Int 1] [Int 1, Int 2, Int 3])
-          , ("x3", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-          , ("x4", newSimpleAtomDisj [Int 2] [Int 1, Int 2, Int 3])
-          , ("x5", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-          , ("x6", newSimpleAtomDisj [] [Int 1, Int 2])
-          , ("y0", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
-          , ("y1", newSimpleAtomDisj [Int 2] [Int 1, Int 2, Int 3])
-          , ("y2", newSimpleAtomDisj [Int 3] [Int 1, Int 2, Int 3])
+        newStruct
+          [ ("x1", newAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("x2", newAtomDisj [Int 1] [Int 1, Int 2, Int 3])
+          , ("x3", newAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x4", newAtomDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("x5", newAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("x6", newAtomDisj [] [Int 1, Int 2])
+          , ("y0", newAtomDisj [] [Int 1, Int 2, Int 3])
+          , ("y1", newAtomDisj [Int 2] [Int 1, Int 2, Int 3])
+          , ("y2", newAtomDisj [Int 3] [Int 1, Int 2, Int 3])
           , ("z1", mkAtomTree $ Int 3)
           ]
 
-newSimpleAtomDisj :: [Atom] -> [Atom] -> Tree
-newSimpleAtomDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) (map mkAtomTree d2)
+newAtomDisj :: [Atom] -> [Atom] -> Tree
+newAtomDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) (map mkAtomTree d2)
  where
   mkDefault :: [Atom] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
     [x] -> Just $ mkAtomTree x
-    xs -> Just $ newSimpleAtomDisj [] xs
+    xs -> Just $ newAtomDisj [] xs
 
-newSimpleDisj :: [Tree] -> [Tree] -> Tree
-newSimpleDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) d2
+newDisj :: [Tree] -> [Tree] -> Tree
+newDisj d1 d2 = mkNewTree . TNDisj $ Disj (mkDefault d1) d2
  where
   mkDefault :: [Tree] -> Maybe Tree
   mkDefault ts = case ts of
     [] -> Nothing
     [x] -> Just x
-    xs -> Just $ newSimpleDisj [] xs
+    xs -> Just $ newDisj [] xs
 
 testDisj2 :: IO ()
 testDisj2 = do
@@ -422,17 +414,15 @@ testDisj2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x"]
+        @?= newStruct
           [
             ( "x"
             , mkNewTree . TNDisj $
                 Disj
                   Nothing
-                  [ newSimpleStruct
-                      ["y", "z"]
+                  [ newStruct
                       [("y", mkAtomTree $ Int 1), ("z", mkAtomTree $ Int 3)]
-                  , newSimpleStruct ["y"] [("y", mkAtomTree $ Int 2)]
+                  , newStruct [("y", mkAtomTree $ Int 2)]
                   ]
             )
           ]
@@ -445,34 +435,28 @@ testDisj3 = do
     Left err -> assertFailure err
     Right v ->
       cmpStructs v $
-        newSimpleStruct
-          ( ["a" ++ show i | i <- [0 .. 2]]
-              ++ ["b" ++ show i | i <- [0 .. 1]]
-              ++ ["c" ++ show i | i <- [0 .. 3]]
-              ++ ["d" ++ show i | i <- [0 .. 0]]
-              ++ ["e" ++ show i | i <- [0 .. 4]]
-          )
-          [ ("a0", newSimpleAtomDisj [] [String "tcp", String "udp"])
-          , ("a1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
+        newStruct
+          [ ("a0", newAtomDisj [] [String "tcp", String "udp"])
+          , ("a1", newAtomDisj [String "tcp"] [String "tcp", String "udp"])
           , ("a2", mkAtomTree $ Int 4)
-          , ("b0", newSimpleAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
-          , ("b1", newSimpleAtomDisj [] [Int 1, Int 2, Int 3])
-          , ("c0", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-          , ("c1", newSimpleAtomDisj [String "tcp"] [String "tcp", String "udp"])
-          , ("c2", newSimpleAtomDisj [String "tcp"] [String "tcp"])
-          , ("c3", newSimpleAtomDisj [] [String "tcp", String "udp"])
-          , ("d0", newSimpleAtomDisj [Bool True] [Bool True, Bool False])
-          , ("e0", newSimpleDisj [] [sa, sb])
-          , ("e1", newSimpleDisj [sb] [sa, sb])
-          , ("e2", newSimpleDisj [] [sa, sb])
-          , ("e3", newSimpleDisj [] [sa, sab])
-          , ("e4", newSimpleDisj [sb] [sa, sba, sab, sb])
+          , ("b0", newAtomDisj [Int 1, Int 2] [Int 1, Int 2, Int 3])
+          , ("b1", newAtomDisj [] [Int 1, Int 2, Int 3])
+          , ("c0", newAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("c1", newAtomDisj [String "tcp"] [String "tcp", String "udp"])
+          , ("c2", newAtomDisj [String "tcp"] [String "tcp"])
+          , ("c3", newAtomDisj [] [String "tcp", String "udp"])
+          , ("d0", newAtomDisj [Bool True] [Bool True, Bool False])
+          , ("e0", newDisj [] [sa, sb])
+          , ("e1", newDisj [sb] [sa, sb])
+          , ("e2", newDisj [] [sa, sb])
+          , ("e3", newDisj [] [sa, sab])
+          , ("e4", newDisj [sb] [sa, sba, sab, sb])
           ]
  where
-  sa = newSimpleStruct ["a"] [("a", mkAtomTree $ Int 1)]
-  sb = newSimpleStruct ["b"] [("b", mkAtomTree $ Int 1)]
-  sba = newSimpleStruct ["b", "a"] [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 1)]
-  sab = newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 1)]
+  sa = newStruct [("a", mkAtomTree $ Int 1)]
+  sb = newStruct [("b", mkAtomTree $ Int 1)]
+  sba = newStruct [("b", mkAtomTree $ Int 1), ("a", mkAtomTree $ Int 1)]
+  sab = newStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 1)]
 
 testDisj4 :: IO ()
 testDisj4 = do
@@ -482,7 +466,7 @@ testDisj4 = do
     Left err -> assertFailure err
     Right y ->
       cmpExpStructs y $
-        newFieldsStruct
+        newStruct
           [
             ( "x"
             , mkNewTree . TNDisj $
@@ -522,28 +506,25 @@ testSelector1 = do
  where
   structT =
     newStruct
-      ["x", "y", "x-y"]
-      [("x-y", LabelAttr SLRegular False)]
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [ ("x", Int 1)
           , ("y", Int 3)
-          , ("x-y", Int 4)
+          , ("\"x-y\"", Int 4)
           ]
       )
-  fieldEDefault = newSimpleStruct ["a"] [("a", newSimpleAtomDisj [Int 4] [Int 3, Int 4])]
+  fieldEDefault = newStruct [("a", newAtomDisj [Int 4] [Int 3, Int 4])]
   structE =
     mkNewTree . TNDisj $
       Disj
         (Just fieldEDefault)
-        [newSimpleStruct ["a"] [("a", newSimpleAtomDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
+        [newStruct [("a", newAtomDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
   pathC = Path [strSel "c"]
   pendValC = mkSimpleLink $ pathFromList [strSel "T", strSel "z"]
   pathF = Path [strSel "f"]
-  disjF = newSimpleAtomDisj [Int 4] [Int 3, Int 4]
+  disjF = newAtomDisj [Int 4] [Int 3, Int 4]
   expStruct =
-    newSimpleStruct
-      ["T", "a", "b", "c", "d", "e", "f"]
+    newStruct
       [ ("T", structT)
       , ("a", mkAtomTree $ Int 1)
       , ("b", mkAtomTree $ Int 3)
@@ -561,13 +542,12 @@ testUnify1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "d", "b", "z"]
+        @?= newStruct
           ( map
               (\(k, v) -> (k, mkAtomTree v))
               [ ("a", Int 123)
-              , ("b", Int 456)
               , ("d", String "hello")
+              , ("b", Int 456)
               , ("z", Int 4321)
               ]
           )
@@ -580,10 +560,9 @@ testUnify2 = do
     Left err -> assertFailure err
     Right y ->
       cmpStructs y $
-        newSimpleStruct
-          ["x", "y"]
-          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
-          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 200), ("b", mkAtomTree $ Int 200)])
+        newStruct
+          [ ("x", newStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
+          , ("y", newStruct [("a", mkAtomTree $ Int 200), ("b", mkAtomTree $ Int 200)])
           ]
 
 testUnify3 :: IO ()
@@ -594,10 +573,9 @@ testUnify3 = do
     Left err -> assertFailure err
     Right y ->
       cmpStructs y $
-        newSimpleStruct
-          ["x", "y"]
-          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
-          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 200), ("b", mkNewTree TNTop)])
+        newStruct
+          [ ("x", newStruct [("a", mkNewTree TNTop), ("b", mkNewTree TNTop)])
+          , ("y", newStruct [("a", mkAtomTree $ Int 200), ("b", mkNewTree TNTop)])
           ]
 
 testUnify4 :: IO ()
@@ -608,10 +586,9 @@ testUnify4 = do
     Left err -> assertFailure err
     Right y ->
       cmpStructs y $
-        newSimpleStruct
-          ["x", "y", "df"]
-          [ ("x", newFieldsStruct [("a", mkNewTree TNTop), ("b", mkAtomTree $ Int 1)])
-          , ("y", newFieldsStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 1)])
+        newStruct
+          [ ("x", newStruct [("a", mkNewTree TNTop), ("b", mkAtomTree $ Int 1)])
+          , ("y", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 1)])
           , ("df", mkAtomTree $ String "x")
           ]
 
@@ -623,8 +600,7 @@ testCycles1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x", "b", "c", "d"]
+        @?= newStruct
           [ ("x", selfCycle)
           , ("b", selfCycle)
           , ("c", selfCycle)
@@ -641,8 +617,7 @@ testCycles2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b"]
+        @?= newStruct
           [
             ( "a"
             , mkNewTree (TNRefCycle (RefCycle False))
@@ -661,8 +636,7 @@ testCycles3 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b"]
+        @?= newStruct
           [ ("a", mkAtomTree $ Int 200)
           , ("b", mkAtomTree $ Int 100)
           ]
@@ -675,12 +649,10 @@ testCycles4 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x", "y"]
+        @?= newStruct
           [
             ( "x"
-            , newSimpleStruct
-                ["a", "b"]
+            , newStruct
                 [
                   ( "a"
                   , mkNewTree (TNRefCycle (RefCycle False))
@@ -693,9 +665,7 @@ testCycles4 = do
             )
           ,
             ( "y"
-            , newSimpleStruct
-                ["a", "b"]
-                [("a", mkAtomTree $ Int 200), ("b", mkAtomTree $ Int 100)]
+            , newStruct [("a", mkAtomTree $ Int 200), ("b", mkAtomTree $ Int 100)]
             )
           ]
 
@@ -707,15 +677,14 @@ testCycles5 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b", "c"]
+        @?= newStruct
           [ ("a", innerStructGen ["z", "y", "x"])
           , ("b", innerStructGen ["x", "z", "y"])
           , ("c", innerStructGen ["y", "x", "z"])
           ]
  where
   innerStructGen labels =
-    newSimpleStruct
+    newCompleteStruct
       labels
       [ ("x", mkAtomTree $ Int 1)
       , ("y", mkAtomTree $ Int 2)
@@ -730,24 +699,23 @@ testCycles6 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b", "c"]
-          [ ("a", newSimpleDisj [] [xzy, sy1])
-          , ("b", newSimpleDisj [] [sx2, zyx])
-          , ("c", newSimpleDisj [] [yxz, sz3])
+        @?= newStruct
+          [ ("a", newDisj [] [xzy, sy1])
+          , ("b", newDisj [] [sx2, zyx])
+          , ("c", newDisj [] [yxz, sz3])
           ]
  where
   innerStructGen labels =
-    newSimpleStruct
+    newCompleteStruct
       labels
       [ ("x", mkAtomTree $ Int 1)
       , ("y", mkAtomTree $ Int 3)
       , ("z", mkAtomTree $ Int 2)
       ]
 
-  sy1 = newSimpleStruct ["y"] [("y", mkAtomTree $ Int 1)]
-  sx2 = newSimpleStruct ["x"] [("x", mkAtomTree $ Int 2)]
-  sz3 = newSimpleStruct ["z"] [("z", mkAtomTree $ Int 3)]
+  sy1 = newStruct [("y", mkAtomTree $ Int 1)]
+  sx2 = newStruct [("x", mkAtomTree $ Int 2)]
+  sz3 = newStruct [("z", mkAtomTree $ Int 3)]
 
   xzy = innerStructGen ["x", "z", "y"]
   zyx = innerStructGen ["z", "y", "x"]
@@ -761,13 +729,12 @@ testCycles7 = do
     Left err -> assertFailure err
     Right x ->
       cmpExpStructs x $
-        newSimpleStruct
-          ["x", "y", "z", "dfa", "z2"]
-          [ ("x", newSimpleStruct ["a", "b"] [("a", selfCycle), ("b", selfCycle)])
-          , ("y", newSimpleStruct ["a", "b"] [("a", selfCycle), ("b", mkAtomTree $ Int 2)])
-          , ("z", newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
+        newStruct
+          [ ("x", newStruct [("a", selfCycle), ("b", selfCycle)])
+          , ("y", newStruct [("a", selfCycle), ("b", mkAtomTree $ Int 2)])
+          , ("z", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
           , ("dfa", mkAtomTree $ String "a")
-          , ("z2", newSimpleStruct ["a", "b"] [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
+          , ("z2", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
           ]
  where
   selfCycle = mkNewTree (TNRefCycle (RefCycle True))
@@ -780,8 +747,7 @@ testIncomplete = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b"]
+        @?= newStruct
           [ ("a", mkNewTree TNTop)
           ,
             ( "b"
@@ -802,14 +768,12 @@ testDup1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["z"]
+        @?= newStruct
           [
             ( "z"
-            , newSimpleStruct
-                ["y", "x"]
-                [ ("x", newSimpleStruct ["b"] [("b", mkAtomTree $ Int 4)])
-                , ("y", newSimpleStruct ["b"] [("b", mkAtomTree $ Int 4)])
+            , newStruct
+                [ ("y", newStruct [("b", mkAtomTree $ Int 4)])
+                , ("x", newStruct [("b", mkAtomTree $ Int 4)])
                 ]
             )
           ]
@@ -822,12 +786,10 @@ testDup2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x"]
+        @?= newStruct
           [
             ( "x"
-            , newSimpleStruct
-                ["a", "c"]
+            , newStruct
                 [ ("a", mkAtomTree $ Int 1)
                 , ("c", mkAtomTree $ Int 2)
                 ]
@@ -842,12 +804,10 @@ testDup3 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x"]
+        @?= newStruct
           [
             ( "x"
-            , newSimpleStruct
-                ["a", "b", "c"]
+            , newStruct
                 [ ("a", mkAtomTree $ Int 1)
                 , ("b", mkAtomTree $ Int 2)
                 , ("c", mkAtomTree $ Int 2)
@@ -863,8 +823,7 @@ testRef1 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "b"]
+        @?= newStruct
           [ ("a", mkAtomTree $ Int 4)
           , ("b", mkAtomTree $ Int 4)
           ]
@@ -877,13 +836,11 @@ testRef2 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["a", "x"]
+        @?= newStruct
           [ ("a", mkAtomTree $ Int 1)
           ,
             ( "x"
-            , newSimpleStruct
-                ["c", "d"]
+            , newStruct
                 [ ("c", mkAtomTree $ Int 1)
                 , ("d", mkNewTree TNTop)
                 ]
@@ -898,24 +855,20 @@ testRef3 = do
     Left err -> assertFailure err
     Right val' ->
       val'
-        @?= newSimpleStruct
-          ["x", "d"]
+        @?= newStruct
           [
             ( "x"
-            , newSimpleStruct
-                ["a", "c"]
+            , newStruct
                 [ ("a", mkAtomTree $ Int 1)
                 , ("c", mkAtomTree $ Int 2)
                 ]
             )
           ,
             ( "d"
-            , newSimpleStruct
-                ["y"]
+            , newStruct
                 [
                   ( "y"
-                  , newSimpleStruct
-                      ["a", "c"]
+                  , newStruct
                       [ ("a", mkAtomTree $ Int 1)
                       , ("c", mkAtomTree $ Int 2)
                       ]
@@ -932,15 +885,52 @@ testRef5 = do
     Left err -> assertFailure err
     Right x ->
       cmpExpStructs x $
-        newSimpleStruct
-          ["b", "c", "df"]
+        newStruct
           [ ("b", mkAtomTree $ String "z")
-          , ("df", mkAtomTree $ String "c")
           ,
             ( "c"
-            , newSimpleStruct
-                ["z"]
-                [ ("z", mkAtomTree $ String "z")
+            , newStruct [("z", mkAtomTree $ String "z")]
+            )
+          , ("df", mkAtomTree $ String "c")
+          ]
+
+testRef6 :: IO ()
+testRef6 = do
+  s <- readFile "tests/spec/ref6.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("y", newStruct [("c", mkBoundsTree [BdType BdInt]), ("d", mkBoundsTree [BdType BdString])])
+          , ("B", newStruct [("d", mkAtomTree $ Int 2)])
+          ,
+            ( "A"
+            , newStruct
+                [ ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("d", mkBoundsTree [BdType BdString])])
+                , ("d", mkAtomTree $ Int 2)
+                ]
+            )
+          ]
+
+testRef7 :: IO ()
+testRef7 = do
+  s <- readFile "tests/spec/ref7.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("y", newStruct [("c", mkBoundsTree [BdType BdInt]), ("e", mkAtomTree $ Int 2)])
+          , ("r1", newStruct [("d", mkAtomTree $ Int 2)])
+          , ("r2", newStruct [("e", mkAtomTree $ Int 2)])
+          ,
+            ( "A"
+            , newStruct
+                [ ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("e", mkAtomTree $ Int 2)])
+                , ("d", mkAtomTree $ Int 2)
                 ]
             )
           ]
@@ -953,14 +943,10 @@ testStruct1 = do
     Left err -> assertFailure err
     Right y ->
       y
-        @?= newSimpleStruct
-          ["s1"]
-          [ ("s1", s1)
-          ]
+        @?= newStruct [("s1", s1)]
  where
   s1 =
-    newSimpleStruct
-      ["a", "b", "c"]
+    newStruct
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [ ("a", Int 1)
@@ -975,28 +961,20 @@ testStruct2 = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right y ->
-      y
-        @?= newSimpleStruct
-          ["a"]
-          [("a", a)]
+    Right y -> y @?= newStruct [("a", a)]
  where
   a =
-    newSimpleStruct
-      ["b", "c"]
+    newStruct
       [ ("b", ab)
       , ("c", mkAtomTree $ Int 42)
       ]
   ab =
-    newSimpleStruct
-      ["c", "d"]
+    newStruct
       [ ("c", abc)
       , ("d", mkAtomTree $ Int 12)
       ]
   abc =
-    newSimpleStruct
-      ["d"]
-      [("d", mkAtomTree $ Int 123)]
+    newStruct [("d", mkAtomTree $ Int 123)]
 
 testStruct3 :: IO ()
 testStruct3 = do
@@ -1007,18 +985,17 @@ testStruct3 = do
     Right y -> cmpStructs y exp
  where
   sGen :: Tree -> Tree
-  sGen t = newSimpleStruct ["f"] [("f", t)]
+  sGen t = newStruct [("f", t)]
 
-  sGen2 :: Tree -> LabelAttr -> Tree
-  sGen2 t la = newStruct ["f"] [("f", la)] [("f", t)]
+  sGen2 :: Tree -> Tree
+  sGen2 t = newStruct [("f!", t)]
 
   exp =
-    newSimpleStruct
-      (map (\i -> "x" ++ show i) [0 .. 7])
+    newStruct
       [ ("x0", sGen $ mkAtomTree $ Int 3)
       , ("x1", sGen $ mkAtomTree $ Int 3)
       , ("x2", sGen $ mkBoundsTree [BdType BdInt])
-      , ("x3", sGen2 (mkBoundsTree [BdNumCmp $ BdNumCmpCons BdLT (NumInt 1)]) (LabelAttr SLRequired True))
+      , ("x3", sGen2 (mkBoundsTree [BdNumCmp $ BdNumCmpCons BdLT (NumInt 1)]))
       , ("x4", sGen $ mkBoundsTree [BdNumCmp $ BdNumCmpCons BdLE (NumInt 3)])
       , ("x5", sGen $ mkAtomTree $ Int 3)
       , ("x6", sGen $ mkAtomTree $ Int 3)
@@ -1035,16 +1012,11 @@ testStruct4 = do
  where
   exp =
     newStruct
-      ["a", "b", "foo", "foobar", "bar"]
-      [ ("foo", LabelAttr SLRegular False)
-      , ("bar", LabelAttr SLRequired False)
-      , ("foobar", LabelAttr SLRegular False)
-      ]
       [ ("a", mkAtomTree $ String "foo")
       , ("b", mkAtomTree $ String "bar")
-      , ("foo", mkAtomTree $ String "baz")
-      , ("foobar", mkAtomTree $ String "qux")
-      , ("bar", mkBoundsTree [BdType BdString])
+      , ("\"foo\"", mkAtomTree $ String "baz")
+      , ("\"foobar\"", mkAtomTree $ String "qux")
+      , ("\"bar\"!", mkBoundsTree [BdType BdString])
       ]
 
 testStruct5 :: IO ()
@@ -1056,13 +1028,11 @@ testStruct5 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newSimpleStruct
-      ["a", "b"]
-      [ ("a", newSimpleStruct ["c"] [("c", mkAtomTree $ String "b")])
+    newStruct
+      [ ("a", newStruct [("c", mkAtomTree $ String "b")])
       ,
         ( "b"
-        , newSimpleStruct
-            ["x", "y"]
+        , newStruct
             [ ("x", mkAtomTree $ String "x")
             , ("y", mkAtomTree $ String "y")
             ]
@@ -1078,8 +1048,7 @@ testList1 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newSimpleStruct
-      ["x0", "x1"]
+    newStruct
       [ ("x0", mkNewTree . TNList $ List (map mkAtomTree [Int 1, Int 4, Int 9]))
       , ("x1", mkNewTree . TNList $ List (map mkAtomTree [Float 1.0, Bool True, String "hello"]))
       ]
@@ -1093,8 +1062,7 @@ testIndex1 = do
     Right y -> cmpExpStructs y exp
  where
   exp =
-    newSimpleStruct
-      ["x1", "x2", "x3", "x4", "x5", "z"]
+    newStruct
       ( map
           (\(k, v) -> (k, mkAtomTree v))
           [ ("x1", Int 14)
@@ -1123,8 +1091,7 @@ testCnstr2 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newSimpleStruct
-      ["a", "b"]
+    newStruct
       [ ("a", mkNewTree (TNRefCycle (RefCycle True)))
       ,
         ( "b"
@@ -1164,13 +1131,13 @@ testPat1 = do
     expandWithPatterns
       [ PatternStructField
           { psfPattern = Bounds{bdsList = [BdType BdString]}
-          , psfValue = newFieldsStruct [("a", mkAtomTree $ Int 1)]
+          , psfValue = newStruct [("a", mkAtomTree $ Int 1)]
           }
       ]
-      ( newFieldsStruct
+      ( newStruct
           [
             ( "y"
-            , newFieldsStruct
+            , newStruct
                 [ ("a", mkAtomTree $ Int 1)
                 , ("b", mkAtomTree $ Int 2)
                 ]
@@ -1187,14 +1154,14 @@ testPat2 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newFieldsStruct
+    newStruct
       [
         ( "nameMap"
         , expandWithPatterns
             [ PatternStructField
                 { psfPattern = Bounds{bdsList = [BdType BdString]}
                 , psfValue =
-                    newFieldsStruct
+                    newStruct
                       [ ("firstName", mkBoundsTree [BdType BdString])
                       ,
                         ( "nickName"
@@ -1208,10 +1175,10 @@ testPat2 = do
                       ]
                 }
             ]
-            $ newFieldsStruct
+            $ newStruct
               [
                 ( "hank"
-                , newFieldsStruct
+                , newStruct
                     [ ("firstName", mkAtomTree $ String "Hank")
                     ,
                       ( "nickName"
@@ -1263,10 +1230,10 @@ testClose3 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newFieldsStruct
-      [ ("c1", newFieldsStruct [("x", sxc), ("y", sycp)])
-      , ("c2", newFieldsStruct [("x", sxc), ("y", sycp)])
-      , ("c3", newFieldsStruct [("x", sxc), ("y", syc), ("z", sycp)])
+    newStruct
+      [ ("c1", newStruct [("x", sxc), ("y", sycp)])
+      , ("c2", newStruct [("x", sxc), ("y", sycp)])
+      , ("c3", newStruct [("x", sxc), ("y", syc), ("z", sycp)])
       ]
 
   patterna =
@@ -1278,14 +1245,14 @@ testClose3 = do
   sxc =
     expandWithClosed True $
       expandWithPatterns patterna $
-        newFieldsStruct []
+        newStruct []
   syc =
     expandWithClosed True $
-      newFieldsStruct [("a", mkAtomTree $ Int 1)]
+      newStruct [("a", mkAtomTree $ Int 1)]
   sycp =
     expandWithClosed True $
       expandWithPatterns patterna $
-        newFieldsStruct [("a", mkAtomTree $ Int 1)]
+        newStruct [("a", mkAtomTree $ Int 1)]
 
 expandWithClosed :: Bool -> Tree -> Tree
 expandWithClosed closesd t = case t of
@@ -1301,14 +1268,14 @@ testEmbed1 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    newFieldsStruct
+    newStruct
       [ ("c1", sab)
       , ("c2", sCab)
       , ("c3", sCab)
       ]
 
-  sab = newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
-  sCab = expandWithClosed True $ newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+  sab = newStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+  sCab = expandWithClosed True $ newStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
 
 testEmbed2 :: IO ()
 testEmbed2 = do
@@ -1318,11 +1285,7 @@ testEmbed2 = do
     Left err -> assertFailure err
     Right y -> cmpStructs y exp
  where
-  exp =
-    expandWithClosed True $
-      newFieldsStruct
-        [ ("x", mkAtomTree $ Int 1)
-        ]
+  exp = expandWithClosed True $ newStruct [("x", mkAtomTree $ Int 1)]
 
 testEmbed3 :: IO ()
 testEmbed3 = do
@@ -1333,13 +1296,12 @@ testEmbed3 = do
     Right y -> cmpStructs y exp
  where
   exp =
-    expandWithClosed True $
-      newFieldsStruct
-        [ ("c1", mkAtomTree $ Int 1)
-        , ("c2", mkAtomTree $ String "a")
-        , ("c3", newSimpleAtomDisj [] [Int 1, Int 2])
-        , ("c5", mkNewTree TNTop)
-        ]
+    newStruct
+      [ ("c1", mkAtomTree $ Int 1)
+      , ("c2", mkAtomTree $ String "a")
+      , ("c3", newAtomDisj [] [Int 1, Int 2])
+      , ("c5", mkNewTree TNTop)
+      ]
 
 testEmbed4 :: IO ()
 testEmbed4 = do
@@ -1350,13 +1312,110 @@ testEmbed4 = do
     Right y -> cmpStructs y exp
  where
   exp =
+    newStruct
+      [ ("c1", mkAtomTree $ Int 1)
+      , ("c2", mkAtomTree $ String "a")
+      , ("c3", newAtomDisj [] [Int 1, Int 2])
+      , ("c5", mkAtomTree $ Int 1)
+      ]
+
+testDef1 :: IO ()
+testDef1 = do
+  s <- readFile "tests/spec/def1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("#S", sSBool)
+      , ("m", expandWithClosed True sSC)
+      ]
+  sSBool = newStruct [("a", saBool)]
+  saBool = newStruct [("c?", mkBoundsTree [BdType BdBool])]
+  sSC = expandWithClosed True $ newStruct [("a", saC)]
+  saC = expandWithClosed True $ newStruct [("c", mkAtomTree $ Bool True)]
+
+testDef2 :: IO ()
+testDef2 = do
+  s <- readFile "tests/spec/def2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testDef3 :: IO ()
+testDef3 = do
+  s <- readFile "tests/spec/def3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("#D", djD)
+      , ("#OneOf", oneOf)
+      , ("D1", expandWithClosed True $ newStruct [("a", mkAtomTree $ Int 12), ("c", mkAtomTree $ Int 22)])
+      ]
+
+  djD =
+    newDisj
+      []
+      [ expandWithClosed True $ newStruct [("a", mkBoundsTree [BdType BdInt]), ("c", mkBoundsTree [BdType BdInt])]
+      , expandWithClosed True $ newStruct [("b", mkBoundsTree [BdType BdInt]), ("c", mkBoundsTree [BdType BdInt])]
+      ]
+  oneOf =
+    newDisj
+      []
+      [ newStruct [("a", mkBoundsTree [BdType BdInt])]
+      , newStruct [("b", mkBoundsTree [BdType BdInt])]
+      ]
+
+testDef4 :: IO ()
+testDef4 = do
+  s <- readFile "tests/spec/def4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testDef5 :: IO ()
+testDef5 = do
+  s <- readFile "tests/spec/def5.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("#A", sA)
+      , ("B", sBC)
+      , ("y", sY)
+      ]
+
+  sA = newStruct [("a", mkBoundsTree [BdType BdInt])]
+  sBC =
     expandWithClosed True $
-      newFieldsStruct
-        [ ("c1", mkAtomTree $ Int 1)
-        , ("c2", mkAtomTree $ String "a")
-        , ("c3", newSimpleAtomDisj [] [Int 1, Int 2])
-        , ("c5", mkAtomTree $ Int 1)
+      newStruct
+        [ ("b", newStruct [("c", mkBoundsTree [BdType BdInt])])
+        , ("a", mkBoundsTree [BdType BdInt])
         ]
+  sY =
+    newStruct
+      [ ("c", mkBoundsTree [BdType BdInt])
+      , ("d", mkAtomTree $ Int 3)
+      ]
+
+testDef6 :: IO ()
+testDef6 = do
+  s <- readFile "tests/spec/def6.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
 
 specTests :: TestTree
 specTests =
@@ -1398,7 +1457,9 @@ specTests =
     , testCase "ref1" testRef1
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
-    , testCase "ref3" testRef5
+    , testCase "ref5" testRef5
+    , testCase "ref6" testRef6
+    , testCase "ref7" testRef7
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
     , testCase "struct3" testStruct3
@@ -1418,6 +1479,12 @@ specTests =
     , testCase "embed2" testEmbed2
     , testCase "embed3" testEmbed3
     , testCase "embed4" testEmbed4
+    , testCase "def1" testDef1
+    , testCase "def2" testDef2
+    , testCase "def3" testDef3
+    , testCase "def4" testDef4
+    , testCase "def5" testDef5
+    , testCase "def6" testDef6
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()
@@ -1428,6 +1495,7 @@ cmpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
   mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
   assertEqual "patterns" (stcPatterns exp) (stcPatterns act)
   assertEqual "pendings" (stcPendSubs exp) (stcPendSubs act)
+  assertEqual "close" (stcClosed exp) (stcClosed act)
 cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
 
 cmpExpStructs :: Tree -> Tree -> IO ()

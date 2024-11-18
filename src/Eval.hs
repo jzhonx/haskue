@@ -21,6 +21,7 @@ import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
+import Cursor
 import EvalExpr
 import Parser (parseSourceFile)
 import Path
@@ -62,6 +63,15 @@ runStr s mermaid = do
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
+evalConfig :: Config Tree
+evalConfig =
+  Config
+    { cfCreateCnstr = False
+    , cfMermaid = False
+    , cfEvalExpr = evalExpr
+    , cfClose = close
+    }
+
 evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> Bool -> m Tree
 evalFile sf mermaid = do
   rootTC <-
@@ -77,11 +87,17 @@ evalFile sf mermaid = do
           logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      Config{cfCreateCnstr = True, cfMermaid = mermaid, cfEvalExpr = evalExpr}
+      evalConfig
+        { cfCreateCnstr = True
+        , cfMermaid = mermaid
+        }
 
   finalized <-
     runReaderT
       (execStateT validateCnstrs rootTC)
-      Config{cfCreateCnstr = False, cfMermaid = mermaid, cfEvalExpr = evalExpr}
+      evalConfig
+        { cfCreateCnstr = False
+        , cfMermaid = mermaid
+        }
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

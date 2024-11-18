@@ -70,9 +70,11 @@ subTreeTN sel t = case (sel, getTreeNode t) of
       DynamicField dsf -> Just (dsfValue dsf)
       PatternField _ val -> Just val
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
-  (FuncSelector f, TNFunc fn) -> case f of
-    FuncArgSelector i -> fncArgs fn `indexList` i
-    FuncResSelector -> fncTempRes fn
+  (_, TNFunc fn)
+    | FuncSelector (FuncArgSelector i) <- sel -> fncArgs fn `indexList` i
+    | FuncSelector FuncResSelector <- sel -> fncTempRes fn
+    -- This has to be the last case because the explicit function selector has the highest priority.
+    | otherwise -> fncTempRes fn >>= subTree sel
   (_, TNDisj d)
     | DisjDefaultSelector <- sel -> dsjDefault d
     | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
@@ -93,15 +95,24 @@ setSubTreeTN sel subT parT = do
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
-    (FuncSelector f, TNFunc fn) -> case f of
-      FuncArgSelector i -> do
-        let
-          args = fncArgs fn
-          l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
-        return l
-      FuncResSelector -> do
-        let l = TNFunc $ fn{fncTempRes = Just subT}
-        return l
+    (_, TNFunc fn)
+      | FuncSelector (FuncArgSelector i) <- sel -> do
+          let
+            args = fncArgs fn
+            l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
+          return l
+      | FuncSelector FuncResSelector <- sel -> do
+          let l = TNFunc $ fn{fncTempRes = Just subT}
+          return l
+      -- If the selector is not a function selector, then the sub value must have been the fncTempRes value.
+      | otherwise ->
+          maybe
+            (throwError "setSubTreeTN: function temporary result is not found for non-function selector")
+            ( \r -> do
+                updatedR <- setSubTree sel subT r
+                return (TNFunc $ fn{fncTempRes = Just updatedR})
+            )
+            (fncTempRes fn)
     (_, TNDisj d)
       | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjDisjunctSelector i <- sel ->
@@ -110,7 +121,7 @@ setSubTreeTN sel subT parT = do
       -- value.
       | otherwise ->
           maybe
-            (throwError "propValUp: default disjunction value not found for non-disjunction selector")
+            (throwError "setSubTreeTN: default disjunction value is not found for non-disjunction selector")
             ( \dft -> do
                 updatedDftT <- setSubTree sel subT dft
                 return (TNDisj $ d{dsjDefault = Just updatedDftT})
@@ -118,8 +129,8 @@ setSubTreeTN sel subT parT = do
             (dsjDefault d)
     (FuncSelector _, TNConstraint c) ->
       return (TNConstraint $ c{cnsValidator = subT})
-    (ParentSelector, _) -> throwError "propValUp: ParentSelector is not allowed"
-    (RootSelector, _) -> throwError "propValUp: RootSelector is not allowed"
+    (ParentSelector, _) -> throwError "setSubTreeTN: ParentSelector is not allowed"
+    (RootSelector, _) -> throwError "setSubTreeT: RootSelector is not allowed"
     _ -> throwError insertErrMsg
   return $ setTreeNode parT n
  where

@@ -13,6 +13,7 @@ import Config
 import Control.Monad (foldM, forM, void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (ask)
+import Cursor
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust)
@@ -20,6 +21,7 @@ import qualified Data.Set as Set
 import FuncCall
 import Path
 import Ref
+import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -1106,6 +1108,10 @@ unifyLeftStruct (s1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}
   TNStruct s2 -> unifyStructs (utEmbedded ut1 || utEmbedded ut2) (d1, s1) (d2, s2)
   _ -> unifyLeftOther ut2 ut1
 
+{- | unify two structs.
+For closedness, unification only generates a closed struct but not a recursively closed struct since to close a struct
+recursively, the only way is to reference the struct via a #ident.
+-}
 unifyStructs ::
   (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m Bool
 unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
@@ -1202,7 +1208,8 @@ checkPermittedLabels base isNewEmbedded new =
         mapM
           ( \sel -> case sel of
               StringSelector s -> do
-                -- foldM only returns a non-bottom value when the new label is in the patterns.
+                -- foldM only returns a non-bottom value when the new label is in the patterns, otherwise it returns a
+                -- Nothing or a bottom.
                 r <-
                   foldM
                     ( \iacc (i, pat) ->
@@ -1224,10 +1231,16 @@ checkPermittedLabels base isNewEmbedded new =
           )
           (Set.toList diff)
 
-      logDebugStr $
-        printf "checkPermittedLabels: isNewEmbedde: %s, diff: %s, r: %s" (show isNewEmbedded) (show diff) (show res)
+      withDebugInfo $ \path _ ->
+        logDebugStr $
+          printf
+            "checkPermittedLabels: path: %s, isNewEmbedde: %s, diff: %s, r: %s"
+            (show path)
+            (show isNewEmbedded)
+            (show $ Set.toList diff)
+            (show res)
 
-      -- A field is only disallowed if its unified value is a bottom.
+      -- A field is disallowed if no pattern exists or its unified value with the pattern is a bottom.
       let disallowed = map fst $ filter (maybe True isTreeBottom . snd) res
 
       -- When no new labels or all new labels are in the patterns, we return the new labels.
@@ -1250,6 +1263,8 @@ unifyLeftDisj
           , utEmbedded = isEmbedded2
           }
         ) = do
+    withDebugInfo $ \path _ ->
+      logDebugStr $ printf "unifyLeftDisj: path: %s, dj: %s, right: %s" (show path) (show ut1) (show ut2)
     case treeNode t2 of
       TNFunc _ -> unifyLeftOther ut2 ut1
       TNConstraint _ -> unifyLeftOther ut2 ut1
@@ -1262,6 +1277,7 @@ unifyLeftDisj
       TNDisj dj2 -> case (dj1, dj2) of
         -- this is U0 rule, <v1> & <v2> => <v1&v2>
         (Disj{dsjDefault = Nothing, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do
+          logDebugStr $ printf "unifyLeftDisj: U0, ds1: %s, ds2: %s" (show ds1) (show ds2)
           ds <- mapM (`oneToMany` (d2, isEmbedded2, ds2)) (map (\x -> (d1, isEmbedded1, x)) ds1)
           treeFromNodes Nothing ds >>= putTMTree
           return True
@@ -1326,7 +1342,8 @@ unifyLeftDisj
 
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
 treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
-  (_, []) -> throwError "empty disjuncts"
+  -- if there is no non-bottom disjuncts, we return the first bottom.
+  (_, []) -> maybe (throwError $ printf "treeFromNodes: no disjuncts") return (firstBottom ds)
   (Nothing, [_d]) -> return $ mkNewTree (treeNode _d)
   (Nothing, _ds) ->
     let
@@ -1342,8 +1359,10 @@ treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
   -- concat and dedup the non-bottom disjuncts
   concatDedupNonBottoms :: [[Tree]] -> [Tree]
   concatDedupNonBottoms xs =
-    dedup $
-      concatMap (filter (not . isTreeBottom)) xs
+    dedup $ concatMap (filter (not . isTreeBottom)) xs
+
+  firstBottom :: [[Tree]] -> Maybe Tree
+  firstBottom xs = let ys = concatMap (filter isTreeBottom) xs in if null ys then Nothing else Just $ head ys
 
   excludeBottomM :: Maybe Tree -> Maybe Tree
   excludeBottomM = maybe Nothing (\x -> if isTreeBottom x then Nothing else Just x)
@@ -1374,24 +1393,47 @@ builtinFuncTable =
   [
     ( "close"
     , mkFuncTree $
-        (mkStubFunc closeStruct)
+        -- built-in close does not recursively close the struct.
+        (mkStubFunc $ close False)
           { fncName = "close"
           , fncArgs = [mkNewTree TNTop]
           }
     )
   ]
 
-closeStruct :: (TreeMonad s m) => [Tree] -> m Bool
-closeStruct args
+-- | Closes a struct when the tree has struct.
+close :: (TreeMonad s m) => Bool -> [Tree] -> m Bool
+close recur args
   | length args /= 1 = throwError $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
       let a = head args
       r <- reduceFuncArg unaryOpSelector a
       case treeNode r of
-        TNBottom _ -> putTMTree r >> return True
-        TNStruct s -> do
-          let closed = s{stcClosed = True}
-          putTMTree $ mkStructTree closed
-          return True
+        -- If the argument is pending, wait for the result.
         TNFunc _ -> return False
-        _ -> return False
+        _ -> do
+          putTMTree $ closeTree recur r
+          return True
+
+-- | Closes a struct when the tree has struct.
+closeTree :: Bool -> Tree -> Tree
+closeTree recur a =
+  case treeNode a of
+    TNStruct s ->
+      let ss =
+            if recur
+              then
+                Map.map
+                  ( \ssf -> let new = closeTree recur $ ssfField ssf in ssf{ssfField = new}
+                  )
+                  (stcSubs s)
+              else
+                stcSubs s
+       in mkStructTree $ s{stcSubs = ss, stcClosed = True}
+    TNDisj dj ->
+      let
+        dft = closeTree recur <$> dsjDefault dj
+        ds = map (closeTree recur) (dsjDisjuncts dj)
+       in
+        mkNewTree $ TNDisj (dj{dsjDefault = dft, dsjDisjuncts = ds})
+    _ -> a

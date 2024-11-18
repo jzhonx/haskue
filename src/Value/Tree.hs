@@ -9,12 +9,10 @@ module Value.Tree (
   module Value.Bottom,
   module Value.Bounds,
   module Value.Constraint,
-  module Value.Cursor,
   module Value.Cycle,
   module Value.Disj,
   module Value.List,
   module Value.Struct,
-  module Value.TMonad,
   module Value.Tree,
   module Value.TreeNode,
   Func,
@@ -31,6 +29,7 @@ module Value.Tree (
   mkStubFunc,
   mkUnaryOp,
   setFuncTempRes,
+  fncTempRes,
 )
 where
 
@@ -41,24 +40,24 @@ import Control.Monad (foldM, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader, ask)
 import Control.Monad.State.Strict (MonadState, evalState)
+import Cursor
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import Env
 import Path
+import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
 import Value.Constraint
-import Value.Cursor
 import Value.Cycle
 import Value.Disj
 import Value.Func
 import Value.List
 import Value.Struct
-import Value.TMonad
 import Value.TreeNode
 
 class TreeRepBuilderIter a where
@@ -134,10 +133,10 @@ instance TreeRepBuilderIter Tree where
     TNStruct s ->
       let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
           attr :: LabelAttr -> String
-          attr a = case lbAttrType a of
-            SLRegular -> mempty
-            SLRequired -> "!"
-            SLOptional -> "?"
+          attr a = case lbAttrCnstr a of
+            SFCRegular -> mempty
+            SFCRequired -> "!"
+            SFCOptional -> "?"
 
           isVar :: LabelAttr -> String
           isVar a =
@@ -485,6 +484,11 @@ whenNotBottom a f = do
   case treeNode t of
     TNBottom _ -> return a
     _ -> f
+
+mustFunc :: (TreeMonad s m) => (Func Tree -> m a) -> m a
+mustFunc f = withTN $ \case
+  TNFunc fn -> f fn
+  _ -> throwError "tree focus is not a function"
 
 treesToPath :: [Tree] -> Maybe Path
 treesToPath ts = pathFromList <$> mapM treeToSel ts

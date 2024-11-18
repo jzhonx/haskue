@@ -10,14 +10,16 @@ module Ref where
 
 import Class
 import Config
-import Control.Monad (unless, void)
+import Control.Monad (unless, void, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (ask)
+import Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Set as Set
 import FuncCall
 import Path
+import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -40,21 +42,29 @@ startReduceRef nt reduceFunc = do
 
 {- | Substitute the cached result of the Func node pointed by the path with the new non-function value. Then trigger the
  - re-evluation of the lowest ancestor Func.
+ - The tree focus is set to the ref func.
 -}
 populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
 populateRef nt reduceFunc = do
   withDebugInfo $ \path t ->
-    logDebugStr $ printf "populateRef: path: %s, focus: %s, new value: %s" (show path) (show t) (show nt)
-  withTree $ \tar -> case (treeNode tar, treeNode nt) of
-    -- If the new value is a function, just skip the reduction.
-    (TNFunc _, TNFunc _) -> return ()
-    (TNFunc fn, _) -> do
+    logDebugStr $ printf "populateRef: path: %s, start, focus: %s, new value: %s" (show path) (show t) (show nt)
+  withTree $ \tar -> mustFunc $ \fn -> case treeNode nt of
+    TNFunc newFn ->
+      maybe
+        (return ()) -- If the new value is a pure function, just skip the reduction.
+        ( \res -> do
+            withDebugInfo $ \path _ ->
+              logDebugStr $ printf "populateRef: path: %s, new res of function: %s" (show path) (show res)
+            putTMTree . mkFuncTree $ setFuncTempRes fn res
+            void $ handleFuncCall (Just res)
+        )
+        (fncTempRes newFn)
+    _ -> do
       unless (isFuncRef fn) $
         throwError $
           printf "populateRef: the target node %s is not a reference." (show tar)
 
       void $ handleFuncCall (Just nt)
-    _ -> throwError $ printf "populateRef: the target node %s is not a function." (show tar)
 
   res <- getTMTree
   withDebugInfo $ \path _ ->
@@ -111,21 +121,12 @@ deref tp = do
   path <- getTMAbsPath
   withDebugInfo $ \_ t ->
     logDebugStr $
-      printf
-        "deref: path: %s, start:, ref_path: %s, tip: %s"
-        (show path)
-        (show tp)
-        (show t)
+      printf "deref: path: %s, start:, ref_path: %s, tip: %s" (show path) (show tp) (show t)
   follow tp Set.empty >>= \case
     (Just (_, tar)) -> do
       withDebugInfo $ \_ t ->
         logDebugStr $
-          printf
-            "deref: path: %s, done: ref_path: %s, tip: %s, tar: %s"
-            (show path)
-            (show tp)
-            (show t)
-            (show tar)
+          printf "deref: path: %s, done: ref_path: %s, tip: %s, tar: %s" (show path) (show tp) (show t) (show tar)
 
       putTMTree tar
       return True
@@ -166,7 +167,7 @@ deref tp = do
   getDstVal :: (TreeMonad s m) => Path -> Set.Set Path -> m (Maybe (Path, Tree))
   getDstVal ref refsSeen = do
     srcPath <- getTMAbsPath
-    inRemoteTMMaybe ref $ do
+    rM <- inRemoteTMMaybe ref $ do
       dstPath <- getTMAbsPath
       logDebugStr $
         printf "deref: getDstVal ref: %s, dstPath: %s, seen: %s" (show ref) (show dstPath) (show $ Set.toList refsSeen)
@@ -177,7 +178,7 @@ deref tp = do
         if
           -- This handles the case when following the chain of references leads to a cycle.
           -- For example, { a: b, b: a, d: a } and we are at d.
-          -- The the values of d would be: 1. a -> b, 2. b -> a, 3. a (seen) -> RC.
+          -- The values of d would be: 1. a -> b, 2. b -> a, 3. a (seen) -> RC.
           -- The returned RC would be a self-reference cycle, which has empty path because the cycle is formed by all
           -- references.
           | Set.member ref refsSeen -> do
@@ -205,7 +206,7 @@ deref tp = do
           -- any references within that expression bound to the respective copies of the fields they were originally
           -- bound to.
           | otherwise -> withTree $ \tar -> case treeNode tar of
-              -- The atom value is final, so we can return it directly.
+              -- The atom value is final, so we can just return it.
               TNAtom _ -> return $ Just tar
               TNConstraint c -> return $ Just (mkAtomVTree $ cnsAtom c)
               _ -> do
@@ -217,15 +218,47 @@ deref tp = do
                         evalExpr e
                     )
                     (treeOrig tar)
+                Config{cfClose = close} <- ask
+                let visitedRefs = Set.insert ref refsSeen
+                val <-
+                  if any pathHasDef visitedRefs
+                    then do
+                      logDebugStr $
+                        printf
+                          "deref: path: %s, visitedRefs: %s, has definition, recursively close the value."
+                          (show dstPath)
+                          (show $ Set.toList visitedRefs)
+                      return $
+                        mkFuncTree $
+                          (mkStubFunc $ close True)
+                            { fncName = "deref_close"
+                            , fncArgs = [orig]
+                            }
+                    else return orig
                 logDebugStr $
                   printf
-                    "deref: path: %s, deref'd orig is: %s, set: %s, tar: %s"
+                    "deref: path: %s, deref'd val is: %s, set: %s, tar: %s"
                     (show dstPath)
-                    (show orig)
+                    (show val)
                     (show $ Set.toList refsSeen)
                     (show tar)
-                return $ Just orig
+                return $ Just val
       return $ (dstPath,) <$> val
+    when (isNothing rM) $
+      logDebugStr $
+        printf "deref: getDstVal ref: %s, nothing found" (show ref)
+    return rM
+
+  pathHasDef :: Path -> Bool
+  pathHasDef p =
+    any
+      ( \case
+          StructSelector (StringSelector s) -> fromMaybe False $ do
+            typ <- getFieldType s
+            return $ typ == SFTDefinition
+          _ -> False
+      )
+      $ pathToList p
 
   inRemoteTMMaybe :: (TreeMonad s m) => Path -> m (Maybe a) -> m (Maybe a)
   inRemoteTMMaybe p f = do

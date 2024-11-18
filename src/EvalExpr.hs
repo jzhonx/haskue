@@ -16,6 +16,7 @@ import qualified Data.Map.Strict as Map
 import Env
 import Path
 import Reduction
+import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -108,7 +109,7 @@ evalFdLabels lbls e =
   mkAdder :: (EvalEnv m) => Label -> Tree -> m (StructElemAdder Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
-      let attr = LabelAttr{lbAttrType = slFrom c, lbAttrIsVar = isVar ln}
+      let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
        in case ln of
             (sselFrom -> Just key) -> return $ Static key (StaticStructField val attr)
             (dselFrom -> Just se) -> do
@@ -129,11 +130,11 @@ evalFdLabels lbls e =
   dselFrom (LabelNameExpr lne) = Just lne
   dselFrom _ = Nothing
 
-  slFrom :: AST.LabelConstraint -> StructLabelType
-  slFrom c = case c of
-    RegularLabel -> SLRegular
-    OptionalLabel -> SLOptional
-    RequiredLabel -> SLRequired
+  cnstrFrom :: AST.LabelConstraint -> StructFieldCnstr
+  cnstrFrom c = case c of
+    RegularLabel -> SFCRegular
+    OptionalLabel -> SFCOptional
+    RequiredLabel -> SFCRequired
 
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True

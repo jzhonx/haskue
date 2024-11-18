@@ -11,7 +11,9 @@ import qualified Path
 import Value.Bounds
 
 data Struct t = Struct
-  { stcOrdLabels :: [Path.StructSelector] -- Should only contain StringSelector labels.
+  { stcOrdLabels :: [Path.StructSelector]
+  -- ^ Should only contain StringSelector labels, meaning it contains all regular fields, hidden fields and
+  -- definitions. The length of this list should be equal to the size of the stcSubs map.
   , stcSubs :: Map.Map Path.StructSelector (StaticStructField t)
   , stcPatterns :: [PatternStructField t]
   , stcPendSubs :: [PendingStructElem t]
@@ -19,13 +21,16 @@ data Struct t = Struct
   }
 
 data LabelAttr = LabelAttr
-  { lbAttrType :: StructLabelType
+  { lbAttrCnstr :: StructFieldCnstr
   , lbAttrIsVar :: Bool
   }
   deriving (Show, Eq)
 
-data StructLabelType = SLRegular | SLRequired | SLOptional
-  deriving (Eq, Ord, Enum, Show)
+data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
+  deriving (Eq, Ord, Show)
+
+data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
+  deriving (Eq, Ord, Show)
 
 data StaticStructField t = StaticStructField
   { ssfField :: t
@@ -103,10 +108,10 @@ instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
         AST.Label $
           AST.LabelName
             ln
-            ( case lbAttrType attr of
-                SLRegular -> AST.RegularLabel
-                SLRequired -> AST.RequiredLabel
-                SLOptional -> AST.OptionalLabel
+            ( case lbAttrCnstr attr of
+                SFCRegular -> AST.RegularLabel
+                SFCRequired -> AST.RequiredLabel
+                SFCOptional -> AST.OptionalLabel
             )
      in
       do
@@ -147,12 +152,12 @@ modifyPSEValue f pse = case pse of
   PatternField pattern val -> PatternField pattern (f val)
 
 defaultLabelAttr :: LabelAttr
-defaultLabelAttr = LabelAttr SLRegular True
+defaultLabelAttr = LabelAttr SFCRegular True
 
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
-    { lbAttrType = min (lbAttrType a1) (lbAttrType a2)
+    { lbAttrCnstr = min (lbAttrCnstr a1) (lbAttrCnstr a2)
     , lbAttrIsVar = lbAttrIsVar a1 || lbAttrIsVar a2
     }
 
@@ -212,3 +217,10 @@ hasEmptyFields s = Map.null (stcSubs s) && not (any isDynamicField (stcPendSubs 
  where
   isDynamicField (DynamicField _) = True
   isDynamicField _ = False
+
+getFieldType :: String -> Maybe StructFieldType
+getFieldType [] = Nothing
+getFieldType ident
+  | head ident == '#' || length ident >= 2 && take 2 ident == "_#" = Just SFTDefinition
+  | head ident == '_' = Just SFTHidden
+  | otherwise = Just SFTRegular
