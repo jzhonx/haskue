@@ -1324,8 +1324,39 @@ testEmbed2 = do
         [ ("x", mkAtomTree $ Int 1)
         ]
 
--- sab = newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
--- sCab = expandWithClosed True $ newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+testEmbed3 :: IO ()
+testEmbed3 = do
+  s <- readFile "tests/spec/embed3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    expandWithClosed True $
+      newFieldsStruct
+        [ ("c1", mkAtomTree $ Int 1)
+        , ("c2", mkAtomTree $ String "a")
+        , ("c3", newSimpleAtomDisj [] [Int 1, Int 2])
+        , ("c5", mkNewTree TNTop)
+        ]
+
+testEmbed4 :: IO ()
+testEmbed4 = do
+  s <- readFile "tests/spec/embed4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    expandWithClosed True $
+      newFieldsStruct
+        [ ("c1", mkAtomTree $ Int 1)
+        , ("c2", mkAtomTree $ String "a")
+        , ("c3", newSimpleAtomDisj [] [Int 1, Int 2])
+        , ("c5", mkAtomTree $ Int 1)
+        ]
 
 specTests :: TestTree
 specTests =
@@ -1385,6 +1416,8 @@ specTests =
     , testCase "close3" testClose3
     , testCase "embed1" testEmbed1
     , testCase "embed2" testEmbed2
+    , testCase "embed3" testEmbed3
+    , testCase "embed4" testEmbed4
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

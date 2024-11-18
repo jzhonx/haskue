@@ -734,11 +734,12 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = do
     logDebugStr $
       printf ("unifying start, path: %s:, %s" ++ "\n" ++ "with %s") (show path) (show ut1) (show ut2)
 
+  -- Each case should handle embedded case when the left value is embedded.
   r <- case (treeNode t1, treeNode t2) of
-    (TNTop, _) -> putTree t2
-    (_, TNTop) -> putTree t1
     (TNBottom _, _) -> putTree t1
     (_, TNBottom _) -> putTree t2
+    (TNTop, _) -> unifyLeftTop ut1 ut2
+    (_, TNTop) -> unifyLeftTop ut2 ut1
     (TNAtom a1, _) -> unifyLeftAtom (a1, ut1) ut2
     -- Below is the earliest time to create a constraint
     (_, TNAtom a2) -> unifyLeftAtom (a2, ut2) ut1
@@ -755,24 +756,31 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = do
   putTree :: (TreeMonad s m) => Tree -> m Bool
   putTree x = putTMTree x >> return True
 
+unifyLeftTop :: (TreeMonad s m) => UTree -> UTree -> m Bool
+unifyLeftTop ut1 ut2 = do
+  case treeNode . utVal $ ut2 of
+    -- If the left top is embedded in the right struct, we can immediately put the top into the tree without worrying
+    -- any future existing/new fields. Because for example {_, a: 1} is equivalent to _ & {a: 1}. This follows the
+    -- behavior of the spec:
+    -- The result of { A } is A for any A (including definitions).
+    -- Notice that this is different from the behavior of the latest CUE. The latest CUE would do the following:
+    -- {_, _h: int} & {_h: "hidden"} -> _|_.
+    TNStruct _ | utEmbedded ut1 -> putTMTree (utVal ut1)
+    _ -> putTMTree (utVal ut2)
+  return True
+
 unifyLeftAtom :: (TreeMonad s m) => (AtomV, UTree) -> UTree -> m Bool
 unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = do
   case (amvAtom v1, treeNode t2) of
-    (String x, TNAtom s) -> case amvAtom s of
-      String y -> putTree $ if x == y then TNAtom v1 else amismatch x y
-      _ -> notUnifiable ut1 ut2
-    (Int x, TNAtom s) -> case amvAtom s of
-      Int y -> putTree $ if x == y then TNAtom v1 else amismatch x y
-      _ -> notUnifiable ut1 ut2
-    (Bool x, TNAtom s) -> case amvAtom s of
-      Bool y -> putTree $ if x == y then TNAtom v1 else amismatch x y
-      _ -> notUnifiable ut1 ut2
-    (Float x, TNAtom s) -> case amvAtom s of
-      Float y -> putTree $ if x == y then TNAtom v1 else amismatch x y
-      _ -> notUnifiable ut1 ut2
-    (Null, TNAtom s) -> case amvAtom s of
-      Null -> putTree $ TNAtom v1
-      _ -> notUnifiable ut1 ut2
+    (String x, TNAtom s)
+      | String y <- amvAtom s -> putTree $ if x == y then TNAtom v1 else amismatch x y
+    (Int x, TNAtom s)
+      | Int y <- amvAtom s -> putTree $ if x == y then TNAtom v1 else amismatch x y
+    (Float x, TNAtom s)
+      | Float y <- amvAtom s -> putTree $ if x == y then TNAtom v1 else amismatch x y
+    (Bool x, TNAtom s)
+      | Bool y <- amvAtom s -> putTree $ if x == y then TNAtom v1 else amismatch x y
+    (Null, TNAtom s) | Null <- amvAtom s -> putTree $ TNAtom v1
     (_, TNBounds b) -> do
       logDebugStr $ printf "unifyLeftAtom, %s with Bounds: %s" (show v1) (show t2)
       putTMTree $ unifyAtomBounds (d1, amvAtom v1) (d2, bdsList b)
@@ -794,7 +802,11 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
       DisjFunc -> unifyLeftOther ut2 ut1
       _ -> procOther
     (_, TNRefCycle _) -> procOther
-    _ -> notUnifiable ut1 ut2
+    -- If the left atom is embedded in the right struct and there is no fields and no pending dynamic fields, we can
+    -- immediately put the atom into the tree without worrying any future new fields. This is what CUE currently
+    -- does.
+    (_, TNStruct s2) | utEmbedded ut1 && hasEmptyFields s2 -> putTree (TNAtom v1)
+    _ -> unifyLeftOther ut1 ut2
  where
   putTree :: (TreeMonad s m) => TreeNode Tree -> m Bool
   putTree n = do
@@ -840,11 +852,11 @@ unifyLeftBound (b1, ut1@(UTree{utVal = t1, utDir = d1})) ut2@(UTree{utVal = t2, 
           case snd r of
             Just a -> putTMTree (mkAtomTree a) >> return True
             Nothing -> putTMTree (mkBoundsTree (fst r)) >> return True
-  TNFunc _ -> unifyLeftOther ut2 ut1
-  TNConstraint _ -> unifyLeftOther ut2 ut1
-  TNRefCycle _ -> unifyLeftOther ut2 ut1
-  TNDisj _ -> unifyLeftOther ut2 ut1
-  _ -> notUnifiable ut1 ut2
+  -- If the left bounds are embedded in the right struct and there is no fields and no pending dynamic fields, we can
+  -- immediately put the bounds into the tree without worrying any future new fields. This is what CUE currently
+  -- does.
+  TNStruct s2 | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree t1 >> return True
+  _ -> unifyLeftOther ut2 ut1
 
 unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tree
 unifyAtomBounds (d1, a1) (d2, bs) =
@@ -1046,45 +1058,47 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds :: [Bound]
   newOrdBounds = if d1 == Path.L then [b1, b2] else [b2, b1]
 
+-- | unifyLeftOther is the sink of the unification process.
 unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m Bool
-unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2, utDir = d2}) = case (treeNode t1, treeNode t2) of
-  (TNFunc _, _) -> do
-    withDebugInfo $ \path _ ->
-      logDebugStr $
-        printf
-          "unifyLeftOther starts, path: %s, %s: %s, %s: %s"
-          (show path)
-          (show d1)
-          (show t1)
-          (show d2)
-          (show t2)
-    r1 <- reduceFuncArg (Path.toBinOpSelector d1) t1
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
+unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
+  case (treeNode t1, treeNode t2) of
+    (TNFunc _, _) -> do
+      withDebugInfo $ \path _ ->
+        logDebugStr $
+          printf "unifyLeftOther starts, path: %s, %s, %s" (show path) (show ut1) (show ut2)
+      r1 <- reduceFuncArg (Path.toBinOpSelector d1) t1
+      withDebugInfo $ \path _ ->
+        logDebugStr $ printf "unifyLeftOther, path: %s, %s is reduced to %s" (show path) (show t1) (show r1)
 
-    case treeNode r1 of
-      TNFunc _ -> return False
-      _ -> unifyUTrees (ut1{utVal = r1}) ut2
+      case treeNode r1 of
+        TNFunc _ -> return False
+        _ -> unifyUTrees (ut1{utVal = r1}) ut2
 
-  -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
-  -- containing an atom or a bottom.
-  (TNConstraint c1, _) -> do
-    r <- unifyUTrees (ut1{utVal = mkNewTree (TNAtom $ cnsAtom c1)}) ut2
-    na <- getTMTree
-    putTMTree $ case treeNode na of
-      TNBottom _ -> na
-      _ -> t1
-    return r
-  -- According to the spec,
-  -- A field value of the form r & v, where r evaluates to a reference cycle and v is a concrete value, evaluates to v.
-  -- Unification is idempotent and unifying a value with itself ad infinitum, which is what the cycle represents,
-  -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
-  -- unification.
-  -- We can just return the second value.
-  (TNRefCycle _, _) -> do
-    putTMTree t2
-    return True
-  _ -> notUnifiable ut1 ut2
+    -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
+    -- containing an atom or a bottom.
+    (TNConstraint c1, _) -> do
+      r <- unifyUTrees (ut1{utVal = mkNewTree (TNAtom $ cnsAtom c1)}) ut2
+      na <- getTMTree
+      putTMTree $ case treeNode na of
+        TNBottom _ -> na
+        _ -> t1
+      return r
+    -- According to the spec,
+    -- A field value of the form r & v, where r evaluates to a reference cycle and v is a concrete value, evaluates to v.
+    -- Unification is idempotent and unifying a value with itself ad infinitum, which is what the cycle represents,
+    -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
+    -- unification.
+    -- We can just return the second value.
+    (TNRefCycle _, _) -> do
+      putTMTree t2
+      return True
+    _ -> putNotUnifiable
+ where
+  putNotUnifiable :: (TreeMonad s m) => m Bool
+  putNotUnifiable = mkNodeWithDir ut1 ut2 f >> return False
+   where
+    f :: (TreeMonad s m) => Tree -> Tree -> m ()
+    f x y = putTMTree $ mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
 unifyLeftStruct :: (TreeMonad s m) => (Struct Tree, UTree) -> UTree -> m Bool
 unifyLeftStruct (s1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = case treeNode t2 of
@@ -1227,12 +1241,6 @@ mkNodeWithDir (UTree{utVal = t1, utDir = d1}) (UTree{utVal = t2}) f = case d1 of
   Path.L -> f t1 t2
   Path.R -> f t2 t1
 
-notUnifiable :: (TreeMonad s m) => UTree -> UTree -> m Bool
-notUnifiable ut1 ut2 = mkNodeWithDir ut1 ut2 f >> return False
- where
-  f :: (TreeMonad s m) => Tree -> Tree -> m ()
-  f x y = putTMTree $ mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
-
 unifyLeftDisj :: (TreeMonad s m) => (Disj Tree, UTree) -> UTree -> m Bool
 unifyLeftDisj
   (dj1, ut1@(UTree{utDir = d1, utEmbedded = isEmbedded1}))
@@ -1246,6 +1254,11 @@ unifyLeftDisj
       TNFunc _ -> unifyLeftOther ut2 ut1
       TNConstraint _ -> unifyLeftOther ut2 ut1
       TNRefCycle _ -> unifyLeftOther ut2 ut1
+      -- If the left disj is embedded in the right struct and there is no fields and no pending dynamic fields, we can
+      -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently
+      -- does.
+      TNStruct s2
+        | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree (utVal ut1) >> return True
       TNDisj dj2 -> case (dj1, dj2) of
         -- this is U0 rule, <v1> & <v2> => <v1&v2>
         (Disj{dsjDefault = Nothing, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do

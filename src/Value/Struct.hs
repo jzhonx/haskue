@@ -33,9 +33,11 @@ data StaticStructField t = StaticStructField
   }
   deriving (Show)
 
+{- | DynamicStructField would only be evaluated into a field. Definitions (#field) or hidden (_field)fields are not
+possible.
+-}
 data DynamicStructField t = DynamicStructField
-  { -- For pattern constraint, this is omitted.
-    dsfAttr :: LabelAttr
+  { dsfAttr :: LabelAttr
   , dsfLabel :: t
   , dsfLabelExpr :: AST.Expression
   , dsfValue :: t
@@ -203,3 +205,10 @@ updateStatic struct s t =
   case Map.lookup (Path.StringSelector s) (stcSubs struct) of
     Just sf -> return $ addStatic struct s (sf{ssfField = t})
     Nothing -> throwError "updateStatic: the static field is not found"
+
+-- | Determines whether the struct has empty fields, including both static and dynamic fields.
+hasEmptyFields :: Struct t -> Bool
+hasEmptyFields s = Map.null (stcSubs s) && not (any isDynamicField (stcPendSubs s))
+ where
+  isDynamicField (DynamicField _) = True
+  isDynamicField _ = False
