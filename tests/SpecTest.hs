@@ -465,7 +465,7 @@ testDisj3 = do
           , ("e0", newSimpleDisj [] [sa, sb])
           , ("e1", newSimpleDisj [sb] [sa, sb])
           , ("e2", newSimpleDisj [] [sa, sb])
-          , ("e3", newSimpleDisj [] [sa, sba])
+          , ("e3", newSimpleDisj [] [sa, sab])
           , ("e4", newSimpleDisj [sb] [sa, sba, sab, sb])
           ]
  where
@@ -732,9 +732,9 @@ testCycles6 = do
       val'
         @?= newSimpleStruct
           ["a", "b", "c"]
-          [ ("a", newSimpleDisj [] [yzx, sy1])
-          , ("b", newSimpleDisj [] [sx2, xyz])
-          , ("c", newSimpleDisj [] [zxy, sz3])
+          [ ("a", newSimpleDisj [] [xzy, sy1])
+          , ("b", newSimpleDisj [] [sx2, zyx])
+          , ("c", newSimpleDisj [] [yxz, sz3])
           ]
  where
   innerStructGen labels =
@@ -749,9 +749,9 @@ testCycles6 = do
   sx2 = newSimpleStruct ["x"] [("x", mkAtomTree $ Int 2)]
   sz3 = newSimpleStruct ["z"] [("z", mkAtomTree $ Int 3)]
 
-  yzx = innerStructGen ["y", "z", "x"]
-  xyz = innerStructGen ["x", "y", "z"]
-  zxy = innerStructGen ["z", "x", "y"]
+  xzy = innerStructGen ["x", "z", "y"]
+  zyx = innerStructGen ["z", "y", "x"]
+  yxz = innerStructGen ["y", "x", "z"]
 
 testCycles7 :: IO ()
 testCycles7 = do
@@ -1292,6 +1292,41 @@ expandWithClosed closesd t = case t of
   Tree{treeNode = TNStruct s} -> mkStructTree $ s{stcClosed = closesd}
   _ -> error "Not a struct"
 
+testEmbed1 :: IO ()
+testEmbed1 = do
+  s <- readFile "tests/spec/embed1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newFieldsStruct
+      [ ("c1", sab)
+      , ("c2", sCab)
+      , ("c3", sCab)
+      ]
+
+  sab = newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+  sCab = expandWithClosed True $ newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+
+testEmbed2 :: IO ()
+testEmbed2 = do
+  s <- readFile "tests/spec/embed2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    expandWithClosed True $
+      newFieldsStruct
+        [ ("x", mkAtomTree $ Int 1)
+        ]
+
+-- sab = newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+-- sCab = expandWithClosed True $ newFieldsStruct [("a", mkAtomTree $ Int 1), ("b", mkAtomTree $ Int 2)]
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1348,6 +1383,8 @@ specTests =
     , testCase "close1" testClose1
     , testCase "close2" testClose2
     , testCase "close3" testClose3
+    , testCase "embed1" testEmbed1
+    , testCase "embed2" testEmbed2
     ]
 
 cmpStructs :: Tree -> Tree -> IO ()

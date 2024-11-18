@@ -79,7 +79,6 @@ type TreeMonad s m =
 data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeOrig :: Maybe AST.Expression
-  , treeEvaled :: Bool
   }
 
 data TreeRep = TreeRep
@@ -445,7 +444,7 @@ isTreeRefCycleTail t = case treeNode t of
   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
-mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeEvaled = False}
+mkNewTree n = Tree{treeNode = n, treeOrig = Nothing}
 
 mkAtomVTree :: AtomV -> Tree
 mkAtomVTree v = mkNewTree (TNAtom v)

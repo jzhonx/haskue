@@ -331,13 +331,13 @@ comma l = do
     else unexpected "failed to parse comma"
 
 decl :: Parser (Lexeme Declaration)
-decl = (fmap FieldDecl <$> field) <|> (fmap EllipsisDecl <$> ellipsisDecl) <|> (fmap Embedding <$> expr)
+decl = try (fmap FieldDecl <$> field) <|> (fmap EllipsisDecl <$> ellipsisDecl) <|> (fmap Embedding <$> expr)
 
 field :: Parser (Lexeme FieldDecl)
 field = do
   lnx <- label
   -- labels might be in the form of "a: b: c: val". We need to try to match the b and c.
-  otherxs <- try $ many (try label)
+  otherxs <- many (try label)
   eLex <- expr
   let
     ln = lex lnx

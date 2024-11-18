@@ -57,33 +57,33 @@ evalLiteral lit = return v
 
 evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
 evalDecls decls = do
-  (struct, ts) <- foldM evalDecl (emptyStruct, []) decls
+  (struct, embeds) <- foldM evalDecl (emptyStruct, []) decls
   let v =
-        if null ts
+        if null embeds
           then mkNewTree (TNStruct struct)
           else
             foldl
-              (\acc t -> mkFuncTree $ mkBinaryOp AST.Unify unify acc t)
+              (\acc embed -> mkFuncTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
               (mkNewTree (TNStruct struct))
-              ts
+              embeds
   return v
 
 --  Evaluates a declaration in a struct.
---  It returns the updated struct and the list of trees to be unified , which are embeddings.
+--  It returns the updated struct and the list of embeddings to be unified.
 evalDecl :: (EvalEnv m) => (Struct Tree, [Tree]) -> Declaration -> m (Struct Tree, [Tree])
-evalDecl (scp, ts) (Embedding e) = do
+evalDecl (scp, embeds) (Embedding e) = do
   v <- evalExpr e
-  return (scp, v : ts)
-evalDecl (scp, ts) (EllipsisDecl (Ellipsis cM)) =
+  return (scp, v : embeds)
+evalDecl (scp, embeds) (EllipsisDecl (Ellipsis cM)) =
   maybe
-    (return (scp, ts))
+    (return (scp, embeds))
     (\_ -> throwError "default constraints are not implemented yet")
     cM
-evalDecl (struct, ts) (FieldDecl fd) = case fd of
+evalDecl (struct, embeds) (FieldDecl fd) = case fd of
   Field ls e -> do
     sfa <- evalFdLabels ls e
     let newStruct = insertUnifyStruct sfa struct
-    return (newStruct, ts)
+    return (newStruct, embeds)
 
 evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
 evalFdLabels lbls e =
