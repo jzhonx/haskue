@@ -5,12 +5,13 @@ module Config where
 
 import AST
 import Class
-import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
 import Cursor
 import Env
+import Error
 import Text.Printf (printf)
+import Util
 
 data Config t = Config
   { cfCreateCnstr :: Bool
@@ -18,7 +19,7 @@ data Config t = Config
   , cfEvalExpr :: forall m. (Env m, MonadReader (Config t) m, TreeOp t) => AST.Expression -> m t
   , cfClose ::
       forall s m.
-      (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t) =>
+      (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
       Bool ->
       [t] ->
       m Bool
@@ -32,6 +33,6 @@ emptyConfig =
   Config
     { cfCreateCnstr = False
     , cfMermaid = False
-    , cfEvalExpr = \_ -> throwError "cfEvalExpr not set"
-    , cfClose = \_ _ -> throwError "cfClose not set"
+    , cfEvalExpr = \_ -> throwErrSt "cfEvalExpr not set"
+    , cfClose = \_ _ -> throwErrSt "cfClose not set"
     }

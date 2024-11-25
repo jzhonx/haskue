@@ -5,7 +5,6 @@
 module Cursor where
 
 import Class
-import Control.Monad.Except (throwError)
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -16,7 +15,9 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
+import Error
 import Path
+import Util
 
 class HasCtxVal s t a | s -> a, s -> t where
   getCtxVal :: s -> CtxVal t a
@@ -34,6 +35,10 @@ instance HasCtxVal (CtxVal t a) t a where
   getCtxVal = id
   setCtxVal _ x = x
 
+instance HasTrace (CtxVal t a) where
+  getTrace = ctxTrace . cvCtx
+  setTrace cv tr = cv{cvCtx = (cvCtx cv){ctxTrace = tr}}
+
 cvFromCur :: ValCursor t a -> CtxVal t a
 cvFromCur cur =
   CtxVal
@@ -42,6 +47,7 @@ cvFromCur cur =
         Context
           { ctxCrumbs = vcCrumbs cur
           , ctxNotifiers = Map.empty
+          , ctxTrace = emptyTrace
           }
     }
 
@@ -50,6 +56,7 @@ type CtxTree t = CtxVal t t
 data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxNotifiers :: Map.Map Path [Path]
+  , ctxTrace :: Trace
   }
   deriving (Eq, Show)
 
@@ -76,6 +83,7 @@ emptyContext =
   Context
     { ctxCrumbs = []
     , ctxNotifiers = Map.empty
+    , ctxTrace = emptyTrace
     }
 
 {- | Add a notifier pair to the context.
@@ -151,30 +159,27 @@ goDownTCPath (Path sels) = go (reverse sels)
     nextCur <- goDownTCSel x cursor
     go xs nextCur
 
--- {- | Go down the TreeCursor with the given selector and return the new cursor.
--- It handles the case when the current node is a disjunction node.
--- -}
+{- | Go down the TreeCursor with the given selector and return the new cursor.
+It handles the case when the current node is a disjunction node.
+-}
 goDownTCSel :: (TreeOp t) => Selector -> TreeCursor t -> Maybe (TreeCursor t)
 goDownTCSel sel tc = do
   nextTree <- subTree sel (vcFocus tc)
   return $ mkSubTC sel nextTree tc
 
-{- | propUp propagates the changes made to the tip of the block to the parent block.
-The structure of the tree is not changed.
--}
+-- | propUp propagates the changes made to the focus of the block to the parent block.
 propValUp :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
 propValUp tc@(ValCursor _ []) = return tc
 propValUp (ValCursor subT ((sel, parT) : cs)) = do
   t <- setSubTree sel subT parT
   return $ ValCursor t cs
 
--- Propagate the value up until the lowest selector is matched.
+-- | Propagate the value up until the lowest selector is matched.
 propUpTCUntil :: (Env m, TreeOp t) => Selector -> TreeCursor t -> m (TreeCursor t)
-propUpTCUntil _ (ValCursor _ []) = throwError "propUpTCUntil: already at the top"
-propUpTCUntil sel tc@(ValCursor _ ((s, _) : _)) = do
-  if s == sel
-    then return tc
-    else propValUp tc >>= propUpTCUntil sel
+propUpTCUntil _ (ValCursor _ []) = throwErrSt "already at the top"
+propUpTCUntil sel tc@(ValCursor _ ((s, _) : _))
+  | s == sel = return tc
+  | otherwise = propValUp tc >>= propUpTCUntil sel
 
 {- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
 The cursor will also be propagated to the parent block.

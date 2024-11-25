@@ -22,6 +22,7 @@ import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
 import Cursor
+import Error
 import EvalExpr
 import Parser (parseSourceFile)
 import Path
@@ -48,7 +49,7 @@ runIO s conf =
     case ast of
       AST.ExprUnaryExpr
         (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls)))) -> return decls
-      _ -> throwError "Expected a struct literal"
+      _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
 runTreeIO s = runNoLoggingT $ runTreeStr s False
@@ -57,6 +58,7 @@ runStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m AST.Expres
 runStr s mermaid = do
   t <- runTreeStr s mermaid
   case treeNode t of
+    -- print the error message to the console.
     TNBottom (Bottom msg) -> throwError msg
     _ -> runReaderT (buildASTExpr False t) emptyConfig
 

@@ -11,10 +11,11 @@ import Config
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import Env
+import GHC.Stack (HasCallStack)
 import Path
 import TMonad
 
-type FuncEnv s m t = (TMonad s m t, MonadReader (Config t) m)
+type FuncEnv s m t = (TMonad s m t, MonadReader (Config t) m, HasCallStack)
 
 data Func t = Func
   { fncName :: String

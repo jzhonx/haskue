@@ -45,6 +45,7 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import Env
+import GHC.Stack (HasCallStack)
 import Path
 import TMonad
 import Text.Printf (printf)
@@ -69,6 +70,8 @@ type TreeMonad s m =
   , MonadState s m
   , HasCtxVal s Tree Tree
   , MonadReader (Config Tree) m
+  , HasTrace s
+  , HasCallStack
   )
 
 -- Some rules:

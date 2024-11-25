@@ -12,6 +12,7 @@ import Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import Env
+import GHC.Stack (HasCallStack)
 import Path
 import Text.Printf (printf)
 import Util
@@ -21,6 +22,8 @@ type TMonad s m t =
   , Env m
   , MonadState s m
   , HasCtxVal s t t
+  , HasTrace s
+  , HasCallStack
   )
 
 getTMAbsPath :: (TMonad s m t) => m Path
