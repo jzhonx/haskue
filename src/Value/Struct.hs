@@ -4,9 +4,10 @@ module Value.Struct where
 
 import qualified AST
 import Class
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (MonadError)
 import qualified Data.Map.Strict as Map
 import Env
+import Error
 import qualified Path
 import Value.Bounds
 
@@ -91,7 +92,7 @@ instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
                       else AST.LabelString sel
                 ]
                 e
-        _ -> throwError "Only StringSelector is allowed in static fields."
+        _ -> throwErrSt "Only StringSelector is allowed in static fields."
 
       processDynField :: (Env m, BuildASTExpr t) => DynamicStructField t -> m AST.Declaration
       processDynField sf = do
@@ -209,7 +210,7 @@ updateStatic :: (MonadError String m) => Struct t -> String -> t -> m (Struct t)
 updateStatic struct s t =
   case Map.lookup (Path.StringSelector s) (stcSubs struct) of
     Just sf -> return $ addStatic struct s (sf{ssfField = t})
-    Nothing -> throwError "updateStatic: the static field is not found"
+    Nothing -> throwErrSt "the static field is not found"
 
 -- | Determines whether the struct has empty fields, including both static and dynamic fields.
 hasEmptyFields :: Struct t -> Bool

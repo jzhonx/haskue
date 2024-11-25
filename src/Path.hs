@@ -11,20 +11,22 @@ data Selector
     RootSelector
   | StructSelector StructSelector
   | IndexSelector Int
-  | FuncSelector FuncSelector
+  | MutableSelector MutableSelector
   | DisjDefaultSelector
   | DisjDisjunctSelector Int
   | ParentSelector
+  | TempSelector
   deriving (Eq, Ord)
 
 instance Show Selector where
   show RootSelector = "/"
   show (StructSelector s) = show s
   show (IndexSelector i) = "i" ++ show i
-  show (FuncSelector f) = show f
+  show (MutableSelector f) = show f
   show DisjDefaultSelector = "d*"
   show (DisjDisjunctSelector i) = "dj" ++ show i
   show ParentSelector = ".."
+  show TempSelector = "tmp"
 
 data StructSelector
   = StringSelector String
@@ -42,24 +44,24 @@ instance Show StructSelector where
   -- c stands for constraint.
   show (PatternSelector i) = "sc" ++ show i
 
--- FuncArgSelector is different in that the sel would be omitted when canonicalizing the path.
-data FuncSelector
-  = FuncArgSelector Int
-  | FuncResSelector
+-- MutableArgSelector is different in that the sel would be omitted when canonicalizing the path.
+data MutableSelector
+  = MutableArgSelector Int
+  | MutableValSelector
   deriving (Eq, Ord)
 
-instance Show FuncSelector where
-  show (FuncArgSelector i) = "fa" ++ show i
-  show FuncResSelector = "fr"
+instance Show MutableSelector where
+  show (MutableArgSelector i) = "fa" ++ show i
+  show MutableValSelector = "fv"
 
 unaryOpSelector :: Selector
-unaryOpSelector = FuncSelector $ FuncArgSelector 0
+unaryOpSelector = MutableSelector $ MutableArgSelector 0
 
 binOpLeftSelector :: Selector
-binOpLeftSelector = FuncSelector $ FuncArgSelector 0
+binOpLeftSelector = MutableSelector $ MutableArgSelector 0
 
 binOpRightSelector :: Selector
-binOpRightSelector = FuncSelector $ FuncArgSelector 1
+binOpRightSelector = MutableSelector $ MutableArgSelector 1
 
 toBinOpSelector :: BinOpDirect -> Selector
 toBinOpSelector L = binOpLeftSelector
@@ -118,11 +120,12 @@ initPath (Path xs) = Just $ Path (drop 1 xs)
 
 -- | Canonicalize a path by removing operator selectors.
 canonicalizePath :: Path -> Path
-canonicalizePath (Path xs) = Path $ filter (not . isOperator) xs
+canonicalizePath (Path xs) = Path $ filter (not . isIgnored) xs
  where
-  isOperator :: Selector -> Bool
-  isOperator (FuncSelector _) = True
-  isOperator _ = False
+  isIgnored :: Selector -> Bool
+  isIgnored (MutableSelector _) = True
+  isIgnored TempSelector = True
+  isIgnored _ = False
 
 -- | Get the tail path of a path, excluding the head selector.
 tailPath :: Path -> Maybe Path
@@ -197,3 +200,13 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
 
   isCycle (CyclicSCC _) = True
   isCycle _ = False
+
+hasTemp :: Path -> Bool
+hasTemp (Path xs) = TempSelector `elem` xs
+
+treeRefPath :: Path -> Path
+treeRefPath p = Path $ filter (not . isRefSelector) (getPath p)
+ where
+  isRefSelector :: Selector -> Bool
+  isRefSelector (MutableSelector MutableValSelector) = True
+  isRefSelector _ = False

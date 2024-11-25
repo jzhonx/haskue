@@ -10,10 +10,10 @@ import AST
 import Class
 import Config
 import Control.Monad (foldM)
-import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import qualified Data.Map.Strict as Map
 import Env
+import Error
 import Path
 import Reduction
 import TMonad
@@ -64,7 +64,7 @@ evalDecls decls = do
           then mkNewTree (TNStruct struct)
           else
             foldl
-              (\acc embed -> mkFuncTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
+              (\acc embed -> mkMutableTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
               (mkNewTree (TNStruct struct))
               embeds
   return v
@@ -78,7 +78,7 @@ evalDecl (scp, embeds) (Embedding e) = do
 evalDecl (scp, embeds) (EllipsisDecl (Ellipsis cM)) =
   maybe
     (return (scp, embeds))
-    (\_ -> throwError "default constraints are not implemented yet")
+    (\_ -> throwErrSt "default constraints are not implemented yet")
     cM
 evalDecl (struct, embeds) (FieldDecl fd) = case fd of
   Field ls e -> do
@@ -89,7 +89,7 @@ evalDecl (struct, embeds) (FieldDecl fd) = case fd of
 evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
 evalFdLabels lbls e =
   case lbls of
-    [] -> throwError "empty labels"
+    [] -> throwErrSt "empty labels"
     [l1] ->
       do
         logDebugStr $ printf "evalFdLabels: lb1: %s" (show l1)
@@ -115,7 +115,7 @@ evalFdLabels lbls e =
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
               return $ Dynamic (DynamicStructField attr selTree se val)
-            _ -> throwError "invalid label"
+            _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
       return (Pattern pat val)
@@ -150,7 +150,7 @@ insertUnifyStruct adder struct = case adder of
       let
         unifySFOp =
           StaticStructField
-            { ssfField = mkNewTree (TNFunc $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
+            { ssfField = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
             , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
             }
        in
@@ -180,7 +180,7 @@ builtinOpNameTable =
   map (\b -> (show b, mkBoundsTree [BdType b])) [minBound :: BdType .. maxBound :: BdType]
     -- built-in function names
     -- We use the function to distinguish the identifier from the string literal.
-    ++ builtinFuncTable
+    ++ builtinMutableTable
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> m Tree
 evalPrimExpr e@(PrimExprOperand op) = case op of
@@ -198,7 +198,7 @@ evalPrimExpr e@(PrimExprIndex primExpr idx) = do
 evalPrimExpr (PrimExprArguments primExpr aes) = do
   p <- evalPrimExpr primExpr
   args <- mapM evalExpr aes
-  funcApplier p args
+  mutApplier p args
 
 {- | Evaluates the selector.
 Parameters:
@@ -211,7 +211,7 @@ If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x"
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
 evalSelector pe astSel tree =
-  return $ mkIndexFuncTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
+  return $ mkIndexMutableTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -221,7 +221,7 @@ evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
 evalIndex pe (AST.Index e) tree = do
   sel <- evalExpr e
-  return $ mkIndexFuncTree tree sel (UnaryExprPrimaryExpr pe)
+  return $ mkIndexMutableTree tree sel (UnaryExprPrimaryExpr pe)
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
@@ -229,7 +229,7 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> m Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  return $ mkNewTree (TNFunc $ mkUnaryOp op (dispUnaryFunc op) t)
+  return $ mkNewTree (TNMutable $ mkUnaryOp op (dispUnaryOp op) t)
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -239,7 +239,7 @@ evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
-  return $ mkNewTree (TNFunc $ mkBinaryOp op (dispBinFunc op) lt rt)
+  return $ mkNewTree (TNMutable $ mkBinaryOp op (dispBinMutable op) lt rt)
 
 evalDisj :: (EvalEnv m) => Expression -> Expression -> m Tree
 evalDisj e1 e2 = do
@@ -260,12 +260,12 @@ evalDisj e1 e2 = do
       l <- evalExpr e1
       r <- evalExpr e2
       return (l, r)
-  return $ mkNewTree (TNFunc $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
+  return $ mkNewTree (TNMutable $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
   reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
   reduceDisjAdapt unt1 unt2 = do
-    t1 <- reduceFuncArg binOpLeftSelector unt1
-    t2 <- reduceFuncArg binOpRightSelector unt2
+    t1 <- reduceMutableArg binOpLeftSelector unt1
+    t2 <- reduceMutableArg binOpRightSelector unt2
     if not (isTreeValue t1) || not (isTreeValue t2)
       then do
         logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)

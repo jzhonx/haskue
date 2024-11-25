@@ -1,7 +1,7 @@
 module Value.Cycle where
 
 import Class
-import Control.Monad.Except (throwError)
+import Error
 import Path
 
 data RefCycle
@@ -21,4 +21,4 @@ instance Eq RefCycle where
 
 instance BuildASTExpr RefCycle where
   -- The tree should use the original expression instead.
-  buildASTExpr _ _ = throwError "RefCycle should not be used in the AST"
+  buildASTExpr _ _ = throwErrSt "RefCycle should not be used in the AST"

@@ -15,21 +15,22 @@ module Value.Tree (
   module Value.Struct,
   module Value.Tree,
   module Value.TreeNode,
-  Func,
-  FuncType (..),
-  fncArgs,
-  fncExpr,
-  fncName,
-  fncType,
-  invokeFunc,
-  isFuncIndex,
-  isFuncRef,
+  Mutable,
+  MutableType (..),
+  invokeMutMethod,
+  isMutableIndex,
+  isMutableRef,
   mkBinaryOp,
   mkBinaryOpDir,
-  mkStubFunc,
+  mkStubMutable,
   mkUnaryOp,
-  setFuncTempRes,
-  fncTempRes,
+  mutArgs,
+  mutExpr,
+  mutName,
+  mutValue,
+  mutType,
+  setMutableState,
+  resetMutableVal,
 )
 where
 
@@ -37,7 +38,6 @@ import qualified AST
 import Class
 import Config
 import Control.Monad (foldM, when)
-import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader, ask)
 import Control.Monad.State.Strict (MonadState, evalState)
 import Cursor
@@ -45,6 +45,7 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import Env
+import Error
 import GHC.Stack (HasCallStack)
 import Path
 import TMonad
@@ -56,8 +57,8 @@ import Value.Bounds
 import Value.Constraint
 import Value.Cycle
 import Value.Disj
-import Value.Func
 import Value.List
+import Value.Mutable
 import Value.Struct
 import Value.TreeNode
 
@@ -69,18 +70,20 @@ type TreeMonad s m =
   ( Env m
   , MonadState s m
   , HasCtxVal s Tree Tree
-  , MonadReader (Config Tree) m
   , HasTrace s
+  , MonadReader (Config Tree) m
   , HasCallStack
   )
 
 -- Some rules:
--- 1. If a node is a Func that contains references, then the node should not be supplanted to other places without
+-- 1. If a node is a Mutable that contains references, then the node should not be supplanted to other places without
 -- changing the dependencies.
 -- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeOrig :: Maybe AST.Expression
+  , treeTemp :: Maybe Tree
+  -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
   }
 
 data TreeRep = TreeRep
@@ -106,20 +109,26 @@ instance HasTreeNode Tree where
   setTreeNode = setTN
 
 instance TreeOp Tree where
-  subTree = subTreeTN
-  setSubTree = setSubTreeTN
+  subTree sel t = case sel of
+    TempSelector -> treeTemp t
+    _ -> subTreeTN sel t
+  setSubTree sel sub t = case sel of
+    TempSelector -> return $ t{treeTemp = Just sub}
+    _ -> setSubTreeTN sel sub t
+
   getVarField = getVarFieldTN
+  delTemp t = t{treeTemp = Nothing}
   isTreeAtom = isJust . getAtomVFromTree
   isTreeBottom = isJust . getBottomFromTree
   isTreeCnstr = isJust . getCnstrFromTree
   isTreeRefCycle = isJust . getRefCycleFromTree
-  isTreeFunc = isJust . getFuncFromTree
+  isTreeMutable = isJust . getMutableFromTree
   isTreeValue t = case treeNode t of
     TNRefCycle _ -> False
-    TNFunc _ -> False
+    TNMutable _ -> False
     _ -> True
   treeHasRef t = case treeNode t of
-    TNFunc fn -> funcHasRef fn
+    TNMutable fn -> mutHasRef fn
     _ -> False
   treeHasAtom t = case treeNode t of
     TNAtom _ -> True
@@ -131,123 +140,124 @@ instance TreeRepBuilder Tree where
   repTree = treeToSimpleStr
 
 instance TreeRepBuilderIter Tree where
-  iterRepTree t = case treeNode t of
-    TNAtom leaf -> consRep (symbol, show (amvAtom leaf), [], [])
-    TNStruct s ->
-      let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
-          attr :: LabelAttr -> String
-          attr a = case lbAttrCnstr a of
-            SFCRegular -> mempty
-            SFCRequired -> "!"
-            SFCOptional -> "?"
+  iterRepTree t =
+    let trf = buildRepTreeTN t (treeNode t)
+     in trf{trFields = trFields trf ++ maybe [] (\x -> [TreeRepField (show TempSelector) "" x]) (treeTemp t)}
 
-          isVar :: LabelAttr -> String
-          isVar a =
-            if lbAttrIsVar a
-              then ",v"
-              else mempty
+buildRepTreeTN :: Tree -> TreeNode Tree -> TreeRep
+buildRepTreeTN t tn = case tn of
+  TNAtom leaf -> consRep (mempty, show (amvAtom leaf), [], [])
+  -- TODO: selector
+  TNBounds b ->
+    consRep
+      ( mempty
+      , show b
+      , []
+      , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
+      )
+  TNStruct s ->
+    let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
+        attr :: LabelAttr -> String
+        attr a = case lbAttrCnstr a of
+          SFCRegular -> mempty
+          SFCRequired -> "!"
+          SFCOptional -> "?"
 
-          slabelAttr :: StructSelector -> String
-          slabelAttr k =
-            let sf = stcSubs s Map.! k
-             in attr (ssfAttr sf) <> isVar (ssfAttr sf)
+        isVar :: LabelAttr -> String
+        isVar a =
+          if lbAttrIsVar a
+            then ",v"
+            else mempty
 
-          dlabelAttr :: DynamicStructField Tree -> String
-          dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
+        slabelAttr :: StructSelector -> String
+        slabelAttr k =
+          let sf = stcSubs s Map.! k
+           in attr (ssfAttr sf) <> isVar (ssfAttr sf)
 
-          plabelAttr :: String
-          plabelAttr = ",e,patpend"
+        dlabelAttr :: DynamicStructField Tree -> String
+        dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
 
-          fields :: [(String, String, Tree)]
-          fields =
-            map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
-              ++ zipWith
-                ( \j k ->
-                    ( show (StructSelector $ PatternSelector j)
-                    , ""
-                    , psfValue k
-                    )
-                )
-                [0 ..]
-                (stcPatterns s)
-              ++ map
-                ( \j ->
-                    let a = stcPendSubs s !! j
-                     in case a of
-                          DynamicField dsf -> (show (StructSelector $ PendingSelector j), dlabelAttr dsf, dsfValue dsf)
-                          PatternField _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
-                )
-                (structPendIndexes s)
+        plabelAttr :: String
+        plabelAttr = ",e,patpend"
 
-          metas :: [(String, String)]
-          metas =
-            zipWith
-              (\j psf -> (show (StructSelector $ PatternSelector j), show (psfPattern psf)))
+        fields :: [(String, String, Tree)]
+        fields =
+          map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
+            ++ zipWith
+              ( \j k -> (show (StructSelector $ PatternSelector j), "", psfValue k)
+              )
               [0 ..]
               (stcPatterns s)
-       in consRep ((if stcClosed s then "#" else mempty) <> symbol, ordLabels, consFields fields, consMetas metas)
-    TNList vs ->
-      let fields = zipWith (\j v -> (show (IndexSelector j), mempty, v)) [0 ..] (lstSubs vs)
-       in consRep (symbol, mempty, consFields fields, [])
-    TNDisj d ->
-      let dfField = maybe [] (\v -> [(show DisjDefaultSelector, mempty, v)]) (dsjDefault d)
-          djFields = zipWith (\j v -> (show $ DisjDisjunctSelector j, mempty, v)) [0 ..] (dsjDisjuncts d)
-       in consRep (symbol, mempty, consFields dfField ++ consFields djFields, [])
-    TNConstraint c ->
-      consRep
-        ( symbol
-        , mempty
-        , consFields
-            [ ("Atom", mempty, mkAtomVTree (cnsAtom c))
-            , (show unaryOpSelector, mempty, cnsValidator c)
-            ]
-        , []
-        )
-    -- TODO: selector
-    TNBounds b ->
-      consRep
-        ( symbol
-        , mempty
-        , []
-        , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
-        )
-    TNRefCycle c -> case c of
-      RefCycle p -> consRep (symbol, show p, [], [])
-      RefCycleTail p -> consRep (symbol, "tail " ++ show p, [], [])
-    TNFunc f -> case fncType f of
-      RefFunc ->
-        let
-          res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
-         in
-          consRep (symbol, fncName f, consFields res, [])
-      _ ->
-        let
-          args = zipWith (\j v -> (show (FuncArgSelector j), mempty, v)) [0 ..] (fncArgs f)
-          res = maybe mempty (\s -> [("res", mempty, s)]) (fncTempRes f)
-         in
-          consRep
-            ( symbol
-            , fncName f
-                <> ( printf ", args:%s" (show . length $ fncArgs f)
-                      <> (if funcHasRef f then ", hasRef" else mempty)
-                   )
-            , consFields (args ++ res)
-            , []
-            )
-    TNBottom b -> consRep (symbol, show b, [], [])
-    TNTop -> consRep (symbol, mempty, [], [])
-   where
-    symbol :: String
-    symbol = showTreeSymbol t
+            ++ map
+              ( \j ->
+                  let a = stcPendSubs s !! j
+                   in case a of
+                        DynamicField dsf -> (show (StructSelector $ PendingSelector j), dlabelAttr dsf, dsfValue dsf)
+                        PatternField _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
+              )
+              (structPendIndexes s)
 
-    consRep :: (String, String, [TreeRepField], [TreeRepMeta]) -> TreeRep
-    consRep (s, m, f, l) = TreeRep s m f l
+        metas :: [(String, String)]
+        metas =
+          zipWith
+            (\j psf -> (show (StructSelector $ PatternSelector j), show (psfPattern psf)))
+            [0 ..]
+            (stcPatterns s)
+     in consRep ((if stcClosed s then "#" else mempty) <> symbol, ordLabels, consFields fields, consMetas metas)
+  TNList vs ->
+    let fields = zipWith (\j v -> (show (IndexSelector j), mempty, v)) [0 ..] (lstSubs vs)
+     in consRep (symbol, mempty, consFields fields, [])
+  TNDisj d ->
+    let dfField = maybe [] (\v -> [(show DisjDefaultSelector, mempty, v)]) (dsjDefault d)
+        djFields = zipWith (\j v -> (show $ DisjDisjunctSelector j, mempty, v)) [0 ..] (dsjDisjuncts d)
+     in consRep (symbol, mempty, consFields dfField ++ consFields djFields, [])
+  TNConstraint c ->
+    consRep
+      ( symbol
+      , mempty
+      , consFields
+          [ ("atom", mempty, mkAtomVTree (cnsAtom c))
+          , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
+          ]
+      , []
+      )
+  TNRefCycle c -> case c of
+    RefCycle p -> consRep (symbol, "self: " ++ show p, [], [])
+    RefCycleTail p -> consRep (symbol, "tail: " ++ show p, [], [])
+  TNMutable f -> case mutType f of
+    RefMutable ->
+      let
+        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue f)
+       in
+        consRep (symbol, mutName f, consFields val, [])
+    _ ->
+      let
+        args = zipWith (\j v -> (show (MutableArgSelector j), mempty, v)) [0 ..] (mutArgs f)
+        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue f)
+       in
+        consRep
+          ( symbol
+          , mutName f
+              <> ( printf ", args:%s" (show . length $ mutArgs f)
+                    <> (if mutHasRef f then ", hasRef" else mempty)
+                 )
+          , consFields (args ++ val)
+          , []
+          )
+  TNBottom b -> consRep (symbol, show b, [], [])
+  TNTop -> consRep (symbol, mempty, [], [])
+ where
+  symbol :: String
+  symbol = showTreeSymbol t
 
-    consFields :: [(String, String, Tree)] -> [TreeRepField]
-    consFields = map (\(l, a, v) -> TreeRepField l a v)
+  consRep :: (String, String, [TreeRepField], [TreeRepMeta]) -> TreeRep
+  consRep (s, m, f, l) = TreeRep s m f l
 
-    consMetas :: [(String, String)] -> [TreeRepMeta]
-    consMetas = map (\(l, a) -> TreeRepMeta l a)
+  consFields :: [(String, String, Tree)] -> [TreeRepField]
+  consFields = map (\(l, a, v) -> TreeRepField l a v)
+
+  consMetas :: [(String, String)] -> [TreeRepMeta]
+  consMetas = map (\(l, a) -> TreeRepMeta l a)
 
 instance Show Tree where
   show = treeToSimpleStr 0
@@ -261,10 +271,10 @@ instance BuildASTExpr Tree where
     TNStruct s -> buildASTExpr cr s
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
-    TNFunc fn -> buildASTExpr cr fn
+    TNMutable fn -> buildASTExpr cr fn
     TNConstraint c ->
       maybe
-        (buildASTExpr cr (cnsValidator c))
+        (return $ cnsValidator c)
         return
         (treeOrig t)
     TNRefCycle c -> case c of
@@ -272,8 +282,8 @@ instance BuildASTExpr Tree where
         if p
           -- If the path is empty, then it is a self-reference.
           then return $ AST.litCons AST.TopLit
-          else maybe (throwError "RefCycle: original expression not found") return (treeOrig t)
-      RefCycleTail _ -> throwError "RefCycleTail should have been converted to RefCycle"
+          else maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
+      RefCycleTail _ -> throwErrSt "RefCycleTail should have been converted to RefCycle"
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -282,7 +292,7 @@ treeToSimpleStr :: Int -> Tree -> String
 treeToSimpleStr toff t =
   let TreeRep symbol meta fields listedMetas = iterRepTree t
    in "("
-        <> (symbol <> " " <> meta)
+        <> (if null symbol then meta else symbol <> " " <> meta)
         <> ( if null fields
               then mempty
               else
@@ -343,46 +353,52 @@ treeToMermaid msg evalPath root = do
   indent n = replicate n ' '
 
   subgraph :: (MonadState Int m) => Int -> Tree -> String -> m String
-  subgraph toff t path = do
+  subgraph toff t treeID = do
     let
-      (TreeRep symbol meta fields _) = iterRepTree t
+      (TreeRep symbol meta subReps _) = iterRepTree t
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
-      writer =
+      curTreeRepStr =
         writeLine
           ( printf
               "%s[\"`%s`\"]"
-              path
-              ( symbol
-                  -- print whether the node has an original expression.
-                  -- Currently disabled.
-                  -- <> printf ", %s" (if isJust $ treeOrig t then "Y" else "N")
-                  <> if null meta then mempty else " " <> meta
-              )
+              treeID
+              $ escape
+                ( symbol
+                    <> (if null meta then mempty else " " <> meta)
+                    -- print whether the node has an original expression.
+                    -- Currently disabled.
+                    <> printf ", %s" (if isJust $ treeOrig t then "Y" else "N")
+                )
           )
 
     foldM
       ( \acc (TreeRepField label _ sub) -> do
-          let subName = path ++ "_" ++ label
-          rest <- subgraph (toff + 2) sub subName
+          let subTreeID = treeID ++ "_" ++ label
+          rest <- subgraph (toff + 2) sub subTreeID
           return $
             acc
-              <> writeLine (printf "%s -->|%s| %s" path label subName)
+              <> writeLine (printf "%s -->|%s| %s" treeID label subTreeID)
               <> rest
       )
-      writer
-      fields
+      curTreeRepStr
+      subReps
+
+  escape :: String -> String
+  escape = concatMap $ \case
+    '"' -> "#quot;"
+    c -> [c]
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
-  TNAtom _ -> "v"
+  TNAtom _ -> ""
   TNBounds _ -> "b"
   TNStruct{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
   TNConstraint{} -> "Cnstr"
   TNRefCycle _ -> "RC"
-  TNFunc{} -> "fn"
+  TNMutable{} -> "mut"
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
@@ -390,20 +406,20 @@ subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
   TNList l -> [(IndexSelector i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  TNFunc fn -> [(FuncSelector $ FuncArgSelector i, v) | (i, v) <- zip [0 ..] (fncArgs fn)]
+  TNMutable fn -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (mutArgs fn)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultSelector, x)]) (dsjDefault d)
       ++ [(DisjDisjunctSelector i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
-funcHasRef :: Func Tree -> Bool
-funcHasRef fn = isFuncRef fn || argsHaveRef (fncArgs fn)
+mutHasRef :: Mutable Tree -> Bool
+mutHasRef fn = isMutableRef fn || argsHaveRef (mutArgs fn)
  where
   argsHaveRef :: [Tree] -> Bool
   argsHaveRef =
     any
       ( \x -> case treeNode x of
-          TNFunc subFn -> funcHasRef subFn
+          TNMutable subFn -> mutHasRef subFn
           _ -> False
       )
 
@@ -435,9 +451,9 @@ getRefCycleFromTree t = case treeNode t of
   TNRefCycle c -> Just c
   _ -> Nothing
 
-getFuncFromTree :: Tree -> Maybe (Func Tree)
-getFuncFromTree t = case treeNode t of
-  TNFunc f -> Just f
+getMutableFromTree :: Tree -> Maybe (Mutable Tree)
+getMutableFromTree t = case treeNode t of
+  TNMutable f -> Just f
   _ -> Nothing
 
 isTreeRefCycleTail :: Tree -> Bool
@@ -446,7 +462,7 @@ isTreeRefCycleTail t = case treeNode t of
   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
-mkNewTree n = Tree{treeNode = n, treeOrig = Nothing}
+mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeTemp = Nothing}
 
 mkAtomVTree :: AtomV -> Tree
 mkAtomVTree v = mkNewTree (TNAtom v)
@@ -460,14 +476,14 @@ mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
 mkBoundsTree :: [Bound] -> Tree
 mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
-mkCnstrTree :: AtomV -> Tree -> Tree
-mkCnstrTree a t = mkNewTree . TNConstraint $ Constraint a a t
+mkCnstrTree :: AtomV -> AST.Expression -> Tree
+mkCnstrTree a e = mkNewTree . TNConstraint $ Constraint a a e
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
 
-mkFuncTree :: Func Tree -> Tree
-mkFuncTree fn = mkNewTree (TNFunc fn)
+mkMutableTree :: Mutable Tree -> Tree
+mkMutableTree fn = mkNewTree (TNMutable fn)
 
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
@@ -488,10 +504,10 @@ whenNotBottom a f = do
     TNBottom _ -> return a
     _ -> f
 
-mustFunc :: (TreeMonad s m) => (Func Tree -> m a) -> m a
-mustFunc f = withTN $ \case
-  TNFunc fn -> f fn
-  _ -> throwError "tree focus is not a function"
+mustMutable :: (TreeMonad s m) => (Mutable Tree -> m a) -> m a
+mustMutable f = withTree $ \t -> case treeNode t of
+  TNMutable fn -> f fn
+  _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
 
 treesToPath :: [Tree] -> Maybe Path
 treesToPath ts = pathFromList <$> mapM treeToSel ts
@@ -530,13 +546,13 @@ traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
 traverseTM :: (TreeMonad s m) => m () -> m ()
 traverseTM f = f >> traverseSub (traverseTM f)
 
-{- | Traverse the tree and replace the function node with the result of the function if it exists, otherwise the
-original function node is kept.
+{- | Traverse the tree and replace the Mutable node with the result of the mutator if it exists, otherwise the
+original mutator node is kept.
 -}
 snapshotTM :: (TreeMonad s m) => m ()
 snapshotTM =
   traverseTM $ withTN $ \case
-    TNFunc fn -> maybe (return ()) putTMTree (fncTempRes fn)
+    TNMutable fn -> maybe (return ()) putTMTree (mutValue fn)
     _ -> return ()
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
@@ -552,8 +568,8 @@ dumpEntireTree msg = do
         notifiers <- ctxNotifiers <$> getTMContext
         logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
         tc <- getTMCursor
-        -- logDebugStr $ printf "tc: %s" (show tc)
         rtc <- propUpTCUntil Path.RootSelector tc
+
         let
           t = vcFocus rtc
           evalPath = pathFromCrumbs (vcCrumbs tc)

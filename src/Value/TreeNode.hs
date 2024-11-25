@@ -5,10 +5,11 @@
 module Value.TreeNode where
 
 import Class
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (MonadError)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isNothing)
 import Env
+import Error
 import Path
 import Text.Printf (printf)
 import Value.Atom
@@ -17,8 +18,8 @@ import Value.Bounds
 import Value.Constraint
 import Value.Cycle
 import Value.Disj
-import Value.Func
 import Value.List
+import Value.Mutable
 import Value.Struct
 
 class HasTreeNode t where
@@ -36,7 +37,7 @@ data TreeNode t
   | TNBounds Bounds
   | TNConstraint (Constraint t)
   | TNRefCycle RefCycle
-  | TNFunc (Func t)
+  | TNMutable (Mutable t)
   | TNTop
   | TNBottom Bottom
 
@@ -52,14 +53,15 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
       then False
       else getTreeNode (fromJust $ dsjDefault dj1) == n2
   (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
-  (==) (TNFunc f1) (TNFunc f2) = f1 == f2
+  (==) (TNMutable f1) (TNMutable f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) _ _ = False
 
--- step down the tree with the given selector.
--- This should only be used by TreeCursor.
+{- | descend into the tree with the given selector.
+This should only be used by TreeCursor.
+-}
 subTreeTN :: (TreeOp t, HasTreeNode t) => Selector -> t -> Maybe t
 subTreeTN sel t = case (sel, getTreeNode t) of
   (RootSelector, _) -> Just t
@@ -70,17 +72,16 @@ subTreeTN sel t = case (sel, getTreeNode t) of
       DynamicField dsf -> Just (dsfValue dsf)
       PatternField _ val -> Just val
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
-  (_, TNFunc fn)
-    | FuncSelector (FuncArgSelector i) <- sel -> fncArgs fn `indexList` i
-    | FuncSelector FuncResSelector <- sel -> fncTempRes fn
+  (_, TNMutable mut)
+    | MutableSelector (MutableArgSelector i) <- sel -> mutArgs mut `indexList` i
+    | MutableSelector MutableValSelector <- sel -> mutValue mut
     -- This has to be the last case because the explicit function selector has the highest priority.
-    | otherwise -> fncTempRes fn >>= subTree sel
+    | otherwise -> mutValue mut >>= subTree sel
   (_, TNDisj d)
     | DisjDefaultSelector <- sel -> dsjDefault d
     | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
     -- This has to be the last case because the explicit disjunct selector has the highest priority.
     | otherwise -> dsjDefault d >>= subTree sel
-  (_, TNConstraint c) | sel == unaryOpSelector -> Just (cnsValidator c)
   _ -> Nothing
  where
   indexList :: [a] -> Int -> Maybe a
@@ -95,24 +96,24 @@ setSubTreeTN sel subT parT = do
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
-    (_, TNFunc fn)
-      | FuncSelector (FuncArgSelector i) <- sel -> do
+    (_, TNMutable mut)
+      | MutableSelector (MutableArgSelector i) <- sel -> do
           let
-            args = fncArgs fn
-            l = TNFunc $ fn{fncArgs = take i args ++ [subT] ++ drop (i + 1) args}
+            args = mutArgs mut
+            l = TNMutable $ mut{mutArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
-      | FuncSelector FuncResSelector <- sel -> do
-          let l = TNFunc $ fn{fncTempRes = Just subT}
+      | MutableSelector MutableValSelector <- sel -> do
+          let l = TNMutable $ mut{mutValue = Just subT}
           return l
-      -- If the selector is not a function selector, then the sub value must have been the fncTempRes value.
+      -- If the selector is not a mutable selector, then the sub value must have been the mutValue value.
       | otherwise ->
           maybe
-            (throwError "setSubTreeTN: function temporary result is not found for non-function selector")
+            (throwErrSt "setSubTreeTN: function temporary result is not found for non-function selector")
             ( \r -> do
                 updatedR <- setSubTree sel subT r
-                return (TNFunc $ fn{fncTempRes = Just updatedR})
+                return (TNMutable $ mut{mutValue = Just updatedR})
             )
-            (fncTempRes fn)
+            (mutValue mut)
     (_, TNDisj d)
       | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjDisjunctSelector i <- sel ->
@@ -121,17 +122,15 @@ setSubTreeTN sel subT parT = do
       -- value.
       | otherwise ->
           maybe
-            (throwError "setSubTreeTN: default disjunction value is not found for non-disjunction selector")
+            (throwErrSt "setSubTreeTN: default disjunction value is not found for non-disjunction selector")
             ( \dft -> do
                 updatedDftT <- setSubTree sel subT dft
                 return (TNDisj $ d{dsjDefault = Just updatedDftT})
             )
             (dsjDefault d)
-    (FuncSelector _, TNConstraint c) ->
-      return (TNConstraint $ c{cnsValidator = subT})
-    (ParentSelector, _) -> throwError "setSubTreeTN: ParentSelector is not allowed"
-    (RootSelector, _) -> throwError "setSubTreeT: RootSelector is not allowed"
-    _ -> throwError insertErrMsg
+    (ParentSelector, _) -> throwErrSt "setSubTreeTN: ParentSelector is not allowed"
+    (RootSelector, _) -> throwErrSt "setSubTreeT: RootSelector is not allowed"
+    _ -> throwErrSt insertErrMsg
   return $ setTreeNode parT n
  where
   updateParStruct :: (MonadError String m) => Struct t -> StructSelector -> m (TreeNode t)
@@ -168,7 +167,7 @@ setSubTreeTN sel subT parT = do
                   }
              in
               return (TNStruct newStruct)
-          _ -> throwError insertErrMsg
+          _ -> throwErrSt insertErrMsg
 
   insertErrMsg :: String
   insertErrMsg =

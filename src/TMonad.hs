@@ -6,12 +6,12 @@ module TMonad where
 
 import Class
 import Control.Monad (unless, when)
-import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState, gets, modify)
 import Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import Env
+import Error
 import GHC.Stack (HasCallStack)
 import Path
 import Text.Printf (printf)
@@ -63,7 +63,7 @@ propUpTMSel :: (TMonad s m t) => Selector -> m ()
 propUpTMSel sel = getTMCursor >>= go >>= putTMCursor
  where
   go :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
-  go (ValCursor _ []) = throwError "propUpTMSel: already at the top"
+  go (ValCursor _ []) = throwErrSt "propUpTMSel: already at the top"
   go tc@(ValCursor _ ((s, _) : _)) = do
     if s == sel
       then propValUp tc
@@ -104,43 +104,74 @@ inSubTM sel t f = do
   propUpTMSel sel
   return r
 
-inAbsRemoteTM :: (TMonad s m t) => Path -> m a -> m a
-inAbsRemoteTM p f = do
-  inAbsRemoteTMMaybe p (Just <$> f) >>= maybe (throwError "inAbsRemoteTM: path does not exist") return
+inParentTM :: (TMonad s m t) => m a -> m a
+inParentTM f = do
+  crumbs <- getTMCrumbs
+  case crumbs of
+    [] -> throwErrSt "already at the top"
+    (sel, _) : _ -> do
+      propUpTM
+      r <- f
+      getTMCursor >>= maybe (throwErrSt "failed to go down") putTMCursor . goDownTCSel sel
+      return r
 
--- | Go to the absolute path in the tree and execute the action. The path must exist.
-inAbsRemoteTMMaybe :: (TMonad s m t) => Path -> m (Maybe a) -> m (Maybe a)
+{- | Get the parent of the current focus.
+
+This does not propagate the value up.
+-}
+getTMParent :: (TMonad s m t) => m t
+getTMParent = do
+  crumbs <- getTMCrumbs
+  case crumbs of
+    [] -> throwErrSt "already at the top"
+    (_, t) : _ -> return t
+
+inAbsRemoteTM :: (TMonad s m t, Show t) => Path -> m a -> m a
+inAbsRemoteTM p f = do
+  inAbsRemoteTMMaybe p f
+    >>= maybe (throwErrSt $ printf "path %s does not exist" (show p)) return
+
+{- | Go to the absolute path in the tree and execute the action.
+If the path does not exist, return Nothing.
+-}
+inAbsRemoteTMMaybe :: (TMonad s m t, Show t) => Path -> m a -> m (Maybe a)
 inAbsRemoteTMMaybe p f = do
   origAbsPath <- getTMAbsPath
 
   tarM <- whenM (goTMAbsPath p) f
-  backM <- goTMAbsPath origAbsPath
-  unless backM $ throwError "inAbsRemoteTMMaybe: failed to go back to the original path"
+  backOk <- goTMAbsPath origAbsPath
+  unless backOk $
+    throwErrSt $
+      printf
+        "failed to go back to the original path %s, dest: %s"
+        (show origAbsPath)
+        (show p)
   return tarM
  where
-  whenM :: (TMonad s m t) => m Bool -> m (Maybe a) -> m (Maybe a)
+  whenM :: (TMonad s m t) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
-    if b then g else return Nothing
+    if b then Just <$> g else return Nothing
 
 -- | Go to the absolute path in the tree. The path must exist.
-goTMAbsPath :: (TMonad s m t) => Path -> m Bool
+goTMAbsPath :: (TMonad s m t, Show t) => Path -> m Bool
 goTMAbsPath dst = do
   when (headSel dst /= Just Path.RootSelector) $
-    throwError (printf "goTMAbsPath: the path %s should start with the root selector" (show dst))
+    throwErrSt (printf "the path %s should start with the root selector" (show dst))
   propUpTMUntilSel Path.RootSelector
+  -- withDebugInfo $ \_ t -> logDebugStr $ printf "goTMAbsPath: %s, t: %s" (show dst) (show t)
   let dstNoRoot = fromJust $ tailPath dst
   descendTM dstNoRoot
 
 -- Locate the node in the lowest ancestor tree by specified path. The path must start with a locatable var.
 goLowestAncPathTM :: (TMonad s m t) => Path -> m (Maybe a) -> m (Maybe a)
 goLowestAncPathTM dst f = do
-  when (isPathEmpty dst) $ throwError "locate: empty path"
+  when (isPathEmpty dst) $ throwErrSt "empty path"
   let fstSel = fromJust $ headSel dst
   tc <- getTMCursor
   varTC <-
     maybeM
-      (throwError $ printf "reference %s is not found" (show fstSel))
+      (throwErrSt $ printf "identifier %s is not found" (show fstSel))
       return
       (searchTCVar fstSel tc)
 
@@ -183,6 +214,13 @@ inDiscardSubTM sel t f = do
   discardTMAndPop
   return r
 
+inTempSubTM :: (TMonad s m t) => t -> m a -> m a
+inTempSubTM sub f = do
+  pushTMSub TempSelector sub
+  r <- f
+  propUpTMSel TempSelector
+  return r
+
 maybeM :: (Monad m) => m b -> (a -> m b) -> m (Maybe a) -> m b
 maybeM b f m = do
   ma <- m
@@ -196,10 +234,10 @@ whenJustM m f = do
   ma <- m
   maybe (return Nothing) f ma
 
--- Delete the notification receiver.
+-- Delete the notification receivers that have the specified prefix.
 -- This should be called when the reference becomes invalid.
-delNotifRecvs :: (TMonad s m t) => Path -> m ()
-delNotifRecvs pathPrefix = do
+delNotifRecvPrefix :: (TMonad s m t) => Path -> m ()
+delNotifRecvPrefix pathPrefix = do
   withContext $ \ctx -> do
     putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
   withDebugInfo $ \path _ -> do

@@ -11,104 +11,109 @@ module Ref where
 import Class
 import Config
 import Control.Monad (unless, void, when)
-import Control.Monad.Except (throwError)
 import Control.Monad.Reader (ask)
 import Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromJust, fromMaybe, isNothing)
 import qualified Data.Set as Set
-import FuncCall
+import Error
+import Mutate
 import Path
 import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
 
-startReduceRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
-startReduceRef nt reduceFunc = do
-  withDebugInfo $ \path _ ->
-    logDebugStr $
-      printf "startReduceRef: path: %s, new value: %s" (show path) (show nt)
-  withCtxTree $ \ct -> do
-    let
-      nvPath = cvPath ct
-      notifers = ctxNotifiers . cvCtx $ ct
-      deps = fromMaybe [] (Map.lookup nvPath notifers)
-    withDebugInfo $ \path _ ->
-      unless (null deps) $
-        logDebugStr $
-          printf "startReduceRef: path: %s, using value to update %s" (show path) (show deps)
-    mapM_ (\dep -> inAbsRemoteTM dep (populateRef nt reduceFunc)) deps
+notify :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Mutable Tree -> m ()) -> m ()
+notify nt reduceMutable = withDebugInfo $ \path _ ->
+  debugSpan (printf "notify: path: %s, new value: %s" (show path) (show nt)) $ do
+    withCtxTree $ \ct -> do
+      let
+        srcRefPath = treeRefPath $ cvPath ct
+        notifers = ctxNotifiers . cvCtx $ ct
+        notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
 
-{- | Substitute the cached result of the Func node pointed by the path with the new non-function value. Then trigger the
- - re-evluation of the lowest ancestor Func.
+      unless (null notifs) $
+        logDebugStr $
+          printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
+      mapM_
+        ( \dep ->
+            inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
+              -- Remove the notifier if the receiver is not found. The receiver might be relocated. For examaple,
+              -- the receiver could first be reduced in a unifying function reducing arguments phase with path a/fa0.
+              -- Then the receiver is relocated to a due to unifying fields.
+              >>= maybe (delNotifRecvPrefix dep) return
+        )
+        notifs
+
+{- | Substitute the cached result of the Mutable node pointed by the path with the new non-function value. Then trigger the
+ - re-evluation of the lowest ancestor Mutable.
  - The tree focus is set to the ref func.
 -}
-populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Func Tree -> m ()) -> m ()
-populateRef nt reduceFunc = do
-  withDebugInfo $ \path t ->
-    logDebugStr $ printf "populateRef: path: %s, start, focus: %s, new value: %s" (show path) (show t) (show nt)
-  withTree $ \tar -> mustFunc $ \fn -> case treeNode nt of
-    TNFunc newFn ->
-      maybe
-        (return ()) -- If the new value is a pure function, just skip the reduction.
-        ( \res -> do
-            withDebugInfo $ \path _ ->
+populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => Mutable Tree -> m ()) -> m ()
+populateRef nt reduceMutable = withDebugInfo $ \path x ->
+  debugSpan (printf "populateRef: path: %s, focus: %s, new value: %s" (show path) (show x) (show nt)) $ do
+    withTree $ \tar -> case treeNode nt of
+      TNMutable newMut ->
+        maybe
+          (return ()) -- If the new value is a pure function (mutable without any values), just skip the reduction.
+          ( \res -> do
               logDebugStr $ printf "populateRef: path: %s, new res of function: %s" (show path) (show res)
-            putTMTree . mkFuncTree $ setFuncTempRes fn res
-            void $ handleFuncCall (Just res)
-        )
-        (fncTempRes newFn)
-    _ -> do
-      unless (isFuncRef fn) $
-        throwError $
-          printf "populateRef: the target node %s is not a reference." (show tar)
+              void $ tryReduceMut (Just res)
+          )
+          (mutValue newMut)
+      _ -> case treeNode tar of
+        TNMutable _ -> void $ tryReduceMut (Just nt)
+        _ -> do
+          logDebugStr $ printf "populateRef: the target node %s is not a reference now." (show tar)
+          -- we need to delete receiver starting with the path, not only the path. For example, if the function
+          -- is index and the first argument is a reference, then the first argument dependency should also be
+          -- deleted.
+          delNotifRecvPrefix path
 
-      void $ handleFuncCall (Just nt)
+    res <- getTMTree
+    logDebugStr $ printf "populateRef: path: %s, mutable reduced to: %s" (show path) (show res)
 
-  res <- getTMTree
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "populateRef: path: %s, function reduced to: %s" (show path) (show res)
-
-  -- Locate the lowest ancestor function to trigger the re-evaluation of the ancestor function.
-  locateLAFunc
-  withTree $ \t -> case treeNode t of
-    TNFunc fn
-      | isFuncRef fn -> do
-          -- If it is a reference, the re-evaluation can be skipped because
-          -- 1. The highest function is actually itself.
-          -- 2. Re-evaluating the reference would get the same value.
-          withDebugInfo $ \path _ ->
+    -- Locate the lowest ancestor mutable to trigger the re-evaluation of the ancestor mutable.
+    locateLAMutable
+    withTree $ \t -> case treeNode t of
+      TNMutable fn
+        | isMutableRef fn -> do
+            -- If it is a reference, the re-evaluation can be skipped because
+            -- 1. The la mutable is actually itself.
+            -- 2. Re-evaluating the reference would get the same value.
             logDebugStr $
               printf
-                "populateRef: lowest ancestor function is a reference, skip re-evaluation. path: %s, node: %s"
+                "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
                 (show path)
                 (show t)
-      -- re-evaluate the highest function when it is not a reference.
-      | otherwise -> do
-          withDebugInfo $ \path _ ->
+        -- re-evaluate the highest mutable when it is not a reference.
+        | otherwise -> do
             logDebugStr $
-              printf "populateRef: re-evaluating the lowest ancestor function, path: %s, node: %s" (show path) (show t)
-          r <- reduceFunc fn >> getTMTree
-          startReduceRef r reduceFunc
-    _ ->
-      if isTreeFunc res
-        then throwError $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)
-        else logDebugStr "populateRef: the lowest ancestor node is not found"
+              printf "populateRef: re-evaluating the lowest ancestor mutable, path: %s, node: %s" (show path) (show t)
+            r <- reduceMutable fn >> getTMTree
+            notify r reduceMutable
+      _ ->
+        if isTreeMutable res
+          then throwErrSt $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)
+          else logDebugStr "populateRef: the lowest ancestor node is not found"
 
--- Locate the lowest ancestor node of type regular function.
-locateLAFunc :: (TreeMonad s m) => m ()
-locateLAFunc = do
+-- Locate the lowest ancestor mutable.
+-- TODO: consider the mutable does not have arguments.
+locateLAMutable :: (TreeMonad s m) => m ()
+locateLAMutable = do
   path <- getTMAbsPath
-  if hasEmptyPath path || not (hasFuncSel path)
+  if hasEmptyPath path || not (hasMutableArgSel path)
     then return ()
-    else propUpTM >> locateLAFunc
+    -- If the path has mutable argument selectors, that means we are in a mutable node.
+    else propUpTM >> locateLAMutable
  where
   hasEmptyPath (Path.Path sels) = null sels
-  hasFuncSel (Path.Path sels) =
+  -- Check if the path has mutable argument selectors.
+  hasMutableArgSel (Path.Path sels) =
     any
       ( \case
-          (FuncSelector (FuncArgSelector _)) -> True
+          (MutableSelector (MutableArgSelector _)) -> True
           _ -> False
       )
       sels
@@ -122,15 +127,28 @@ deref tp = do
   withDebugInfo $ \_ t ->
     logDebugStr $
       printf "deref: path: %s, start:, ref_path: %s, tip: %s" (show path) (show tp) (show t)
-  follow tp Set.empty >>= \case
-    (Just (_, tar)) -> do
-      withDebugInfo $ \_ t ->
-        logDebugStr $
-          printf "deref: path: %s, done: ref_path: %s, tip: %s, tar: %s" (show path) (show tp) (show t) (show tar)
+  r <-
+    follow tp Set.empty >>= \case
+      (Just (_, tar)) -> do
+        withDebugInfo $ \_ t ->
+          logDebugStr $
+            printf "deref: path: %s, done: ref_path: %s, tip: %s, tar: %s" (show path) (show tp) (show t) (show tar)
 
-      putTMTree tar
-      return True
-    Nothing -> return False
+        putTMTree tar
+        return True
+      Nothing -> return False
+
+  -- add notifier. If the referenced value changes, then the reference should be updated.
+  -- duplicate cases are handled by the addCtxNotifier.
+  withCtxTree $ \ct -> do
+    tarPath <- getRefTarAbsPath tp
+    let
+      tarRefPath = treeRefPath tarPath
+      recvRefPath = treeRefPath $ cvPath ct
+
+    logDebugStr $ printf "deref: add notifier: (%s, %s)" (show tarRefPath) (show recvRefPath)
+    putTMContext $ addCtxNotifier (cvCtx ct) (tarRefPath, recvRefPath)
+  return r
  where
   -- Keep dereferencing until the target node is not a reference node.
   -- The refsSeen keeps track of the followed references to detect cycles.
@@ -150,14 +168,14 @@ deref tp = do
               (show orig)
         -- substitute the reference with the target node.
         putTMTree orig
-        withTN $ \case
+        case treeNode orig of
           -- follow the reference.
-          TNFunc fn | isFuncRef fn -> do
+          TNMutable fn | isMutableRef fn -> do
             nextDst <-
               maybe
-                (throwError "deref: can not generate path from the arguments")
+                (throwErrSt "can not generate path from the arguments")
                 return
-                (treesToPath (fncArgs fn))
+                (treesToPath (mutArgs fn))
             follow nextDst (Set.insert ref refsSeen)
           _ -> return resM
 
@@ -183,7 +201,7 @@ deref tp = do
           -- references.
           | Set.member ref refsSeen -> do
               logDebugStr $
-                printf "deref: reference cycle detected: %s, seen: %s" (show ref) (show $ Set.toList refsSeen)
+                printf "deref: self reference cycle detected: %s, seen: %s" (show ref) (show $ Set.toList refsSeen)
               return $ Just . mkNewTree $ TNRefCycle (RefCycle True)
           -- This handles the case when the reference refers to itself that is the ancestor.
           -- For example, { a: a + 1 } or { a: !a }.
@@ -193,15 +211,16 @@ deref tp = do
           -- (!)
           --  | - unary_op
           -- ref_a
-          | canDstPath == canSrcPath && srcPath /= dstPath -> withTree $ \tar -> case treeNode tar of
+          | canDstPath == canSrcPath && treeRefPath srcPath /= treeRefPath dstPath -> withTree $ \tar -> case treeNode tar of
               -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
               TNConstraint c -> return $ Just (mkAtomVTree $ cnsOrigAtom c)
               _ -> do
-                logDebugStr $ printf "deref: reference tail cycle detected: %s == %s." (show dstPath) (show srcPath)
+                logDebugStr $ printf "deref: reference cycle tail detected: %s == %s." (show dstPath) (show srcPath)
                 return $ Just . mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
-          -- return $ Left (dstPath, relPath dstPath srcPath)
-          | isPrefix canDstPath canSrcPath && srcPath /= dstPath ->
-              throwError $ printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)
+          | isPrefix canDstPath canSrcPath && canSrcPath /= canDstPath ->
+              return . Just $
+                mkBottomTree $
+                  printf "structural cycle detected. %s is a prefix of %s" (show dstPath) (show srcPath)
           -- The value of a reference is a copy of the expression associated with the field that it is bound to, with
           -- any references within that expression bound to the respective copies of the fields they were originally
           -- bound to.
@@ -229,10 +248,10 @@ deref tp = do
                           (show dstPath)
                           (show $ Set.toList visitedRefs)
                       return $
-                        mkFuncTree $
-                          (mkStubFunc $ close True)
-                            { fncName = "deref_close"
-                            , fncArgs = [orig]
+                        mkMutableTree $
+                          (mkStubMutable $ close True)
+                            { mutName = "deref_close"
+                            , mutArgs = [orig]
                             }
                     else return orig
                 logDebugStr $
@@ -266,5 +285,20 @@ deref tp = do
     tarM <- goLowestAncPathTM p (Just <$> getTMTree)
     res <- maybe (return Nothing) (\x -> putTMTree x >> f) tarM
     backM <- goTMAbsPath origAbsPath
-    unless backM $ throwError $ printf "inRemoteTMMaybe: failed to go back to the original path %s" (show origAbsPath)
+    unless backM $ throwErrSt $ printf "failed to go back to the original path %s" (show origAbsPath)
     return res
+
+{- | Get the reference target absolute path. The target might not exist at the time, but the path should be valid as the
+first selector is a locatable var.
+-}
+getRefTarAbsPath :: (TreeMonad s m) => Path -> m Path
+getRefTarAbsPath ref = do
+  let fstSel = fromJust $ headSel ref
+  tc <- getTMCursor
+  varTC <-
+    maybeM
+      (throwErrSt $ printf "reference %s is not found" (show fstSel))
+      return
+      (searchTCVar fstSel tc)
+  let fstSelAbsPath = tcPath varTC
+  return $ maybe fstSelAbsPath (`appendPath` fstSelAbsPath) (tailPath ref)

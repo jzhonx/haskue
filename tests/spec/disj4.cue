@@ -1,3 +1,3 @@
-x: *"h" | string
-y: *"h" | string
+x: *"a" | string
+y: *"a" | string
 z: x & y

@@ -24,14 +24,15 @@ instance Show Trace where
 debugSpan :: (MonadState s m, MonadLogger m, HasTrace s, Show a) => String -> m a -> m a
 debugSpan msg f = do
   tr <- gets getTrace
-  modify $ \s -> setTrace s (tr{traceStack = traceID tr : traceStack tr, traceID = traceID tr + 1})
-  logDebugStr $ printf "%s, begin, %s" (show tr) msg
+  let ntr = tr{traceID = traceID tr + 1}
+  logDebugStr $ printf "%s, begin, %s" (show ntr) msg
+  modify $ \s -> setTrace s (ntr{traceStack = traceID ntr : traceStack ntr})
 
   res <- f
 
-  logDebugStr $ printf "%s, _ends, %s, result: %s" (show tr) msg (show res)
-  tr2 <- gets getTrace
-  modify $ \s -> setTrace s (tr2{traceStack = tail $ traceStack tr2})
+  logDebugStr $ printf "%s, _ends, %s, result: %s" (show ntr) msg (show res)
+  closeTR <- gets getTrace
+  modify $ \s -> setTrace s (closeTR{traceStack = tail $ traceStack closeTR})
   return res
 
 emptyTrace :: Trace

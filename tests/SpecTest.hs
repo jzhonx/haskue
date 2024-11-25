@@ -11,7 +11,7 @@ import Debug.Trace
 import Eval (runTreeIO)
 import Parser
 import Path
-import Reduction (mkRefFunc)
+import Reduction (mkRefMutable)
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -74,9 +74,9 @@ newStruct subs = newCompleteStruct [] subs
 -- newStruct subs = newStruct (map fst subs) subs
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = case runExcept (mkRefFunc p undefined) of
+mkSimpleLink p = case runExcept (mkRefMutable p undefined) of
   Left err -> error err
-  Right v -> mkFuncTree v
+  Right v -> mkMutableTree v
 
 startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ runTreeIO s
@@ -471,8 +471,8 @@ testDisj4 = do
             ( "x"
             , mkNewTree . TNDisj $
                 Disj
-                  (Just $ mkAtomTree $ String "h")
-                  [ mkAtomTree $ String "h"
+                  (Just $ mkAtomTree $ String "a")
+                  [ mkAtomTree $ String "a"
                   , mkBoundsTree [BdType BdString]
                   ]
             )
@@ -480,8 +480,8 @@ testDisj4 = do
             ( "y"
             , mkNewTree . TNDisj $
                 Disj
-                  (Just $ mkAtomTree $ String "h")
-                  [ mkAtomTree $ String "h"
+                  (Just $ mkAtomTree $ String "a")
+                  [ mkAtomTree $ String "a"
                   , mkBoundsTree [BdType BdString]
                   ]
             )
@@ -489,8 +489,8 @@ testDisj4 = do
             ( "z"
             , mkNewTree . TNDisj $
                 Disj
-                  (Just $ mkAtomTree $ String "h")
-                  [ mkAtomTree $ String "h"
+                  (Just $ mkAtomTree $ String "a")
+                  [ mkAtomTree $ String "a"
                   , mkBoundsTree [BdType BdString]
                   ]
             )
@@ -751,7 +751,7 @@ testIncomplete = do
           [ ("a", mkNewTree TNTop)
           ,
             ( "b"
-            , mkFuncTree $
+            , mkMutableTree $
                 mkBinaryOp
                   AST.Sub
                   (\_ _ -> throwError "not implemented")
@@ -1095,12 +1095,12 @@ testCnstr2 = do
       [ ("a", mkNewTree (TNRefCycle (RefCycle True)))
       ,
         ( "b"
-        , mkFuncTree $
+        , mkMutableTree $
             mkBinaryOp
               AST.Unify
               (\_ _ -> throwError "not implemented")
               (mkAtomTree $ Int 200)
-              ( mkNewTree . TNFunc $
+              ( mkNewTree . TNMutable $
                   mkBinaryOp
                     AST.Add
                     (\_ _ -> throwError "not implemented")
@@ -1138,8 +1138,8 @@ testPat1 = do
           [
             ( "y"
             , newStruct
-                [ ("a", mkAtomTree $ Int 1)
-                , ("b", mkAtomTree $ Int 2)
+                [ ("b", mkAtomTree $ Int 2)
+                , ("a", mkAtomTree $ Int 1)
                 ]
             )
           ]
@@ -1165,7 +1165,7 @@ testPat2 = do
                       [ ("firstName", mkBoundsTree [BdType BdString])
                       ,
                         ( "nickName"
-                        , mkFuncTree $
+                        , mkMutableTree $
                             mkBinaryOp
                               AST.Disjunction
                               (\_ _ -> throwError "not implemented")

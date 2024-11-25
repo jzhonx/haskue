@@ -5,7 +5,7 @@ import Class
 import Value.Atom
 
 newtype Bounds = Bounds {bdsList :: [Bound]}
-  deriving (Eq, Show)
+  deriving (Eq)
 
 data Bound
   = BdNE Atom
@@ -41,10 +41,11 @@ data BdType
   | BdString
   deriving (Eq, Enum, Bounded)
 
+instance Show Bounds where
+  show b = AST.exprStr $ buildBoundsASTExpr b
+
 instance BuildASTExpr Bounds where
-  buildASTExpr c b = do
-    xs <- mapM (buildASTExpr c) (bdsList b)
-    return $ foldr1 (AST.ExprBinaryOp AST.Unify) xs
+  buildASTExpr _ b = return $ buildBoundsASTExpr b
 
 instance Show Bound where
   show b = AST.exprStr $ buildBoundASTExpr b
@@ -54,6 +55,11 @@ instance TreeRepBuilder Bound where
 
 instance BuildASTExpr Bound where
   buildASTExpr _ b = return $ buildBoundASTExpr b
+
+buildBoundsASTExpr :: Bounds -> AST.Expression
+buildBoundsASTExpr bds = foldr1 (AST.ExprBinaryOp AST.Unify) es
+ where
+  es = map buildBoundASTExpr (bdsList bds)
 
 buildBoundASTExpr :: Bound -> AST.Expression
 buildBoundASTExpr b = case b of
