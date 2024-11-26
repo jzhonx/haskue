@@ -15,6 +15,7 @@ import Util
 import Value.Tree
 
 {- | Check whether the mutator is reducible.
+
 The first argument is a mutable node, and the second argument is the value of the mutable.
 -}
 isMutableTreeReducible :: Tree -> Tree -> Bool
@@ -25,10 +26,13 @@ isMutableTreeReducible fnt res =
     -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
     || not (treeHasRef fnt)
 
-{- | Mutate the Mutable. If the previous mutable mutates to another mutable, then the function will be recursively
+{- | Mutate the Mutable. If the previous mutable mutates to another mutable, then this function will be recursively
  - called.
- - The focus of the tree should still be of type Mutable after the mutation.
- - No global states should be changed too.
+
+The mutation is run in the sub-tree indicated by MutableValSelector. The mutMethod result will be put in the mutVal.
+
+The focus of the tree should still be of type Mutable after the mutation.
+No global states should be changed too.
 -}
 mutate :: (TreeMonad s m) => m ()
 mutate = mustMutable $ \m -> withDebugInfo $ \path _ -> do
@@ -36,7 +40,7 @@ mutate = mustMutable $ \m -> withDebugInfo $ \path _ -> do
   debugSpan (printf "mutate, path: %s, mut: %s" (show path) (show name)) $ do
     -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
     -- enough to replace the mutable with the new struct.
-    inSubTM (MutableSelector MutableValSelector) (mkMutableTree mutateValStub) $ void (invokeMutMethod m)
+    inSubTM (MutableSelector MutableValSelector) (mkMutableTree mutateValStub) (invokeMutMethod m)
 
     -- Make sure the mutable is still the focus of the tree.
     withTree $ \_ -> mustMutable $ \mut ->
@@ -53,14 +57,11 @@ mutate = mustMutable $ \m -> withDebugInfo $ \path _ -> do
                 else do
                   -- recursively mutate until the result is not a mutable.
                   putTMTree res >> mutate
-            Nothing -> do
-              void $ tryReduceMut (Just res)
+            Nothing -> void $ tryReduceMut (Just res)
  where
   mutateValStub :: Mutable Tree
   mutateValStub =
-    ( mkStubMutable
-        ( \_ -> throwErrSt "mutateValStub: mutMethod should not be called"
-        )
+    ( mkStubMutable (\_ -> throwErrSt "mutateValStub: mutMethod should not be called")
     )
       { mutName = "mvStub"
       }
@@ -80,7 +81,6 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
             let reducible = isMutableTreeReducible t val
 
             withDebugInfo $ \path _ -> do
-              -- dumpEntireTree ("tryReduceMut " ++ show path ++ " start")
               logDebugStr $
                 printf
                   "tryReduceMut: func %s, path: %s, is reducible: %s, args: %s"
@@ -99,6 +99,7 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
     valM
 
 {- | Convert the RefCycleTail to RefCycle if the path is the same as the cycle start path.
+
 RefCycleTail is like Bottom.
 -}
 handleRefCycle :: (TreeMonad s m) => Tree -> m ()

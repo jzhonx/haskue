@@ -126,6 +126,7 @@ reduceStruct = do
 
   -- pattern value should never be reduced because the references inside the pattern value should only be resolved in
   -- the unification node of the static field.
+  -- See unify for more details.
   whenStruct () $ \s -> mapM_ applyPatStaticFields (stcPatterns s)
 
   withDebugInfo $ \path t ->
@@ -707,9 +708,28 @@ unifyREmbedded t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R True
 
 {- | Unify UTrees.
 
-If one of the operators is a struct, we should not further reduce the values of the references. Otherwise it is a great
-challenge to the notification system.
-For example:
+The special case is the struct. If two operands are structs, we must not immediately reduce the operands. Instead, we
+should combine both fields and reduce sub-fields. The reason is stated in the spec,
+
+> The successful unification of structs a and b is a new struct c which has all fields of both a and b, where the value
+of a field f in c is a.f & b.f if f is defined in both a and b, or just a.f or b.f if f is in just a or b, respectively.
+Any references to a or b in their respective field values need to be replaced with references to c. The result of a
+unification is bottom (_|_) if any of its defined fields evaluates to bottom, recursively.
+
+Suppose one of the structs contains a reference to a field in the other struct, and reducing the struct operand will
+register a notifier that watches the field in the unified struct. The notifier will be triggered when the field is
+updated. But the direction is from parent to the child. Once the operand is updated, the reference system will search
+for the lowest ancestor mutable to re-run reduction since one of the LAM's dependencies is updated. This will cause the
+unified struct to be reduced again, and the notifier will be triggered again. This will cause an infinite loop.
+
+Consider the example:
+x: { a: c } & { c: {} }
+
+After reducing the left struct, the notifier, (/x/c, /x/fa0/a) will be registered to watch the field "c". When the field
+"c" is updated, the notifier will be triggered. Then the struct labeled with "x" will be reduced again. An infinite loop
+will occur.
+
+Another example:
 {
   a: b + 100
   b: a - 100
@@ -718,10 +738,8 @@ For example:
 
 The "b" in the first struct will have to see the atom 50.
 
-Another example:
-x: { a: c }
-y: { c: 2 }
-z: x & y
+For operands that are references, we do not need reduce them. We only evaluate the expression when the reference is
+dereferenced. If the reference is evaluated to a struct, the struct will be a raw struct.
 -}
 unifyUTrees :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withDebugInfo $ \path _ ->

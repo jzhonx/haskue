@@ -211,12 +211,15 @@ deref tp = do
           -- (!)
           --  | - unary_op
           -- ref_a
-          | canDstPath == canSrcPath && treeRefPath srcPath /= treeRefPath dstPath -> withTree $ \tar -> case treeNode tar of
-              -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
-              TNConstraint c -> return $ Just (mkAtomVTree $ cnsOrigAtom c)
-              _ -> do
-                logDebugStr $ printf "deref: reference cycle tail detected: %s == %s." (show dstPath) (show srcPath)
-                return $ Just . mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
+          -- Notice that for self-cycle, the srcPath could be /path/fv, and the dstPath could be /path. They are the
+          -- same in the treeRefPath form.
+          | canDstPath == canSrcPath && treeRefPath srcPath /= treeRefPath dstPath -> withTree $ \tar ->
+              case treeNode tar of
+                -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
+                TNConstraint c -> return $ Just (mkAtomVTree $ cnsOrigAtom c)
+                _ -> do
+                  logDebugStr $ printf "deref: reference cycle tail detected: %s == %s." (show dstPath) (show srcPath)
+                  return $ Just . mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
           | isPrefix canDstPath canSrcPath && canSrcPath /= canDstPath ->
               return . Just $
                 mkBottomTree $
