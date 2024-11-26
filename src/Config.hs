@@ -22,7 +22,7 @@ data Config t = Config
       (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
       Bool ->
       [t] ->
-      m Bool
+      m ()
   }
 
 instance Show (Config t) where

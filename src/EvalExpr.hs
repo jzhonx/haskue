@@ -262,14 +262,13 @@ evalDisj e1 e2 = do
       return (l, r)
   return $ mkNewTree (TNMutable $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
-  reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m Bool
+  reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
     t1 <- reduceMutableArg binOpLeftSelector unt1
     t2 <- reduceMutableArg binOpRightSelector unt2
     if not (isTreeValue t1) || not (isTreeValue t2)
-      then do
+      then
         logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
-        return False
       else do
         u <- case (e1, e2) of
           (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
@@ -281,4 +280,3 @@ evalDisj e1 e2 = do
           (_, _) -> reduceDisjPair (DisjRegular t1) (DisjRegular t2)
         logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
         putTMTree u
-        return True

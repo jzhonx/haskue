@@ -27,7 +27,7 @@ data Mutable t = Mutable
   -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
   -- available.
   -- The return value of the method should be stored in the tree.
-  , mutMethod :: forall s m. (MutableEnv s m t) => [t] -> m Bool
+  , mutMethod :: forall s m. (MutableEnv s m t) => [t] -> m ()
   , mutValue :: Maybe t
   -- ^ mutValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
@@ -65,10 +65,10 @@ setMutableState mut t = mut{mutValue = Just t}
 resetMutableVal :: Mutable t -> Mutable t
 resetMutableVal mut = mut{mutValue = Nothing}
 
-invokeMutMethod :: (MutableEnv s m t) => Mutable t -> m Bool
+invokeMutMethod :: (MutableEnv s m t) => Mutable t -> m ()
 invokeMutMethod mut = mutMethod mut (mutArgs mut)
 
-mkStubMutable :: (forall s m. (MutableEnv s m t) => [t] -> m Bool) -> Mutable t
+mkStubMutable :: (forall s m. (MutableEnv s m t) => [t] -> m ()) -> Mutable t
 mkStubMutable f =
   Mutable
     { mutName = ""
@@ -83,7 +83,7 @@ mkUnaryOp ::
   forall t.
   (BuildASTExpr t) =>
   AST.UnaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> m Bool) ->
+  (forall s m. (MutableEnv s m t) => t -> m ()) ->
   t ->
   Mutable t
 mkUnaryOp op f n =
@@ -96,7 +96,7 @@ mkUnaryOp op f n =
     , mutValue = Nothing
     }
  where
-  g :: (MutableEnv s m t) => [t] -> m Bool
+  g :: (MutableEnv s m t) => [t] -> m ()
   g [x] = f x
   g _ = throwErrSt "invalid number of arguments for unary function"
 
@@ -117,7 +117,7 @@ mkBinaryOp ::
   forall t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> t -> m Bool) ->
+  (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
   t ->
   t ->
   Mutable t
@@ -133,7 +133,7 @@ mkBinaryOp op f l r =
     , mutValue = Nothing
     }
  where
-  g :: (MutableEnv s m t) => [t] -> m Bool
+  g :: (MutableEnv s m t) => [t] -> m ()
   g [x, y] = f x y
   g _ = throwErrSt "invalid number of arguments for binary function"
 
@@ -148,7 +148,7 @@ mkBinaryOpDir ::
   forall t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> t -> m Bool) ->
+  (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
   (BinOpDirect, t) ->
   (BinOpDirect, t) ->
   Mutable t

@@ -296,7 +296,7 @@ mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
 -}
-index :: (TreeMonad s m) => AST.UnaryExpr -> [Tree] -> m Bool
+index :: (TreeMonad s m) => AST.UnaryExpr -> [Tree] -> m ()
 index ue ts@(t : _)
   | length ts > 1 = do
       idxPathM <- treesToPath <$> mapM evalIndexArg [1 .. length ts - 1]
@@ -321,8 +321,6 @@ index ue ts@(t : _)
             (goDownTCPath idxPath tc)
           withDebugInfo $ \_ r ->
             logDebugStr $ printf "index: the indexed is %s" (show r)
-      -- The tree has been modified.
-      return True
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
   evalIndexArg i = mutValToArgsTM (MutableSelector $ MutableArgSelector i) (ts !! i) (reduce >> getTMTree)
@@ -364,7 +362,6 @@ mkRefMutable tp ue = do
       ( \_ -> do
           ok <- deref tp
           when ok $ withTree $ \t -> putTMTree t
-          return ok
       )
 
 validateCnstrs :: (TreeMonad s m) => m ()
@@ -413,7 +410,7 @@ validateCnstr c = withTree $ \_ -> do
       | isTreeMutable res -> res
       | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
-dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m Bool
+dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m ()
 dispUnaryOp op _t = do
   tM <- reduceAtomOpArg unaryOpSelector _t
   case tM of
@@ -423,7 +420,7 @@ dispUnaryOp op _t = do
         (AST.Plus, Float i) -> fa i id
         (AST.Minus, Int i) -> ia i negate
         (AST.Minus, Float i) -> fa i negate
-        (AST.Not, Bool b) -> putTMTree (mkAtomTree (Bool (not b))) >> return True
+        (AST.Not, Bool b) -> putTMTree (mkAtomTree (Bool (not b)))
         (AST.UnaRelOp uop, _) -> case (uop, amvAtom ta) of
           (AST.NE, a) -> mkb (BdNE a)
           (AST.LT, Int i) -> mkib BdLT i
@@ -434,44 +431,44 @@ dispUnaryOp op _t = do
           (AST.GT, Float f) -> mkfb BdGT f
           (AST.GE, Int i) -> mkib BdGE i
           (AST.GE, Float f) -> mkfb BdGE f
-          (AST.ReMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReMatch p]) >> return True
-          (AST.ReNotMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReNotMatch p]) >> return True
+          (AST.ReMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReMatch p])
+          (AST.ReNotMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReNotMatch p])
           _ -> putConflict
         _ -> putConflict
-      TNRefCycle (RefCycleTail _) -> putTMTree t >> return True
+      TNRefCycle (RefCycleTail _) -> putTMTree t
       _ -> putConflict
-    Nothing -> return False
+    Nothing -> return ()
  where
   conflict :: Tree
   conflict = mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
 
-  putConflict :: (TreeMonad s m) => m Bool
-  putConflict = putTMTree conflict >> return True
+  putConflict :: (TreeMonad s m) => m ()
+  putConflict = putTMTree conflict
 
-  ia :: (TreeMonad s m) => Integer -> (Integer -> Integer) -> m Bool
-  ia a f = putTMTree (mkAtomTree (Int $ f a)) >> return True
+  ia :: (TreeMonad s m) => Integer -> (Integer -> Integer) -> m ()
+  ia a f = putTMTree (mkAtomTree (Int $ f a))
 
-  fa :: (TreeMonad s m) => Double -> (Double -> Double) -> m Bool
-  fa a f = putTMTree (mkAtomTree (Float $ f a)) >> return True
+  fa :: (TreeMonad s m) => Double -> (Double -> Double) -> m ()
+  fa a f = putTMTree (mkAtomTree (Float $ f a))
 
-  mkb :: (TreeMonad s m) => Bound -> m Bool
-  mkb b = putTMTree (mkBoundsTree [b]) >> return True
+  mkb :: (TreeMonad s m) => Bound -> m ()
+  mkb b = putTMTree (mkBoundsTree [b])
 
-  mkib :: (TreeMonad s m) => BdNumCmpOp -> Integer -> m Bool
-  mkib uop i = putTMTree (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)]) >> return True
+  mkib :: (TreeMonad s m) => BdNumCmpOp -> Integer -> m ()
+  mkib uop i = putTMTree (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
 
-  mkfb :: (TreeMonad s m) => BdNumCmpOp -> Double -> m Bool
-  mkfb uop f = putTMTree (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)]) >> return True
+  mkfb :: (TreeMonad s m) => BdNumCmpOp -> Double -> m ()
+  mkfb uop f = putTMTree (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
 
-dispBinMutable :: (TreeMonad s m) => AST.BinaryOp -> Tree -> Tree -> m Bool
+dispBinMutable :: (TreeMonad s m) => AST.BinaryOp -> Tree -> Tree -> m ()
 dispBinMutable op = case op of
   AST.Unify -> unify
   _ -> regBin op
 
-regBin :: (TreeMonad s m) => AST.BinaryOp -> Tree -> Tree -> m Bool
+regBin :: (TreeMonad s m) => AST.BinaryOp -> Tree -> Tree -> m ()
 regBin op t1 t2 = regBinDir op (L, t1) (R, t2)
 
-regBinDir :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Bool
+regBinDir :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinDir op (d1, _t1) (d2, _t2) = do
   withDebugInfo $ \path _ ->
     logDebugStr $
@@ -486,10 +483,10 @@ regBinDir op (d1, _t1) (d2, _t2) = do
 
   case (t1M, t2M) of
     (Just t1, Just t2) -> case (treeNode t1, treeNode t2) of
-      (TNBottom _, _) -> putTMTree t1 >> return True
-      (_, TNBottom _) -> putTMTree t2 >> return True
-      (TNRefCycle (RefCycleTail _), _) -> putTMTree t1 >> return True
-      (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2 >> return True
+      (TNBottom _, _) -> putTMTree t1
+      (_, TNBottom _) -> putTMTree t2
+      (TNRefCycle (RefCycleTail _), _) -> putTMTree t1
+      (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2
       (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
       (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
       (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
@@ -497,9 +494,9 @@ regBinDir op (d1, _t1) (d2, _t2) = do
       (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) (d2, t2)
       (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
       _ -> regBinLeftOther op (d1, t1) (d2, t2)
-    _ -> return False
+    _ -> return ()
 
-regBinLeftAtom :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m Bool
+regBinLeftAtom :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
   if
@@ -522,11 +519,11 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ uncmpAtoms a1 a2
            in
             case r of
-              Right b -> putTree $ mkAtomTree b
-              Left err -> putTree err
+              Right b -> putTMTree $ mkAtomTree b
+              Left err -> putTMTree err
         TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
-        TNStruct _ -> putTree $ cmpNull a1 t2
-        TNList _ -> putTree $ cmpNull a1 t2
+        TNStruct _ -> putTMTree $ cmpNull a1 t2
+        TNList _ -> putTMTree $ cmpNull a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
     -- arithmetic operators
     | op `elem` arithOps -> case treeNode t2 of
@@ -557,20 +554,17 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ mismatch op a1 (amvAtom ta2)
            in
             case r of
-              Right b -> putTree $ mkAtomTree b
-              Left err -> putTree err
+              Right b -> putTMTree $ mkAtomTree b
+              Left err -> putTMTree err
         TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
-        TNStruct _ -> putTree $ mismatchArith a1 t2
-        TNList _ -> putTree $ mismatchArith a1 t2
+        TNStruct _ -> putTMTree $ mismatchArith a1 t2
+        TNList _ -> putTMTree $ mismatchArith a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
-    | otherwise -> putTree (mkBottomTree $ printf "operator %s is not supported" (show op))
+    | otherwise -> putTMTree (mkBottomTree $ printf "operator %s is not supported" (show op))
  where
   a1 = amvAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
   arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
-
-  putTree :: (TreeMonad s m) => Tree -> m Bool
-  putTree x = putTMTree x >> return True
 
   uncmpAtoms :: Atom -> Atom -> Tree
   uncmpAtoms x y = mkBottomTree $ printf "%s and %s are not comparable" (show x) (show y)
@@ -594,31 +588,31 @@ mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> Tree
 mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
 regBinLeftStruct ::
-  (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Struct Tree, Tree) -> (BinOpDirect, Tree) -> m Bool
+  (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Struct Tree, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftStruct op (d1, _, t1) (d2, t2) = case treeNode t2 of
   TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-  _ -> putTMTree (mismatch op t1 t2) >> return True
+  _ -> putTMTree (mismatch op t1 t2)
 
 regBinLeftDisj ::
-  (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Disj Tree, Tree) -> (BinOpDirect, Tree) -> m Bool
+  (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Disj Tree, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
   Disj{dsjDefault = Just d} -> regBinDir op (d1, d) (d2, t2)
   _ -> case treeNode t2 of
     TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-    _ -> putTMTree (mismatch op t1 t2) >> return True
+    _ -> putTMTree (mismatch op t1 t2)
 
-regBinLeftOther :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m Bool
+regBinLeftOther :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftOther op (d1, t1) (d2, t2) = do
   withDebugInfo $ \path _ ->
     logDebugStr $ printf "regBinLeftOther: path: %s, %s: %s, %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
-    (TNRefCycle _, _) -> return False
+    (TNRefCycle _, _) -> return ()
     (TNConstraint c, _) -> do
       na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
       case treeNode na of
-        TNAtom atom -> putTMTree (mkNewTree (TNConstraint $ updateCnstrAtom atom c)) >> return True
+        TNAtom atom -> putTMTree (mkNewTree (TNConstraint $ updateCnstrAtom atom c))
         _ -> undefined
-    _ -> putTMTree (mkBottomTree mismatchErr) >> return True
+    _ -> putTMTree (mkBottomTree mismatchErr)
  where
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
@@ -704,11 +698,11 @@ data UTree = UTree
 instance Show UTree where
   show (UTree t d e) = printf "(%s,e:%s,\n%s)" (show d) (show e) (show t)
 
-unify :: (TreeMonad s m) => Tree -> Tree -> m Bool
+unify :: (TreeMonad s m) => Tree -> Tree -> m ()
 unify t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R False)
 
 -- | Unify the right embedded tree with the left tree.
-unifyREmbedded :: (TreeMonad s m) => Tree -> Tree -> m Bool
+unifyREmbedded :: (TreeMonad s m) => Tree -> Tree -> m ()
 unifyREmbedded t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R True)
 
 {- | Unify UTrees.
@@ -729,13 +723,13 @@ x: { a: c }
 y: { c: 2 }
 z: x & y
 -}
-unifyUTrees :: (TreeMonad s m) => UTree -> UTree -> m Bool
+unifyUTrees :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withDebugInfo $ \path _ ->
   debugSpan (printf ("unifying, path: %s:, %s" ++ "\n" ++ "with %s") (show path) (show ut1) (show ut2)) $ do
     -- Each case should handle embedded case when the left value is embedded.
     case (treeNode t1, treeNode t2) of
-      (TNBottom _, _) -> putTree t1
-      (_, TNBottom _) -> putTree t2
+      (TNBottom _, _) -> putTMTree t1
+      (_, TNBottom _) -> putTMTree t2
       (TNTop, _) -> unifyLeftTop ut1 ut2
       (_, TNTop) -> unifyLeftTop ut2 ut1
       (TNAtom a1, _) -> unifyLeftAtom (a1, ut1) ut2
@@ -748,11 +742,8 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withDebugInfo $ \p
       (TNBounds b1, _) -> unifyLeftBound (b1, ut1) ut2
       (_, TNBounds b2) -> unifyLeftBound (b2, ut2) ut1
       _ -> unifyLeftOther ut1 ut2
- where
-  putTree :: (TreeMonad s m) => Tree -> m Bool
-  putTree x = putTMTree x >> return True
 
-unifyLeftTop :: (TreeMonad s m) => UTree -> UTree -> m Bool
+unifyLeftTop :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftTop ut1 ut2 = do
   case treeNode . utVal $ ut2 of
     -- If the left top is embedded in the right struct, we can immediately put the top into the tree without worrying
@@ -763,9 +754,8 @@ unifyLeftTop ut1 ut2 = do
     -- {_, _h: int} & {_h: "hidden"} -> _|_.
     TNStruct _ | utEmbedded ut1 -> putTMTree (utVal ut1)
     _ -> putTMTree (utVal ut2)
-  return True
 
-unifyLeftAtom :: (TreeMonad s m) => (AtomV, UTree) -> UTree -> m Bool
+unifyLeftAtom :: (TreeMonad s m) => (AtomV, UTree) -> UTree -> m ()
 unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = do
   case (amvAtom v1, treeNode t2) of
     (String x, TNAtom s)
@@ -780,14 +770,10 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     (_, TNBounds b) -> do
       logDebugStr $ printf "unifyLeftAtom, %s with Bounds: %s" (show v1) (show t2)
       putTMTree $ unifyAtomBounds (d1, amvAtom v1) (d2, bdsList b)
-      return True
     (_, TNConstraint c) ->
       if v1 == cnsAtom c
-        then putCnstr (cnsAtom c) >> return True
-        else do
-          putTMTree . mkBottomTree $
-            printf "values mismatch: %s != %s" (show v1) (show $ cnsAtom c)
-          return True
+        then putCnstr (cnsAtom c)
+        else putTMTree . mkBottomTree $ printf "values mismatch: %s != %s" (show v1) (show $ cnsAtom c)
     (_, TNDisj dj2) -> do
       logDebugStr $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show v1)
       unifyLeftDisj (dj2, ut2) ut1
@@ -804,15 +790,13 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     (_, TNStruct s2) | utEmbedded ut1 && hasEmptyFields s2 -> putTree (TNAtom v1)
     _ -> unifyLeftOther ut1 ut2
  where
-  putTree :: (TreeMonad s m) => TreeNode Tree -> m Bool
-  putTree n = do
-    putTMTree $ mkNewTree n
-    return True
+  putTree :: (TreeMonad s m) => TreeNode Tree -> m ()
+  putTree n = putTMTree $ mkNewTree n
 
   amismatch :: (Show a) => a -> a -> TreeNode Tree
   amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
-  procOther :: (TreeMonad s m) => m Bool
+  procOther :: (TreeMonad s m) => m ()
   procOther = do
     Config{cfCreateCnstr = cc} <- ask
     logDebugStr $ printf "unifyLeftAtom: cc: %s, procOther: %s, %s" (show cc) (show ut1) (show ut2)
@@ -820,7 +804,6 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
       then do
         c <- putCnstr v1 >> getTMTree
         logDebugStr $ printf "unifyLeftAtom: constraint created, %s" (show c)
-        return True
       else unifyLeftOther ut2 ut1
 
   putCnstr :: (TreeMonad s m) => AtomV -> m ()
@@ -830,17 +813,16 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     logDebugStr $ printf "unifyLeftAtom: creating constraint, e: %s, t: %s" (show e) (show unifyOp)
     putTMTree $ mkCnstrTree a1 e
 
-unifyLeftBound :: (TreeMonad s m) => (Bounds, UTree) -> UTree -> m Bool
+unifyLeftBound :: (TreeMonad s m) => (Bounds, UTree) -> UTree -> m ()
 unifyLeftBound (b1, ut1@(UTree{utVal = t1, utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = case treeNode t2 of
   TNAtom ta2 -> do
     logDebugStr $ printf "unifyAtomBounds: %s, %s" (show t1) (show t2)
     putTMTree $ unifyAtomBounds (d2, amvAtom ta2) (d1, bdsList b1)
-    return True
   TNBounds b2 -> do
     logDebugStr $ printf "unifyBoundList: %s, %s" (show t1) (show t2)
     let res = unifyBoundList (d1, bdsList b1) (d2, bdsList b2)
     case res of
-      Left err -> putTMTree (mkBottomTree err) >> return True
+      Left err -> putTMTree (mkBottomTree err)
       Right bs ->
         let
           r =
@@ -853,12 +835,12 @@ unifyLeftBound (b1, ut1@(UTree{utVal = t1, utDir = d1})) ut2@(UTree{utVal = t2, 
               bs
          in
           case snd r of
-            Just a -> putTMTree (mkAtomTree a) >> return True
-            Nothing -> putTMTree (mkBoundsTree (fst r)) >> return True
+            Just a -> putTMTree (mkAtomTree a)
+            Nothing -> putTMTree (mkBoundsTree (fst r))
   -- If the left bounds are embedded in the right struct and there is no fields and no pending dynamic fields, we can
   -- immediately put the bounds into the tree without worrying any future new fields. This is what CUE currently
   -- does.
-  TNStruct s2 | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree t1 >> return True
+  TNStruct s2 | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree t1
   _ -> unifyLeftOther ut2 ut1
 
 unifyAtomBounds :: (Path.BinOpDirect, Atom) -> (Path.BinOpDirect, [Bound]) -> Tree
@@ -1062,7 +1044,7 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds = if d1 == Path.L then [b1, b2] else [b2, b1]
 
 -- | unifyLeftOther is the sink of the unification process.
-unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m Bool
+unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   case (treeNode t1, treeNode t2) of
     (TNMutable _, _) -> do
@@ -1071,7 +1053,7 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
           printf "unifyLeftOther starts, path: %s, %s, %s" (show path) (show ut1) (show ut2)
       r1 <- reduceMutableArg (Path.toBinOpSelector d1) t1
       case treeNode r1 of
-        TNMutable _ -> return False
+        TNMutable _ -> return ()
         _ -> unifyUTrees (ut1{utVal = r1}) ut2
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
@@ -1091,16 +1073,15 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     -- We can just return the second value.
     (TNRefCycle _, _) -> do
       putTMTree t2
-      return True
     _ -> putNotUnifiable
  where
-  putNotUnifiable :: (TreeMonad s m) => m Bool
-  putNotUnifiable = mkNodeWithDir ut1 ut2 f >> return False
+  putNotUnifiable :: (TreeMonad s m) => m ()
+  putNotUnifiable = mkNodeWithDir ut1 ut2 f
    where
     f :: (TreeMonad s m) => Tree -> Tree -> m ()
     f x y = putTMTree $ mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
-unifyLeftStruct :: (TreeMonad s m) => (Struct Tree, UTree) -> UTree -> m Bool
+unifyLeftStruct :: (TreeMonad s m) => (Struct Tree, UTree) -> UTree -> m ()
 unifyLeftStruct (s1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = case treeNode t2 of
   -- If either of the structs is embedded, closed struct restrictions are ignored.
   TNStruct s2 -> unifyStructs (utEmbedded ut1 || utEmbedded ut2) (d1, s1) (d2, s2)
@@ -1111,7 +1092,7 @@ For closedness, unification only generates a closed struct but not a recursively
 recursively, the only way is to reference the struct via a #ident.
 -}
 unifyStructs ::
-  (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m Bool
+  (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m ()
 unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
   lE1 <- checkPermittedLabels s1 isEitherEmbeded s2
   lE2 <- checkPermittedLabels s2 isEitherEmbeded s1
@@ -1125,8 +1106,6 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
       -- in reduce, the new combined fields will be checked by the combined patterns.
       putTMTree merged
       reduce
-
-  return True
  where
   fields1 = stcSubs s1
   fields2 = stcSubs s2
@@ -1252,7 +1231,7 @@ mkNodeWithDir (UTree{utVal = t1, utDir = d1}) (UTree{utVal = t2}) f = case d1 of
   Path.L -> f t1 t2
   Path.R -> f t2 t1
 
-unifyLeftDisj :: (TreeMonad s m) => (Disj Tree, UTree) -> UTree -> m Bool
+unifyLeftDisj :: (TreeMonad s m) => (Disj Tree, UTree) -> UTree -> m ()
 unifyLeftDisj
   (dj1, ut1@(UTree{utDir = d1, utEmbedded = isEmbedded1}))
   ut2@( UTree
@@ -1271,14 +1250,13 @@ unifyLeftDisj
       -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently
       -- does.
       TNStruct s2
-        | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree (utVal ut1) >> return True
+        | utEmbedded ut1 && hasEmptyFields s2 -> putTMTree (utVal ut1)
       TNDisj dj2 -> case (dj1, dj2) of
         -- this is U0 rule, <v1> & <v2> => <v1&v2>
         (Disj{dsjDefault = Nothing, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do
           logDebugStr $ printf "unifyLeftDisj: U0, ds1: %s, ds2: %s" (show ds1) (show ds2)
           ds <- mapM (`oneToMany` (d2, isEmbedded2, ds2)) (map (\x -> (d1, isEmbedded1, x)) ds1)
           treeFromNodes Nothing ds >>= putTMTree
-          return True
         -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
         (Disj{dsjDefault = Just df1, dsjDisjuncts = ds1}, Disj{dsjDefault = Nothing, dsjDisjuncts = ds2}) -> do
           logDebugStr $ printf "unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s" (show df1) (show ds1) (show ds2)
@@ -1286,7 +1264,6 @@ unifyLeftDisj
           df <- treeFromNodes Nothing [dfs]
           dss <- manyToMany (d1, isEmbedded1, ds1) (d2, isEmbedded2, ds2)
           treeFromNodes (Just df) dss >>= putTMTree
-          return True
         -- this is also the U1 rule.
         (Disj{dsjDefault = Nothing}, Disj{}) -> unifyLeftDisj (dj2, ut2) ut1
         -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
@@ -1306,7 +1283,6 @@ unifyLeftDisj
           withDebugInfo $ \path _ ->
             logDebugStr $ printf "unifyLeftDisj: path: %s, U2, df: %s, dss: %s" (show path) (show df) (show dss)
           treeFromNodes (Just df) dss >>= putTMTree
-          return True
       -- this is the case for a disjunction unified with a value.
       _ -> case dj1 of
         Disj{dsjDefault = Nothing, dsjDisjuncts = ds1} -> do
@@ -1314,7 +1290,6 @@ unifyLeftDisj
             printf "unifyLeftDisj: unify with %s, disj: (ds: %s)" (show t2) (show ds1)
           ds2 <- oneToMany (d2, isEmbedded2, t2) (d1, isEmbedded1, ds1)
           treeFromNodes Nothing [ds2] >>= putTMTree
-          return True
         Disj{dsjDefault = Just df1, dsjDisjuncts = ds1} -> do
           logDebugStr $
             printf "unifyLeftDisj: U1, unify with %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
@@ -1324,7 +1299,6 @@ unifyLeftDisj
           r <- treeFromNodes (Just df2) [ds2]
           logDebugStr $ printf "unifyLeftDisj: U1, result: %s" (show r)
           putTMTree r
-          return True
    where
     -- Note: isEmbedded is still required. Think about the following values,
     -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
@@ -1383,11 +1357,7 @@ mutApplier t args = case treeNode t of
     return $
       mkMutableTree $
         ( mkStubMutable $ \_ -> do
-            putTMTree . mkMutableTree $
-              mut
-                { mutArgs = args
-                }
-            return True
+            putTMTree . mkMutableTree $ mut{mutArgs = args}
         )
           { mutName = "mutatorApplier"
           }
@@ -1399,7 +1369,6 @@ mkReduceMut t =
     ( mkStubMutable $ \_ -> do
         putTMTree t
         reduce
-        return True
     )
       { mutName = "reduce"
       , mutArgs = []
@@ -1420,7 +1389,7 @@ builtinMutableTable =
   ]
 
 -- | Closes a struct when the tree has struct.
-close :: (TreeMonad s m) => Bool -> [Tree] -> m Bool
+close :: (TreeMonad s m) => Bool -> [Tree] -> m ()
 close recur args
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
@@ -1428,10 +1397,8 @@ close recur args
       r <- reduceMutableArg unaryOpSelector a
       case treeNode r of
         -- If the argument is pending, wait for the result.
-        TNMutable _ -> return False
-        _ -> do
-          putTMTree $ closeTree recur r
-          return True
+        TNMutable _ -> return ()
+        _ -> putTMTree $ closeTree recur r
 
 -- | Closes a struct when the tree has struct.
 closeTree :: Bool -> Tree -> Tree
