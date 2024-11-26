@@ -43,12 +43,7 @@ cvFromCur :: ValCursor t a -> CtxVal t a
 cvFromCur cur =
   CtxVal
     { cvVal = vcFocus cur
-    , cvCtx =
-        Context
-          { ctxCrumbs = vcCrumbs cur
-          , ctxNotifiers = Map.empty
-          , ctxTrace = emptyTrace
-          }
+    , cvCtx = emptyContext{ctxCrumbs = vcCrumbs cur}
     }
 
 type CtxTree t = CtxVal t t

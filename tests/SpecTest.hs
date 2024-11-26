@@ -496,6 +496,37 @@ testDisj4 = do
             )
           ]
 
+testDisj5 :: IO ()
+testDisj5 = do
+  s <- readFile "tests/spec/disj5.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpExpStructs y $
+        newStruct
+          [ ("x1", mkAtomTree $ Int 1)
+          , ("x2", mkAtomTree $ Int 1)
+          , ("x3", mkAtomTree $ Int 1)
+          , ("x4", mkAtomTree $ Int 1)
+          ]
+
+testDisj6 :: IO ()
+testDisj6 = do
+  s <- readFile "tests/spec/disj6.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testDisj7 :: IO ()
+testDisj7 = do
+  s <- readFile "tests/spec/disj7.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
 testSelector1 :: IO ()
 testSelector1 = do
   s <- readFile "tests/spec/selector1.cue"
@@ -591,6 +622,14 @@ testUnify4 = do
           , ("y", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 1)])
           , ("df", mkAtomTree $ String "x")
           ]
+
+testUnify5 :: IO ()
+testUnify5 = do
+  s <- readFile "tests/spec/unify5.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y $ newStruct [("x", newStruct [("a", mkAtomTree $ Int 3)])]
 
 testCycles1 :: IO ()
 testCycles1 = do
@@ -738,6 +777,30 @@ testCycles7 = do
           ]
  where
   selfCycle = mkNewTree (TNRefCycle (RefCycle True))
+
+testCycles8 :: IO ()
+testCycles8 = do
+  s <- readFile "tests/spec/cycles8.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
+
+testCycles9 :: IO ()
+testCycles9 = do
+  s <- readFile "tests/spec/cycles9.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
+
+testCycles10 :: IO ()
+testCycles10 = do
+  s <- readFile "tests/spec/cycles10.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
 
 testIncomplete :: IO ()
 testIncomplete = do
@@ -1435,6 +1498,9 @@ specTests =
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
     , testCase "disj4" testDisj4
+    , testCase "disj5" testDisj5
+    , testCase "disj6" testDisj6
+    , testCase "disj7" testDisj7
     , testCase "vars1" testVars1
     , testCase "vars2" testVars2
     , testCase "vars3" testVars3
@@ -1443,6 +1509,7 @@ specTests =
     , testCase "unify2" testUnify2
     , testCase "unify3" testUnify3
     , testCase "unify4" testUnify4
+    , testCase "unify5" testUnify5
     , testCase "cycles1" testCycles1
     , testCase "cycles2" testCycles2
     , testCase "cycles3" testCycles3
@@ -1450,6 +1517,9 @@ specTests =
     , testCase "cycles5" testCycles5
     , testCase "cycles6" testCycles6
     , testCase "cycles7" testCycles7
+    , testCase "cycles8" testCycles8
+    , testCase "cycles9" testCycles9
+    , testCase "cycles10" testCycles10
     , testCase "incomplete" testIncomplete
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2

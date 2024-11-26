@@ -10,14 +10,14 @@ module Reduction where
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, forM, unless, when)
+import Control.Monad (foldM, forM, unless, void)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (ask)
 import Control.Monad.State.Strict (gets)
 import Cursor
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
 import Error
 import Mutate
@@ -31,44 +31,43 @@ import Value.Tree
 -- | Reduce the tree to the lowest form.
 reduce :: (TreeMonad s m) => m ()
 reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show path)) $ do
+  treeDepthCheck
+
   tr <- gets getTrace
   let trID = traceID tr
   dumpEntireTree $ printf "reduce id=%s start" (show trID)
 
-  origT <- getTMTree
+  -- save the original expression before effects are applied to the focus of the tree.
+  origExpr <- treeOrig <$> getTMTree
   withTree $ \t -> case treeNode t of
-    TNMutable mut -> reduceMutable mut
+    TNMutable _ -> mutate
     TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
     _ -> return ()
 
   withTree $ \t -> do
-    let nt = setOrig t (treeOrig origT)
-    putTMTree nt
+    -- Attach the original expression to the reduced tree.
+    putTMTree $ setOrig t origExpr
+    -- Only notify dependents when we are not in a temporary node.
+    unless (hasTemp path) $ notify t mutate
 
-  -- Only reduceMutable when we are not in a temporary node.
-  withTree $ \t -> unless (hasTemp path) $ do
-    notify t reduceMutable
+  -- deleteRefSeen
 
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
 
--- Reduce tree nodes
+-- deleteRefSeen :: (TreeMonad s m) => m ()
+-- deleteRefSeen = withTN $ \case
+--   TNMutable mut | isMutableRef mut -> do
+--     ref <-
+--       maybe
+--         (throwErrSt "can not generate path from the arguments")
+--         return
+--         (treesToPath (mutArgs mut))
+--     modifyTMContext (deleteCtxSeenRef ref)
+--   _ -> return ()
 
-{- | Reduce the Mutable.
-- If the result can be used to replace the mutable itself, then the mutable is replaced by the result.
-- Otherwise, the mutable is kept.
--}
-reduceMutable :: (TreeMonad s m) => Mutable Tree -> m ()
-reduceMutable mut = do
-  mutate
-  withDebugInfo $ \path t ->
-    logDebugStr $
-      printf
-        "reduceMutable: path: %s, function %s reduced to:\n%s"
-        (show path)
-        (show $ mutName mut)
-        (show t)
+-- Reduce tree nodes
 
 reduceAtomOpArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
 reduceAtomOpArg sel sub =
@@ -220,7 +219,7 @@ reducePendSE (sel@(PendingSelector _), pse) = case pse of
   -- Add the pattern to the struct. Return the new struct and the index of the pattern.
   addPattern :: PatternStructField Tree -> Struct Tree -> Struct Tree
   addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
-reducePendSE _ = throwErrSt "evalStructField: invalid selector field combination"
+reducePendSE _ = throwErrSt "invalid selector field combination"
 
 {- | Apply the pattern to the existing statis fields of the struct.
 
@@ -314,40 +313,41 @@ index ue ts@(t : _)
           putTMTree res
           logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
 
-          -- descendTM can not be used here because it would change the tree cursor.
-          tc <- getTMCursor
-          maybe
-            (throwErrSt $ printf "index: %s is not found" (show idxPath))
-            (putTMTree . vcFocus)
-            (goDownTCPath idxPath tc)
-          withDebugInfo $ \_ r ->
-            logDebugStr $ printf "index: the indexed is %s" (show r)
+          unlessTFBottom () $ do
+            -- descendTM can not be used here because it would change the tree cursor.
+            tc <- getTMCursor
+            maybe
+              (throwErrSt $ printf "%s is not found" (show idxPath))
+              (putTMTree . vcFocus)
+              (goDownTCPath idxPath tc)
+            withDebugInfo $ \_ r ->
+              logDebugStr $ printf "index: the indexed is %s" (show r)
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
   evalIndexArg i = mutValToArgsTM (MutableSelector $ MutableArgSelector i) (ts !! i) (reduce >> getTMTree)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
-index _ _ = throwErrSt "index: invalid arguments"
+index _ _ = throwErrSt "invalid index arguments"
 
 appendRefMutablePath :: (TreeMonad s m) => Mutable Tree -> Path -> AST.UnaryExpr -> m (Mutable Tree)
 appendRefMutablePath mut p ue
   | isMutableRef mut = do
       origTP <-
         maybe
-          (throwErrSt "appendRefMutablePath: can not generate path from the arguments")
+          (throwErrSt "can not generate path from the arguments")
           return
           (treesToPath (mutArgs mut))
       let tp = appendPath p origTP
       -- Reference the target node when the target node is not an atom or a cycle head.
       mkRefMutable tp ue
-appendRefMutablePath _ _ _ = throwErrSt "appendRefMutablePath: invalid function type"
+appendRefMutablePath _ _ _ = throwErrSt "invalid function type"
 
 mkRefMutable :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Mutable Tree)
 mkRefMutable tp ue = do
   args <-
     maybe
-      (throwErrSt "mkRefMutable: can not generate path from the arguments")
+      (throwErrSt "can not generate path from the arguments")
       return
       (pathToTrees tp)
   return
@@ -358,12 +358,7 @@ mkRefMutable tp ue = do
       , mutExpr = return $ AST.ExprUnaryExpr ue
       }
  where
-  mut =
-    mkStubMutable
-      ( \_ -> do
-          ok <- deref tp
-          when ok $ withTree $ \t -> putTMTree t
-      )
+  mut = mkStubMutable (\_ -> void $ deref tp)
 
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
@@ -495,6 +490,12 @@ regBinDir op (d1, _t1) (d2, _t2) = do
       (TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, t1) (d2, t2)
       (_, TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
       _ -> regBinLeftOther op (d1, t1) (d2, t2)
+    (Just t1, _)
+      | TNBottom _ <- treeNode t1 -> putTMTree t1
+      | TNRefCycle (RefCycleTail _) <- treeNode t1 -> putTMTree t1
+    (_, Just t2)
+      | TNBottom _ <- treeNode t2 -> putTMTree t2
+      | TNRefCycle (RefCycleTail _) <- treeNode t2 -> putTMTree t2
     _ -> return ()
 
 regBinLeftAtom :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()
@@ -666,21 +667,45 @@ reduceRegularDisj x (Tree{treeNode = TNDisj dj}) = newDisj Nothing [x] (dsjDefau
 -- Rule D0
 reduceRegularDisj x y = newDisj Nothing [x] Nothing [y]
 
--- dedupAppend appends unique elements in ys to the xs list, but only if they are not already in xs.
--- xs and ys are guaranteed to be unique.
-dedupAppend :: [Tree] -> [Tree] -> [Tree]
-dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
-
 newDisj :: (TreeMonad s m) => Maybe Tree -> [Tree] -> Maybe Tree -> [Tree] -> m Tree
 newDisj df1 ds1 df2 ds2 =
-  let
-    st :: Maybe Tree
-    st = case map fromJust (filter isJust [df1, df2]) of
-      [x] -> Just x
-      [x, y] -> Just $ mkDisjTree Nothing [x, y]
-      _ -> Nothing
-   in
-    return $ mkDisjTree st (dedupAppend ds1 ds2)
+  if
+    | null allTerms -> throwErrSt "both sides of disjunction are empty"
+    -- No non-bottoms exist
+    | null filteredTerms -> return $ head allTerms
+    -- the disjunction of a value a with bottom is always a.
+    | length filteredTerms == 1 -> return $ head filteredTerms
+    -- two or more non-bottom terms exist.
+    | otherwise -> return $ mkDisjTree (defaultFrom $ filterBtms defaults) (filterBtms disjuncts)
+ where
+  defaults :: [Tree]
+  defaults = catMaybes [df1, df2]
+
+  defaultFrom :: [Tree] -> Maybe Tree
+  defaultFrom xs = case xs of
+    [x] -> Just x
+    -- If there are more than one defaults, then defaults become disjuncts.
+    [x, y] -> Just $ mkDisjTree Nothing [x, y]
+    _ -> Nothing
+
+  -- The first element is non-bottom.
+  -- The second element is a bottom.
+  disjuncts :: [Tree]
+  disjuncts = dedupAppend ds1 ds2
+
+  filterBtms :: [Tree] -> [Tree]
+  filterBtms = filter (not . isTreeBottom)
+
+  allTerms :: [Tree]
+  allTerms = defaults ++ disjuncts
+
+  filteredTerms :: [Tree]
+  filteredTerms = filterBtms allTerms
+
+  -- dedupAppend appends unique elements in ys to the xs list, but only if they are not already in xs.
+  -- xs and ys are guaranteed to be unique.
+  dedupAppend :: [Tree] -> [Tree] -> [Tree]
+  dedupAppend xs ys = xs ++ foldr (\y acc -> if y `elem` xs then acc else y : acc) [] ys
 
 mkUnifyNode :: Tree -> Tree -> Mutable Tree
 mkUnifyNode = mkBinaryOp AST.Unify unify
@@ -771,7 +796,8 @@ unifyLeftTop ut1 ut2 = do
     -- Notice that this is different from the behavior of the latest CUE. The latest CUE would do the following:
     -- {_, _h: int} & {_h: "hidden"} -> _|_.
     TNStruct _ | utEmbedded ut1 -> putTMTree (utVal ut1)
-    _ -> putTMTree (utVal ut2)
+    -- The ut2 has not been reduced yet.
+    _ -> putTMTree (utVal ut2) >> reduce
 
 unifyLeftAtom :: (TreeMonad s m) => (AtomV, UTree) -> UTree -> m ()
 unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = do
@@ -1089,8 +1115,7 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
     -- unification.
     -- We can just return the second value.
-    (TNRefCycle _, _) -> do
-      putTMTree t2
+    (TNRefCycle _, _) -> putTMTree t2 >> reduce
     _ -> putNotUnifiable
  where
   putNotUnifiable :: (TreeMonad s m) => m ()
@@ -1112,9 +1137,9 @@ recursively, the only way is to reference the struct via a #ident.
 unifyStructs ::
   (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m ()
 unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
-  lE1 <- checkPermittedLabels s1 isEitherEmbeded s2
-  lE2 <- checkPermittedLabels s2 isEitherEmbeded s1
-  case (lE1, lE2) of
+  lBtm1 <- checkPermittedLabels s1 isEitherEmbeded s2
+  lBtm2 <- checkPermittedLabels s2 isEitherEmbeded s1
+  case (lBtm1, lBtm2) of
     (Just b1, _) -> putTMTree b1
     (_, Just b2) -> putTMTree b2
     _ -> do
@@ -1335,7 +1360,7 @@ unifyLeftDisj
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
 treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
   -- if there is no non-bottom disjuncts, we return the first bottom.
-  (_, []) -> maybe (throwErrSt $ printf "treeFromNodes: no disjuncts") return (firstBottom ds)
+  (_, []) -> maybe (throwErrSt $ printf "no disjuncts") return (firstBottom ds)
   (Nothing, [_d]) -> return $ mkNewTree (treeNode _d)
   (Nothing, _ds) ->
     let

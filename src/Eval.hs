@@ -59,7 +59,7 @@ runStr s mermaid = do
   t <- runTreeStr s mermaid
   case treeNode t of
     -- print the error message to the console.
-    TNBottom (Bottom msg) -> throwError msg
+    TNBottom (Bottom msg) -> throwError $ printf "error: %s" msg
     _ -> runReaderT (buildASTExpr False t) emptyConfig
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree

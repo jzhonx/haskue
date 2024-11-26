@@ -27,10 +27,11 @@ module Value.Tree (
   mutArgs,
   mutExpr,
   mutName,
-  mutValue,
   mutType,
-  setMutableState,
+  mutValStub,
+  mutValue,
   resetMutableVal,
+  setMutableState,
 )
 where
 
@@ -497,8 +498,8 @@ convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)
 
-whenNotBottom :: (TreeMonad s m) => a -> m a -> m a
-whenNotBottom a f = do
+unlessTFBottom :: (TreeMonad s m) => a -> m a -> m a
+unlessTFBottom a f = do
   t <- getTMTree
   case treeNode t of
     TNBottom _ -> return a
@@ -537,7 +538,7 @@ traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
 traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
  where
   go :: (TreeMonad s m) => (Selector, Tree) -> m ()
-  go (sel, sub) = whenNotBottom () $ inSubTM sel sub f
+  go (sel, sub) = unlessTFBottom () $ inSubTM sel sub f
 
 {- | Traverse the leaves of the tree cursor in the following order
 1. Traverse the current node.

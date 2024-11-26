@@ -6,9 +6,9 @@ module TMonad where
 
 import Class
 import Control.Monad (unless, when)
+import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState, gets, modify)
 import Cursor
-import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import Env
 import Error
@@ -36,6 +36,12 @@ putTMContext :: (TMonad s m t) => Context t -> m ()
 putTMContext ctx = modify $ \s ->
   let ct = getCtxVal s
    in setCtxVal s (ct{cvCtx = ctx})
+
+modifyTMContext :: (TMonad s m t) => (Context t -> Context t) -> m ()
+modifyTMContext f = modify $ \s ->
+  let ct = getCtxVal s
+      ctx = cvCtx ct
+   in setCtxVal s (ct{cvCtx = f ctx})
 
 getTMCrumbs :: (TMonad s m t) => m [TreeCrumb t]
 getTMCrumbs = ctxCrumbs <$> getTMContext
@@ -234,20 +240,8 @@ whenJustM m f = do
   ma <- m
   maybe (return Nothing) f ma
 
--- Delete the notification receivers that have the specified prefix.
--- This should be called when the reference becomes invalid.
-delNotifRecvPrefix :: (TMonad s m t) => Path -> m ()
-delNotifRecvPrefix pathPrefix = do
-  withContext $ \ctx -> do
-    putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
-  withDebugInfo $ \path _ -> do
-    notifiers <- ctxNotifiers <$> getTMContext
-    logDebugStr $
-      printf
-        "delNotifRecvs: path: %s delete receiver prefix: %s, updated notifiers: %s"
-        (show path)
-        (show pathPrefix)
-        (show notifiers)
- where
-  del :: Map.Map Path [Path] -> Map.Map Path [Path]
-  del = Map.map (filter (\p -> not (isPrefix pathPrefix p)))
+treeDepthCheck :: (TMonad s m t) => m ()
+treeDepthCheck = do
+  crumbs <- getTMCrumbs
+  let depth = length crumbs
+  when (depth > 1000) $ throwError "tree depth exceeds 1000"

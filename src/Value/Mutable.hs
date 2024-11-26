@@ -68,6 +68,13 @@ resetMutableVal mut = mut{mutValue = Nothing}
 invokeMutMethod :: (MutableEnv s m t) => Mutable t -> m ()
 invokeMutMethod mut = mutMethod mut (mutArgs mut)
 
+mutValStub :: Mutable t
+mutValStub =
+  ( mkStubMutable (\_ -> throwErrSt "mutateValStub: mutMethod should not be called")
+  )
+    { mutName = "mvStub"
+    }
+
 mkStubMutable :: (forall s m. (MutableEnv s m t) => [t] -> m ()) -> Mutable t
 mkStubMutable f =
   Mutable
