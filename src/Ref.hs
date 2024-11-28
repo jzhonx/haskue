@@ -13,11 +13,11 @@ where
 
 import Class
 import Config
-import Control.Monad (unless, void)
+import Control.Monad (unless, void, when)
 import Control.Monad.Reader (ask)
 import Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Error
 import Mutate
@@ -36,9 +36,8 @@ notify nt reduceMutable = withDebugInfo $ \path _ ->
         notifers = ctxNotifiers . cvCtx $ ct
         notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
 
-      unless (null notifs) $
-        logDebugStr $
-          printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
+      logDebugStr $
+        printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
       mapM_
         ( \dep ->
             inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
@@ -48,6 +47,8 @@ notify nt reduceMutable = withDebugInfo $ \path _ ->
               >>= maybe (delNotifRecvPrefix dep) return
         )
         notifs
+
+-- withDeps :: (TreeMonad s m) => Path -> Map.Map Path [Path] -> [Path]
 
 {- | Substitute the cached result of the Mutable node pointed by the path with the new non-function value. Then trigger the
  - re-evluation of the lowest ancestor Mutable.
@@ -80,9 +81,11 @@ populateRef nt reduceMutable = withDebugInfo $ \path x ->
             -- 2. Re-evaluating the reference would get the same value.
             logDebugStr $
               printf
-                "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
+                -- "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
+                "populateRef: lowest ancestor mutable is a reference, path: %s, node: %s"
                 (show path)
                 (show t)
+        -- notify res reduceMutable
         -- re-evaluate the highest mutable when it is not a reference.
         | otherwise -> do
             logDebugStr $
@@ -115,37 +118,57 @@ locateLAMutable = do
       sels
 
 {- | Dereference the reference. It keeps dereferencing until the target node is not a reference node or a cycle is
- - detected.
+ - detected. If the target is found, a copy of the target value is put to the tree.
 
-If the target is not found, the current node is kept.
-No more evaluation is done after the dereference.
+@param ref: the reference path.
+@param skip: skip putting the deref'd result into tree.
 -}
-deref :: (TreeMonad s m) => Path -> m Bool
-deref ref = do
+deref :: (TreeMonad s m) => Path -> Bool -> m ()
+deref ref skip = do
   path <- getTMAbsPath
   t <- getTMTree
-  rM <- debugSpan (printf "deref: path: %s, ref: %s, focus: %s" (show path) (show ref) (show t)) $ do
+  void $ debugSpan (printf "deref: path: %s, ref: %s, focus: %s" (show path) (show ref) (show t)) $ do
     -- refInAnc <- pathInAncestorRefs ref
     -- if refInAnc
     --   then do
     --     logDebugStr $ printf "deref: path: %s, ref: %s, ref is reducing in ancestor" (show path) (show ref)
     --     return . Just $ mkBottomTree "structural cycle caused by infinite evaluation detected"
     --   else do
-    rM <- do
-      follow ref Set.empty >>= \case
-        (Just (_, tar)) -> do
-          putTMTree tar
-          return (Just tar)
-        Nothing -> return Nothing
 
     -- add notifier. If the referenced value changes, then the reference should be updated.
     -- duplicate cases are handled by the addCtxNotifier.
     tarPath <- getRefTarAbsPath ref
     recvPath <- getTMAbsPath
     addNotifier tarPath recvPath
-    return rM
 
-  return $ isJust rM
+    follow ref Set.empty
+      >>= maybe
+        (return ())
+        ( \(_, tar) -> case treeNode tar of
+            TNRefCycle _ -> putTMTree tar
+            TNBottom _ -> putTMTree tar
+            _
+              | not skip -> putTMTree tar
+              | otherwise -> return ()
+        )
+
+-- case rM of
+
+-- >>= \case
+-- (Just (_, tar)) -> do
+-- putTMTree tar
+-- unless skip $
+--   void $
+-- return (Just tar)
+-- Nothing -> return Nothing
+
+-- when reduceTar $
+--   withTree $ \tar -> case treeNode tar of
+--     TNMutable mut | mut == mutValStub -> return ()
+--     _ -> debugSpan (printf "deref_reduce: path: %s, ref: %s, focus: %s" (show path) (show ref) (show tar)) $ do
+--       Config{cfReduce = reduce} <- ask
+--
+--       reduce
 
 addNotifier :: (TreeMonad s m) => Path -> Path -> m ()
 addNotifier srcPath recvPath = do

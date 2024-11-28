@@ -40,7 +40,7 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
   -- save the original expression before effects are applied to the focus of the tree.
   origExpr <- treeOrig <$> getTMTree
   withTree $ \t -> case treeNode t of
-    TNMutable _ -> mutate
+    TNMutable _ -> mutate False
     TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
@@ -50,7 +50,7 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    unless (hasTemp path) $ notify t mutate
+    unless (hasTemp path) $ notify t (mutate False)
 
   -- deleteRefSeen
 
@@ -81,25 +81,37 @@ reduceAtomOpArg sel sub =
             then rM
             else Nothing
     )
+    reduce
 
 reduceMutableArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
 reduceMutableArg sel sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t)
+  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) reduce
+  return $ fromJust ret
+
+reduceUnifyRefArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
+reduceUnifyRefArg sel sub = withTree $ \t -> do
+  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) (mutate False)
   return $ fromJust ret
 
 -- Evaluate the argument of the given mutable.
 -- This does not reduce the argument whose type is mutable.
 -- Notice that if the argument is a mutable and the value of the mutable, such as struct or disjunction, is not
 -- reducible, the value is still returned because the parent mutable needs the value.
-reduceMutableArgMaybe :: (TreeMonad s m) => Selector -> Tree -> (Maybe Tree -> Maybe Tree) -> m (Maybe Tree)
-reduceMutableArgMaybe sel sub csHandler = withDebugInfo $ \path _ ->
+reduceMutableArgMaybe ::
+  (TreeMonad s m) =>
+  Selector ->
+  Tree ->
+  (Maybe Tree -> Maybe Tree) ->
+  m () ->
+  m (Maybe Tree)
+reduceMutableArgMaybe sel sub csHandler reducer = withDebugInfo $ \path _ ->
   debugSpan (printf "reduceMutableArgMaybe, path: %s, sel: %s" (show path) (show sel)) $
     -- We are currently in the Mutable's val field. We need to go up to the Mutable.
     mutValToArgsTM
       sel
       sub
       ( do
-          reduce
+          reducer
           withTree $ \x -> return $ case treeNode x of
             TNMutable mut -> csHandler (mutValue mut)
             _ -> Just x
@@ -358,7 +370,7 @@ mkRefMutable tp ue = do
       , mutExpr = return $ AST.ExprUnaryExpr ue
       }
  where
-  mut = mkStubMutable (\_ -> void $ deref tp)
+  mut = mkStubMutable (\_ -> throwErrSt "should not be called directly")
 
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
@@ -1091,11 +1103,12 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   case (treeNode t1, treeNode t2) of
-    (TNMutable _, _) -> do
+    (TNMutable mut, _) -> do
       withDebugInfo $ \path _ ->
         logDebugStr $
           printf "unifyLeftOther starts, path: %s, %s, %s" (show path) (show ut1) (show ut2)
-      r1 <- reduceMutableArg (Path.toBinOpSelector d1) t1
+      r1 <-
+        (if isMutableRef mut then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpSelector d1) t1
       case treeNode r1 of
         TNMutable _ -> return ()
         _ -> unifyUTrees (ut1{utVal = r1}) ut2

@@ -27,6 +27,7 @@ import EvalExpr
 import Parser (parseSourceFile)
 import Path
 import Reduction
+import Ref
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -72,6 +73,8 @@ evalConfig =
     , cfMermaid = False
     , cfEvalExpr = evalExpr
     , cfClose = close
+    , cfReduce = reduce
+    , cfDeref = deref
     }
 
 evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> Bool -> m Tree

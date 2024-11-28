@@ -6,7 +6,9 @@
 module Mutate where
 
 import Class
+import Config
 import Control.Monad (void)
+import Control.Monad.Reader (ask)
 import Cursor
 import qualified Data.Map.Strict as Map
 import Error
@@ -31,18 +33,34 @@ isMutableTreeReducible fnt res =
 {- | Mutate the Mutable. If the previous mutable mutates to another mutable, then this function will be recursively
  - called.
 
+@param reduceTar: whether to reduce the deref'd value.
+
 The mutation is run in the sub-tree indicated by MutableValSelector. The mutMethod result will be put in the mutVal.
 
 The focus of the tree should still be of type Mutable after the mutation.
 No global states should be changed too.
 -}
-mutate :: (TreeMonad s m) => m ()
-mutate = mustMutable $ \m -> withDebugInfo $ \path _ -> do
+mutate :: (TreeMonad s m) => Bool -> m ()
+mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
   let name = mutName m
   debugSpan (printf "mutate, path: %s, mut: %s" (show path) (show name)) $ do
     -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
     -- enough to replace the mutable with the new struct.
-    inSubTM (MutableSelector MutableValSelector) (mkMutableTree mutValStub) (invokeMutMethod m)
+    Config{cfDeref = deref} <- ask
+    inSubTM
+      (MutableSelector MutableValSelector)
+      (mkMutableTree mutValStub)
+      ( if isMutableRef m
+          then do
+            dst <-
+              maybe
+                (throwErrSt "can not generate path from the arguments")
+                return
+                (treesToPath (mutArgs m))
+
+            deref dst skipDeref
+          else invokeMutMethod m
+      )
 
     -- Make sure the mutable is still the focus of the tree.
     withTree $ \_ -> mustMutable $ \mut ->
@@ -58,7 +76,7 @@ mutate = mustMutable $ \m -> withDebugInfo $ \path _ -> do
                   putTMTree $ mkMutableTree $ resetMutableVal mut
                 else do
                   -- recursively mutate in mutval env until the result is not a mutable.
-                  putTMTree res >> mutate
+                  putTMTree res >> mutate skipDeref
             Nothing -> void $ tryReduceMut (Just res)
 
 {- | Try to reduce the mutable by using the mutate result to replace the mutable node.

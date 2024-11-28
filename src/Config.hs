@@ -10,6 +10,7 @@ import Control.Monad.State.Strict (MonadState)
 import Cursor
 import Env
 import Error
+import Path
 import Text.Printf (printf)
 import Util
 
@@ -23,6 +24,16 @@ data Config t = Config
       Bool ->
       [t] ->
       m ()
+  , cfReduce ::
+      forall s m.
+      (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
+      m ()
+  , cfDeref ::
+      forall s m.
+      (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
+      Path ->
+      Bool ->
+      m ()
   }
 
 instance Show (Config t) where
@@ -35,4 +46,6 @@ emptyConfig =
     , cfMermaid = False
     , cfEvalExpr = \_ -> throwErrSt "cfEvalExpr not set"
     , cfClose = \_ _ -> throwErrSt "cfClose not set"
+    , cfReduce = throwErrSt "cfReduce not set"
+    , cfDeref = \_ _ -> throwErrSt "cfDeref not set"
     }
