@@ -50,7 +50,7 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    unless (hasTemp path) $ notify t (mutate False)
+    unless (hasTemp path) $ notify (mutate False)
 
   -- deleteRefSeen
 

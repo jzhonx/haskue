@@ -27,17 +27,17 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
-notify :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => m ()) -> m ()
-notify nt reduceMutable = withDebugInfo $ \path _ ->
-  debugSpan (printf "notify: path: %s, new value: %s" (show path) (show nt)) $ do
+notify :: (TreeMonad s m) => ((TreeMonad s m) => m ()) -> m ()
+notify reduceMutable = withDebugInfo $ \path t ->
+  debugSpan (printf "notify: path: %s, new value: %s" (show path) (show t)) $ do
     withCtxTree $ \ct -> do
       let
         srcRefPath = treeRefPath $ cvPath ct
         notifers = ctxNotifiers . cvCtx $ ct
         notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
 
-      logDebugStr $
-        printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
+      logDebugStr $ printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
+      nt <- getTMTree
       mapM_
         ( \dep ->
             inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
@@ -48,11 +48,11 @@ notify nt reduceMutable = withDebugInfo $ \path _ ->
         )
         notifs
 
--- withDeps :: (TreeMonad s m) => Path -> Map.Map Path [Path] -> [Path]
+-- upNotify :: (TreeMonad s m) => Path -> Map.Map Path [Path] -> [Path]
 
-{- | Substitute the cached result of the Mutable node pointed by the path with the new non-function value. Then trigger the
- - re-evluation of the lowest ancestor Mutable.
- - The tree focus is set to the ref func.
+{- | Populate the ref's mutval with the new value and trigger the re-evaluation of the lowest ancestor Mutable.
+
+The tree focus is set to the ref mutable.
 -}
 populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => m ()) -> m ()
 populateRef nt reduceMutable = withDebugInfo $ \path x ->
@@ -68,34 +68,38 @@ populateRef nt reduceMutable = withDebugInfo $ \path x ->
           (mutValue newMut)
       _ -> void $ tryReduceMut (Just nt)
 
-    res <- getTMTree
-    logDebugStr $ printf "populateRef: path: %s, mutable reduced to: %s" (show path) (show res)
+    reduceLAMut reduceMutable
 
-    -- Locate the lowest ancestor mutable to trigger the re-evaluation of the ancestor mutable.
-    locateLAMutable
-    withTree $ \t -> case treeNode t of
-      TNMutable fn
-        | isMutableRef fn -> do
-            -- If it is a reference, the re-evaluation can be skipped because
-            -- 1. The la mutable is actually itself.
-            -- 2. Re-evaluating the reference would get the same value.
-            logDebugStr $
-              printf
-                -- "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
-                "populateRef: lowest ancestor mutable is a reference, path: %s, node: %s"
-                (show path)
-                (show t)
-        -- notify res reduceMutable
-        -- re-evaluate the highest mutable when it is not a reference.
-        | otherwise -> do
-            logDebugStr $
-              printf "populateRef: re-evaluating the lowest ancestor mutable, path: %s, node: %s" (show path) (show t)
-            r <- reduceMutable >> getTMTree
-            notify r reduceMutable
-      _ ->
-        if isTreeMutable res
-          then throwErrSt $ printf "populateRef: the lowest ancestor node %s is not a function" (show t)
-          else logDebugStr "populateRef: the lowest ancestor node is not found"
+reduceLAMut :: (TreeMonad s m) => ((TreeMonad s m) => m ()) -> m ()
+reduceLAMut reduceMutable = do
+  -- Locate the lowest ancestor mutable to trigger the re-evaluation of the ancestor mutable.
+  -- Notice the tree focus now changes to the LA mutable.
+  locateLAMutable
+  path <- getTMAbsPath
+  withTree $ \t -> case treeNode t of
+    TNMutable fn
+      | isMutableRef fn -> do
+          -- If it is a reference, the re-evaluation can be skipped because
+          -- 1. The la mutable is actually itself.
+          -- 2. Re-evaluating the reference would get the same value.
+          logDebugStr $
+            printf
+              -- "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
+              "populateRef: lowest ancestor mutable is a reference, path: %s, node: %s"
+              (show path)
+              (show t)
+      -- notify res reduceMutable
+      -- re-evaluate the highest mutable when it is not a reference.
+      | otherwise -> do
+          logDebugStr $
+            printf "populateRef: re-evaluating the lowest ancestor mutable, path: %s, node: %s" (show path) (show t)
+          reduceMutable
+          notify reduceMutable
+    _ -> logDebugStr "populateRef: the lowest ancestor node is not found"
+
+-- if isTreeMutable res
+--   then throwErrSt $ printf "the lowest ancestor node %s is not a mutable" (show t)
+-- else logDebugStr "populateRef: the lowest ancestor node is not found"
 
 -- Locate the lowest ancestor mutable.
 -- TODO: consider the mutable does not have arguments.
