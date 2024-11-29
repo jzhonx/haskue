@@ -50,6 +50,7 @@ type CtxTree t = CtxVal t t
 
 data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
+  , ctxReduceStack :: [Path]
   , ctxNotifiers :: Map.Map Path [Path]
   , ctxTrace :: Trace
   }
@@ -77,6 +78,7 @@ emptyContext :: Context t
 emptyContext =
   Context
     { ctxCrumbs = []
+    , ctxReduceStack = []
     , ctxNotifiers = Map.empty
     , ctxTrace = emptyTrace
     }

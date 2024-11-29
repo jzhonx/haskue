@@ -67,6 +67,20 @@ toBinOpSelector :: BinOpDirect -> Selector
 toBinOpSelector L = binOpLeftSelector
 toBinOpSelector R = binOpRightSelector
 
+-- | Check if the selector is accessible, either by index or by field name.
+isSelAccessible :: Selector -> Bool
+isSelAccessible sel = case sel of
+  RootSelector -> True
+  (StructSelector (StringSelector _)) -> True
+  (IndexSelector _) -> True
+  -- If a path ends with a mutval selector, for example /p/fv, then it is accessible.
+  -- It it the same as /p.
+  (MutableSelector MutableValSelector) -> True
+  -- If a path ends with a disj default selector, for example /p/d*, then it is accessible.
+  -- It it the same as /p.
+  DisjDefaultSelector -> True
+  _ -> False
+
 data BinOpDirect = L | R deriving (Eq, Ord)
 
 instance Show BinOpDirect where
@@ -203,6 +217,10 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
 
 hasTemp :: Path -> Bool
 hasTemp (Path xs) = TempSelector `elem` xs
+
+-- | Check if the path is accessible, either by index or by field name.
+isPathAccessible :: Path -> Bool
+isPathAccessible (Path xs) = all isSelAccessible xs
 
 treeRefPath :: Path -> Path
 treeRefPath p = Path $ filter (not . isRefSelector) (getPath p)

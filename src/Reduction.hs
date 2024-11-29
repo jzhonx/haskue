@@ -10,7 +10,7 @@ module Reduction where
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, forM, unless, void)
+import Control.Monad (foldM, forM, unless, void, when)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (ask)
 import Control.Monad.State.Strict (gets)
@@ -32,6 +32,7 @@ import Value.Tree
 reduce :: (TreeMonad s m) => m ()
 reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show path)) $ do
   treeDepthCheck
+  push path
 
   tr <- gets getTrace
   let trID = traceID tr
@@ -50,11 +51,14 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    unless (hasTemp path) $ notify (mutate False)
+    when (isPathAccessible path) $ notify (mutate False)
 
-  -- deleteRefSeen
-
+  pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
+ where
+  push path = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = path : stack}
+
+  pop = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
 -- deleteRefSeen :: (TreeMonad s m) => m ()
 -- deleteRefSeen = withTN $ \case
@@ -90,7 +94,7 @@ reduceMutableArg sel sub = withTree $ \t -> do
 
 reduceUnifyRefArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
 reduceUnifyRefArg sel sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) (mutate False)
+  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) (mutate True)
   return $ fromJust ret
 
 -- Evaluate the argument of the given mutable.

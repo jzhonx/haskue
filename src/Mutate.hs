@@ -97,9 +97,10 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
             withDebugInfo $ \path _ -> do
               logDebugStr $
                 printf
-                  "tryReduceMut: func %s, path: %s, is reducible: %s, args: %s"
+                  "tryReduceMut: func %s, path: %s, %s is reducible: %s, args: %s"
                   (show $ mutName mut)
                   (show path)
+                  (show val)
                   (show reducible)
                   (show $ mutArgs mut)
 

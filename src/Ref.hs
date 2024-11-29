@@ -27,28 +27,53 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
+-- | Notify dependents of the change of the value.
 notify :: (TreeMonad s m) => ((TreeMonad s m) => m ()) -> m ()
 notify reduceMutable = withDebugInfo $ \path t ->
   debugSpan (printf "notify: path: %s, new value: %s" (show path) (show t)) $ do
-    withCtxTree $ \ct -> do
+    tc <- getTMCursor
+    notifyWithTC tc reduceMutable
+
+--   let
+--     srcRefPath = treeRefPath $ cvPath ct
+--     notifers = ctxNotifiers . cvCtx $ ct
+--     notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
+--
+--   logDebugStr $ printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
+--   nt <- getTMTree
+--   notifyWith nt notifs reduceMutable
+
+notifyWithTC :: (TreeMonad s m) => TreeCursor Tree -> ((TreeMonad s m) => m ()) -> m ()
+notifyWithTC (ValCursor _ []) _ = throwErrSt "already at the top"
+notifyWithTC tc@(ValCursor nt cs) reduceMutable
+  -- We should not use root value to notify.
+  | length cs == 1 = return ()
+  | otherwise = do
+      notifiers <- ctxNotifiers <$> getTMContext
       let
-        srcRefPath = treeRefPath $ cvPath ct
-        notifers = ctxNotifiers . cvCtx $ ct
-        notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
+        srcRefPath = treeRefPath $ tcPath tc
+        notifs = fromMaybe [] (Map.lookup srcRefPath notifiers)
+      logDebugStr $ printf "notifyWithTC: srcRefPath: %s, notifs %s" (show srcRefPath) (show notifs)
+      unless (null notifs) $ notifyWithTree nt notifs reduceMutable
+      newTC <- propValUp tc
+      pic <- parentIsReducing $ tcPath newTC
+      unless pic $ notifyWithTC newTC reduceMutable
+ where
+  parentIsReducing parPath = do
+    stack <- ctxReduceStack <$> getTMContext
+    return $ length stack > 1 && stack !! 1 == parPath
 
-      logDebugStr $ printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
-      nt <- getTMTree
-      mapM_
-        ( \dep ->
-            inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
-              -- Remove the notifier if the receiver is not found. The receiver might be relocated. For examaple,
-              -- the receiver could first be reduced in a unifying function reducing arguments phase with path a/fa0.
-              -- Then the receiver is relocated to a due to unifying fields.
-              >>= maybe (delNotifRecvPrefix dep) return
-        )
-        notifs
-
--- upNotify :: (TreeMonad s m) => Path -> Map.Map Path [Path] -> [Path]
+notifyWithTree :: (TreeMonad s m) => Tree -> [Path] -> ((TreeMonad s m) => m ()) -> m ()
+notifyWithTree nt notifs reduceMutable = do
+  mapM_
+    ( \dep ->
+        inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
+          -- Remove the notifier if the receiver is not found. The receiver might be relocated. For example,
+          -- the receiver could first be reduced in a unifying function reducing arguments phase with path a/fa0.
+          -- Then the receiver is relocated to a due to unifying fields.
+          >>= maybe (delNotifRecvPrefix dep) return
+    )
+    notifs
 
 {- | Populate the ref's mutval with the new value and trigger the re-evaluation of the lowest ancestor Mutable.
 
@@ -68,10 +93,10 @@ populateRef nt reduceMutable = withDebugInfo $ \path x ->
           (mutValue newMut)
       _ -> void $ tryReduceMut (Just nt)
 
-    reduceLAMut reduceMutable
+    reduceLAMut path reduceMutable
 
-reduceLAMut :: (TreeMonad s m) => ((TreeMonad s m) => m ()) -> m ()
-reduceLAMut reduceMutable = do
+reduceLAMut :: (TreeMonad s m) => Path -> ((TreeMonad s m) => m ()) -> m ()
+reduceLAMut from reduceMutable = do
   -- Locate the lowest ancestor mutable to trigger the re-evaluation of the ancestor mutable.
   -- Notice the tree focus now changes to the LA mutable.
   locateLAMutable
@@ -79,16 +104,19 @@ reduceLAMut reduceMutable = do
   withTree $ \t -> case treeNode t of
     TNMutable fn
       | isMutableRef fn -> do
+          when (from /= path) $
+            throwErrSt $
+              printf "the lowest ancestor mutable %s is not the same as the ref path: %s" (show path) (show from)
           -- If it is a reference, the re-evaluation can be skipped because
           -- 1. The la mutable is actually itself.
           -- 2. Re-evaluating the reference would get the same value.
           logDebugStr $
             printf
               -- "populateRef: lowest ancestor mutable is a reference, skip re-evaluation. path: %s, node: %s"
-              "populateRef: lowest ancestor mutable is a reference, path: %s, node: %s"
+              "populateRef: lowest ancestor mutable is a reference, path: %s, node: %s, trigger notify"
               (show path)
               (show t)
-      -- notify res reduceMutable
+          notify reduceMutable
       -- re-evaluate the highest mutable when it is not a reference.
       | otherwise -> do
           logDebugStr $
@@ -125,10 +153,10 @@ locateLAMutable = do
  - detected. If the target is found, a copy of the target value is put to the tree.
 
 @param ref: the reference path.
-@param skip: skip putting the deref'd result into tree.
+@param skipReduce: if true, the target value is not reduced.
 -}
 deref :: (TreeMonad s m) => Path -> Bool -> m ()
-deref ref skip = do
+deref ref skipReduce = do
   path <- getTMAbsPath
   t <- getTMTree
   void $ debugSpan (printf "deref: path: %s, ref: %s, focus: %s" (show path) (show ref) (show t)) $ do
@@ -152,8 +180,12 @@ deref ref skip = do
             TNRefCycle _ -> putTMTree tar
             TNBottom _ -> putTMTree tar
             _
-              | not skip -> putTMTree tar
-              | otherwise -> return ()
+              | not skipReduce -> do
+                  putTMTree tar
+                  logDebugStr (printf "deref, path: %s, reduce deref'd value. ref: %s, focus: %s" (show path) (show ref) (show tar))
+                  Config{cfReduce = reduce} <- ask
+                  reduce
+              | otherwise -> putTMTree tar
         )
 
 -- case rM of
