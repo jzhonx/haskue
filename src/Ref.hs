@@ -11,7 +11,6 @@ module Ref (
 )
 where
 
-import Class
 import Config
 import Control.Monad (unless, void, when)
 import Control.Monad.Reader (ask)
@@ -55,9 +54,18 @@ notifyWithTC tc@(ValCursor nt cs) reduceMutable
         notifs = fromMaybe [] (Map.lookup srcRefPath notifiers)
       logDebugStr $ printf "notifyWithTC: srcRefPath: %s, notifs %s" (show srcRefPath) (show notifs)
       unless (null notifs) $ notifyWithTree nt notifs reduceMutable
-      newTC <- propValUp tc
-      pic <- parentIsReducing $ tcPath newTC
-      unless pic $ notifyWithTC newTC reduceMutable
+      let parentTCM = parentTC tc
+      maybe
+        (return ())
+        ( \ptc -> do
+            -- We must check if the parent is reducing. If the parent is reducing, we should not notify the parent.
+            -- In addition, once parent is done with reducing, it will notify its dependents.
+            inReducing <- parentIsReducing $ tcPath ptc
+            unless inReducing $ do
+              newTC <- propValUp tc
+              notifyWithTC newTC reduceMutable
+        )
+        parentTCM
  where
   parentIsReducing parPath = do
     stack <- ctxReduceStack <$> getTMContext
@@ -166,27 +174,54 @@ deref ref skipReduce = do
     --     logDebugStr $ printf "deref: path: %s, ref: %s, ref is reducing in ancestor" (show path) (show ref)
     --     return . Just $ mkBottomTree "structural cycle caused by infinite evaluation detected"
     --   else do
+    --
+    isInfEval <- checkInfinite ref
+    if isInfEval
+      then do
+        logDebugStr $ printf "deref: path: %s, ref: %s, ref is reducing in ancestor" (show path) (show ref)
+        putTMTree $ mkBottomTree "structural cycle detected."
+      else do
+        rM <- follow ref (Set.fromList [treeRefPath path])
+        maybe
+          (addNotifier ref)
+          ( \(_, tar) -> do
+              putTMTree tar
+              case treeNode tar of
+                TNBottom _ -> return ()
+                TNRefCycle (RefCycleHori (start, _))
+                  | start == treeRefPath path ->
+                      logDebugStr $
+                        printf
+                          "deref, path: %s, self-cycle: %s, skipping add notifier"
+                          (show path)
+                          (show tar)
+                _ -> do
+                  addNotifier ref
 
-    -- add notifier. If the referenced value changes, then the reference should be updated.
-    -- duplicate cases are handled by the addCtxNotifier.
-    tarPath <- getRefTarAbsPath ref
-    recvPath <- getTMAbsPath
-    addNotifier tarPath recvPath
+                  unless skipReduce $ do
+                    logDebugStr (printf "deref, path: %s, reduce deref'd value. ref: %s, focus: %s" (show path) (show ref) (show tar))
+                    Config{cfReduce = reduce} <- ask
+                    reduce
+          )
+          rM
 
-    follow ref Set.empty
-      >>= maybe
-        (return ())
-        ( \(_, tar) -> case treeNode tar of
-            TNRefCycle _ -> putTMTree tar
-            TNBottom _ -> putTMTree tar
-            _
-              | not skipReduce -> do
-                  putTMTree tar
-                  logDebugStr (printf "deref, path: %s, reduce deref'd value. ref: %s, focus: %s" (show path) (show ref) (show tar))
-                  Config{cfReduce = reduce} <- ask
-                  reduce
-              | otherwise -> putTMTree tar
-        )
+{- | Check if the ref is already being reduced in the ancestor nodes.
+
+The function is supposed to be run in the mutval env.
+-}
+checkInfinite :: (TreeMonad s m) => Path -> m Bool
+checkInfinite ref = do
+  -- exclude the current mut node.
+  mutCrumbs <- tail <$> getTMCrumbs
+  let match = foldl (\acc (_, t) -> acc || getRef t == Just ref) False mutCrumbs
+  withDebugInfo $ \path _ ->
+    logDebugStr $ printf "pathInAncestorRefs: path: %s, ref: %s, match: %s" (show path) (show ref) (show match)
+  return match
+ where
+  getRef :: Tree -> Maybe Path
+  getRef t = case treeNode t of
+    TNMutable mut | isMutableRef mut -> treesToPath (mutArgs mut)
+    _ -> Nothing
 
 -- case rM of
 
@@ -206,8 +241,17 @@ deref ref skipReduce = do
 --
 --       reduce
 
-addNotifier :: (TreeMonad s m) => Path -> Path -> m ()
-addNotifier srcPath recvPath = do
+{- | Add a notifier to the context.
+
+
+              -- add notifier. If the referenced value changes, then the reference should be updated.
+              -- duplicate cases are handled by the addCtxNotifier.
+This must not introduce a cycle.
+-}
+addNotifier :: (TreeMonad s m) => Path -> m ()
+addNotifier ref = do
+  srcPath <- getRefTarAbsPath ref
+  recvPath <- getTMAbsPath
   let
     srcRefPath = treeRefPath srcPath
     recvRefPath = treeRefPath recvPath
@@ -218,21 +262,17 @@ addNotifier srcPath recvPath = do
 
 {- | Keep dereferencing until the target node is not a reference node. Returns the target node.
 
-The refsSeen keeps track of the followed references to detect cycles.
+@param trail: keeps track of the followed treeRefPaths.
 -}
 follow :: (TreeMonad s m) => Path -> Set.Set Path -> m (Maybe (Path, Tree))
-follow ref refsSeen = do
-  resM <- getDstVal ref refsSeen
+follow ref trail = do
+  path <- getTMAbsPath
+  resM <- getDstVal ref trail
   case resM of
     Nothing -> return Nothing
     Just (tarPath, tar) -> do
-      withDebugInfo $ \path _ -> do
-        logDebugStr $
-          printf
-            "deref: path: %s, substitutes with tar_path: %s, tar: %s"
-            (show path)
-            (show tarPath)
-            (show tar)
+      logDebugStr $
+        printf "deref: path: %s, substitutes with tar_path: %s, tar: %s" (show path) (show tarPath) (show tar)
       case treeNode tar of
         -- follow the reference.
         TNMutable fn | isMutableRef fn -> do
@@ -241,7 +281,7 @@ follow ref refsSeen = do
               (throwErrSt "can not generate path from the arguments")
               return
               (treesToPath (mutArgs fn))
-          follow nextDst (Set.insert ref refsSeen)
+          follow nextDst (Set.insert (treeRefPath tarPath) trail)
         _ -> do
           -- substitute the reference with the target node.
           putTMTree tar
@@ -253,13 +293,13 @@ If the reference path is self or visited, then return the tuple of the absolute 
 the cycle tail relative path.
 -}
 getDstVal :: (TreeMonad s m) => Path -> Set.Set Path -> m (Maybe (Path, Tree))
-getDstVal ref refsSeen = do
+getDstVal ref trail = do
   srcPath <- getTMAbsPath
 
   rM <- inRemoteTMMaybe ref $ do
     dstPath <- getTMAbsPath
     logDebugStr $
-      printf "deref: getDstVal ref: %s, dstPath: %s, seen: %s" (show ref) (show dstPath) (show $ Set.toList refsSeen)
+      printf "deref: getDstVal ref: %s, dstPath: %s, trail: %s" (show ref) (show dstPath) (show $ Set.toList trail)
     let
       canSrcPath = canonicalizePath srcPath
       canDstPath = canonicalizePath dstPath
@@ -270,10 +310,14 @@ getDstVal ref refsSeen = do
         -- The values of d would be: 1. a -> b, 2. b -> a, 3. a (seen) -> RC.
         -- The returned RC would be a self-reference cycle, which has empty path because the cycle is formed by all
         -- references.
-        | Set.member ref refsSeen -> do
+        | Set.member (treeRefPath dstPath) trail -> do
             logDebugStr $
-              printf "deref: self reference cycle detected: %s, seen: %s" (show ref) (show $ Set.toList refsSeen)
-            return $ mkNewTree $ TNRefCycle (RefCycle True)
+              printf
+                "deref: horizontal reference cycle detected: %s, dst: %s, trail: %s"
+                (show ref)
+                (show dstPath)
+                (show $ Set.toList trail)
+            return . mkNewTree $ TNRefCycle (RefCycleHori (dstPath, srcPath))
         -- This handles the case when the reference refers to itself that is the ancestor.
         -- For example, { a: a + 1 } or { a: !a }.
         -- The tree representation of the latter is,
@@ -289,8 +333,8 @@ getDstVal ref refsSeen = do
               -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
               TNConstraint c -> return (mkAtomVTree $ cnsOrigAtom c)
               _ -> do
-                logDebugStr $ printf "deref: reference cycle tail detected: %s == %s." (show dstPath) (show srcPath)
-                return $ mkNewTree $ TNRefCycle (RefCycleTail (dstPath, relPath dstPath srcPath))
+                logDebugStr $ printf "deref: vertical reference cycle tail detected: %s == %s." (show dstPath) (show srcPath)
+                return $ mkNewTree $ TNRefCycle (RefCycleVertMerger (dstPath, srcPath))
         | isPrefix canDstPath canSrcPath && canSrcPath /= canDstPath ->
             return $
               mkBottomTree $
@@ -304,28 +348,10 @@ getDstVal ref refsSeen = do
         return Nothing
     )
     ( \(p, r) -> do
-        c <- copyRefVal ref refsSeen r
+        c <- copyRefVal ref trail r
         return $ Just (p, c)
     )
     rM
-
-{- | Check if the ref is already being reduced in the ancestor nodes.
-
-The function is supposed to be run in the mutval env.
--}
-pathInAncestorRefs :: (TreeMonad s m) => Path -> m Bool
-pathInAncestorRefs ref = do
-  -- exclude the mut node.
-  mutCrumbs <- tail <$> getTMCrumbs
-  let match = foldl (\acc (_, t) -> acc || getRef t == Just ref) False mutCrumbs
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "pathInAncestorRefs: path: %s, ref: %s, match: %s" (show path) (show ref) (show match)
-  return match
- where
-  getRef :: Tree -> Maybe Path
-  getRef t = case treeNode t of
-    TNMutable mut | isMutableRef mut -> treesToPath (mutArgs mut)
-    _ -> Nothing
 
 {- | Copy the value of the reference.
 
@@ -335,7 +361,7 @@ any references within that expression bound to the respective copies of the fiel
 bound to.
 -}
 copyRefVal :: (TreeMonad s m) => Path -> Set.Set Path -> Tree -> m Tree
-copyRefVal ref refsSeen tar = do
+copyRefVal ref trail tar = do
   path <- getTMAbsPath
   case treeNode tar of
     -- The atom value is final, so we can just return it.
@@ -352,7 +378,7 @@ copyRefVal ref refsSeen tar = do
           )
           (treeOrig tar)
       Config{cfClose = close} <- ask
-      let visitedRefs = Set.insert ref refsSeen
+      let visitedRefs = Set.insert ref trail
       val <-
         if any pathHasDef visitedRefs
           then do
@@ -370,10 +396,10 @@ copyRefVal ref refsSeen tar = do
           else return orig
       logDebugStr $
         printf
-          "deref: path: %s, deref'd val is: %s, set: %s, tar: %s"
+          "deref: path: %s, deref'd val is: %s, trail: %s, tar: %s"
           (show path)
           (show val)
-          (show $ Set.toList refsSeen)
+          (show $ Set.toList trail)
           (show tar)
       return val
 

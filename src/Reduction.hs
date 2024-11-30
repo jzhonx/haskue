@@ -447,7 +447,7 @@ dispUnaryOp op _t = do
           (AST.ReNotMatch, String p) -> putTMTree (mkBoundsTree [BdStrMatch $ BdReNotMatch p])
           _ -> putConflict
         _ -> putConflict
-      TNRefCycle (RefCycleTail _) -> putTMTree t
+      TNRefCycle (RefCycleVertMerger _) -> putTMTree t
       _ -> putConflict
     Nothing -> return ()
  where
@@ -497,8 +497,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     (Just t1, Just t2) -> case (treeNode t1, treeNode t2) of
       (TNBottom _, _) -> putTMTree t1
       (_, TNBottom _) -> putTMTree t2
-      (TNRefCycle (RefCycleTail _), _) -> putTMTree t1
-      (_, TNRefCycle (RefCycleTail _)) -> putTMTree t2
+      (TNRefCycle (RefCycleVertMerger _), _) -> putTMTree t1
+      (_, TNRefCycle (RefCycleVertMerger _)) -> putTMTree t2
       (TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
       (_, TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
       (TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
@@ -508,10 +508,10 @@ regBinDir op (d1, _t1) (d2, _t2) = do
       _ -> regBinLeftOther op (d1, t1) (d2, t2)
     (Just t1, _)
       | TNBottom _ <- treeNode t1 -> putTMTree t1
-      | TNRefCycle (RefCycleTail _) <- treeNode t1 -> putTMTree t1
+      | TNRefCycle (RefCycleVertMerger _) <- treeNode t1 -> putTMTree t1
     (_, Just t2)
       | TNBottom _ <- treeNode t2 -> putTMTree t2
-      | TNRefCycle (RefCycleTail _) <- treeNode t2 -> putTMTree t2
+      | TNRefCycle (RefCycleVertMerger _) <- treeNode t2 -> putTMTree t2
     _ -> return ()
 
 regBinLeftAtom :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, AtomV, Tree) -> (BinOpDirect, Tree) -> m ()

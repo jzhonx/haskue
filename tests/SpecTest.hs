@@ -646,7 +646,7 @@ testCycles1 = do
           , ("d", selfCycle)
           ]
  where
-  selfCycle = mkNewTree (TNRefCycle (RefCycle True))
+  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
 
 testCycles2 :: IO ()
 testCycles2 = do
@@ -659,11 +659,11 @@ testCycles2 = do
         @?= newStruct
           [
             ( "a"
-            , mkNewTree (TNRefCycle (RefCycle False))
+            , mkNewTree (TNRefCycle RefCycleVert)
             )
           ,
             ( "b"
-            , mkNewTree (TNRefCycle (RefCycle False))
+            , mkNewTree (TNRefCycle RefCycleVert)
             )
           ]
 
@@ -694,11 +694,11 @@ testCycles4 = do
             , newStruct
                 [
                   ( "a"
-                  , mkNewTree (TNRefCycle (RefCycle False))
+                  , mkNewTree (TNRefCycle RefCycleVert)
                   )
                 ,
                   ( "b"
-                  , mkNewTree (TNRefCycle (RefCycle False))
+                  , mkNewTree (TNRefCycle RefCycleVert)
                   )
                 ]
             )
@@ -776,7 +776,7 @@ testCycles7 = do
           , ("z2", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
           ]
  where
-  selfCycle = mkNewTree (TNRefCycle (RefCycle True))
+  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
 
 testCycles8 :: IO ()
 testCycles8 = do
@@ -801,6 +801,28 @@ testCycles10 = do
   case val of
     Left err -> assertFailure err
     Right x -> x @?= mkBottomTree ""
+
+testCycles11 :: IO ()
+testCycles11 = do
+  s <- readFile "tests/spec/cycles11.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("#List", listS)
+          ,
+            ( "MyList"
+            , expandWithClosed True $
+                newStruct [("head", mkAtomTree $ Int 1), ("tail", myListInnerSC)]
+            )
+          ]
+ where
+  listS = newStruct [("head", mkNewTree TNTop), ("tail", mkAtomTree Null)]
+  myListInnerSC =
+    expandWithClosed True $
+      newStruct [("head", mkAtomTree $ Int 2), ("tail", mkAtomTree Null)]
 
 testIncomplete :: IO ()
 testIncomplete = do
@@ -949,11 +971,8 @@ testRef5 = do
     Right x ->
       cmpExpStructs x $
         newStruct
-          [ ("b", mkAtomTree $ String "z")
-          ,
-            ( "c"
-            , newStruct [("z", mkAtomTree $ String "z")]
-            )
+          [ ("b", mkAtomTree $ Int 1)
+          , ("c", newStruct [("z", mkAtomTree $ Int 1)])
           , ("df", mkAtomTree $ String "c")
           ]
 
@@ -997,6 +1016,23 @@ testRef7 = do
                 ]
             )
           ]
+
+testRef8 :: IO ()
+testRef8 = do
+  s <- readFile "tests/spec/ref8.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("y", sa)
+          , ("x", sa)
+          , ("z", sb)
+          ]
+ where
+  sb = newStruct [("b", mkAtomTree $ Int 3)]
+  sa = newStruct [("a", sb)]
 
 testStruct1 :: IO ()
 testStruct1 = do
@@ -1155,7 +1191,7 @@ testCnstr2 = do
  where
   exp =
     newStruct
-      [ ("a", mkNewTree (TNRefCycle (RefCycle True)))
+      [ ("a", mkNewTree (TNRefCycle (RefCycleHori undefined)))
       ,
         ( "b"
         , mkMutableTree $
@@ -1520,6 +1556,7 @@ specTests =
     , testCase "cycles8" testCycles8
     , testCase "cycles9" testCycles9
     , testCase "cycles10" testCycles10
+    , testCase "cycles11" testCycles11
     , testCase "incomplete" testIncomplete
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2
@@ -1530,6 +1567,7 @@ specTests =
     , testCase "ref5" testRef5
     , testCase "ref6" testRef6
     , testCase "ref7" testRef7
+    , testCase "ref8" testRef8
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
     , testCase "struct3" testStruct3

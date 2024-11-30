@@ -106,7 +106,8 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
 
             if reducible
               then do
-                handleRefCycle val
+                putTMTree val
+                handleRefCycle
                 --
                 path <- getTMAbsPath
                 delNotifRecvPrefix path
@@ -121,17 +122,17 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
 
 RefCycleTail is like Bottom.
 -}
-handleRefCycle :: (TreeMonad s m) => Tree -> m ()
-handleRefCycle val = case treeNode val of
-  TNRefCycle (RefCycleTail (cycleStartPath, _)) -> do
+handleRefCycle :: (TreeMonad s m) => m ()
+handleRefCycle = withTree $ \val -> case treeNode val of
+  TNRefCycle (RefCycleVertMerger (cycleStartPath, _)) -> do
     path <- getTMAbsPath
     if cycleStartPath == path
       then do
         logDebugStr $ printf "handleRefCycle: path: %s, cycle head found" (show path)
         -- The ref cycle tree must record the original tree.
-        withTree $ \t -> putTMTree $ convRefCycleTree t False
+        withTree $ \t -> putTMTree $ convRefCycleTree t
       else putTMTree val
-  _ -> putTMTree val
+  _ -> return ()
 
 {- | Delete the notification receivers that have the specified prefix.
 
@@ -153,7 +154,7 @@ delNotifRecvPrefix pathPrefix = do
         (show path)
         (show pathPrefix)
         (show refPathPrefix)
-        (show notifiers)
+        (show $ Map.toList notifiers)
  where
   refPathPrefix = treeRefPath pathPrefix
 

@@ -138,6 +138,7 @@ canonicalizePath (Path xs) = Path $ filter (not . isIgnored) xs
  where
   isIgnored :: Selector -> Bool
   isIgnored (MutableSelector _) = True
+  -- TODO: remove temp
   isIgnored TempSelector = True
   isIgnored _ = False
 

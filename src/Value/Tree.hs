@@ -223,8 +223,9 @@ buildRepTreeTN t tn = case tn of
       , []
       )
   TNRefCycle c -> case c of
-    RefCycle p -> consRep (symbol, "self: " ++ show p, [], [])
-    RefCycleTail p -> consRep (symbol, "tail: " ++ show p, [], [])
+    RefCycleVert -> consRep (symbol, "vert", [], [])
+    RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
+    RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
   TNMutable f -> case mutType f of
     RefMutable ->
       let
@@ -279,12 +280,9 @@ instance BuildASTExpr Tree where
         return
         (treeOrig t)
     TNRefCycle c -> case c of
-      RefCycle p -> do
-        if p
-          -- If the path is empty, then it is a self-reference.
-          then return $ AST.litCons AST.TopLit
-          else maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
-      RefCycleTail _ -> throwErrSt "RefCycleTail should have been converted to RefCycle"
+      RefCycleHori _ -> return $ AST.litCons AST.TopLit
+      RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
+      RefCycleVertMerger _ -> throwErrSt "RefCycleVert should not be used in the AST"
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -457,9 +455,11 @@ getMutableFromTree t = case treeNode t of
   TNMutable f -> Just f
   _ -> Nothing
 
+-- | Check if the node is a reducible ref cycle.
 isTreeRefCycleTail :: Tree -> Bool
 isTreeRefCycleTail t = case treeNode t of
-  TNRefCycle (RefCycleTail _) -> True
+  TNRefCycle (RefCycleVertMerger _) -> True
+  -- TNRefCycle (RefCycleHori _) -> True
   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
@@ -492,8 +492,8 @@ mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 mkStructTree :: Struct Tree -> Tree
 mkStructTree s = mkNewTree (TNStruct s)
 
-convRefCycleTree :: Tree -> Bool -> Tree
-convRefCycleTree t p = setTN t (TNRefCycle $ RefCycle p)
+convRefCycleTree :: Tree -> Tree
+convRefCycleTree t = setTN t (TNRefCycle RefCycleVert)
 
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)

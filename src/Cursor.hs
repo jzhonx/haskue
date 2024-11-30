@@ -123,6 +123,10 @@ instance Functor (ValCursor t) where
 tcPath :: ValCursor t a -> Path
 tcPath c = pathFromCrumbs (vcCrumbs c)
 
+parentTC :: TreeCursor t -> Maybe (TreeCursor t)
+parentTC (ValCursor _ []) = Nothing
+parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
+
 showCursor :: (Show t, Show a) => ValCursor t a -> String
 showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
  where
