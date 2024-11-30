@@ -33,15 +33,6 @@ notify reduceMutable = withDebugInfo $ \path t ->
     tc <- getTMCursor
     notifyWithTC tc reduceMutable
 
---   let
---     srcRefPath = treeRefPath $ cvPath ct
---     notifers = ctxNotifiers . cvCtx $ ct
---     notifs = fromMaybe [] (Map.lookup srcRefPath notifers)
---
---   logDebugStr $ printf "notify: path: %s, srcRefPath: %s, notifs %s" (show path) (show srcRefPath) (show notifs)
---   nt <- getTMTree
---   notifyWith nt notifs reduceMutable
-
 notifyWithTC :: (TreeMonad s m) => TreeCursor Tree -> ((TreeMonad s m) => m ()) -> m ()
 notifyWithTC (ValCursor _ []) _ = throwErrSt "already at the top"
 notifyWithTC tc@(ValCursor nt cs) reduceMutable
@@ -133,10 +124,6 @@ reduceLAMut from reduceMutable = do
           notify reduceMutable
     _ -> logDebugStr "populateRef: the lowest ancestor node is not found"
 
--- if isTreeMutable res
---   then throwErrSt $ printf "the lowest ancestor node %s is not a mutable" (show t)
--- else logDebugStr "populateRef: the lowest ancestor node is not found"
-
 -- Locate the lowest ancestor mutable.
 -- TODO: consider the mutable does not have arguments.
 locateLAMutable :: (TreeMonad s m) => m ()
@@ -222,24 +209,6 @@ checkInfinite ref = do
   getRef t = case treeNode t of
     TNMutable mut | isMutableRef mut -> treesToPath (mutArgs mut)
     _ -> Nothing
-
--- case rM of
-
--- >>= \case
--- (Just (_, tar)) -> do
--- putTMTree tar
--- unless skip $
---   void $
--- return (Just tar)
--- Nothing -> return Nothing
-
--- when reduceTar $
---   withTree $ \tar -> case treeNode tar of
---     TNMutable mut | mut == mutValStub -> return ()
---     _ -> debugSpan (printf "deref_reduce: path: %s, ref: %s, focus: %s" (show path) (show ref) (show tar)) $ do
---       Config{cfReduce = reduce} <- ask
---
---       reduce
 
 {- | Add a notifier to the context.
 

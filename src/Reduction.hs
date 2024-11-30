@@ -10,7 +10,7 @@ module Reduction where
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, forM, unless, void, when)
+import Control.Monad (foldM, forM, when)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (ask)
 import Control.Monad.State.Strict (gets)
@@ -60,18 +60,9 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
 
   pop = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
--- deleteRefSeen :: (TreeMonad s m) => m ()
--- deleteRefSeen = withTN $ \case
---   TNMutable mut | isMutableRef mut -> do
---     ref <-
---       maybe
---         (throwErrSt "can not generate path from the arguments")
---         return
---         (treesToPath (mutArgs mut))
---     modifyTMContext (deleteCtxSeenRef ref)
---   _ -> return ()
-
+-- ###
 -- Reduce tree nodes
+-- ###
 
 reduceAtomOpArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
 reduceAtomOpArg sel sub =
