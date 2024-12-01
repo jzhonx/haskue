@@ -89,7 +89,7 @@ populateRef nt reduceMutable = withDebugInfo $ \path x ->
               logDebugStr $ printf "populateRef: path: %s, new res of function: %s" (show path) (show res)
               void $ tryReduceMut (Just res)
           )
-          (mutValue newMut)
+          (getMutVal newMut)
       _ -> void $ tryReduceMut (Just nt)
 
     reduceLAMut path reduceMutable
@@ -155,13 +155,6 @@ deref ref skipReduce = do
   path <- getTMAbsPath
   t <- getTMTree
   void $ debugSpan (printf "deref: path: %s, ref: %s, focus: %s" (show path) (show ref) (show t)) $ do
-    -- refInAnc <- pathInAncestorRefs ref
-    -- if refInAnc
-    --   then do
-    --     logDebugStr $ printf "deref: path: %s, ref: %s, ref is reducing in ancestor" (show path) (show ref)
-    --     return . Just $ mkBottomTree "structural cycle caused by infinite evaluation detected"
-    --   else do
-    --
     isInfEval <- checkInfinite ref
     if isInfEval
       then do
@@ -201,20 +194,26 @@ checkInfinite ref = do
   -- exclude the current mut node.
   mutCrumbs <- tail <$> getTMCrumbs
   let match = foldl (\acc (_, t) -> acc || getRef t == Just ref) False mutCrumbs
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "pathInAncestorRefs: path: %s, ref: %s, match: %s" (show path) (show ref) (show match)
+  withDebugInfo $ \path t ->
+    logDebugStr $
+      printf
+        "checkInfinite: path: %s, ref: %s, match: %s, focus: %s"
+        (show path)
+        (show ref)
+        (show match)
+        (show t)
   return match
  where
   getRef :: Tree -> Maybe Path
   getRef t = case treeNode t of
-    TNMutable mut | isMutableRef mut -> treesToPath (mutArgs mut)
+    TNMutable (Ref rf) -> Just $ refPath rf
     _ -> Nothing
 
 {- | Add a notifier to the context.
 
 
-              -- add notifier. If the referenced value changes, then the reference should be updated.
-              -- duplicate cases are handled by the addCtxNotifier.
+If the referenced value changes, then the reference should be updated. Duplicate cases are handled by the
+addCtxNotifier.
 This must not introduce a cycle.
 -}
 addNotifier :: (TreeMonad s m) => Path -> m ()
@@ -244,13 +243,8 @@ follow ref trail = do
         printf "deref: path: %s, substitutes with tar_path: %s, tar: %s" (show path) (show tarPath) (show tar)
       case treeNode tar of
         -- follow the reference.
-        TNMutable fn | isMutableRef fn -> do
-          nextDst <-
-            maybe
-              (throwErrSt "can not generate path from the arguments")
-              return
-              (treesToPath (mutArgs fn))
-          follow nextDst (Set.insert (treeRefPath tarPath) trail)
+        TNMutable (Ref rf) ->
+          follow (refPath rf) (Set.insert (treeRefPath tarPath) trail)
         _ -> do
           -- substitute the reference with the target node.
           putTMTree tar
@@ -356,12 +350,12 @@ copyRefVal ref trail tar = do
                 "deref: path: %s, visitedRefs: %s, has definition, recursively close the value."
                 (show path)
                 (show $ Set.toList visitedRefs)
-            return $
-              mkMutableTree $
-                (mkStubMutable $ close True)
-                  { mutName = "deref_close"
-                  , mutArgs = [orig]
-                  }
+            return . mkMutableTree . Mut $
+              stubRegMutable
+                { mutArgs = [orig]
+                , mutName = "deref_close"
+                , mutMethod = close True
+                }
           else return orig
       logDebugStr $
         printf

@@ -11,7 +11,6 @@ import Debug.Trace
 import Eval (runTreeIO)
 import Parser
 import Path
-import Reduction (mkRefMutable)
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -68,15 +67,10 @@ newCompleteStruct labels subs =
     | otherwise = (s, defaultLabelAttr)
 
 newStruct :: [(String, Tree)] -> Tree
-newStruct subs = newCompleteStruct [] subs
-
--- newStruct :: [(String, Tree)] -> Tree
--- newStruct subs = newStruct (map fst subs) subs
+newStruct = newCompleteStruct []
 
 mkSimpleLink :: Path -> Tree
-mkSimpleLink p = case runExcept (mkRefMutable p undefined) of
-  Left err -> error err
-  Right v -> mkMutableTree v
+mkSimpleLink p = mkMutableTree $ mkRefMutable p
 
 startEval :: String -> IO (Either String Tree)
 startEval s = runExceptT $ runTreeIO s

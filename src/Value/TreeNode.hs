@@ -73,10 +73,11 @@ subTreeTN sel t = case (sel, getTreeNode t) of
       PatternField _ val -> Just val
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
-    | MutableSelector (MutableArgSelector i) <- sel -> mutArgs mut `indexList` i
-    | MutableSelector MutableValSelector <- sel -> mutValue mut
+    | (MutableSelector (MutableArgSelector i), Mut m) <- (sel, mut) -> mutArgs m `indexList` i
+    | MutableSelector MutableValSelector <- sel -> getMutVal mut
     -- This has to be the last case because the explicit function selector has the highest priority.
-    | otherwise -> mutValue mut >>= subTree sel
+    | otherwise -> getMutVal mut >>= subTree sel
+  -- (_, TNMutable (Ref ref)) -> refValue ref >>= subTree sel
   (_, TNDisj d)
     | DisjDefaultSelector <- sel -> dsjDefault d
     | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
@@ -97,23 +98,21 @@ setSubTreeTN sel subT parT = do
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
-      | MutableSelector (MutableArgSelector i) <- sel -> do
+      | (MutableSelector (MutableArgSelector i), Mut m) <- (sel, mut) -> do
           let
-            args = mutArgs mut
-            l = TNMutable $ mut{mutArgs = take i args ++ [subT] ++ drop (i + 1) args}
+            args = mutArgs m
+            l = TNMutable . Mut $ m{mutArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
-      | MutableSelector MutableValSelector <- sel -> do
-          let l = TNMutable $ mut{mutValue = Just subT}
-          return l
+      | MutableSelector MutableValSelector <- sel -> return . TNMutable $ setMutVal mut subT
       -- If the selector is not a mutable selector, then the sub value must have been the mutValue value.
       | otherwise ->
           maybe
-            (throwErrSt "setSubTreeTN: function temporary result is not found for non-function selector")
+            (throwErrSt $ printf "setSubTreeTN: mutable value is not found for non-function selector %s" (show sel))
             ( \r -> do
                 updatedR <- setSubTree sel subT r
-                return (TNMutable $ mut{mutValue = Just updatedR})
+                return (TNMutable $ setMutVal mut updatedR)
             )
-            (mutValue mut)
+            (getMutVal mut)
     (_, TNDisj d)
       | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjDisjunctSelector i <- sel ->
@@ -122,7 +121,11 @@ setSubTreeTN sel subT parT = do
       -- value.
       | otherwise ->
           maybe
-            (throwErrSt "setSubTreeTN: default disjunction value is not found for non-disjunction selector")
+            ( throwErrSt $
+                printf
+                  "setSubTreeTN: default disjunction value is not found for non-disjunction selector %s"
+                  (show sel)
+            )
             ( \dft -> do
                 updatedDftT <- setSubTree sel subT dft
                 return (TNDisj $ d{dsjDefault = Just updatedDftT})

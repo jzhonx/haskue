@@ -108,7 +108,7 @@ reduceMutableArgMaybe sel sub csHandler reducer = withDebugInfo $ \path _ ->
       ( do
           reducer
           withTree $ \x -> return $ case treeNode x of
-            TNMutable mut -> csHandler (mutValue mut)
+            TNMutable mut -> csHandler (getMutVal mut)
             _ -> Just x
       )
 
@@ -278,41 +278,49 @@ applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
         return ()
 
 -- | Create a new identifier reference.
-mkVarLinkTree :: (MonadError String m) => String -> AST.UnaryExpr -> m Tree
-mkVarLinkTree var ue = do
-  mut <- mkRefMutable (Path [StructSelector $ StringSelector var]) ue
+mkVarLinkTree :: (MonadError String m) => String -> m Tree
+mkVarLinkTree var = do
+  let mut = mkRefMutable (Path [StructSelector $ StringSelector var])
   return $ mkMutableTree mut
 
 -- | Create an index function node.
 mkIndexMutableTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
 mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
-  TNMutable g
-    | isMutableIndex g ->
-        g
-          { mutArgs = mutArgs g ++ [selArg]
-          , mutExpr = return $ AST.ExprUnaryExpr ue
-          }
+  TNMutable m
+    | isMutableIndex m ->
+        modifyRegMut
+          ( \mut ->
+              mut
+                { mutArgs = mutArgs mut ++ [selArg]
+                , mutExpr = return $ AST.ExprUnaryExpr ue
+                }
+          )
+          m
   _ ->
-    (mkStubMutable (index ue))
-      { mutName = "index"
-      , mutType = IndexMutable
-      , mutArgs = [treeArg, selArg]
-      , mutExpr = return $ AST.ExprUnaryExpr ue
-      }
+    Mut
+      stubRegMutable
+        { mutName = "index"
+        , mutType = IndexMutable
+        , mutArgs = [treeArg, selArg]
+        , mutExpr = return $ AST.ExprUnaryExpr ue
+        , mutMethod = index
+        }
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the selectors.
 -}
-index :: (TreeMonad s m) => AST.UnaryExpr -> [Tree] -> m ()
-index ue ts@(t : _)
+index :: (TreeMonad s m) => [Tree] -> m ()
+index ts@(t : _)
   | length ts > 1 = do
       idxPathM <- treesToPath <$> mapM evalIndexArg [1 .. length ts - 1]
       whenJustE idxPathM $ \idxPath -> case treeNode t of
         TNMutable mut
           -- If the function is a ref, then we should append the path to the ref. For example, if the ref is a.b, and
           -- the path is c, then the new ref should be a.b.c.
-          | isMutableRef mut -> do
-              refMutable <- appendRefMutablePath mut idxPath ue
+          | (Ref ref) <- mut -> do
+              let
+                newPath = appendPath idxPath (refPath ref)
+                refMutable = mkRefMutable newPath
               putTMTree (mkMutableTree refMutable)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
@@ -335,37 +343,7 @@ index ue ts@(t : _)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
-index _ _ = throwErrSt "invalid index arguments"
-
-appendRefMutablePath :: (TreeMonad s m) => Mutable Tree -> Path -> AST.UnaryExpr -> m (Mutable Tree)
-appendRefMutablePath mut p ue
-  | isMutableRef mut = do
-      origTP <-
-        maybe
-          (throwErrSt "can not generate path from the arguments")
-          return
-          (treesToPath (mutArgs mut))
-      let tp = appendPath p origTP
-      -- Reference the target node when the target node is not an atom or a cycle head.
-      mkRefMutable tp ue
-appendRefMutablePath _ _ _ = throwErrSt "invalid function type"
-
-mkRefMutable :: (MonadError String m) => Path -> AST.UnaryExpr -> m (Mutable Tree)
-mkRefMutable tp ue = do
-  args <-
-    maybe
-      (throwErrSt "can not generate path from the arguments")
-      return
-      (pathToTrees tp)
-  return
-    mut
-      { mutName = printf "&%s" (show tp)
-      , mutType = RefMutable
-      , mutArgs = args
-      , mutExpr = return $ AST.ExprUnaryExpr ue
-      }
- where
-  mut = mkStubMutable (\_ -> throwErrSt "should not be called directly")
+index _ = throwErrSt "invalid index arguments"
 
 validateCnstrs :: (TreeMonad s m) => m ()
 validateCnstrs = do
@@ -828,12 +806,14 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     (_, TNDisj dj2) -> do
       logDebugStr $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show v1)
       unifyLeftDisj (dj2, ut2) ut1
-    (_, TNMutable mut2) -> case mutType mut2 of
-      -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
-      -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
-      -- marked disjunction.
-      DisjMutable -> unifyLeftOther ut2 ut1
-      _ -> procOther
+    (_, TNMutable mut2)
+      | (Mut m2) <- mut2 -> case mutType m2 of
+          -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
+          -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
+          -- marked disjunction.
+          DisjMutable -> unifyLeftOther ut2 ut1
+          _ -> procOther
+      | otherwise -> procOther
     (_, TNRefCycle _) -> procOther
     -- If the left atom is embedded in the right struct and there is no fields and no pending dynamic fields, we can
     -- immediately put the atom into the tree without worrying any future new fields. This is what CUE currently
@@ -1401,28 +1381,24 @@ unifyUTreesInTemp ut1 ut2 =
     (mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
     $ reduce >> getTMTree
 
--- mutApplier creates a new function tree for the original function with the arguments applied.
+-- | mutApplier creates a new function tree for the original function with the arguments applied.
 mutApplier :: (MonadError String m) => Tree -> [Tree] -> m Tree
 mutApplier t args = case treeNode t of
   TNMutable mut ->
-    return $
-      mkMutableTree $
-        ( mkStubMutable $ \_ -> do
-            putTMTree . mkMutableTree $ mut{mutArgs = args}
-        )
-          { mutName = "mutatorApplier"
-          }
+    return . mkMutableTree . Mut $
+      stubRegMutable
+        { mutName = "mutApplier"
+        , mutMethod = \_ -> putTMTree . mkMutableTree $ modifyRegMut (\m -> m{mutArgs = args}) mut
+        }
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 mkReduceMut :: Tree -> Tree
 mkReduceMut t =
-  mkMutableTree $
-    ( mkStubMutable $ \_ -> do
-        putTMTree t
-        reduce
-    )
+  mkMutableTree . Mut $
+    stubRegMutable
       { mutName = "reduce"
       , mutArgs = []
+      , mutMethod = \_ -> putTMTree t >> reduce
       }
 
 -- built-in functions
@@ -1430,11 +1406,12 @@ builtinMutableTable :: [(String, Tree)]
 builtinMutableTable =
   [
     ( "close"
-    , mkMutableTree $
+    , mkMutableTree . Mut $
         -- built-in close does not recursively close the struct.
-        (mkStubMutable $ close False)
+        stubRegMutable
           { mutName = "close"
           , mutArgs = [mkNewTree TNTop]
+          , mutMethod = close False
           }
     )
   ]

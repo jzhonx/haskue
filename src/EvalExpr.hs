@@ -183,12 +183,12 @@ builtinOpNameTable =
     ++ builtinMutableTable
 
 evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> m Tree
-evalPrimExpr e@(PrimExprOperand op) = case op of
+evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
     Just v -> return v
-    Nothing -> mkVarLinkTree ident (AST.UnaryExprPrimaryExpr e)
+    Nothing -> mkVarLinkTree ident
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
   evalSelector e sel p

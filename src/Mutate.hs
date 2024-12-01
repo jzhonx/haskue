@@ -42,7 +42,7 @@ No global states should be changed too.
 -}
 mutate :: (TreeMonad s m) => Bool -> m ()
 mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
-  let name = mutName m
+  let name = getMutName m
   debugSpan (printf "mutate, path: %s, mut: %s" (show path) (show name)) $ do
     -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
     -- enough to replace the mutable with the new struct.
@@ -50,21 +50,14 @@ mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
     inSubTM
       (MutableSelector MutableValSelector)
       (mkMutableTree mutValStub)
-      ( if isMutableRef m
-          then do
-            dst <-
-              maybe
-                (throwErrSt "can not generate path from the arguments")
-                return
-                (treesToPath (mutArgs m))
-
-            deref dst skipDeref
-          else invokeMutMethod m
+      ( case m of
+          Ref ref -> deref (refPath ref) skipDeref
+          Mut mut -> invokeMutMethod mut
       )
 
     -- Make sure the mutable is still the focus of the tree.
     withTree $ \_ -> mustMutable $ \mut ->
-      case mutValue mut of
+      case getMutVal mut of
         Nothing -> throwErrSt "mutable value is lost"
         Just res -> do
           logDebugStr $ printf "mutate: path: %s, mut %s, result:\n%s" (show path) (show name) (show res)
@@ -73,7 +66,7 @@ mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
               if nm == mutValStub
                 then do
                   -- The mutable is not mutated, so we need to reset the mutable value to Nothing.
-                  putTMTree $ mkMutableTree $ resetMutableVal mut
+                  putTMTree $ mkMutableTree $ resetMutVal mut
                 else do
                   -- recursively mutate in mutval env until the result is not a mutable.
                   putTMTree res >> mutate skipDeref
@@ -97,12 +90,11 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
             withDebugInfo $ \path _ -> do
               logDebugStr $
                 printf
-                  "tryReduceMut: func %s, path: %s, %s is reducible: %s, args: %s"
-                  (show $ mutName mut)
+                  "tryReduceMut: func %s, path: %s, %s is reducible: %s"
+                  (show $ getMutName mut)
                   (show path)
                   (show val)
                   (show reducible)
-                  (show $ mutArgs mut)
 
             if reducible
               then do
@@ -113,7 +105,7 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
                 delNotifRecvPrefix path
               else
                 -- Not reducible, we need to update the mutable value.
-                putTMTree (mkMutableTree $ setMutableState mut val)
+                putTMTree (mkMutableTree $ setMutVal mut val)
             return reducible
     )
     valM

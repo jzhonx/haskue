@@ -15,23 +15,7 @@ module Value.Tree (
   module Value.Struct,
   module Value.Tree,
   module Value.TreeNode,
-  Mutable,
-  MutableType (..),
-  invokeMutMethod,
-  isMutableIndex,
-  isMutableRef,
-  mkBinaryOp,
-  mkBinaryOpDir,
-  mkStubMutable,
-  mkUnaryOp,
-  mutArgs,
-  mutExpr,
-  mutName,
-  mutType,
-  mutValStub,
-  mutValue,
-  resetMutableVal,
-  setMutableState,
+  module Value.Mutable,
 )
 where
 
@@ -226,26 +210,26 @@ buildRepTreeTN t tn = case tn of
     RefCycleVert -> consRep (symbol, "vert", [], [])
     RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
     RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
-  TNMutable f -> case mutType f of
-    RefMutable ->
+  TNMutable m -> case m of
+    Mut mut ->
       let
-        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue f)
-       in
-        consRep (symbol, mutName f, consFields val, [])
-    _ ->
-      let
-        args = zipWith (\j v -> (show (MutableArgSelector j), mempty, v)) [0 ..] (mutArgs f)
-        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue f)
+        args = zipWith (\j v -> (show (MutableArgSelector j), mempty, v)) [0 ..] (mutArgs mut)
+        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue mut)
        in
         consRep
           ( symbol
-          , mutName f
-              <> ( printf ", args:%s" (show . length $ mutArgs f)
-                    <> (if mutHasRef f then ", hasRef" else mempty)
+          , mutName mut
+              <> ( printf ", args:%s" (show . length $ mutArgs mut)
+                    <> (if mutHasRef m then ", hasRef" else mempty)
                  )
           , consFields (args ++ val)
           , []
           )
+    Ref ref ->
+      let
+        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (refValue ref)
+       in
+        consRep (symbol, show $ refPath ref, consFields val, [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
  where
@@ -273,12 +257,10 @@ instance BuildASTExpr Tree where
     TNStruct s -> buildASTExpr cr s
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
-    TNMutable fn -> buildASTExpr cr fn
-    TNConstraint c ->
-      maybe
-        (return $ cnsValidator c)
-        return
-        (treeOrig t)
+    TNMutable mut -> case mut of
+      Mut _ -> buildASTExpr cr mut
+      Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeOrig t)
+    TNConstraint c -> maybe (return $ cnsValidator c) return (treeOrig t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
@@ -397,7 +379,9 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNConstraint{} -> "Cnstr"
   TNRefCycle _ -> "RC"
-  TNMutable{} -> "mut"
+  TNMutable m -> case m of
+    Mut _ -> "fn"
+    Ref _ -> "ref"
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
@@ -405,14 +389,15 @@ subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
   TNList l -> [(IndexSelector i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  TNMutable fn -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (mutArgs fn)]
+  TNMutable (Mut mut) -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (mutArgs mut)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultSelector, x)]) (dsjDefault d)
       ++ [(DisjDisjunctSelector i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
 mutHasRef :: Mutable Tree -> Bool
-mutHasRef fn = isMutableRef fn || argsHaveRef (mutArgs fn)
+mutHasRef (Ref _) = True
+mutHasRef (Mut mut) = argsHaveRef (mutArgs mut)
  where
   argsHaveRef :: [Tree] -> Bool
   argsHaveRef =
@@ -553,7 +538,7 @@ original mutator node is kept.
 snapshotTM :: (TreeMonad s m) => m ()
 snapshotTM =
   traverseTM $ withTN $ \case
-    TNMutable fn -> maybe (return ()) putTMTree (mutValue fn)
+    TNMutable m -> maybe (return ()) putTMTree (getMutVal m)
     _ -> return ()
 
 dumpEntireTree :: (TreeMonad s m) => String -> m ()
