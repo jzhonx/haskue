@@ -73,7 +73,7 @@ subTreeTN sel t = case (sel, getTreeNode t) of
       PatternField _ val -> Just val
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
-    | (MutableSelector (MutableArgSelector i), Mut m) <- (sel, mut) -> mutArgs m `indexList` i
+    | (MutableSelector (MutableArgSelector i), SFunc m) <- (sel, mut) -> sfnArgs m `indexList` i
     | MutableSelector MutableValSelector <- sel -> getMutVal mut
     -- This has to be the last case because the explicit function selector has the highest priority.
     | otherwise -> getMutVal mut >>= subTree sel
@@ -98,13 +98,13 @@ setSubTreeTN sel subT parT = do
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
-      | (MutableSelector (MutableArgSelector i), Mut m) <- (sel, mut) -> do
+      | (MutableSelector (MutableArgSelector i), SFunc f) <- (sel, mut) -> do
           let
-            args = mutArgs m
-            l = TNMutable . Mut $ m{mutArgs = take i args ++ [subT] ++ drop (i + 1) args}
+            args = sfnArgs f
+            l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
       | MutableSelector MutableValSelector <- sel -> return . TNMutable $ setMutVal mut subT
-      -- If the selector is not a mutable selector, then the sub value must have been the mutValue value.
+      -- If the selector is not a mutable selector, then the sub value must have been the sfnValue value.
       | otherwise ->
           maybe
             (throwErrSt $ printf "setSubTreeTN: mutable value is not found for non-function selector %s" (show sel))

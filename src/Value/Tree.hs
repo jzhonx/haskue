@@ -211,15 +211,15 @@ buildRepTreeTN t tn = case tn of
     RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
     RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
   TNMutable m -> case m of
-    Mut mut ->
+    SFunc mut ->
       let
-        args = zipWith (\j v -> (show (MutableArgSelector j), mempty, v)) [0 ..] (mutArgs mut)
-        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (mutValue mut)
+        args = zipWith (\j v -> (show (MutableArgSelector j), mempty, v)) [0 ..] (sfnArgs mut)
+        val = maybe mempty (\s -> [(show MutableValSelector, mempty, s)]) (sfnValue mut)
        in
         consRep
           ( symbol
-          , mutName mut
-              <> ( printf ", args:%s" (show . length $ mutArgs mut)
+          , sfnName mut
+              <> ( printf ", args:%s" (show . length $ sfnArgs mut)
                     <> (if mutHasRef m then ", hasRef" else mempty)
                  )
           , consFields (args ++ val)
@@ -258,7 +258,7 @@ instance BuildASTExpr Tree where
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
     TNMutable mut -> case mut of
-      Mut _ -> buildASTExpr cr mut
+      SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeOrig t)
     TNConstraint c -> maybe (return $ cnsValidator c) return (treeOrig t)
     TNRefCycle c -> case c of
@@ -380,7 +380,7 @@ showTreeSymbol t = case treeNode t of
   TNConstraint{} -> "Cnstr"
   TNRefCycle _ -> "RC"
   TNMutable m -> case m of
-    Mut _ -> "fn"
+    SFunc _ -> "fn"
     Ref _ -> "ref"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -389,7 +389,7 @@ subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
   TNList l -> [(IndexSelector i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  TNMutable (Mut mut) -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (mutArgs mut)]
+  TNMutable (SFunc mut) -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultSelector, x)]) (dsjDefault d)
       ++ [(DisjDisjunctSelector i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
@@ -397,7 +397,7 @@ subNodes t = case treeNode t of
 
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
-mutHasRef (Mut mut) = argsHaveRef (mutArgs mut)
+mutHasRef (SFunc mut) = argsHaveRef (sfnArgs mut)
  where
   argsHaveRef :: [Tree] -> Bool
   argsHaveRef =

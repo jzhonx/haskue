@@ -52,7 +52,7 @@ mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
       (mkMutableTree mutValStub)
       ( case m of
           Ref ref -> deref (refPath ref) skipDeref
-          Mut mut -> invokeMutMethod mut
+          SFunc mut -> invokeMutMethod mut
       )
 
     -- Make sure the mutable is still the focus of the tree.

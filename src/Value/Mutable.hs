@@ -18,23 +18,23 @@ type MutableEnv s m t = (TMonad s m t, MonadReader (Config t) m)
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
-  = Mut (RegMutable t)
+  = SFunc (StatefulFunc t)
   | Ref (Reference t)
 
--- | RegMutable is a tree node whose value can be changed.
-data RegMutable t = RegMutable
-  { mutName :: String
-  , mutType :: MutableType
-  , mutArgs :: [t]
+-- | StatefulFunc is a tree node whose value can be changed.
+data StatefulFunc t = StatefulFunc
+  { sfnName :: String
+  , sfnType :: MutableType
+  , sfnArgs :: [t]
   -- ^ Args stores the arguments that may or may not need to be evaluated.
-  , mutExpr :: forall m. (Env m) => m AST.Expression
-  -- ^ mutExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
+  , sfnExpr :: forall m. (Env m) => m AST.Expression
+  -- ^ sfnExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
   -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
   -- available.
   -- The return value of the method should be stored in the tree.
-  , mutMethod :: forall s m. (MutableEnv s m t) => [t] -> m ()
-  , mutValue :: Maybe t
-  -- ^ mutValue stores the non-atom, non-Mutable (isTreeValue true) value.
+  , sfnMethod :: forall s m. (MutableEnv s m t) => [t] -> m ()
+  , sfnValue :: Maybe t
+  -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
 
 data MutableType = RegularMutable | DisjMutable | IndexMutable
@@ -46,26 +46,26 @@ data Reference t = Reference
   }
 
 instance (Eq t) => Eq (Mutable t) where
-  (==) (Mut m1) (Mut m2) = m1 == m2
+  (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
-  buildASTExpr c (Mut m) = buildASTExpr c m
+  buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr c (Ref r) = buildASTExpr c r
 
-instance (Eq t) => Eq (RegMutable t) where
+instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
-    mutName f1 == mutName f2
-      && mutType f1 == mutType f2
-      && mutArgs f1 == mutArgs f2
+    sfnName f1 == sfnName f2
+      && sfnType f1 == sfnType f2
+      && sfnArgs f1 == sfnArgs f2
 
-instance (BuildASTExpr t) => BuildASTExpr (RegMutable t) where
+instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
     if c || requireMutableConcrete mut
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
-      then mutExpr mut
-      else maybe (mutExpr mut) (buildASTExpr c) (mutValue mut)
+      then sfnExpr mut
+      else maybe (sfnExpr mut) (buildASTExpr c) (sfnValue mut)
 
 instance (Eq t) => Eq (Reference t) where
   (==) r1 r2 = refPath r1 == refPath r2
@@ -80,54 +80,54 @@ isMutableRef mut = case mut of
 
 isMutableIndex :: Mutable t -> Bool
 isMutableIndex mut = case mut of
-  Mut m -> mutType m == IndexMutable
+  SFunc m -> sfnType m == IndexMutable
   _ -> False
 
-requireMutableConcrete :: RegMutable t -> Bool
+requireMutableConcrete :: StatefulFunc t -> Bool
 requireMutableConcrete mut
-  | RegularMutable <- mutType mut = mutName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
+  | RegularMutable <- sfnType mut = sfnName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
 requireMutableConcrete _ = False
 
 getMutName :: Mutable t -> String
-getMutName (Mut mut) = mutName mut
+getMutName (SFunc mut) = sfnName mut
 getMutName (Ref ref) = "ref " ++ show (refPath ref)
 
 getMutVal :: Mutable t -> Maybe t
-getMutVal (Mut mut) = mutValue mut
+getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
 
 setMutVal :: Mutable t -> t -> Mutable t
-setMutVal (Mut mut) t = Mut $ mut{mutValue = Just t}
+setMutVal (SFunc mut) t = SFunc $ mut{sfnValue = Just t}
 setMutVal (Ref ref) t = Ref $ ref{refValue = Just t}
 
 resetMutVal :: Mutable t -> Mutable t
-resetMutVal (Mut mut) = Mut $ mut{mutValue = Nothing}
+resetMutVal (SFunc mut) = SFunc $ mut{sfnValue = Nothing}
 resetMutVal (Ref ref) = Ref $ ref{refValue = Nothing}
 
-invokeMutMethod :: (MutableEnv s m t) => RegMutable t -> m ()
-invokeMutMethod mut = mutMethod mut (mutArgs mut)
+invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
+invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
 
-modifyRegMut :: (RegMutable t -> RegMutable t) -> Mutable t -> Mutable t
-modifyRegMut f (Mut m) = Mut $ f m
+modifyRegMut :: (StatefulFunc t -> StatefulFunc t) -> Mutable t -> Mutable t
+modifyRegMut f (SFunc m) = SFunc $ f m
 modifyRegMut _ r = r
 
 mutValStub :: Mutable t
 mutValStub =
-  Mut $
+  SFunc $
     stubRegMutable
-      { mutName = "mvStub"
-      , mutMethod = \_ -> throwErrSt "mutateValStub: mutMethod should not be called"
+      { sfnName = "mvStub"
+      , sfnMethod = \_ -> throwErrSt "mutateValStub: sfnMethod should not be called"
       }
 
-stubRegMutable :: RegMutable t
+stubRegMutable :: StatefulFunc t
 stubRegMutable =
-  RegMutable
-    { mutName = ""
-    , mutType = RegularMutable
-    , mutArgs = []
-    , mutExpr = throwErrSt "stub mutable"
-    , mutMethod = \_ -> throwErrSt "stub mutable"
-    , mutValue = Nothing
+  StatefulFunc
+    { sfnName = ""
+    , sfnType = RegularMutable
+    , sfnArgs = []
+    , sfnExpr = throwErrSt "stub mutable"
+    , sfnMethod = \_ -> throwErrSt "stub mutable"
+    , sfnValue = Nothing
     }
 
 mkUnaryOp ::
@@ -138,14 +138,14 @@ mkUnaryOp ::
   t ->
   Mutable t
 mkUnaryOp op f n =
-  Mut $
-    RegMutable
-      { mutMethod = g
-      , mutType = RegularMutable
-      , mutExpr = buildUnaryExpr op n
-      , mutName = show op
-      , mutArgs = [n]
-      , mutValue = Nothing
+  SFunc $
+    StatefulFunc
+      { sfnMethod = g
+      , sfnType = RegularMutable
+      , sfnExpr = buildUnaryExpr op n
+      , sfnName = show op
+      , sfnArgs = [n]
+      , sfnValue = Nothing
       }
  where
   g :: (MutableEnv s m t) => [t] -> m ()
@@ -174,16 +174,16 @@ mkBinaryOp ::
   t ->
   Mutable t
 mkBinaryOp op f l r =
-  Mut $
-    RegMutable
-      { mutMethod = g
-      , mutType = case op of
+  SFunc $
+    StatefulFunc
+      { sfnMethod = g
+      , sfnType = case op of
           AST.Disjunction -> DisjMutable
           _ -> RegularMutable
-      , mutExpr = buildBinaryExpr op l r
-      , mutName = show op
-      , mutArgs = [l, r]
-      , mutValue = Nothing
+      , sfnExpr = buildBinaryExpr op l r
+      , sfnName = show op
+      , sfnArgs = [l, r]
+      , sfnValue = Nothing
       }
  where
   g :: (MutableEnv s m t) => [t] -> m ()

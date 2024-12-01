@@ -350,11 +350,11 @@ copyRefVal ref trail tar = do
                 "deref: path: %s, visitedRefs: %s, has definition, recursively close the value."
                 (show path)
                 (show $ Set.toList visitedRefs)
-            return . mkMutableTree . Mut $
+            return . mkMutableTree . SFunc $
               stubRegMutable
-                { mutArgs = [orig]
-                , mutName = "deref_close"
-                , mutMethod = close True
+                { sfnArgs = [orig]
+                , sfnName = "deref_close"
+                , sfnMethod = close True
                 }
           else return orig
       logDebugStr $

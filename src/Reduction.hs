@@ -291,19 +291,19 @@ mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
         modifyRegMut
           ( \mut ->
               mut
-                { mutArgs = mutArgs mut ++ [selArg]
-                , mutExpr = return $ AST.ExprUnaryExpr ue
+                { sfnArgs = sfnArgs mut ++ [selArg]
+                , sfnExpr = return $ AST.ExprUnaryExpr ue
                 }
           )
           m
   _ ->
-    Mut
+    SFunc
       stubRegMutable
-        { mutName = "index"
-        , mutType = IndexMutable
-        , mutArgs = [treeArg, selArg]
-        , mutExpr = return $ AST.ExprUnaryExpr ue
-        , mutMethod = index
+        { sfnName = "index"
+        , sfnType = IndexMutable
+        , sfnArgs = [treeArg, selArg]
+        , sfnExpr = return $ AST.ExprUnaryExpr ue
+        , sfnMethod = index
         }
 
 {- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
@@ -807,7 +807,7 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
       logDebugStr $ printf "unifyLeftAtom: TNDisj %s, %s" (show t2) (show v1)
       unifyLeftDisj (dj2, ut2) ut1
     (_, TNMutable mut2)
-      | (Mut m2) <- mut2 -> case mutType m2 of
+      | (SFunc m2) <- mut2 -> case sfnType m2 of
           -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
           -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
           -- marked disjunction.
@@ -1385,20 +1385,20 @@ unifyUTreesInTemp ut1 ut2 =
 mutApplier :: (MonadError String m) => Tree -> [Tree] -> m Tree
 mutApplier t args = case treeNode t of
   TNMutable mut ->
-    return . mkMutableTree . Mut $
+    return . mkMutableTree . SFunc $
       stubRegMutable
-        { mutName = "mutApplier"
-        , mutMethod = \_ -> putTMTree . mkMutableTree $ modifyRegMut (\m -> m{mutArgs = args}) mut
+        { sfnName = "mutApplier"
+        , sfnMethod = \_ -> putTMTree . mkMutableTree $ modifyRegMut (\m -> m{sfnArgs = args}) mut
         }
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 mkReduceMut :: Tree -> Tree
 mkReduceMut t =
-  mkMutableTree . Mut $
+  mkMutableTree . SFunc $
     stubRegMutable
-      { mutName = "reduce"
-      , mutArgs = []
-      , mutMethod = \_ -> putTMTree t >> reduce
+      { sfnName = "reduce"
+      , sfnArgs = []
+      , sfnMethod = \_ -> putTMTree t >> reduce
       }
 
 -- built-in functions
@@ -1406,12 +1406,12 @@ builtinMutableTable :: [(String, Tree)]
 builtinMutableTable =
   [
     ( "close"
-    , mkMutableTree . Mut $
+    , mkMutableTree . SFunc $
         -- built-in close does not recursively close the struct.
         stubRegMutable
-          { mutName = "close"
-          , mutArgs = [mkNewTree TNTop]
-          , mutMethod = close False
+          { sfnName = "close"
+          , sfnArgs = [mkNewTree TNTop]
+          , sfnMethod = close False
           }
     )
   ]
