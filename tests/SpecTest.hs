@@ -27,10 +27,11 @@ newCompleteStruct labels subs =
                 ( \(k, v) ->
                     let (s, a) = selAttr k
                      in ( Path.StringSelector s
-                        , StaticStructField
-                            { ssfField = v
-                            , ssfAttr = a
-                            }
+                        , SField $
+                            Field
+                              { ssfField = v
+                              , ssfAttr = a
+                              }
                         )
                 )
                 subs
@@ -1203,7 +1204,7 @@ testCnstr2 = do
         )
       ]
 
-expandWithPatterns :: [PatternStructField Tree] -> Tree -> Tree
+expandWithPatterns :: [StructPattern Tree] -> Tree -> Tree
 expandWithPatterns ps t = case t of
   Tree{treeNode = TNStruct s} ->
     mkStructTree $
@@ -1222,7 +1223,7 @@ testPat1 = do
  where
   exp =
     expandWithPatterns
-      [ PatternStructField
+      [ StructPattern
           { psfPattern = Bounds{bdsList = [BdType BdString]}
           , psfValue = newStruct [("a", mkAtomTree $ Int 1)]
           }
@@ -1251,7 +1252,7 @@ testPat2 = do
       [
         ( "nameMap"
         , expandWithPatterns
-            [ PatternStructField
+            [ StructPattern
                 { psfPattern = Bounds{bdsList = [BdType BdString]}
                 , psfValue =
                     newStruct
@@ -1330,7 +1331,7 @@ testClose3 = do
       ]
 
   patterna =
-    [ PatternStructField
+    [ StructPattern
         { psfPattern = Bounds{bdsList = [BdStrMatch $ BdReMatch "a"]}
         , psfValue = mkBoundsTree [BdType BdInt]
         }

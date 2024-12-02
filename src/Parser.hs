@@ -21,6 +21,7 @@ import Text.Parsec (
   oneOf,
   option,
   optionMaybe,
+  -- parserTraced,
   runParser,
   satisfy,
   setInput,
@@ -333,7 +334,12 @@ comma l = do
     else unexpected "failed to parse comma"
 
 decl :: Parser (Lexeme Declaration)
-decl = try (fmap FieldDecl <$> field) <|> (fmap EllipsisDecl <$> ellipsisDecl) <|> (fmap Embedding <$> expr)
+decl =
+  try (fmap FieldDecl <$> field)
+    -- let would not consume EllipsisDecl. But it could consume Embedding. So it needs "try".
+    <|> try (fmap DeclLet <$> letClause)
+    <|> (fmap EllipsisDecl <$> ellipsisDecl)
+    <|> (fmap Embedding <$> expr)
 
 field :: Parser (Lexeme FieldDecl)
 field = do
@@ -389,6 +395,14 @@ ellipsisDecl = do
     (return $ Ellipsis Nothing <$ lLex)
     (\eLex -> return $ Ellipsis (Just $ lex eLex) <$ eLex)
     eLexM
+
+letClause :: Parser (Lexeme LetClause)
+letClause = do
+  _ <- lexeme $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
+  identLex <- identifier
+  _ <- lexeme $ (,TokenBinOp) <$> (char '=' <?> "failed to parse =")
+  eLex <- expr
+  return $ LetClause (lex identLex) (lex eLex) <$ eLex
 
 labelName :: Parser (Lexeme LabelName)
 labelName =

@@ -101,7 +101,6 @@ instance TreeOp Tree where
     TempSelector -> return $ t{treeTemp = Just sub}
     _ -> setSubTreeTN sel sub t
 
-  getVarField = getVarFieldTN
   delTemp t = t{treeTemp = Nothing}
   isTreeAtom = isJust . getAtomVFromTree
   isTreeBottom = isJust . getBottomFromTree
@@ -154,12 +153,10 @@ buildRepTreeTN t tn = case tn of
             then ",v"
             else mempty
 
-        slabelAttr :: StructSelector -> String
-        slabelAttr k =
-          let sf = stcSubs s Map.! k
-           in attr (ssfAttr sf) <> isVar (ssfAttr sf)
+        slabelAttr :: Field Tree -> String
+        slabelAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
 
-        dlabelAttr :: DynamicStructField Tree -> String
+        dlabelAttr :: DynamicField Tree -> String
         dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
 
         plabelAttr :: String
@@ -167,7 +164,14 @@ buildRepTreeTN t tn = case tn of
 
         fields :: [(String, String, Tree)]
         fields =
-          map (\k -> (show k, slabelAttr k, ssfField $ stcSubs s Map.! k)) (structStaticLabels s)
+          map
+            ( \k ->
+                let sv = stcSubs s Map.! k
+                 in case sv of
+                      SField sf -> (show k, slabelAttr sf, ssfField sf)
+                      SLocal lb -> (show k, "local", lbValue lb)
+            )
+            (structStrLabels s)
             ++ zipWith
               ( \j k -> (show (StructSelector $ PatternSelector j), "", psfValue k)
               )
@@ -177,8 +181,9 @@ buildRepTreeTN t tn = case tn of
               ( \j ->
                   let a = stcPendSubs s !! j
                    in case a of
-                        DynamicField dsf -> (show (StructSelector $ PendingSelector j), dlabelAttr dsf, dsfValue dsf)
-                        PatternField _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
+                        DynamicPend dsf -> (show (StructSelector $ PendingSelector j), dlabelAttr dsf, dsfValue dsf)
+                        PatternPend _ val -> (show (StructSelector $ PendingSelector j), plabelAttr, val)
+                        LocalPend _ val -> (show (StructSelector $ PendingSelector j), "local", val)
               )
               (structPendIndexes s)
 
@@ -387,7 +392,14 @@ showTreeSymbol t = case treeNode t of
 
 subNodes :: Tree -> [(Selector, Tree)]
 subNodes t = case treeNode t of
-  TNStruct struct -> [(StructSelector s, ssfField sf) | (s, sf) <- Map.toList (stcSubs struct)]
+  TNStruct struct ->
+    [ ( StructSelector s
+      , case sv of
+          SField sf -> ssfField sf
+          SLocal lb -> lbValue lb
+      )
+    | (s, sv) <- Map.toList (stcSubs struct)
+    ]
   TNList l -> [(IndexSelector i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableSelector $ MutableArgSelector i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNDisj d ->

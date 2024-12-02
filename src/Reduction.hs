@@ -117,11 +117,11 @@ mutValToArgsTM sel sub f = inParentTM $ mustMutable $ \_ -> inSubTM sel sub f
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
-  whenStruct () $ \s -> mapM_ (reduceStaticSF . fst) (Map.toList . stcSubs $ s)
+  whenStruct () $ \s -> mapM_ (reduceStructVal . fst) (Map.toList . stcSubs $ s)
   -- reduce the pendings.
   delIdxes <- whenStruct [] $ \s ->
     foldM
-      (\acc (i, pend) -> reducePendSE (PendingSelector i, pend) >>= \r -> return $ if r then i : acc else acc)
+      (\acc (i, pend) -> reducePendSElem (PendingSelector i, pend) >>= \r -> return $ if r then i : acc else acc)
       []
       (zip [0 ..] (stcPendSubs s))
   whenStruct () $ \s -> do
@@ -153,13 +153,19 @@ mustStruct f = withTree $ \t -> case treeNode t of
   TNStruct struct -> f struct
   _ -> throwErrSt $ printf "%s is not a struct" (show t)
 
-reduceStaticSF :: (TreeMonad s m) => StructSelector -> m ()
-reduceStaticSF sel = whenStruct () $ \struct ->
-  inSubTM (StructSelector sel) (ssfField (stcSubs struct Map.! sel)) reduce
+reduceStructVal :: (TreeMonad s m) => StructSelector -> m ()
+reduceStructVal sel = whenStruct () $ \struct -> case stcSubs struct Map.!? sel of
+  Just (SField sf) -> inSubTM (StructSelector sel) (ssfField sf) reduce
+  Just (SLocal lb) -> inSubTM (StructSelector sel) (lbValue lb) reduce
+  _ -> throwErrSt $ printf "%s is not found" (show sel)
 
-reducePendSE :: (TreeMonad s m) => (StructSelector, PendingStructElem Tree) -> m Bool
-reducePendSE (sel@(PendingSelector _), pse) = case pse of
-  DynamicField dsf -> do
+{- | Reduce the pending element.
+
+It returns True if the pending element can be reduced.
+-}
+reducePendSElem :: (TreeMonad s m) => (StructSelector, PendingSElem Tree) -> m Bool
+reducePendSElem (sel@(PendingSelector _), pse) = case pse of
+  DynamicPend dsf -> do
     -- evaluate the dynamic label.
     label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ reduce >> getTMTree
     withDebugInfo $ \path _ ->
@@ -170,18 +176,18 @@ reducePendSE (sel@(PendingSelector _), pse) = case pse of
           (show label)
     case treeNode label of
       TNAtom (AtomV (String s)) -> do
-        newSF <- mustStruct $ \struct -> return $ dynToStaticField dsf (stcSubs struct Map.!? StringSelector s)
+        newSF <- mustStruct $ \struct -> return $ dynToField dsf (stcSubs struct Map.!? StringSelector s)
 
         let sSel = StructSelector $ StringSelector s
         mergedT <- inDiscardSubTM sSel (ssfField newSF) (reduce >> getTMTree)
         -- TODO: use whenStruct because mergedT could be a bottom.
         mustStruct $ \struct ->
-          putTMTree $ mkStructTree $ addStatic struct s (newSF{ssfField = mergedT})
+          putTMTree $ mkStructTree $ addStructField struct s (newSF{ssfField = mergedT})
         return True
 
       -- TODO: pending label
       _ -> putTMTree (mkBottomTree "selector can only be a string") >> return False
-  PatternField pattern val -> do
+  PatternPend pattern val -> do
     -- evaluate the pattern.
     pat <- inDiscardSubTM (StructSelector sel) pattern (reduce >> getTMTree)
     withDebugInfo $ \path _ ->
@@ -195,7 +201,7 @@ reducePendSE (sel@(PendingSelector _), pse) = case pse of
         if null (bdsList bds)
           then putTMTree (mkBottomTree "patterns must be non-empty") >> return False
           else do
-            let psf = PatternStructField bds val
+            let psf = StructPattern bds val
             newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
             putTMTree newStruct
             withDebugInfo $ \path _ ->
@@ -206,35 +212,72 @@ reducePendSE (sel@(PendingSelector _), pse) = case pse of
       _ ->
         putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
           >> return False
+  LocalPend name lb -> do
+    -- Fields have already been created in the evalExpr phase, so we do not need to do searchTMVar when adding new
+    -- fields.
+    resM <- searchTMVar (StructSelector (StringSelector name))
+    case resM of
+      Just (_, True) -> putTMTree (lbRedeclErr name) >> return False
+      Just (_, False) -> putTMTree (aliasErr name) >> return False
+      Nothing -> do
+        -- evaluate the local binding.
+        ulb <- inSubTM (StructSelector sel) lb $ reduce >> getTMTree
+        withDebugInfo $ \path _ ->
+          logDebugStr $
+            printf
+              "reducePendSE: path: %s, local binding is evaluated to %s"
+              (show path)
+              (show ulb)
+        mustStruct $ \struct -> putTMTree $ mkStructTree $ addStructLocal struct name ulb
+        return True
  where
-  dynToStaticField ::
-    DynamicStructField Tree ->
-    Maybe (StaticStructField Tree) ->
-    StaticStructField Tree
-  dynToStaticField dsf sfM = case sfM of
-    Just sf ->
-      StaticStructField
+  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in the same scope" name
+  -- case treeNode label of
+  --   TNAtom (AtomV (String s)) -> do
+  --     newSF <- mustStruct $ \struct -> return $ dynToField dsf (stcSubs struct Map.!? StringSelector s)
+  --
+  --     let sSel = StructSelector $ StringSelector s
+  --     mergedT <- inDiscardSubTM sSel (ssfField newSF) (reduce >> getTMTree)
+  --     -- TODO: use whenStruct because mergedT could be a bottom.
+  --     mustStruct $ \struct ->
+  --       putTMTree $ mkStructTree $ addStructField struct s (newSF{ssfField = mergedT})
+  --     return True
+  --
+  --   -- TODO: pending label
+  --   _ -> putTMTree (mkBottomTree "selector can only be a string") >> return False
+
+  dynToField ::
+    DynamicField Tree ->
+    Maybe (StructVal Tree) ->
+    Field Tree
+  dynToField dsf sfM = case sfM of
+    -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
+    -- If the identifier is a local binding, then no need to merge. The limit that there should only be one identifier
+    -- in a scope can be ignored.
+    Just (SField sf) ->
+      Field
         { ssfField = mkMutableTree $ mkUnifyNode (ssfField sf) (dsfValue dsf)
         , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr dsf)
         }
-    Nothing ->
-      StaticStructField
+    _ ->
+      Field
         { ssfField = dsfValue dsf
         , ssfAttr = dsfAttr dsf
         }
 
   -- Add the pattern to the struct. Return the new struct and the index of the pattern.
-  addPattern :: PatternStructField Tree -> Struct Tree -> Struct Tree
+  addPattern :: StructPattern Tree -> Struct Tree -> Struct Tree
   addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
-reducePendSE _ = throwErrSt "invalid selector field combination"
+reducePendSElem _ = throwErrSt "invalid selector field combination"
 
-{- | Apply the pattern to the existing statis fields of the struct.
+{- | Apply the pattern to the existing static fields of the struct.
 
 The tree focus should be the struct.
 -}
 applyPatStaticFields ::
   (TreeMonad s m) =>
-  PatternStructField Tree ->
+  StructPattern Tree ->
   m ()
 applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
   (printf "applyPatStaticFields, path: %s" (show p))
@@ -260,15 +303,20 @@ applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
     logDebugStr $ printf "applyPatStaticFields: cnstrSels: %s" (show cnstrSels)
 
     results <-
-      mapM
-        ( \s -> do
+      foldM
+        ( \acc name -> do
             let
               fieldCnstr = psfValue psf
-              sf = stcSubs struct Map.! StringSelector s
-              f = mkMutableTree $ mkUnifyNode (ssfField sf) fieldCnstr
-            nf <- inSubTM (StructSelector (StringSelector s)) f (reduce >> getTMTree)
-            return (s, nf)
+              svM = stcSubs struct Map.!? StringSelector name
+            case svM of
+              Just (SField sf) -> do
+                let f = mkMutableTree $ mkUnifyNode (ssfField sf) fieldCnstr
+                nf <- inSubTM (StructSelector (StringSelector name)) f (reduce >> getTMTree)
+                return $ (name, nf) : acc
+              Just (SLocal _) -> return acc
+              _ -> throwErrSt $ printf "field %s is not found" name
         )
+        []
         cnstrSels
 
     let bottoms = filter (isTreeBottom . snd) results
@@ -1131,7 +1179,7 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
     (Just b1, _) -> putTMTree b1
     (_, Just b2) -> putTMTree b2
     _ -> do
-      let merged = nodesToStruct allStatics combinedPatterns combinedPendSubs
+      let merged = nodesToStruct allFields combinedPatterns combinedPendSubs
       withDebugInfo $ \path _ ->
         logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
       -- in reduce, the new combined fields will be checked by the combined patterns.
@@ -1148,48 +1196,62 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
   combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
   combinedPatterns = stcPatterns s1 ++ stcPatterns s2
 
+  mergeField :: Field Tree -> Field Tree -> Field Tree
+  mergeField sf1 sf2 =
+    let
+      ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
+      -- No original node exists yet
+      f = mkUnifyNode (ssfField sf1) (ssfField sf2)
+     in
+      Field
+        { ssfField = mkMutableTree f
+        , ssfAttr = ua
+        }
+
   -- Returns the intersection fields of the two structs. The relative order of the fields is preserved.
-  inter :: [(Path.StructSelector, StaticStructField Tree)]
+  inter :: [(Path.StructSelector, Field Tree)]
   inter =
     fst $
       foldr
-        ( \key (l, visited) ->
+        ( \key (decl, visited) ->
             let
-              sf1 = fields1 Map.! key
-              sf2 = fields2 Map.! key
-              ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
-              -- No original node exists yet
-              f = mkUnifyNode (ssfField sf1) (ssfField sf2)
-              field =
-                StaticStructField
-                  { ssfField = mkMutableTree f
-                  , ssfAttr = ua
-                  }
-             in
               -- If the key is in the intersection set and not visited, we add the field to the list. This prevents same
               -- keys in second ordLabels from being added multiple times.
-              if (key `Set.member` interKeysSet) && not (key `Set.member` visited)
-                then ((key, field) : l, Set.insert key visited)
-                else (l, visited)
+              isNewKey = (key `Set.member` interKeysSet) && not (key `Set.member` visited)
+             in
+              if not isNewKey
+                then (decl, visited)
+                else case (fields1 Map.! key, fields2 Map.! key) of
+                  (SField sf1, SField sf2) ->
+                    let field = mergeField sf1 sf2
+                     in ((key, field) : decl, Set.insert key visited)
+                  _ -> (decl, visited)
         )
         -- first element is the pairs, the second element is the visited keys set.
         ([], Set.empty)
         (stcOrdLabels s1 ++ stcOrdLabels s2)
 
   -- select the fields in the struct that are in the keysSet.
-  select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, StaticStructField Tree)]
-  select s keysSet = [(key, stcSubs s Map.! key) | key <- stcOrdLabels s, key `Set.member` keysSet]
+  select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, Field Tree)]
+  select s keysSet =
+    foldr
+      ( \(key, sv) acc -> case sv of
+          SField sf -> (key, sf) : acc
+          _ -> acc
+      )
+      []
+      [(key, stcSubs s Map.! key) | key <- stcOrdLabels s, key `Set.member` keysSet]
 
-  allStatics :: [(Path.StructSelector, StaticStructField Tree)]
-  allStatics = inter ++ select s1 disjKeysSet1 ++ select s2 disjKeysSet2
+  allFields :: [(Path.StructSelector, Field Tree)]
+  allFields = inter ++ select s1 disjKeysSet1 ++ select s2 disjKeysSet2
 
   nodesToStruct ::
-    [(Path.StructSelector, StaticStructField Tree)] -> [PatternStructField Tree] -> [PendingStructElem Tree] -> Tree
+    [(Path.StructSelector, Field Tree)] -> [StructPattern Tree] -> [PendingSElem Tree] -> Tree
   nodesToStruct nodes patterns pends =
     mkStructTree $
       Struct
         { stcOrdLabels = map fst nodes
-        , stcSubs = Map.fromList nodes
+        , stcSubs = Map.fromList $ map (\(sel, f) -> (sel, SField f)) nodes
         , stcPendSubs = pends
         , stcPatterns = patterns
         , stcClosed = stcClosed s1 || stcClosed s2
@@ -1437,7 +1499,9 @@ closeTree recur a =
             if recur
               then
                 Map.map
-                  ( \ssf -> let new = closeTree recur $ ssfField ssf in ssf{ssfField = new}
+                  ( \case
+                      SField sf -> let new = closeTree recur (ssfField sf) in SField $ sf{ssfField = new}
+                      SLocal lb -> let new = closeTree recur (lbValue lb) in SLocal $ lb{lbValue = new}
                   )
                   (stcSubs s)
               else
@@ -1449,4 +1513,6 @@ closeTree recur a =
         ds = map (closeTree recur) (dsjDisjuncts dj)
        in
         mkNewTree $ TNDisj (dj{dsjDefault = dft, dsjDisjuncts = ds})
+    -- TODO: Mutable should be closed.
+    -- TNMutable _ -> throwErrSt "TODO"
     _ -> a

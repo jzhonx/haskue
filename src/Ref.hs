@@ -8,9 +8,11 @@
 module Ref (
   notify,
   deref,
+  searchTMVar,
 )
 where
 
+import Class
 import Config
 import Control.Monad (unless, void, when)
 import Control.Monad.Reader (ask)
@@ -211,7 +213,6 @@ checkInfinite ref = do
 
 {- | Add a notifier to the context.
 
-
 If the referenced value changes, then the reference should be updated. Duplicate cases are handled by the
 addCtxNotifier.
 This must not introduce a cycle.
@@ -266,8 +267,11 @@ getDstVal ref trail = do
     let
       canSrcPath = canonicalizePath srcPath
       canDstPath = canonicalizePath dstPath
+    t <- getTMTree
     val <-
       if
+        -- The bottom must return early so that the var not found error would not be replaced with the cycle error.
+        | isTreeBottom t -> return t
         -- This handles the case when following the chain of references leads to a cycle.
         -- For example, { a: b, b: a, d: a } and we are at d.
         -- The values of d would be: 1. a -> b, 2. b -> a, 3. a (seen) -> RC.
@@ -329,6 +333,7 @@ copyRefVal ref trail tar = do
   case treeNode tar of
     -- The atom value is final, so we can just return it.
     TNAtom _ -> return tar
+    TNBottom _ -> return tar
     TNConstraint c -> return (mkAtomVTree $ cnsAtom c)
     _ -> do
       -- evaluate the original expression.
@@ -372,13 +377,12 @@ first selector is a locatable var.
 getRefTarAbsPath :: (TreeMonad s m) => Path -> m Path
 getRefTarAbsPath ref = do
   let fstSel = fromJust $ headSel ref
-  tc <- getTMCursor
-  varTC <-
-    maybeM
+  resM <- searchTMVar fstSel
+  fstSelAbsPath <-
+    maybe
       (throwErrSt $ printf "reference %s is not found" (show fstSel))
-      return
-      (searchTCVar fstSel tc)
-  let fstSelAbsPath = tcPath varTC
+      (return . fst)
+      resM
   return $ maybe fstSelAbsPath (`appendPath` fstSelAbsPath) (tailPath ref)
 
 inRemoteTMMaybe :: (TreeMonad s m) => Path -> m (Maybe a) -> m (Maybe a)
@@ -390,6 +394,24 @@ inRemoteTMMaybe p f = do
   unless backM $ throwErrSt $ printf "failed to go back to the original path %s" (show origAbsPath)
   return res
 
+-- | Locate the node in the lowest ancestor tree by specified path. The path must start with a locatable var.
+goLowestAncPathTM :: (TreeMonad s m) => Path -> m (Maybe Tree) -> m (Maybe Tree)
+goLowestAncPathTM dst f = do
+  when (isPathEmpty dst) $ throwErrSt "empty path"
+  let fstSel = fromJust $ headSel dst
+  tc <- getTMCursor
+  resM <- searchTCVar fstSel tc
+  case resM of
+    -- Nothing -> return . Just $ mkBottomTree $ printf "identifier %s is not found" (show fstSel)
+    Nothing -> return . Just $ mkBottomTree $ printf "identifier %s is not found" (show fstSel)
+    Just (varTC, _) -> do
+      -- var must be found.
+      putTMCursor varTC
+      -- the selectors may not exist. And if the selectors exist, the value may not exist.
+      whenJust (tailPath dst) $ \selPath -> do
+        r <- descendTM selPath
+        if r then f else return Nothing
+
 pathHasDef :: Path -> Bool
 pathHasDef p =
   any
@@ -400,3 +422,40 @@ pathHasDef p =
         _ -> False
     )
     $ pathToList p
+
+{- | Search in the tree for the first variable that can match the selector. Also return if the variable is a local
+binding.
+-}
+searchTMVar :: (TreeMonad s m) => Selector -> m (Maybe (Path, Bool))
+searchTMVar sel = do
+  tc <- getTMCursor
+  resM <- searchTCVar sel tc
+  return $ (\(rtc, isLB) -> Just (tcPath rtc, isLB)) =<< resM
+
+{- | Search the tree cursor up to the root and return the tree cursor that points to the variable and a boolean
+ - indicating if the variable is a local binding.
+
+The cursor will also be propagated to the parent block.
+-}
+searchTCVar :: (TreeMonad s m) => Selector -> TreeCursor Tree -> m (Maybe (TreeCursor Tree, Bool))
+searchTCVar sel@(StructSelector ssel@(StringSelector _)) tc =
+  maybe
+    (goUp tc)
+    (\(field, isLB) -> return $ Just (mkSubTC sel field tc, isLB))
+    (getVarField $ vcFocus tc)
+ where
+  goUp :: (TreeMonad s m) => TreeCursor Tree -> m (Maybe (TreeCursor Tree, Bool))
+  goUp (ValCursor _ [(RootSelector, _)]) = return Nothing
+  goUp utc = propValUp utc >>= searchTCVar sel
+
+  getVarField :: Tree -> Maybe (Tree, Bool)
+  getVarField Tree{treeNode = TNStruct struct} = do
+    sv <- Map.lookup ssel (stcSubs struct)
+    case sv of
+      SField sf ->
+        if lbAttrIsVar (ssfAttr sf)
+          then Just (ssfField sf, False)
+          else Nothing
+      SLocal lb -> Just (lbValue lb, True)
+  getVarField _ = Nothing
+searchTCVar _ _ = return Nothing

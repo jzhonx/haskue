@@ -1,39 +1,4 @@
-module AST (
-  BinaryOp (..),
-  Declaration (..),
-  ElementList (..),
-  EllipsisDecl (..),
-  Embedding,
-  Expression (..),
-  FieldDecl (..),
-  Identifer,
-  Index (..),
-  Label (..),
-  LabelConstraint (..),
-  LabelExpr (..),
-  LabelName (..),
-  Literal (..),
-  Operand (..),
-  OperandName (..),
-  PrimaryExpr (..),
-  Quote (..),
-  RelOp (..),
-  Selector (..),
-  SimpleStringLit,
-  SourceFile (..),
-  StringLit (..),
-  UnaryExpr (..),
-  UnaryOp (..),
-  binaryOpCons,
-  exprBld,
-  exprBldIdent,
-  exprStr,
-  idCons,
-  litCons,
-  unaryOpCons,
-  declsBld,
-)
-where
+module AST where
 
 import Data.ByteString.Builder (
   Builder,
@@ -91,12 +56,11 @@ data Literal
   | ListLit ElementList
   deriving (Eq, Show)
 
-type Embedding = Expression
-
 data Declaration
   = FieldDecl FieldDecl
   | EllipsisDecl EllipsisDecl
   | Embedding Embedding
+  | DeclLet LetClause
   deriving (Eq, Show)
 
 data FieldDecl
@@ -144,14 +108,10 @@ data RelOp
   | ReNotMatch
   deriving (Eq, Ord)
 
-instance Show RelOp where
-  show NE = "!="
-  show LT = "<"
-  show LE = "<="
-  show GT = ">"
-  show GE = ">="
-  show ReMatch = "=~"
-  show ReNotMatch = "!~"
+type Embedding = Expression
+
+data LetClause = LetClause Identifer Expression
+  deriving (Eq, Show)
 
 data BinaryOp
   = Unify
@@ -164,6 +124,25 @@ data BinaryOp
   | BinRelOp RelOp
   deriving (Eq, Ord)
 
+data UnaryOp
+  = Plus
+  | Minus
+  | Not
+  | Star
+  | UnaRelOp RelOp
+  deriving (Eq, Ord)
+
+data Quote = SingleQuote | DoubleQuote deriving (Eq)
+
+instance Show RelOp where
+  show NE = "!="
+  show LT = "<"
+  show LE = "<="
+  show GT = ">"
+  show GE = ">="
+  show ReMatch = "=~"
+  show ReNotMatch = "!~"
+
 instance Show BinaryOp where
   show Unify = "&"
   show Disjunction = "|"
@@ -174,22 +153,12 @@ instance Show BinaryOp where
   show Equ = "=="
   show (BinRelOp op) = show op
 
-data UnaryOp
-  = Plus
-  | Minus
-  | Not
-  | Star
-  | UnaRelOp RelOp
-  deriving (Eq, Ord)
-
 instance Show UnaryOp where
   show Plus = "+"
   show Minus = "-"
   show Not = "!"
   show Star = "*"
   show (UnaRelOp op) = show op
-
-data Quote = SingleQuote | DoubleQuote deriving (Eq)
 
 instance Show Quote where
   show SingleQuote = "'"
@@ -299,6 +268,7 @@ declBld i e = case e of
   FieldDecl f -> fieldDeclBld i f
   EllipsisDecl (Ellipsis _) -> string7 "..."
   Embedding eb -> exprBldIdent i eb
+  DeclLet (LetClause ident binde) -> string7 "let" <> string7 ident <> string7 " = " <> exprBldIdent 0 binde
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
 fieldDeclBld ident e = case e of

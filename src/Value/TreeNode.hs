@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Value.TreeNode where
@@ -66,11 +66,17 @@ subTreeTN :: (TreeOp t, HasTreeNode t) => Selector -> t -> Maybe t
 subTreeTN sel t = case (sel, getTreeNode t) of
   (RootSelector, _) -> Just t
   (StructSelector s, TNStruct struct) -> case s of
-    StringSelector _ -> ssfField <$> Map.lookup s (stcSubs struct)
+    StringSelector _ ->
+      ( \case
+          SField sf -> ssfField sf
+          SLocal lb -> lbValue lb
+      )
+        <$> Map.lookup s (stcSubs struct)
     PatternSelector i -> Just (psfValue $ stcPatterns struct !! i)
     PendingSelector i -> case stcPendSubs struct !! i of
-      DynamicField dsf -> Just (dsfValue dsf)
-      PatternField _ val -> Just val
+      DynamicPend dsf -> Just (dsfValue dsf)
+      PatternPend _ val -> Just val
+      LocalPend _ val -> Just val
   (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableSelector (MutableArgSelector i), SFunc m) <- (sel, mut) -> sfnArgs m `indexList` i
@@ -137,40 +143,48 @@ setSubTreeTN sel subT parT = do
   return $ setTreeNode parT n
  where
   updateParStruct :: (MonadError String m) => Struct t -> StructSelector -> m (TreeNode t)
-  updateParStruct parStruct labelSel =
-    if
-      | b@(TNBottom _) <- getTreeNode subT -> return b
-      -- the label selector should already exist in the parent struct.
-      | Map.member labelSel (stcSubs parStruct) ->
-          let
-            sf = stcSubs parStruct Map.! labelSel
-            newSF = sf{ssfField = subT}
-            newStruct = parStruct{stcSubs = Map.insert labelSel newSF (stcSubs parStruct)}
-           in
-            return (TNStruct newStruct)
-      | otherwise -> case labelSel of
-          PatternSelector i ->
-            let
-              psf = stcPatterns parStruct !! i
-              newPSF = psf{psfValue = subT}
-              newStruct =
-                parStruct
-                  { stcPatterns = take i (stcPatterns parStruct) ++ [newPSF] ++ drop (i + 1) (stcPatterns parStruct)
-                  }
-             in
-              return (TNStruct newStruct)
-          PendingSelector i ->
-            let
-              psf = stcPendSubs parStruct !! i
-              newPSF = modifyPSEValue (const subT) psf
-              newStruct =
-                parStruct
-                  { stcPendSubs =
-                      take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
-                  }
-             in
-              return (TNStruct newStruct)
-          _ -> throwErrSt insertErrMsg
+  updateParStruct parStruct labelSel
+    | b@(TNBottom _) <- getTreeNode subT = return b
+    -- the label selector should already exist in the parent struct.
+    | Map.member labelSel (stcSubs parStruct) =
+        let
+          sv = stcSubs parStruct Map.! labelSel
+          newSV = case sv of
+            SField sf -> SField sf{ssfField = subT}
+            SLocal lb -> SLocal lb{lbValue = subT}
+          newStruct = parStruct{stcSubs = Map.insert labelSel newSV (stcSubs parStruct)}
+         in
+          return (TNStruct newStruct)
+    | PatternSelector i <- labelSel =
+        let
+          psf = stcPatterns parStruct !! i
+          newPSF = psf{psfValue = subT}
+          newStruct =
+            parStruct
+              { stcPatterns = take i (stcPatterns parStruct) ++ [newPSF] ++ drop (i + 1) (stcPatterns parStruct)
+              }
+         in
+          return (TNStruct newStruct)
+    | PendingSelector i <- labelSel =
+        let
+          psf = stcPendSubs parStruct !! i
+          newPSF = modifyPendElemVal (const subT) psf
+          newStruct =
+            parStruct
+              { stcPendSubs =
+                  take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
+              }
+         in
+          return (TNStruct newStruct)
+  -- updateParStruct parStruct (LocalSelector l)
+  --   | Map.member l (stcLocals parStruct) =
+  --       let
+  --         lb = stcLocals parStruct Map.! l
+  --         newLB = lb{lbValue = subT}
+  --         newStruct = parStruct{stcLocals = Map.insert l newLB (stcLocals parStruct)}
+  --        in
+  --         return (TNStruct newStruct)
+  updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String
   insertErrMsg =
@@ -179,12 +193,3 @@ setSubTreeTN sel subT parT = do
       (show sel)
       (show subT)
       (show parT)
-
-getVarFieldTN :: (HasTreeNode t) => StructSelector -> t -> Maybe t
-getVarFieldTN ssel t = case getTreeNode t of
-  (TNStruct struct) -> do
-    sf <- Map.lookup ssel (stcSubs struct)
-    if lbAttrIsVar (ssfAttr sf)
-      then Just (ssfField sf)
-      else Nothing
-  _ -> Nothing

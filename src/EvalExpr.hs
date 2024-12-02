@@ -10,8 +10,10 @@ import AST
 import Class
 import Config
 import Control.Monad (foldM)
+import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Env
 import Error
 import Path
@@ -58,33 +60,40 @@ evalLiteral lit = return v
 
 evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
 evalDecls decls = do
-  (struct, embeds) <- foldM evalDecl (emptyStruct, []) decls
-  let v =
-        if null embeds
-          then mkNewTree (TNStruct struct)
-          else
-            foldl
-              (\acc embed -> mkMutableTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
-              (mkNewTree (TNStruct struct))
-              embeds
-  return v
+  (t, embeds) <- foldM evalDecl (mkStructTree emptyStruct, []) decls
+  return $
+    if null embeds
+      then t
+      else
+        foldl
+          (\acc embed -> mkMutableTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
+          t
+          embeds
 
---  Evaluates a declaration in a struct.
---  It returns the updated struct and the list of embeddings to be unified.
-evalDecl :: (EvalEnv m) => (Struct Tree, [Tree]) -> Declaration -> m (Struct Tree, [Tree])
-evalDecl (scp, embeds) (Embedding e) = do
-  v <- evalExpr e
-  return (scp, v : embeds)
-evalDecl (scp, embeds) (EllipsisDecl (Ellipsis cM)) =
-  maybe
-    (return (scp, embeds))
-    (\_ -> throwErrSt "default constraints are not implemented yet")
-    cM
-evalDecl (struct, embeds) (FieldDecl fd) = case fd of
-  Field ls e -> do
-    sfa <- evalFdLabels ls e
-    let newStruct = insertUnifyStruct sfa struct
-    return (newStruct, embeds)
+-- | Evaluates a declaration in a struct. It returns the updated struct tree and the list of embeddings to be unified.
+evalDecl :: (EvalEnv m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
+evalDecl (x, embeds) decl = case treeNode x of
+  TNBottom _ -> return (x, embeds)
+  TNStruct struct -> case decl of
+    Embedding e -> do
+      v <- evalExpr e
+      return (mkStructTree struct, v : embeds)
+    EllipsisDecl (Ellipsis cM) ->
+      maybe
+        (return (mkStructTree struct, embeds))
+        (\_ -> throwError "default constraints are not implemented yet")
+        cM
+    FieldDecl (AST.Field ls e) -> do
+      sfa <- evalFdLabels ls e
+      let t = addNewStructElem sfa struct
+      return (t, embeds)
+    DeclLet (LetClause ident binde) -> do
+      val <- evalExpr binde
+      let
+        adder = Local ident val
+        t = addNewStructElem adder struct
+      return (t, embeds)
+  _ -> throwErrSt "invalid struct"
 
 evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
 evalFdLabels lbls e =
@@ -111,19 +120,19 @@ evalFdLabels lbls e =
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> return $ Static key (StaticStructField val attr)
+            (sselFrom -> Just key) -> return $ Static key (Value.Tree.Field val attr)
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
-              return $ Dynamic (DynamicStructField attr selTree se val)
+              return $ Dynamic (DynamicField attr selTree se val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
       return (Pattern pat val)
 
   -- Returns the label name and the whether the label is static.
-  sselFrom :: LabelName -> Maybe Path.StructSelector
-  sselFrom (LabelID ident) = Just (Path.StringSelector ident)
-  sselFrom (LabelString ls) = Just (Path.StringSelector ls)
+  sselFrom :: LabelName -> Maybe String
+  sselFrom (LabelID ident) = Just ident
+  sselFrom (LabelString ls) = Just ls
   sselFrom _ = Nothing
 
   dselFrom :: LabelName -> Maybe AST.Expression
@@ -141,29 +150,56 @@ evalFdLabels lbls e =
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
--- Insert a new field into the struct. If the field is already in the struct, then unify the field with the new field.
-insertUnifyStruct ::
-  StructElemAdder Tree -> Struct Tree -> Struct Tree
-insertUnifyStruct adder struct = case adder of
-  (Static sel sf) -> case subs Map.!? sel of
-    Just extSF ->
-      let
-        unifySFOp =
-          StaticStructField
-            { ssfField = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
-            , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
+-- Insert a new element into the struct. If the field is already in the struct, then unify the field with the new field.
+addNewStructElem :: StructElemAdder Tree -> Struct Tree -> Tree
+addNewStructElem adder struct = case adder of
+  (Static name sf) ->
+    let sel = Path.StringSelector name
+     in fromMaybe
+          ( case stcSubs struct Map.!? sel of
+              Just (SField extSF) ->
+                let
+                  unifySFOp =
+                    SField $
+                      Value.Tree.Field
+                        { ssfField = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
+                        , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
+                        }
+                 in
+                  mkStructTree $ struct{stcSubs = Map.insert sel unifySFOp (stcSubs struct)}
+              Just (SLocal _) ->
+                mkBottomTree $
+                  printf "can not have both alias and field with name %s in the same scope" name
+              Nothing ->
+                mkStructTree $
+                  struct
+                    { stcOrdLabels = stcOrdLabels struct ++ [sel]
+                    , stcSubs = Map.insert sel (SField sf) (stcSubs struct)
+                    }
+          )
+          (declCheck name False)
+  (Dynamic dsf) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [DynamicPend dsf]}
+  (Pattern pattern val) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [PatternPend pattern val]}
+  (Local name val) ->
+    fromMaybe
+      ( mkStructTree $
+          struct
+            { stcSubs =
+                Map.insert (Path.StringSelector name) (SLocal $ LocalBinding False val) (stcSubs struct)
             }
-       in
-        struct{stcSubs = Map.insert sel unifySFOp subs}
-    Nothing ->
-      struct
-        { stcOrdLabels = stcOrdLabels struct ++ [sel]
-        , stcSubs = Map.insert sel sf subs
-        }
-  (Dynamic dsf) -> struct{stcPendSubs = stcPendSubs struct ++ [DynamicField dsf]}
-  (Pattern pattern val) -> struct{stcPendSubs = stcPendSubs struct ++ [PatternField pattern val]}
+      )
+      (declCheck name True)
  where
-  subs = stcSubs struct
+  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in the same scope" name
+
+  declCheck :: String -> Bool -> Maybe Tree
+  declCheck name isLocal =
+    case (stcSubs struct Map.!? Path.StringSelector name, isLocal) of
+      (Just (SField _), True) -> Just $ aliasErr name
+      (Just (SLocal _), True) -> Just $ lbRedeclErr name
+      (Just (SLocal _), False) -> Just $ aliasErr name
+      _ -> Nothing
 
 evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree
 evalListLit (AST.EmbeddingList es) = do

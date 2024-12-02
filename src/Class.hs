@@ -22,9 +22,6 @@ class TreeOp a where
   -- sub tree, and the third argument is the tree to be updated.
   setSubTree :: (Env m) => Selector -> a -> a -> m a
 
-  -- Get the var field with the given selector when the tree is a struct.
-  getVarField :: StructSelector -> a -> Maybe a
-
   -- delete the temp value in the tree.
   delTemp :: a -> a
 

@@ -181,18 +181,3 @@ propUpTCUntil _ (ValCursor _ []) = throwErrSt "already at the top"
 propUpTCUntil sel tc@(ValCursor _ ((s, _) : _))
   | s == sel = return tc
   | otherwise = propValUp tc >>= propUpTCUntil sel
-
-{- | Search the tree cursor up to the root and return the tree cursor that points to the variable.
-The cursor will also be propagated to the parent block.
--}
-searchTCVar :: (Env m, TreeOp t) => Selector -> TreeCursor t -> m (Maybe (TreeCursor t))
-searchTCVar sel@(StructSelector ssel@(StringSelector _)) tc =
-  maybe
-    (goUp tc)
-    (\field -> return . Just $ mkSubTC sel field tc)
-    (getVarField ssel $ vcFocus tc)
- where
-  goUp :: (Env m, TreeOp t) => TreeCursor t -> m (Maybe (TreeCursor t))
-  goUp (ValCursor _ [(RootSelector, _)]) = return Nothing
-  goUp utc = propValUp utc >>= searchTCVar sel
-searchTCVar _ _ = return Nothing

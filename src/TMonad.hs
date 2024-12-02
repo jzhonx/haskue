@@ -169,25 +169,6 @@ goTMAbsPath dst = do
   let dstNoRoot = fromJust $ tailPath dst
   descendTM dstNoRoot
 
--- Locate the node in the lowest ancestor tree by specified path. The path must start with a locatable var.
-goLowestAncPathTM :: (TMonad s m t) => Path -> m (Maybe a) -> m (Maybe a)
-goLowestAncPathTM dst f = do
-  when (isPathEmpty dst) $ throwErrSt "empty path"
-  let fstSel = fromJust $ headSel dst
-  tc <- getTMCursor
-  varTC <-
-    maybeM
-      (throwErrSt $ printf "identifier %s is not found" (show fstSel))
-      return
-      (searchTCVar fstSel tc)
-
-  -- var must be found.
-  putTMCursor varTC
-  -- the selectors may not exist. And if the selectors exist, the value may not exist.
-  whenJust (tailPath dst) $ \selPath -> do
-    r <- descendTM selPath
-    if r then f else return Nothing
-
 descendTM :: (TMonad s m t) => Path -> m Bool
 descendTM dst = do
   tc <- getTMCursor
