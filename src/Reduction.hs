@@ -298,7 +298,7 @@ mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
           m
   _ ->
     SFunc
-      stubRegMutable
+      emptySFunc
         { sfnName = "index"
         , sfnType = IndexMutable
         , sfnArgs = [treeArg, selArg]
@@ -1386,7 +1386,7 @@ mutApplier :: (MonadError String m) => Tree -> [Tree] -> m Tree
 mutApplier t args = case treeNode t of
   TNMutable mut ->
     return . mkMutableTree . SFunc $
-      stubRegMutable
+      emptySFunc
         { sfnName = "mutApplier"
         , sfnMethod = \_ -> putTMTree . mkMutableTree $ modifyRegMut (\m -> m{sfnArgs = args}) mut
         }
@@ -1395,7 +1395,7 @@ mutApplier t args = case treeNode t of
 mkReduceMut :: Tree -> Tree
 mkReduceMut t =
   mkMutableTree . SFunc $
-    stubRegMutable
+    emptySFunc
       { sfnName = "reduce"
       , sfnArgs = []
       , sfnMethod = \_ -> putTMTree t >> reduce
@@ -1408,7 +1408,7 @@ builtinMutableTable =
     ( "close"
     , mkMutableTree . SFunc $
         -- built-in close does not recursively close the struct.
-        stubRegMutable
+        emptySFunc
           { sfnName = "close"
           , sfnArgs = [mkNewTree TNTop]
           , sfnMethod = close False

@@ -114,13 +114,13 @@ modifyRegMut _ r = r
 mutValStub :: Mutable t
 mutValStub =
   SFunc $
-    stubRegMutable
+    emptySFunc
       { sfnName = "mvStub"
       , sfnMethod = \_ -> throwErrSt "mutateValStub: sfnMethod should not be called"
       }
 
-stubRegMutable :: StatefulFunc t
-stubRegMutable =
+emptySFunc :: StatefulFunc t
+emptySFunc =
   StatefulFunc
     { sfnName = ""
     , sfnType = RegularMutable

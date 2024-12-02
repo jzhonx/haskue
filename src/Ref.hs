@@ -351,7 +351,7 @@ copyRefVal ref trail tar = do
                 (show path)
                 (show $ Set.toList visitedRefs)
             return . mkMutableTree . SFunc $
-              stubRegMutable
+              emptySFunc
                 { sfnArgs = [orig]
                 , sfnName = "deref_close"
                 , sfnMethod = close True
