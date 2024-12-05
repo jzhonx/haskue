@@ -50,26 +50,27 @@ type CtxTree t = CtxVal t t
 
 data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
-  , ctxReduceStack :: [Path]
-  , ctxNotifiers :: Map.Map Path [Path]
+  , ctxScopeID :: Int
+  , ctxReduceStack :: [TreeAddr]
+  , ctxNotifiers :: Map.Map TreeAddr [TreeAddr]
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
 
-type TreeCrumb t = (Selector, t)
+type TreeCrumb t = (TASeg, t)
 
-ctxPath :: Context t -> Path
-ctxPath = pathFromCrumbs . ctxCrumbs
+ctxTreeAddr :: Context t -> TreeAddr
+ctxTreeAddr = addrFromCrumbs . ctxCrumbs
 
-pathFromCrumbs :: [TreeCrumb t] -> Path
-pathFromCrumbs crumbs = Path . reverse $ go crumbs []
+addrFromCrumbs :: [TreeCrumb t] -> TreeAddr
+addrFromCrumbs crumbs = TreeAddr . reverse $ go crumbs []
  where
-  go :: [TreeCrumb t] -> [Selector] -> [Selector]
+  go :: [TreeCrumb t] -> [TASeg] -> [TASeg]
   go [] acc = acc
   go ((n, _) : cs) acc = go cs (n : acc)
 
-cvPath :: CtxVal t a -> Path
-cvPath = ctxPath . cvCtx
+cvTreeAddr :: CtxVal t a -> TreeAddr
+cvTreeAddr = ctxTreeAddr . cvCtx
 
 getCVCursor :: CtxVal t a -> ValCursor t a
 getCVCursor cv = ValCursor (cvVal cv) (ctxCrumbs . cvCtx $ cv)
@@ -78,16 +79,17 @@ emptyContext :: Context t
 emptyContext =
   Context
     { ctxCrumbs = []
+    , ctxScopeID = 0
     , ctxReduceStack = []
     , ctxNotifiers = Map.empty
     , ctxTrace = emptyTrace
     }
 
 {- | Add a notifier pair to the context.
-The first element is the source path, which is the path that is being watched.
-The second element is the dependent path, which is the path that is watching the source path.
+The first element is the source addr, which is the addr that is being watched.
+The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
-addCtxNotifier :: Context t -> (Path, Path) -> Context t
+addCtxNotifier :: Context t -> (TreeAddr, TreeAddr) -> Context t
 addCtxNotifier ctx (src, dep) = ctx{ctxNotifiers = Map.insert src newDepList oldMap}
  where
   oldMap = ctxNotifiers ctx
@@ -120,9 +122,10 @@ instance (Show t, Show a) => Show (ValCursor t a) where
 instance Functor (ValCursor t) where
   fmap f (ValCursor t cs) = ValCursor (f t) cs
 
-tcPath :: ValCursor t a -> Path
-tcPath c = pathFromCrumbs (vcCrumbs c)
+tcTreeAddr :: ValCursor t a -> TreeAddr
+tcTreeAddr c = addrFromCrumbs (vcCrumbs c)
 
+-- | Get the parent of the cursor without propagating the value up.
 parentTC :: TreeCursor t -> Maybe (TreeCursor t)
 parentTC (ValCursor _ []) = Nothing
 parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
@@ -136,10 +139,10 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
       <> string7 (show t)
       <> char7 '\n'
       <> foldl
-        ( \b (sel, n) ->
+        ( \b (seg, n) ->
             b
               <> string7 "-- "
-              <> string7 (show sel)
+              <> string7 (show seg)
               <> char7 ':'
               <> char7 '\n'
               <> string7 (show n)
@@ -148,36 +151,38 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-mkSubTC :: Selector -> a -> TreeCursor t -> ValCursor t a
-mkSubTC sel a tc = ValCursor a ((sel, vcFocus tc) : vcCrumbs tc)
+mkSubTC :: TASeg -> a -> TreeCursor t -> ValCursor t a
+mkSubTC seg a tc = ValCursor a ((seg, vcFocus tc) : vcCrumbs tc)
 
-goDownTCPath :: (TreeOp t) => Path -> TreeCursor t -> Maybe (TreeCursor t)
-goDownTCPath (Path sels) = go (reverse sels)
+goDownTCAddr :: (TreeOp t) => TreeAddr -> TreeCursor t -> Maybe (TreeCursor t)
+goDownTCAddr (TreeAddr sels) = go (reverse sels)
  where
-  go :: (TreeOp t) => [Selector] -> TreeCursor t -> Maybe (TreeCursor t)
+  go :: (TreeOp t) => [TASeg] -> TreeCursor t -> Maybe (TreeCursor t)
   go [] cursor = Just cursor
   go (x : xs) cursor = do
-    nextCur <- goDownTCSel x cursor
+    nextCur <- goDownTCSeg x cursor
     go xs nextCur
 
-{- | Go down the TreeCursor with the given selector and return the new cursor.
+{- | Go down the TreeCursor with the given segment and return the new cursor.
+
 It handles the case when the current node is a disjunction node.
 -}
-goDownTCSel :: (TreeOp t) => Selector -> TreeCursor t -> Maybe (TreeCursor t)
-goDownTCSel sel tc = do
-  nextTree <- subTree sel (vcFocus tc)
-  return $ mkSubTC sel nextTree tc
+goDownTCSeg :: (TreeOp t) => TASeg -> TreeCursor t -> Maybe (TreeCursor t)
+goDownTCSeg seg tc = do
+  nextTree <- subTree seg (vcFocus tc)
+  return $ mkSubTC seg nextTree tc
 
 -- | propUp propagates the changes made to the focus of the block to the parent block.
 propValUp :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
-propValUp tc@(ValCursor _ []) = return tc
-propValUp (ValCursor subT ((sel, parT) : cs)) = do
-  t <- setSubTree sel subT parT
+propValUp (ValCursor _ []) = throwErrSt "already at the top"
+propValUp tc@(ValCursor _ [(RootTASeg, _)]) = return tc
+propValUp (ValCursor subT ((seg, parT) : cs)) = do
+  t <- setSubTree seg subT parT
   return $ ValCursor t cs
 
--- | Propagate the value up until the lowest selector is matched.
-propUpTCUntil :: (Env m, TreeOp t) => Selector -> TreeCursor t -> m (TreeCursor t)
+-- | Propagate the value up until the lowest segment is matched.
+propUpTCUntil :: (Env m, TreeOp t) => TASeg -> TreeCursor t -> m (TreeCursor t)
 propUpTCUntil _ (ValCursor _ []) = throwErrSt "already at the top"
-propUpTCUntil sel tc@(ValCursor _ ((s, _) : _))
-  | s == sel = return tc
-  | otherwise = propValUp tc >>= propUpTCUntil sel
+propUpTCUntil seg tc@(ValCursor _ ((s, _) : _))
+  | s == seg = return tc
+  | otherwise = propValUp tc >>= propUpTCUntil seg

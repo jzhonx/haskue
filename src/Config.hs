@@ -17,7 +17,11 @@ import Util
 data Config t = Config
   { cfCreateCnstr :: Bool
   , cfMermaid :: Bool
-  , cfEvalExpr :: forall m. (Env m, MonadReader (Config t) m, TreeOp t) => AST.Expression -> m t
+  , cfEvalExpr ::
+      forall m.
+      (Env m, MonadReader (Config t) m, TreeOp t, MonadState Int m) =>
+      AST.Expression ->
+      m t
   , cfClose ::
       forall s m.
       (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
@@ -31,7 +35,7 @@ data Config t = Config
   , cfDeref ::
       forall s m.
       (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s) =>
-      Path ->
+      Reference ->
       Bool ->
       m ()
   }

@@ -5,80 +5,133 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
-data Selector
-  = -- RootSelector is a special selector that represents the root of the path.
-    -- It is crucial to distinguish between the absolute path and the relative path.
-    RootSelector
-  | StructSelector StructSelector
-  | IndexSelector Int
-  | MutableSelector MutableSelector
-  | DisjDefaultSelector
-  | DisjDisjunctSelector Int
-  | ParentSelector
-  | TempSelector
+data Selector = StringSel String | IntSel Int
+  deriving (Eq, Ord)
+
+{- | Reference is a list of selectors.
+
+The selectors are not stored in reverse order.
+-}
+newtype Reference = Reference {getRefSels :: [Selector]}
   deriving (Eq, Ord)
 
 instance Show Selector where
-  show RootSelector = "/"
-  show (StructSelector s) = show s
-  show (IndexSelector i) = "i" ++ show i
-  show (MutableSelector f) = show f
-  show DisjDefaultSelector = "d*"
-  show (DisjDisjunctSelector i) = "dj" ++ show i
-  show ParentSelector = ".."
-  show TempSelector = "tmp"
+  show (StringSel s) = s
+  show (IntSel i) = show i
 
-data StructSelector
-  = StringSelector String
-  | PatternSelector Int
-  | PendingSelector Int
+instance Show Reference where
+  show (Reference sels) = intercalate "." (map show sels)
+
+headSel :: Reference -> Maybe Selector
+headSel (Reference []) = Nothing
+headSel (Reference sels) = Just $ sels !! 0
+
+tailRef :: Reference -> Maybe Reference
+tailRef (Reference []) = Nothing
+tailRef (Reference sels) = Just $ Reference (tail sels)
+
+appendRefs ::
+  -- | front
+  Reference ->
+  -- | back
+  Reference ->
+  Reference
+appendRefs (Reference xs) (Reference ys) = Reference (xs ++ ys)
+
+isRefEmpty :: Reference -> Bool
+isRefEmpty (Reference []) = True
+isRefEmpty _ = False
+
+refToAddr :: Reference -> TreeAddr
+refToAddr (Reference sels) = addrFromList $ map selToTASeg sels
+
+selToTASeg :: Selector -> TASeg
+selToTASeg (StringSel s) = StructTASeg $ StringTASeg s
+selToTASeg (IntSel i) = IndexTASeg i
+
+data TASeg
+  = -- RootTASeg is a special segment that represents the root of the addr.
+    -- It is crucial to distinguish between the absolute addr and the relative addr.
+    RootTASeg
+  | StructTASeg StructTASeg
+  | IndexTASeg Int
+  | MutableTASeg MutableTASeg
+  | DisjDefaultTASeg
+  | DisjDisjunctTASeg Int
+  | ParentTASeg
+  | TempTASeg
   deriving (Eq, Ord)
 
-viewStructSelector :: StructSelector -> Int
-viewStructSelector (PendingSelector _) = 1
-viewStructSelector _ = 0
+instance Show TASeg where
+  show RootTASeg = "/"
+  show (StructTASeg s) = show s
+  show (IndexTASeg i) = "i" ++ show i
+  show (MutableTASeg f) = show f
+  show DisjDefaultTASeg = "d*"
+  show (DisjDisjunctTASeg i) = "dj" ++ show i
+  show ParentTASeg = ".."
+  show TempTASeg = "tmp"
 
-instance Show StructSelector where
-  show (StringSelector s) = s
-  show (PendingSelector i) = "sp" ++ show i
+data StructTASeg
+  = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
+    -- let binding.
+    StringTASeg String
+  | PatternTASeg Int
+  | PendingTASeg Int
+  | -- | A let binding is always indexed by the LetTASeg.
+    LetTASeg
+      -- | Identifier
+      String
+  deriving (Eq, Ord)
+
+instance Show StructTASeg where
+  show (StringTASeg s) = s
+  show (PendingTASeg i) = "sp_" ++ show i
   -- c stands for constraint.
-  show (PatternSelector i) = "sc" ++ show i
+  show (PatternTASeg i) = "sc_" ++ show i
+  show (LetTASeg s) = "let_" ++ s
 
--- MutableArgSelector is different in that the sel would be omitted when canonicalizing the path.
-data MutableSelector
-  = MutableArgSelector Int
-  | MutableValSelector
+getStrFromSeg :: StructTASeg -> Maybe String
+getStrFromSeg (StringTASeg s) = Just s
+getStrFromSeg (LetTASeg s) = Just s
+getStrFromSeg _ = Nothing
+
+-- MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
+data MutableTASeg
+  = MutableArgTASeg Int
+  | MutableValTASeg
   deriving (Eq, Ord)
 
-instance Show MutableSelector where
-  show (MutableArgSelector i) = "fa" ++ show i
-  show MutableValSelector = "fv"
+instance Show MutableTASeg where
+  show (MutableArgTASeg i) = "fa" ++ show i
+  show MutableValTASeg = "fv"
 
-unaryOpSelector :: Selector
-unaryOpSelector = MutableSelector $ MutableArgSelector 0
+unaryOpTASeg :: TASeg
+unaryOpTASeg = MutableTASeg $ MutableArgTASeg 0
 
-binOpLeftSelector :: Selector
-binOpLeftSelector = MutableSelector $ MutableArgSelector 0
+binOpLeftTASeg :: TASeg
+binOpLeftTASeg = MutableTASeg $ MutableArgTASeg 0
 
-binOpRightSelector :: Selector
-binOpRightSelector = MutableSelector $ MutableArgSelector 1
+binOpRightTASeg :: TASeg
+binOpRightTASeg = MutableTASeg $ MutableArgTASeg 1
 
-toBinOpSelector :: BinOpDirect -> Selector
-toBinOpSelector L = binOpLeftSelector
-toBinOpSelector R = binOpRightSelector
+toBinOpTASeg :: BinOpDirect -> TASeg
+toBinOpTASeg L = binOpLeftTASeg
+toBinOpTASeg R = binOpRightTASeg
 
--- | Check if the selector is accessible, either by index or by field name.
-isSelAccessible :: Selector -> Bool
-isSelAccessible sel = case sel of
-  RootSelector -> True
-  (StructSelector (StringSelector _)) -> True
-  (IndexSelector _) -> True
-  -- If a path ends with a mutval selector, for example /p/fv, then it is accessible.
+-- | Check if the segment is accessible, either by index or by field name.
+isSegAccessible :: TASeg -> Bool
+isSegAccessible seg = case seg of
+  RootTASeg -> True
+  (StructTASeg (StringTASeg _)) -> True
+  (StructTASeg (LetTASeg _)) -> True
+  (IndexTASeg _) -> True
+  -- If a addr ends with a mutval segment, for example /p/fv, then it is accessible.
   -- It it the same as /p.
-  (MutableSelector MutableValSelector) -> True
-  -- If a path ends with a disj default selector, for example /p/d*, then it is accessible.
+  (MutableTASeg MutableValTASeg) -> True
+  -- If a addr ends with a disj default segment, for example /p/d*, then it is accessible.
   -- It it the same as /p.
-  DisjDefaultSelector -> True
+  DisjDefaultTASeg -> True
   _ -> False
 
 data BinOpDirect = L | R deriving (Eq, Ord)
@@ -87,89 +140,89 @@ instance Show BinOpDirect where
   show L = "L"
   show R = "R"
 
-{- | Path is full path to a value. The selectors are stored in reverse order, meaning the last selector is the first in
+{- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype Path = Path {getPath :: [Selector]}
+newtype TreeAddr = TreeAddr {getTreeAddr :: [TASeg]}
   deriving (Eq, Ord)
 
-showPath :: Path -> String
-showPath (Path []) = "."
-showPath (Path sels) =
-  let revSels = reverse sels
-   in if (revSels !! 0) == RootSelector
-        then "/" ++ (intercalate "/" $ map show (drop 1 revSels))
-        else intercalate "/" $ map show (reverse sels)
+showTreeAddr :: TreeAddr -> String
+showTreeAddr (TreeAddr []) = "."
+showTreeAddr (TreeAddr segs) =
+  let revSegs = reverse segs
+   in if (revSegs !! 0) == RootTASeg
+        then "/" ++ (intercalate "/" $ map show (drop 1 revSegs))
+        else intercalate "/" $ map show (reverse segs)
 
-instance Show Path where
-  show = showPath
+instance Show TreeAddr where
+  show = showTreeAddr
 
-emptyPath :: Path
-emptyPath = Path []
+emptyTreeAddr :: TreeAddr
+emptyTreeAddr = TreeAddr []
 
-isPathEmpty :: Path -> Bool
-isPathEmpty (Path []) = True
-isPathEmpty _ = False
+isTreeAddrEmpty :: TreeAddr -> Bool
+isTreeAddrEmpty (TreeAddr []) = True
+isTreeAddrEmpty _ = False
 
-pathFromList :: [Selector] -> Path
-pathFromList sels = Path (reverse sels)
+addrFromList :: [TASeg] -> TreeAddr
+addrFromList segs = TreeAddr (reverse segs)
 
-pathToList :: Path -> [Selector]
-pathToList (Path sels) = reverse sels
+addrToList :: TreeAddr -> [TASeg]
+addrToList (TreeAddr segs) = reverse segs
 
-appendSel :: Selector -> Path -> Path
-appendSel sel (Path xs) = Path (sel : xs)
+appendSeg :: TASeg -> TreeAddr -> TreeAddr
+appendSeg seg (TreeAddr xs) = TreeAddr (seg : xs)
 
-{- | Append the new path to old path.
-new and old are reversed, such as [z, y, x] and [b, a]. The appended path should be [z, y, x, b, a], which is
+{- | Append the new addr to old addr.
+new and old are reversed, such as [z, y, x] and [b, a]. The appended addr should be [z, y, x, b, a], which is
 a.b.x.y.z.
 -}
-appendPath :: Path -> Path -> Path
-appendPath (Path new) (Path old) = Path (new ++ old)
+appendTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
+appendTreeAddr (TreeAddr new) (TreeAddr old) = TreeAddr (new ++ old)
 
--- | Get the parent path of a path by removing the last selector.
-initPath :: Path -> Maybe Path
-initPath (Path []) = Nothing
-initPath (Path xs) = Just $ Path (drop 1 xs)
+-- | Get the parent addr of a addr by removing the last segment.
+initTreeAddr :: TreeAddr -> Maybe TreeAddr
+initTreeAddr (TreeAddr []) = Nothing
+initTreeAddr (TreeAddr xs) = Just $ TreeAddr (drop 1 xs)
 
--- | Canonicalize a path by removing operator selectors.
-canonicalizePath :: Path -> Path
-canonicalizePath (Path xs) = Path $ filter (not . isIgnored) xs
+-- | Canonicalize a addr by removing operator segments.
+canonicalizeAddr :: TreeAddr -> TreeAddr
+canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter (not . isIgnored) xs
  where
-  isIgnored :: Selector -> Bool
-  isIgnored (MutableSelector _) = True
+  isIgnored :: TASeg -> Bool
+  isIgnored (MutableTASeg _) = True
   -- TODO: remove temp
-  isIgnored TempSelector = True
+  isIgnored TempTASeg = True
   isIgnored _ = False
 
--- | Get the tail path of a path, excluding the head selector.
-tailPath :: Path -> Maybe Path
-tailPath (Path []) = Nothing
-tailPath (Path xs) = Just $ Path (init xs)
+-- | Get the tail addr of a addr, excluding the head segment.
+tailTreeAddr :: TreeAddr -> Maybe TreeAddr
+tailTreeAddr (TreeAddr []) = Nothing
+tailTreeAddr (TreeAddr xs) = Just $ TreeAddr (init xs)
 
-{- | Get the last selector of a path.
->>> lastSel (Path [StringSelector "a", StringSelector "b"])
+{- | Get the last segment of a addr.
+>>> lastSeg (TreeAddr [StringTASeg "a", StringTASeg "b"])
 -}
-lastSel :: Path -> Maybe Selector
-lastSel (Path []) = Nothing
-lastSel (Path xs) = Just $ xs !! 0
+lastSeg :: TreeAddr -> Maybe TASeg
+lastSeg (TreeAddr []) = Nothing
+lastSeg (TreeAddr xs) = Just $ xs !! 0
 
-{- | Get the head selector of a path.
->>> headSel (Path [StringSelector "a", StringSelector "b"])
+{- | Get the head segment of a addr.
+>>> headSeg (TreeAddr [StringTASeg "a", StringTASeg "b"])
 Just b
 -}
-headSel :: Path -> Maybe Selector
-headSel (Path []) = Nothing
-headSel (Path xs) = Just $ last xs
+headSeg :: TreeAddr -> Maybe TASeg
+headSeg (TreeAddr []) = Nothing
+headSeg (TreeAddr xs) = Just $ last xs
 
-mergePaths :: [Path] -> [Path] -> [Path]
-mergePaths p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
+mergeTreeAddrs :: [TreeAddr] -> [TreeAddr] -> [TreeAddr]
+mergeTreeAddrs p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
 
--- | Get the common prefix of two paths.
-prefixPath :: Path -> Path -> Maybe Path
-prefixPath (Path pxs) (Path pys) = Path . reverse <$> go (reverse pxs) (reverse pys)
+-- | Get the common prefix of two addrs.
+prefixTreeAddr :: TreeAddr -> TreeAddr -> Maybe TreeAddr
+prefixTreeAddr (TreeAddr pxs) (TreeAddr pys) = TreeAddr . reverse <$> go (reverse pxs) (reverse pys)
  where
-  go :: [Selector] -> [Selector] -> Maybe [Selector]
+  go :: [TASeg] -> [TASeg] -> Maybe [TASeg]
   go [] _ = Just []
   go _ [] = Just []
   go (x : xs) (y : ys) =
@@ -177,38 +230,39 @@ prefixPath (Path pxs) (Path pys) = Path . reverse <$> go (reverse pxs) (reverse 
       then (x :) <$> go xs ys
       else Just []
 
-{- | Get the relative path from the first path to the second path.
+{- | Get the relative addr from the first addr to the second addr.
 
-@param px The first path. @param py The second path.
+@param px: The first addr.
+@param py: The second addr.
 
-For example, relPath (Path [StringSelector "a", StringSelector "b"]) (Path [StringSelector "a", StringSelector "c"])
-returns Path [ParentSelector, StringSelector "c"]
+For example, relTreeAddr (TreeAddr [StringTASeg "a", StringTASeg "b"]) (TreeAddr [StringTASeg "a", StringTASeg "c"])
+returns TreeAddr [ParentTASeg, StringTASeg "c"]
 -}
-relPath :: Path -> Path -> Path
-relPath px py =
-  let prefixLen = maybe 0 (\(Path xs) -> length xs) (prefixPath px py)
-      upDist = length (getPath px) - prefixLen
-      pySelsRest = drop prefixLen (reverse (getPath py))
-   in Path $ reverse $ replicate upDist ParentSelector ++ pySelsRest
+relTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
+relTreeAddr px py =
+  let prefixLen = maybe 0 (\(TreeAddr xs) -> length xs) (prefixTreeAddr px py)
+      upDist = length (getTreeAddr px) - prefixLen
+      pySegsRest = drop prefixLen (reverse (getTreeAddr py))
+   in TreeAddr $ reverse $ replicate upDist ParentTASeg ++ pySegsRest
 
--- | Check if path x is a prefix of path y.
-isPrefix :: Path -> Path -> Bool
+-- | Check if addr x is a prefix of addr y.
+isPrefix :: TreeAddr -> TreeAddr -> Bool
 isPrefix x y =
-  let Path xs = x
-      Path ys = y
+  let TreeAddr xs = x
+      TreeAddr ys = y
       rxs = reverse xs
       rys = reverse ys
    in if length rxs > length rys
         then False
         else take (length rxs) rys == rxs
 
-depsHasCycle :: [(Path, Path)] -> Bool
+depsHasCycle :: [(TreeAddr, TreeAddr)] -> Bool
 depsHasCycle ps = hasCycle edges
  where
   depMap = Map.fromListWith (++) (map (\(k, v) -> (k, [v])) ps)
   edges = Map.toList depMap
 
-hasCycle :: [(Path, [Path])] -> Bool
+hasCycle :: [(TreeAddr, [TreeAddr])] -> Bool
 hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
  where
   edgesForGraph = map (\(k, vs) -> ((), k, vs)) edges
@@ -216,16 +270,20 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
   isCycle (CyclicSCC _) = True
   isCycle _ = False
 
-hasTemp :: Path -> Bool
-hasTemp (Path xs) = TempSelector `elem` xs
+hasTemp :: TreeAddr -> Bool
+hasTemp (TreeAddr xs) = TempTASeg `elem` xs
 
--- | Check if the path is accessible, either by index or by field name.
-isPathAccessible :: Path -> Bool
-isPathAccessible (Path xs) = all isSelAccessible xs
+-- | Check if the addr is accessible, either by index or by field name.
+isTreeAddrAccessible :: TreeAddr -> Bool
+isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
 
-treeRefPath :: Path -> Path
-treeRefPath p = Path $ filter (not . isRefSelector) (getPath p)
+{- | Return the referable part of the addr by removing the mutable value segments.
+
+For example, /p/fv should return /p.
+-}
+getReferableAddr :: TreeAddr -> TreeAddr
+getReferableAddr p = TreeAddr $ filter (not . isMutValSeg) (getTreeAddr p)
  where
-  isRefSelector :: Selector -> Bool
-  isRefSelector (MutableSelector MutableValSelector) = True
-  isRefSelector _ = False
+  isMutValSeg :: TASeg -> Bool
+  isMutValSeg (MutableTASeg MutableValTASeg) = True
+  isMutValSeg _ = False

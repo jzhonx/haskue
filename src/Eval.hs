@@ -35,7 +35,7 @@ import Value.Tree
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecMermaidGraph :: Bool
-  , ecFilePath :: String
+  , ecFileTreeAddr :: String
   }
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m [AST.Declaration]
@@ -82,10 +82,10 @@ evalFile sf mermaid = do
   rootTC <-
     runReaderT
       ( do
-          root <- evalStateT (evalSourceFile sf) emptyContext
+          root <- evalStateT (evalSourceFile sf) 0
           logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (show root)
           let
-            rootTC = ValCursor root [(RootSelector, mkNewTree TNTop)]
+            rootTC = ValCursor root [(RootTASeg, mkNewTree TNTop)]
             cv = cvFromCur rootTC
           logDebugStr $ printf "---- start reduce tree ----"
           res <- execStateT reduce cv
@@ -99,7 +99,7 @@ evalFile sf mermaid = do
 
   finalized <-
     runReaderT
-      (execStateT validateCnstrs rootTC)
+      (execStateT postValidation rootTC)
       evalConfig
         { cfCreateCnstr = False
         , cfMermaid = mermaid

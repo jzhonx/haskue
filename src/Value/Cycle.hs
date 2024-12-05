@@ -10,18 +10,18 @@ import Path
 -- updated to a new value by an evaluated dynamic field, then "b" should be updated to the new value.
 -- It should only be created after deref function call because if there exists a self cycle, and deref returns
 -- the cycle head, then notify will notify nodes in the reverse order of the cycle.
---
--- RefCycleVert is only used to facilitate the cycle detection.
--- The first element in the tuple is the absolute path of the cycle head, the second element is the relative path of
--- the cycle tail.
--- It is always reducible. It should be reduced until the cycle head is found.
---
--- RefCycleHori is a cycle consisting of only reference nodes. It might contain a loop (cycle with only one node)
--- ref. Its first element should be of treeRefPath.
 data RefCycle
-  = RefCycleVertMerger (Path, Path)
-  | RefCycleVert
-  | RefCycleHori (Path, Path)
+  = RefCycleVertMerger (TreeAddr, TreeAddr)
+  | -- | RefCycleVert is only used to facilitate the cycle detection.
+    -- The first element in the tuple is the absolute addr of the cycle head, the second element is the relative addr of
+    -- the cycle tail.
+    -- It is always reducible. It should be reduced until the cycle head is found.
+    RefCycleVert
+  | -- | RefCycleHori is a cycle consisting of only reference nodes.
+    -- It might contain a loop (cycle with only one node) ref.
+    -- The first element should be of treeRefTreeAddr and it is the start of the cycle.
+    -- The second element is the end of the cycle.
+    RefCycleHori (TreeAddr, TreeAddr)
   deriving (Show)
 
 instance Eq RefCycle where

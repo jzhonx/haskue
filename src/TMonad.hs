@@ -26,8 +26,8 @@ type TMonad s m t =
   , HasCallStack
   )
 
-getTMAbsPath :: (TMonad s m t) => m Path
-getTMAbsPath = gets (cvPath . getCtxVal)
+getTMAbsAddr :: (TMonad s m t) => m TreeAddr
+getTMAbsAddr = gets (cvTreeAddr . getCtxVal)
 
 getTMContext :: (TMonad s m t) => m (Context t)
 getTMContext = gets (cvCtx . getCtxVal)
@@ -64,20 +64,27 @@ getTMCursor = gets (getCVCursor . getCtxVal)
 putTMCursor :: (TMonad s m t) => TreeCursor t -> m ()
 putTMCursor tc = putTMCrumbs (vcCrumbs tc) >> putTMTree (vcFocus tc)
 
--- Propagate the value up until the lowest selector is passed.
-propUpTMSel :: (TMonad s m t) => Selector -> m ()
-propUpTMSel sel = getTMCursor >>= go >>= putTMCursor
+getTMTASeg :: (TMonad s m t) => m TASeg
+getTMTASeg = do
+  crumbs <- getTMCrumbs
+  case crumbs of
+    [] -> throwErrSt "no segment"
+    (seg, _) : _ -> return seg
+
+-- Propagate the value up until the lowest segment is passed.
+propUpTMSeg :: (TMonad s m t) => TASeg -> m ()
+propUpTMSeg seg = getTMCursor >>= go >>= putTMCursor
  where
   go :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
-  go (ValCursor _ []) = throwErrSt "propUpTMSel: already at the top"
+  go (ValCursor _ []) = throwErrSt "propUpTMSeg: already at the top"
   go tc@(ValCursor _ ((s, _) : _)) = do
-    if s == sel
+    if s == seg
       then propValUp tc
       else propValUp tc >>= go
 
--- Propagate the value up until the lowest selector is matched.
-propUpTMUntilSel :: (TMonad s m t) => Selector -> m ()
-propUpTMUntilSel sel = getTMCursor >>= propUpTCUntil sel >>= putTMCursor
+-- Propagate the value up until the lowest segment is matched.
+propUpTMUntilSeg :: (TMonad s m t) => TASeg -> m ()
+propUpTMUntilSeg seg = getTMCursor >>= propUpTCUntil seg >>= putTMCursor
 
 propUpTM :: (TMonad s m t) => m ()
 propUpTM = getTMCursor >>= propValUp >>= putTMCursor
@@ -91,35 +98,24 @@ withContext f = getTMContext >>= f
 withCtxTree :: (TMonad s m t) => (CtxTree t -> m a) -> m a
 withCtxTree f = gets getCtxVal >>= f
 
-withDebugInfo :: (TMonad s m t) => (Path -> t -> m a) -> m a
-withDebugInfo f = do
-  path <- getTMAbsPath
-  withTree (f path)
+withAddrAndFocus :: (TMonad s m t) => (TreeAddr -> t -> m a) -> m a
+withAddrAndFocus f = do
+  addr <- getTMAbsAddr
+  withTree (f addr)
 
-pushTMSub :: (TMonad s m t) => Selector -> t -> m ()
-pushTMSub sel tip = do
+pushTMSub :: (TMonad s m t) => TASeg -> t -> m ()
+pushTMSub seg tip = do
   t <- getTMTree
   crumbs <- getTMCrumbs
-  putTMCrumbs ((sel, t) : crumbs)
+  putTMCrumbs ((seg, t) : crumbs)
   putTMTree tip
 
-inSubTM :: (TMonad s m t) => Selector -> t -> m a -> m a
-inSubTM sel t f = do
-  pushTMSub sel t
+inSubTM :: (TMonad s m t) => TASeg -> t -> m a -> m a
+inSubTM seg t f = do
+  pushTMSub seg t
   r <- f
-  propUpTMSel sel
+  propUpTMSeg seg
   return r
-
-inParentTM :: (TMonad s m t) => m a -> m a
-inParentTM f = do
-  crumbs <- getTMCrumbs
-  case crumbs of
-    [] -> throwErrSt "already at the top"
-    (sel, _) : _ -> do
-      propUpTM
-      r <- f
-      getTMCursor >>= maybe (throwErrSt "failed to go down") putTMCursor . goDownTCSel sel
-      return r
 
 {- | Get the parent of the current focus.
 
@@ -132,50 +128,16 @@ getTMParent = do
     [] -> throwErrSt "already at the top"
     (_, t) : _ -> return t
 
-inAbsRemoteTM :: (TMonad s m t, Show t) => Path -> m a -> m a
-inAbsRemoteTM p f = do
-  inAbsRemoteTMMaybe p f
-    >>= maybe (throwErrSt $ printf "path %s does not exist" (show p)) return
-
-{- | Go to the absolute path in the tree and execute the action.
-If the path does not exist, return Nothing.
--}
-inAbsRemoteTMMaybe :: (TMonad s m t, Show t) => Path -> m a -> m (Maybe a)
-inAbsRemoteTMMaybe p f = do
-  origAbsPath <- getTMAbsPath
-
-  tarM <- whenM (goTMAbsPath p) f
-  backOk <- goTMAbsPath origAbsPath
-  unless backOk $
-    throwErrSt $
-      printf
-        "failed to go back to the original path %s, dest: %s"
-        (show origAbsPath)
-        (show p)
-  return tarM
- where
-  whenM :: (TMonad s m t) => m Bool -> m a -> m (Maybe a)
-  whenM cond g = do
-    b <- cond
-    if b then Just <$> g else return Nothing
-
--- | Go to the absolute path in the tree. The path must exist.
-goTMAbsPath :: (TMonad s m t, Show t) => Path -> m Bool
-goTMAbsPath dst = do
-  when (headSel dst /= Just Path.RootSelector) $
-    throwErrSt (printf "the path %s should start with the root selector" (show dst))
-  propUpTMUntilSel Path.RootSelector
-  -- withDebugInfo $ \_ t -> logDebugStr $ printf "goTMAbsPath: %s, t: %s" (show dst) (show t)
-  let dstNoRoot = fromJust $ tailPath dst
-  descendTM dstNoRoot
-
-descendTM :: (TMonad s m t) => Path -> m Bool
+descendTM :: (TMonad s m t) => TreeAddr -> m Bool
 descendTM dst = do
   tc <- getTMCursor
   maybe
     (return False)
     (\r -> putTMCursor r >> return True)
-    (goDownTCPath dst tc)
+    (goDownTCAddr dst tc)
+
+descendTMSeg :: (TMonad s m t) => TASeg -> m Bool
+descendTMSeg seg = descendTM (TreeAddr [seg])
 
 -- | discard the current focus, pop up and put the new focus.
 discardTMAndPut :: (TMonad s m t) => t -> m ()
@@ -194,32 +156,32 @@ discardTMAndPop = do
   putTMContext ctx{ctxCrumbs = tail crumbs}
   putTMTree (snd t)
 
-inDiscardSubTM :: (TMonad s m t) => Selector -> t -> m a -> m a
-inDiscardSubTM sel t f = do
-  pushTMSub sel t
+inDiscardSubTM :: (TMonad s m t) => TASeg -> t -> m a -> m a
+inDiscardSubTM seg t f = do
+  pushTMSub seg t
   r <- f
   discardTMAndPop
   return r
 
 inTempSubTM :: (TMonad s m t) => t -> m a -> m a
 inTempSubTM sub f = do
-  pushTMSub TempSelector sub
+  pushTMSub TempTASeg sub
   r <- f
-  propUpTMSel TempSelector
+  propUpTMSeg TempTASeg
   return r
 
-maybeM :: (Monad m) => m b -> (a -> m b) -> m (Maybe a) -> m b
-maybeM b f m = do
-  ma <- m
-  maybe b f ma
+allocTMScopeID :: (TMonad s m t) => m Int
+allocTMScopeID = do
+  sid <- getTMScopeID
+  let newSID = sid + 1
+  setTMScopeID newSID
+  return newSID
 
-whenJust :: (Monad m) => Maybe a -> (a -> m (Maybe b)) -> m (Maybe b)
-whenJust m = whenJustM (return m)
+getTMScopeID :: (TMonad s m t) => m Int
+getTMScopeID = ctxScopeID <$> getTMContext
 
-whenJustM :: (Monad m) => m (Maybe a) -> (a -> m (Maybe b)) -> m (Maybe b)
-whenJustM m f = do
-  ma <- m
-  maybe (return Nothing) f ma
+setTMScopeID :: (TMonad s m t) => Int -> m ()
+setTMScopeID newID = modifyTMContext (\ctx -> ctx{ctxScopeID = newID})
 
 treeDepthCheck :: (TMonad s m t) => m ()
 treeDepthCheck = do

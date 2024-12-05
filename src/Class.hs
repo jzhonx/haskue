@@ -14,13 +14,13 @@ class TreeRepBuilder a where
   repTree :: Int -> a -> String
 
 class TreeOp a where
-  -- step down the tree with the given selector.
+  -- step down the tree with the given segment.
   -- This should only be used by TreeCursor.
-  subTree :: Selector -> a -> Maybe a
+  subTree :: TASeg -> a -> Maybe a
 
-  -- Set the subtree to the given tree with the selector. The first argument is the selector, the second argument is the
+  -- Set the subtree to the given tree with the segment. The first argument is the segment, the second argument is the
   -- sub tree, and the third argument is the tree to be updated.
-  setSubTree :: (Env m) => Selector -> a -> a -> m a
+  setSubTree :: (Env m) => TASeg -> a -> a -> m a
 
   -- delete the temp value in the tree.
   delTemp :: a -> a

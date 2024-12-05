@@ -35,23 +35,23 @@ isMutableTreeReducible fnt res =
 
 @param reduceTar: whether to reduce the deref'd value.
 
-The mutation is run in the sub-tree indicated by MutableValSelector. The mutMethod result will be put in the mutVal.
+The mutation is run in the sub-tree indicated by MutableValTASeg. The mutMethod result will be put in the mutVal.
 
 The focus of the tree should still be of type Mutable after the mutation.
 No global states should be changed too.
 -}
 mutate :: (TreeMonad s m) => Bool -> m ()
-mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
+mutate skipReduce = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
   let name = getMutName m
-  debugSpan (printf "mutate, path: %s, mut: %s" (show path) (show name)) $ do
+  debugSpan (printf "mutate, addr: %s, mut: %s" (show addr) (show name)) $ do
     -- modified is not equivalent to reducible. For example, if the unification generates a new struct, it is not
     -- enough to replace the mutable with the new struct.
     Config{cfDeref = deref} <- ask
     inSubTM
-      (MutableSelector MutableValSelector)
-      (mkMutableTree mutValStub)
+      (MutableTASeg MutableValTASeg)
+      mutValStubTree
       ( case m of
-          Ref ref -> deref (refPath ref) skipDeref
+          Ref ref -> deref (refPath ref) skipReduce
           SFunc mut -> invokeMutMethod mut
       )
 
@@ -60,7 +60,7 @@ mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
       case getMutVal mut of
         Nothing -> throwErrSt "mutable value is lost"
         Just res -> do
-          logDebugStr $ printf "mutate: path: %s, mut %s, result:\n%s" (show path) (show name) (show res)
+          logDebugStr $ printf "mutate: addr: %s, mut %s, result:\n%s" (show addr) (show name) (show res)
           case getMutableFromTree res of
             Just nm ->
               if nm == mutValStub
@@ -69,7 +69,7 @@ mutate skipDeref = mustMutable $ \m -> withDebugInfo $ \path _ -> do
                   putTMTree $ mkMutableTree $ resetMutVal mut
                 else do
                   -- recursively mutate in mutval env until the result is not a mutable.
-                  putTMTree res >> mutate skipDeref
+                  putTMTree res >> mutate skipReduce
             Nothing -> void $ tryReduceMut (Just res)
 
 {- | Try to reduce the mutable by using the mutate result to replace the mutable node.
@@ -87,12 +87,12 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
           else do
             let reducible = isMutableTreeReducible t val
 
-            withDebugInfo $ \path _ -> do
+            withAddrAndFocus $ \addr _ -> do
               logDebugStr $
                 printf
-                  "tryReduceMut: func %s, path: %s, %s is reducible: %s"
+                  "tryReduceMut: func %s, addr: %s, %s is reducible: %s"
                   (show $ getMutName mut)
-                  (show path)
+                  (show addr)
                   (show val)
                   (show reducible)
 
@@ -101,8 +101,8 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
                 putTMTree val
                 handleRefCycle
                 --
-                path <- getTMAbsPath
-                delNotifRecvPrefix path
+                addr <- getTMAbsAddr
+                delNotifRecvPrefix addr
               else
                 -- Not reducible, we need to update the mutable value.
                 putTMTree (mkMutableTree $ setMutVal mut val)
@@ -110,17 +110,17 @@ tryReduceMut valM = withTree $ \t -> mustMutable $ \mut ->
     )
     valM
 
-{- | Convert the RefCycleTail to RefCycle if the path is the same as the cycle start path.
+{- | Convert the RefCycleTail to RefCycle if the addr is the same as the cycle start addr.
 
 RefCycleTail is like Bottom.
 -}
 handleRefCycle :: (TreeMonad s m) => m ()
 handleRefCycle = withTree $ \val -> case treeNode val of
-  TNRefCycle (RefCycleVertMerger (cycleStartPath, _)) -> do
-    path <- getTMAbsPath
-    if cycleStartPath == path
+  TNRefCycle (RefCycleVertMerger (cycleStartTreeAddr, _)) -> do
+    addr <- getTMAbsAddr
+    if cycleStartTreeAddr == addr
       then do
-        logDebugStr $ printf "handleRefCycle: path: %s, cycle head found" (show path)
+        logDebugStr $ printf "handleRefCycle: addr: %s, cycle head found" (show addr)
         -- The ref cycle tree must record the original tree.
         withTree $ \t -> putTMTree $ convRefCycleTree t
       else putTMTree val
@@ -130,25 +130,25 @@ handleRefCycle = withTree $ \val -> case treeNode val of
 
 This should be called when the reference becomes invalid.
 
-we need to delete receiver starting with the path, not only the path. For example, if the function
+we need to delete receiver starting with the addr, not only the addr. For example, if the function
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delNotifRecvPrefix :: (TMonad s m t) => Path -> m ()
-delNotifRecvPrefix pathPrefix = do
+delNotifRecvPrefix :: (TMonad s m t) => TreeAddr -> m ()
+delNotifRecvPrefix addrPrefix = do
   withContext $ \ctx -> do
     putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
-  withDebugInfo $ \path _ -> do
+  withAddrAndFocus $ \addr _ -> do
     notifiers <- ctxNotifiers <$> getTMContext
     logDebugStr $
       printf
-        "delNotifRecvs: path: %s delete receiver prefix: %s, ref_path: %s, updated notifiers: %s"
-        (show path)
-        (show pathPrefix)
-        (show refPathPrefix)
+        "delNotifRecvs: addr: %s delete receiver prefix: %s, ref_addr: %s, updated notifiers: %s"
+        (show addr)
+        (show addrPrefix)
+        (show refTreeAddrPrefix)
         (show $ Map.toList notifiers)
  where
-  refPathPrefix = treeRefPath pathPrefix
+  refTreeAddrPrefix = getReferableAddr addrPrefix
 
-  del :: Map.Map Path [Path] -> Map.Map Path [Path]
-  del = Map.map (filter (\p -> not (isPrefix refPathPrefix p)))
+  del :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  del = Map.map (filter (\p -> not (isPrefix refTreeAddrPrefix p)))

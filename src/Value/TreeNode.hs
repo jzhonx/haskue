@@ -28,7 +28,7 @@ class HasTreeNode t where
 
 -- | TreeNode represents a tree structure that contains values.
 data TreeNode t
-  = -- | TNStruct is a struct that contains a value and a map of selectors to Tree.
+  = -- | TNStruct is a struct that contains a value and a map of segments to Tree.
     TNStruct (Struct t)
   | TNList (List t)
   | TNDisj (Disj t)
@@ -59,103 +59,104 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) TNTop TNTop = True
   (==) _ _ = False
 
-{- | descend into the tree with the given selector.
+{- | descend into the tree with the given segment.
 This should only be used by TreeCursor.
 -}
-subTreeTN :: (TreeOp t, HasTreeNode t) => Selector -> t -> Maybe t
-subTreeTN sel t = case (sel, getTreeNode t) of
-  (RootSelector, _) -> Just t
-  (StructSelector s, TNStruct struct) -> case s of
-    StringSelector _ ->
-      ( \case
-          SField sf -> ssfField sf
-          SLocal lb -> lbValue lb
-      )
-        <$> Map.lookup s (stcSubs struct)
-    PatternSelector i -> Just (psfValue $ stcPatterns struct !! i)
-    PendingSelector i -> case stcPendSubs struct !! i of
+subTreeTN :: (TreeOp t, HasTreeNode t, Show t) => TASeg -> t -> Maybe t
+subTreeTN seg t = case (seg, getTreeNode t) of
+  (RootTASeg, _) -> Just t
+  (StructTASeg s, TNStruct struct) -> case s of
+    StringTASeg name ->
+      lookupStructVal name struct
+        >>= \case
+          SField sf -> Just $ ssfField sf
+          _ -> Nothing
+    PatternTASeg i -> Just (psfValue $ stcPatterns struct !! i)
+    PendingTASeg i -> case stcPendSubs struct !! i of
       DynamicPend dsf -> Just (dsfValue dsf)
       PatternPend _ val -> Just val
-      LocalPend _ val -> Just val
-  (IndexSelector i, TNList vs) -> lstSubs vs `indexList` i
+    LetTASeg name ->
+      lookupStructVal name struct >>= \case
+        SLet lb -> Just (lbValue lb)
+        _ -> Nothing
+  (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
-    | (MutableSelector (MutableArgSelector i), SFunc m) <- (sel, mut) -> sfnArgs m `indexList` i
-    | MutableSelector MutableValSelector <- sel -> getMutVal mut
-    -- This has to be the last case because the explicit function selector has the highest priority.
-    | otherwise -> getMutVal mut >>= subTree sel
-  -- (_, TNMutable (Ref ref)) -> refValue ref >>= subTree sel
+    | (MutableTASeg (MutableArgTASeg i), SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
+    | MutableTASeg MutableValTASeg <- seg -> getMutVal mut
+    -- This has to be the last case because the explicit function segment has the highest priority.
+    | otherwise -> getMutVal mut >>= subTree seg
+  -- (_, TNMutable (Ref ref)) -> refValue ref >>= subTree seg
   (_, TNDisj d)
-    | DisjDefaultSelector <- sel -> dsjDefault d
-    | DisjDisjunctSelector i <- sel -> dsjDisjuncts d `indexList` i
-    -- This has to be the last case because the explicit disjunct selector has the highest priority.
-    | otherwise -> dsjDefault d >>= subTree sel
+    | DisjDefaultTASeg <- seg -> dsjDefault d
+    | DisjDisjunctTASeg i <- seg -> dsjDisjuncts d `indexList` i
+    -- This has to be the last case because the explicit disjunct segment has the highest priority.
+    | otherwise -> dsjDefault d >>= subTree seg
   _ -> Nothing
  where
   indexList :: [a] -> Int -> Maybe a
   indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
 setSubTreeTN ::
-  forall m t. (Env m, TreeOp t, Show t, HasTreeNode t) => Selector -> t -> t -> m t
-setSubTreeTN sel subT parT = do
-  n <- case (sel, getTreeNode parT) of
-    (StructSelector s, TNStruct struct) -> updateParStruct struct s
-    (IndexSelector i, TNList vs) ->
+  forall m t. (Env m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
+setSubTreeTN seg subT parT = do
+  n <- case (seg, getTreeNode parT) of
+    (StructTASeg s, TNStruct struct) -> updateParStruct struct s
+    (IndexTASeg i, TNList vs) ->
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
-      | (MutableSelector (MutableArgSelector i), SFunc f) <- (sel, mut) -> do
+      | (MutableTASeg (MutableArgTASeg i), SFunc f) <- (seg, mut) -> do
           let
             args = sfnArgs f
             l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
-      | MutableSelector MutableValSelector <- sel -> return . TNMutable $ setMutVal mut subT
-      -- If the selector is not a mutable selector, then the sub value must have been the sfnValue value.
+      | MutableTASeg MutableValTASeg <- seg -> return . TNMutable $ setMutVal mut subT
+      -- If the segment is not a mutable segment, then the sub value must have been the sfnValue value.
       | otherwise ->
           maybe
-            (throwErrSt $ printf "setSubTreeTN: mutable value is not found for non-function selector %s" (show sel))
+            (throwErrSt $ printf "setSubTreeTN: mutable value is not found for non-function segment %s" (show seg))
             ( \r -> do
-                updatedR <- setSubTree sel subT r
+                updatedR <- setSubTree seg subT r
                 return (TNMutable $ setMutVal mut updatedR)
             )
             (getMutVal mut)
     (_, TNDisj d)
-      | DisjDefaultSelector <- sel -> return (TNDisj $ d{dsjDefault = dsjDefault d})
-      | DisjDisjunctSelector i <- sel ->
+      | DisjDefaultTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
+      | DisjDisjunctTASeg i <- seg ->
           return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-      -- If the selector is not a disjunction selector, then the sub value must have been the default disjunction
+      -- If the segment is not a disjunction segment, then the sub value must have been the default disjunction
       -- value.
       | otherwise ->
           maybe
             ( throwErrSt $
                 printf
-                  "setSubTreeTN: default disjunction value is not found for non-disjunction selector %s"
-                  (show sel)
+                  "setSubTreeTN: default disjunction value is not found for non-disjunction segment %s"
+                  (show seg)
             )
             ( \dft -> do
-                updatedDftT <- setSubTree sel subT dft
+                updatedDftT <- setSubTree seg subT dft
                 return (TNDisj $ d{dsjDefault = Just updatedDftT})
             )
             (dsjDefault d)
-    (ParentSelector, _) -> throwErrSt "setSubTreeTN: ParentSelector is not allowed"
-    (RootSelector, _) -> throwErrSt "setSubTreeT: RootSelector is not allowed"
+    (ParentTASeg, _) -> throwErrSt "setSubTreeTN: ParentTASeg is not allowed"
+    (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
     _ -> throwErrSt insertErrMsg
   return $ setTreeNode parT n
  where
-  updateParStruct :: (MonadError String m) => Struct t -> StructSelector -> m (TreeNode t)
-  updateParStruct parStruct labelSel
-    | b@(TNBottom _) <- getTreeNode subT = return b
-    -- the label selector should already exist in the parent struct.
-    | Map.member labelSel (stcSubs parStruct) =
+  updateParStruct :: (MonadError String m) => Struct t -> StructTASeg -> m (TreeNode t)
+  updateParStruct parStruct labelSeg
+    -- \| b@(TNBottom _) <- getTreeNode subT = return b
+    -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
+    -- found.
+    | Just name <- getStrFromSeg labelSeg
+    , Just sv <- lookupStructVal name parStruct =
         let
-          sv = stcSubs parStruct Map.! labelSel
-          newSV = case sv of
-            SField sf -> SField sf{ssfField = subT}
-            SLocal lb -> SLocal lb{lbValue = subT}
-          newStruct = parStruct{stcSubs = Map.insert labelSel newSV (stcSubs parStruct)}
+          newSV = subT <$ sv
+          newStruct = parStruct{stcSubs = Map.insert labelSeg newSV (stcSubs parStruct)}
          in
           return (TNStruct newStruct)
-    | PatternSelector i <- labelSel =
+    | PatternTASeg i <- labelSeg =
         let
           psf = stcPatterns parStruct !! i
           newPSF = psf{psfValue = subT}
@@ -165,7 +166,7 @@ setSubTreeTN sel subT parT = do
               }
          in
           return (TNStruct newStruct)
-    | PendingSelector i <- labelSel =
+    | PendingTASeg i <- labelSeg =
         let
           psf = stcPendSubs parStruct !! i
           newPSF = modifyPendElemVal (const subT) psf
@@ -176,20 +177,12 @@ setSubTreeTN sel subT parT = do
               }
          in
           return (TNStruct newStruct)
-  -- updateParStruct parStruct (LocalSelector l)
-  --   | Map.member l (stcLocals parStruct) =
-  --       let
-  --         lb = stcLocals parStruct Map.! l
-  --         newLB = lb{lbValue = subT}
-  --         newStruct = parStruct{stcLocals = Map.insert l newLB (stcLocals parStruct)}
-  --        in
-  --         return (TNStruct newStruct)
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String
   insertErrMsg =
     printf
-      "propValUp: cannot insert child to parent, selector: %s, child:\n%s\nparent:\n%s"
-      (show sel)
+      "propValUp: cannot insert child to parent, segment: %s, child:\n%s\nparent:\n%s"
+      (show seg)
       (show subT)
       (show parT)

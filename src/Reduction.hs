@@ -4,20 +4,21 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Reduction where
 
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, forM, when)
+import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (ask)
-import Control.Monad.State.Strict (gets)
+import Control.Monad.State.Strict (gets, runStateT)
 import Cursor
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Error
 import Mutate
@@ -30,9 +31,9 @@ import Value.Tree
 
 -- | Reduce the tree to the lowest form.
 reduce :: (TreeMonad s m) => m ()
-reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show path)) $ do
+reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (show addr)) $ do
   treeDepthCheck
-  push path
+  push addr
 
   tr <- gets getTrace
   let trID = traceID tr
@@ -51,12 +52,12 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    when (isPathAccessible path) $ notify (mutate False)
+    when (isTreeAddrAccessible addr) $ notify (mutate False)
 
   pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
  where
-  push path = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = path : stack}
+  push addr = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
 
   pop = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
@@ -64,10 +65,10 @@ reduce = withDebugInfo $ \path _ -> debugSpan (printf "reduce, path: %s" (show p
 -- Reduce tree nodes
 -- ###
 
-reduceAtomOpArg :: (TreeMonad s m) => Selector -> Tree -> m (Maybe Tree)
-reduceAtomOpArg sel sub =
+reduceAtomOpArg :: (TreeMonad s m) => TASeg -> Tree -> m (Maybe Tree)
+reduceAtomOpArg seg sub =
   reduceMutableArgMaybe
-    sel
+    seg
     sub
     ( \rM -> case rM of
         Nothing -> Nothing
@@ -78,14 +79,14 @@ reduceAtomOpArg sel sub =
     )
     reduce
 
-reduceMutableArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
-reduceMutableArg sel sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) reduce
+reduceMutableArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
+reduceMutableArg seg sub = withTree $ \t -> do
+  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) reduce
   return $ fromJust ret
 
-reduceUnifyRefArg :: (TreeMonad s m) => Selector -> Tree -> m Tree
-reduceUnifyRefArg sel sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe sel sub (Just . fromMaybe t) (mutate True)
+reduceUnifyRefArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
+reduceUnifyRefArg seg sub = withTree $ \t -> do
+  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) (mutate True)
   return $ fromJust ret
 
 -- Evaluate the argument of the given mutable.
@@ -94,16 +95,16 @@ reduceUnifyRefArg sel sub = withTree $ \t -> do
 -- reducible, the value is still returned because the parent mutable needs the value.
 reduceMutableArgMaybe ::
   (TreeMonad s m) =>
-  Selector ->
+  TASeg ->
   Tree ->
   (Maybe Tree -> Maybe Tree) ->
   m () ->
   m (Maybe Tree)
-reduceMutableArgMaybe sel sub csHandler reducer = withDebugInfo $ \path _ ->
-  debugSpan (printf "reduceMutableArgMaybe, path: %s, sel: %s" (show path) (show sel)) $
+reduceMutableArgMaybe seg sub csHandler reducer = withAddrAndFocus $ \addr _ ->
+  debugSpan (printf "reduceMutableArgMaybe, addr: %s, seg: %s" (show addr) (show seg)) $
     -- We are currently in the Mutable's val field. We need to go up to the Mutable.
     mutValToArgsTM
-      sel
+      seg
       sub
       ( do
           reducer
@@ -112,8 +113,23 @@ reduceMutableArgMaybe sel sub csHandler reducer = withDebugInfo $ \path _ ->
             _ -> Just x
       )
 
-mutValToArgsTM :: (TreeMonad s m) => Selector -> Tree -> m a -> m a
-mutValToArgsTM sel sub f = inParentTM $ mustMutable $ \_ -> inSubTM sel sub f
+{- | Go to the parent mutable and run the action in an argument environment, then come back to the mutval environment.
+
+The mutable must see changes propagated from the argument environment.
+-}
+mutValToArgsTM :: (TreeMonad s m) => TASeg -> Tree -> m a -> m a
+mutValToArgsTM subSeg sub f = doInMutTM $ mustMutable $ \_ -> inSubTM subSeg sub f
+ where
+  -- Run the action in the parent tree. All changes will be propagated to the parent tree and back to the current
+  -- tree. After evaluating the argument environment, the focus of the tree should still be the mutable.
+  doInMutTM :: (TreeMonad s m) => m a -> m a
+  doInMutTM action = do
+    seg <- getTMTASeg
+    propUpTM
+    r <- action
+    ok <- descendTMSeg seg
+    unless ok $ throwErrSt $ printf "failed to go down with seg %s" (show seg)
+    return r
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
@@ -121,7 +137,7 @@ reduceStruct = do
   -- reduce the pendings.
   delIdxes <- whenStruct [] $ \s ->
     foldM
-      (\acc (i, pend) -> reducePendSElem (PendingSelector i, pend) >>= \r -> return $ if r then i : acc else acc)
+      (\acc (i, pend) -> reducePendSElem (PendingTASeg i, pend) >>= \r -> return $ if r then i : acc else acc)
       []
       (zip [0 ..] (stcPendSubs s))
   whenStruct () $ \s -> do
@@ -135,8 +151,8 @@ reduceStruct = do
   -- See unify for more details.
   whenStruct () $ \s -> mapM_ applyPatStaticFields (stcPatterns s)
 
-  withDebugInfo $ \path t ->
-    logDebugStr $ printf "reduceStruct: path: %s, new struct: %s" (show path) (show t)
+  withAddrAndFocus $ \addr t ->
+    logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
 
 whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a
 whenStruct a f = do
@@ -153,50 +169,82 @@ mustStruct f = withTree $ \t -> case treeNode t of
   TNStruct struct -> f struct
   _ -> throwErrSt $ printf "%s is not a struct" (show t)
 
-reduceStructVal :: (TreeMonad s m) => StructSelector -> m ()
-reduceStructVal sel = whenStruct () $ \struct -> case stcSubs struct Map.!? sel of
-  Just (SField sf) -> inSubTM (StructSelector sel) (ssfField sf) reduce
-  Just (SLocal lb) -> inSubTM (StructSelector sel) (lbValue lb) reduce
-  _ -> throwErrSt $ printf "%s is not found" (show sel)
+reduceInStructSub :: (TreeMonad s m) => StructTASeg -> Tree -> m ()
+reduceInStructSub seg sub = do
+  -- The segment should be a struct segment.
+  whenStruct () $ \_ -> do
+    t <- inSubTM (StructTASeg seg) sub (reduce >> getTMTree)
+    case getBottomFromTree t of
+      (Just _) -> putTMTree t
+      _ -> return ()
+
+reduceStructVal :: (TreeMonad s m) => StructTASeg -> m ()
+reduceStructVal seg@(getStrFromSeg -> Just name) = whenStruct () $ \struct -> do
+  (sub, foundLet) <- case lookupStructVal name struct of
+    Just (SField sf) -> return (ssfField sf, False)
+    Just (SLet lb) -> return (lbValue lb, True)
+    _ -> throwErrSt $ printf "%s is not found" (show seg)
+
+  -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
+  -- in the parent scope that there is no field with the same name.
+  resM <- searchTMVarInPar (StringSel name)
+  structAddr <- getTMAbsAddr
+  let letAddr = appendSeg (StructTASeg seg) structAddr
+  logDebugStr $ printf "reduceStructVal: addr: %s, lbaddr: %s, var: %s" (show structAddr) (show letAddr) (show resM)
+  case resM of
+    -- If the let binding with the name is found in the scope.
+    Just (targetAddr, True)
+      -- The case of the same let bindings or same let binding and field identifier has already checked in the evalExpr
+      -- phase. If both addrs are equal, it just means it is the current let binding.
+      | letAddr /= targetAddr -> putTMTree $ if foundLet then lbRedeclErr else aliasErr
+    -- If the field with the name is found in the scope.
+    Just (_, False)
+      | foundLet -> putTMTree aliasErr
+    _ -> reduceInStructSub seg sub
+ where
+  aliasErr = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+  lbRedeclErr = mkBottomTree $ printf "%s redeclared in same scope" name
+reduceStructVal seg = throwErrSt $ printf "invalid segment %s" (show seg)
 
 {- | Reduce the pending element.
 
 It returns True if the pending element can be reduced.
 -}
-reducePendSElem :: (TreeMonad s m) => (StructSelector, PendingSElem Tree) -> m Bool
-reducePendSElem (sel@(PendingSelector _), pse) = case pse of
+reducePendSElem :: (TreeMonad s m) => (StructTASeg, PendingSElem Tree) -> m Bool
+reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
   DynamicPend dsf -> do
     -- evaluate the dynamic label.
-    label <- inSubTM (StructSelector sel) (dsfLabel dsf) $ reduce >> getTMTree
-    withDebugInfo $ \path _ ->
+    label <- inSubTM (StructTASeg seg) (dsfLabel dsf) $ reduce >> getTMTree
+    withAddrAndFocus $ \addr _ ->
       logDebugStr $
         printf
-          "reducePendSE: path: %s, dynamic label is evaluated to %s"
-          (show path)
+          "reducePendSElem: addr: %s, dynamic label is evaluated to %s"
+          (show addr)
           (show label)
     case treeNode label of
+      TNBottom _ -> putTMTree label >> return False
       TNAtom (AtomV (String s)) -> do
-        newSF <- mustStruct $ \struct -> return $ dynToField dsf (stcSubs struct Map.!? StringSelector s)
+        newSF <- mustStruct $ \struct -> do
+          let newSF = dynToField dsf (lookupStructVal s struct)
+          putTMTree $ mkStructTree $ addStructField struct s newSF
+          return newSF
 
-        let sSel = StructSelector $ StringSelector s
-        mergedT <- inDiscardSubTM sSel (ssfField newSF) (reduce >> getTMTree)
-        -- TODO: use whenStruct because mergedT could be a bottom.
-        mustStruct $ \struct ->
-          putTMTree $ mkStructTree $ addStructField struct s (newSF{ssfField = mergedT})
+        reduceInStructSub (StringTASeg s) (ssfField newSF)
         return True
-
-      -- TODO: pending label
-      _ -> putTMTree (mkBottomTree "selector can only be a string") >> return False
+      -- TODO: implement mutable label
+      TNMutable _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
+      _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
   PatternPend pattern val -> do
     -- evaluate the pattern.
-    pat <- inDiscardSubTM (StructSelector sel) pattern (reduce >> getTMTree)
-    withDebugInfo $ \path _ ->
+    pat <- inDiscardSubTM (StructTASeg seg) pattern (reduce >> getTMTree)
+    withAddrAndFocus $ \addr _ ->
       logDebugStr $
         printf
-          "reducePendSE: path: %s, pattern is evaluated to %s"
-          (show path)
+          "reducePendSElem: addr: %s, pattern is evaluated to %s"
+          (show addr)
           (show pat)
     case treeNode pat of
+      TNBottom _ -> putTMTree pat >> return False
       TNBounds bds ->
         if null (bdsList bds)
           then putTMTree (mkBottomTree "patterns must be non-empty") >> return False
@@ -204,56 +252,22 @@ reducePendSElem (sel@(PendingSelector _), pse) = case pse of
             let psf = StructPattern bds val
             newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
             putTMTree newStruct
-            withDebugInfo $ \path _ ->
-              logDebugStr $ printf "reducePendSE: path: %s, newStruct %s" (show path) (show newStruct)
+            withAddrAndFocus $ \addr _ ->
+              logDebugStr $ printf "reducePendSE: addr: %s, newStruct %s" (show addr) (show newStruct)
             return True
       -- The label expression does not evaluate to a bounds.
       TNMutable _ -> return False
       _ ->
         putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
           >> return False
-  LocalPend name lb -> do
-    -- Fields have already been created in the evalExpr phase, so we do not need to do searchTMVar when adding new
-    -- fields.
-    resM <- searchTMVar (StructSelector (StringSelector name))
-    case resM of
-      Just (_, True) -> putTMTree (lbRedeclErr name) >> return False
-      Just (_, False) -> putTMTree (aliasErr name) >> return False
-      Nothing -> do
-        -- evaluate the local binding.
-        ulb <- inSubTM (StructSelector sel) lb $ reduce >> getTMTree
-        withDebugInfo $ \path _ ->
-          logDebugStr $
-            printf
-              "reducePendSE: path: %s, local binding is evaluated to %s"
-              (show path)
-              (show ulb)
-        mustStruct $ \struct -> putTMTree $ mkStructTree $ addStructLocal struct name ulb
-        return True
  where
-  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
-  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in the same scope" name
-  -- case treeNode label of
-  --   TNAtom (AtomV (String s)) -> do
-  --     newSF <- mustStruct $ \struct -> return $ dynToField dsf (stcSubs struct Map.!? StringSelector s)
-  --
-  --     let sSel = StructSelector $ StringSelector s
-  --     mergedT <- inDiscardSubTM sSel (ssfField newSF) (reduce >> getTMTree)
-  --     -- TODO: use whenStruct because mergedT could be a bottom.
-  --     mustStruct $ \struct ->
-  --       putTMTree $ mkStructTree $ addStructField struct s (newSF{ssfField = mergedT})
-  --     return True
-  --
-  --   -- TODO: pending label
-  --   _ -> putTMTree (mkBottomTree "selector can only be a string") >> return False
-
   dynToField ::
     DynamicField Tree ->
     Maybe (StructVal Tree) ->
     Field Tree
   dynToField dsf sfM = case sfM of
     -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
-    -- If the identifier is a local binding, then no need to merge. The limit that there should only be one identifier
+    -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
     -- in a scope can be ignored.
     Just (SField sf) ->
       Field
@@ -269,7 +283,7 @@ reducePendSElem (sel@(PendingSelector _), pse) = case pse of
   -- Add the pattern to the struct. Return the new struct and the index of the pattern.
   addPattern :: StructPattern Tree -> Struct Tree -> Struct Tree
   addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
-reducePendSElem _ = throwErrSt "invalid selector field combination"
+reducePendSElem _ = throwErrSt "invalid segment field combination"
 
 {- | Apply the pattern to the existing static fields of the struct.
 
@@ -279,19 +293,19 @@ applyPatStaticFields ::
   (TreeMonad s m) =>
   StructPattern Tree ->
   m ()
-applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
-  (printf "applyPatStaticFields, path: %s" (show p))
+applyPatStaticFields psf = withAddrAndFocus $ \p _ -> debugSpan
+  (printf "applyPatStaticFields, addr: %s" (show p))
   $ mustStruct
   $ \struct -> do
     let
       selPattern = psfPattern psf
-      toValSels =
+      toValSegs =
         [ mkMutableTree $ mkUnifyNode (mkAtomTree $ String s) (mkNewTree $ TNBounds selPattern)
-        | (StringSelector s) <- stcOrdLabels struct
+        | (StringTASeg s) <- stcOrdLabels struct
         ]
 
-    cnstrSels <-
-      mapM (\x -> inDiscardSubTM TempSelector x (reduce >> getTMTree)) toValSels
+    cnstrSegs <-
+      mapM (\x -> inDiscardSubTM TempTASeg x (reduce >> getTMTree)) toValSegs
         >>= return
           . map
             ( \x -> case treeNode x of
@@ -300,24 +314,24 @@ applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
             )
         >>= return . filter (/= "")
 
-    logDebugStr $ printf "applyPatStaticFields: cnstrSels: %s" (show cnstrSels)
+    logDebugStr $ printf "applyPatStaticFields: cnstrSegs: %s" (show cnstrSegs)
 
     results <-
       foldM
         ( \acc name -> do
             let
               fieldCnstr = psfValue psf
-              svM = stcSubs struct Map.!? StringSelector name
-            case svM of
+            case lookupStructVal name struct of
               Just (SField sf) -> do
                 let f = mkMutableTree $ mkUnifyNode (ssfField sf) fieldCnstr
-                nf <- inSubTM (StructSelector (StringSelector name)) f (reduce >> getTMTree)
+                -- We can safely return the bottom because later it will be checked if there is any bottom.
+                nf <- inSubTM (StructTASeg (StringTASeg name)) f (reduce >> getTMTree)
                 return $ (name, nf) : acc
-              Just (SLocal _) -> return acc
+              Just (SLet _) -> return acc
               _ -> throwErrSt $ printf "field %s is not found" name
         )
         []
-        cnstrSels
+        cnstrSegs
 
     let bottoms = filter (isTreeBottom . snd) results
     if not $ null bottoms
@@ -328,12 +342,12 @@ applyPatStaticFields psf = withDebugInfo $ \p _ -> debugSpan
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> m Tree
 mkVarLinkTree var = do
-  let mut = mkRefMutable (Path [StructSelector $ StringSelector var])
+  let mut = mkRefMutable (Path.Reference [StringSel var])
   return $ mkMutableTree mut
 
 -- | Create an index function node.
 mkIndexMutableTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
-mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
+mkIndexMutableTree recvArg selArg ue = mkMutableTree $ case treeNode recvArg of
   TNMutable m
     | isMutableIndex m ->
         modifyRegMut
@@ -349,53 +363,53 @@ mkIndexMutableTree treeArg selArg ue = mkMutableTree $ case treeNode treeArg of
       emptySFunc
         { sfnName = "index"
         , sfnType = IndexMutable
-        , sfnArgs = [treeArg, selArg]
+        , sfnArgs = [recvArg, selArg]
         , sfnExpr = return $ AST.ExprUnaryExpr ue
         , sfnMethod = index
         }
 
-{- | Index the tree with the selectors. The index should have a list of arguments where the first argument is the tree
-to be indexed, and the rest of the arguments are the selectors.
+{- | Index the tree with the segments. The index should have a list of arguments where the first argument is the tree
+to be indexed, and the rest of the arguments are the segments.
 -}
 index :: (TreeMonad s m) => [Tree] -> m ()
 index ts@(t : _)
   | length ts > 1 = do
-      idxPathM <- treesToPath <$> mapM evalIndexArg [1 .. length ts - 1]
-      whenJustE idxPathM $ \idxPath -> case treeNode t of
+      idxRefM <- treesToRef <$> mapM evalIndexArg [1 .. length ts - 1]
+      whenJustE idxRefM $ \idxRef -> case treeNode t of
         TNMutable mut
-          -- If the function is a ref, then we should append the path to the ref. For example, if the ref is a.b, and
-          -- the path is c, then the new ref should be a.b.c.
+          -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
+          -- the addr is c, then the new ref should be a.b.c.
           | (Ref ref) <- mut -> do
               let
-                newPath = appendPath idxPath (refPath ref)
-                refMutable = mkRefMutable newPath
+                newRef = appendRefs (refPath ref) idxRef
+                refMutable = mkRefMutable newRef
               putTMTree (mkMutableTree refMutable)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
-          res <- reduceMutableArg (MutableSelector $ MutableArgSelector 0) t
+          res <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 0) t
           putTMTree res
-          logDebugStr $ printf "index: tree is reduced to %s, idxPath: %s" (show res) (show idxPath)
+          logDebugStr $ printf "index: tree is reduced to %s, idxRef: %s" (show res) (show idxRef)
 
-          unlessTFBottom () $ do
+          unlessFocusBottom () $ do
             -- descendTM can not be used here because it would change the tree cursor.
             tc <- getTMCursor
             maybe
-              (throwErrSt $ printf "%s is not found" (show idxPath))
+              (throwErrSt $ printf "%s is not found" (show idxRef))
               (putTMTree . vcFocus)
-              (goDownTCPath idxPath tc)
-            withDebugInfo $ \_ r ->
+              (goDownTCAddr (refToAddr idxRef) tc)
+            withAddrAndFocus $ \_ r ->
               logDebugStr $ printf "index: the indexed is %s" (show r)
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
-  evalIndexArg i = mutValToArgsTM (MutableSelector $ MutableArgSelector i) (ts !! i) (reduce >> getTMTree)
+  evalIndexArg i = mutValToArgsTM (MutableTASeg $ MutableArgTASeg i) (ts !! i) (reduce >> getTMTree)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
 index _ = throwErrSt "invalid index arguments"
 
-validateCnstrs :: (TreeMonad s m) => m ()
-validateCnstrs = do
-  logDebugStr "validateCnstrs: start"
+postValidation :: (TreeMonad s m) => m ()
+postValidation = do
+  logDebugStr "postValidation: start"
 
   ctx <- getTMContext
   -- remove all notifiers.
@@ -406,19 +420,49 @@ validateCnstrs = do
   -- then validate all constraints.
   traverseTM $ withTN $ \case
     TNConstraint c -> validateCnstr c
+    TNStruct s -> validateStruct s
+    _ -> return ()
+
+-- | Traverse all the one-level sub nodes of the tree.
+traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
+traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
+ where
+  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
+  go (sel, sub) = unlessFocusBottom () $ do
+    res <- inSubTM sel sub (f >> getTMTree)
+    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
+    t <- getTMTree
+    case (treeNode t, treeNode res) of
+      (TNStruct _, TNBottom _) -> putTMTree res
+      _ -> return ()
+
+{- | Traverse the leaves of the tree cursor in the following order
+1. Traverse the current node.
+2. Traverse the sub-tree with the segment.
+-}
+traverseTM :: (TreeMonad s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)
+
+{- | Traverse the tree and replace the Mutable node with the result of the mutator if it exists, otherwise the
+original mutator node is kept.
+-}
+snapshotTM :: (TreeMonad s m) => m ()
+snapshotTM =
+  traverseTM $ withTN $ \case
+    TNMutable m -> maybe (return ()) putTMTree (getMutVal m)
     _ -> return ()
 
 -- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
 -- will be assigned to the constraint in the propValUp.
 validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
 validateCnstr c = withTree $ \_ -> do
-  withDebugInfo $ \path _ -> do
+  withAddrAndFocus $ \addr _ -> do
     tc <- getTMCursor
     Config{cfCreateCnstr = cc} <- ask
     logDebugStr $
       printf
-        "validateCnstr: path: %s, validator: %s, cc: %s constraint unify tc:\n%s"
-        (show path)
+        "validateCnstr: addr: %s, validator: %s, cc: %s constraint unify tc:\n%s"
+        (show addr)
         (show (cnsValidator c))
         (show cc)
         (show tc)
@@ -428,20 +472,42 @@ validateCnstr c = withTree $ \_ -> do
   Config{cfEvalExpr = evalExpr} <- ask
   -- run the validator in a sub context.
   res <- inTempSubTM (mkBottomTree "no value yet") $ do
-    t <- evalExpr (cnsValidator c)
+    t <- do
+      curSID <- getTMScopeID
+      (t, newSID) <- runStateT (evalExpr $ cnsValidator c) curSID
+      setTMScopeID newSID
+      return t
     putTMTree t
     reduce >> getTMTree
 
   putTMTree $
     if
+      | isTreeBottom res -> res
       | isTreeAtom res -> atomT
       -- incomplete case
       | isTreeMutable res -> res
       | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
+validateStruct :: (TreeMonad s m) => Struct Tree -> m ()
+validateStruct s =
+  let errM =
+        Map.foldrWithKey
+          ( \seg sv acc ->
+              if isNothing acc && checkSV sv
+                then Just $ mkBottomTree $ printf "unreferenced let clause %s" (show seg)
+                else acc
+          )
+          Nothing
+          (stcSubs s)
+   in maybe (return ()) putTMTree errM
+ where
+  checkSV :: StructVal Tree -> Bool
+  checkSV (SLet (LetBinding{lbReferred = False})) = True
+  checkSV _ = False
+
 dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m ()
 dispUnaryOp op _t = do
-  tM <- reduceAtomOpArg unaryOpSelector _t
+  tM <- reduceAtomOpArg unaryOpTASeg _t
   case tM of
     Just t -> case treeNode t of
       TNAtom ta -> case (op, amvAtom ta) of
@@ -499,16 +565,16 @@ regBin op t1 t2 = regBinDir op (L, t1) (R, t2)
 
 regBinDir :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinDir op (d1, _t1) (d2, _t2) = do
-  withDebugInfo $ \path _ ->
+  withAddrAndFocus $ \addr _ ->
     logDebugStr $
-      printf "regBinDir: path: %s, %s: %s with %s: %s" (show path) (show d1) (show _t1) (show d2) (show _t2)
+      printf "regBinDir: addr: %s, %s: %s with %s: %s" (show addr) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1M <- reduceAtomOpArg (toBinOpSelector d1) _t1
-  t2M <- reduceAtomOpArg (toBinOpSelector d2) _t2
+  t1M <- reduceAtomOpArg (toBinOpTASeg d1) _t1
+  t2M <- reduceAtomOpArg (toBinOpTASeg d2) _t2
 
-  withDebugInfo $ \path _ ->
+  withAddrAndFocus $ \addr _ ->
     logDebugStr $
-      printf "regBinDir: path: %s, reduced args, %s: %s with %s: %s" (show path) (show d1) (show t1M) (show d2) (show t2M)
+      printf "regBinDir: addr: %s, reduced args, %s: %s with %s: %s" (show addr) (show d1) (show t1M) (show d2) (show t2M)
 
   case (t1M, t2M) of
     (Just t1, Just t2) -> case (treeNode t1, treeNode t2) of
@@ -638,8 +704,8 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
 
 regBinLeftOther :: (TreeMonad s m) => AST.BinaryOp -> (BinOpDirect, Tree) -> (BinOpDirect, Tree) -> m ()
 regBinLeftOther op (d1, t1) (d2, t2) = do
-  withDebugInfo $ \path _ ->
-    logDebugStr $ printf "regBinLeftOther: path: %s, %s: %s, %s: %s" (show path) (show d1) (show t1) (show d2) (show t2)
+  withAddrAndFocus $ \addr _ ->
+    logDebugStr $ printf "regBinLeftOther: addr: %s, %s: %s, %s: %s" (show addr) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
     (TNRefCycle _, _) -> return ()
     (TNConstraint c, _) -> do
@@ -800,8 +866,8 @@ For operands that are references, we do not need reduce them. We only evaluate t
 dereferenced. If the reference is evaluated to a struct, the struct will be a raw struct.
 -}
 unifyUTrees :: (TreeMonad s m) => UTree -> UTree -> m ()
-unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withDebugInfo $ \path _ ->
-  debugSpan (printf ("unifying, path: %s:, %s" ++ "\n" ++ "with %s") (show path) (show ut1) (show ut2)) $ do
+unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withAddrAndFocus $ \addr _ ->
+  debugSpan (printf ("unifying, addr: %s:, %s" ++ "\n" ++ "with %s") (show addr) (show ut1) (show ut2)) $ do
     -- Each case should handle embedded case when the left value is embedded.
     case (treeNode t1, treeNode t2) of
       (TNBottom _, _) -> putTMTree t1
@@ -888,7 +954,12 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
   putCnstr :: (TreeMonad s m) => AtomV -> m ()
   putCnstr a1 = do
     unifyOp <- getTMParent
-    e <- maybe (buildASTExpr False unifyOp) return (treeOrig unifyOp)
+    logDebugStr $ printf "unifyLeftAtom: creating constraint, t: %s" (show unifyOp)
+    -- TODO: this is hack now. The unifyOp has a mutStub, which makes the buildASTExpr unhappy.
+    let emptyUnifyOp = case getMutableFromTree unifyOp of
+          Just mut -> mkMutableTree $ resetMutVal mut
+          _ -> unifyOp
+    e <- maybe (buildASTExpr False emptyUnifyOp) return (treeOrig unifyOp)
     logDebugStr $ printf "unifyLeftAtom: creating constraint, e: %s, t: %s" (show e) (show unifyOp)
     putTMTree $ mkCnstrTree a1 e
 
@@ -1127,11 +1198,11 @@ unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   case (treeNode t1, treeNode t2) of
     (TNMutable mut, _) -> do
-      withDebugInfo $ \path _ ->
+      withAddrAndFocus $ \addr _ ->
         logDebugStr $
-          printf "unifyLeftOther starts, path: %s, %s, %s" (show path) (show ut1) (show ut2)
+          printf "unifyLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
       r1 <-
-        (if isMutableRef mut then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpSelector d1) t1
+        (if isMutableRef mut then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpTASeg d1) t1
       case treeNode r1 of
         TNMutable _ -> return ()
         _ -> unifyUTrees (ut1{utVal = r1}) ut2
@@ -1179,9 +1250,10 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
     (Just b1, _) -> putTMTree b1
     (_, Just b2) -> putTMTree b2
     _ -> do
-      let merged = nodesToStruct allFields combinedPatterns combinedPendSubs
-      withDebugInfo $ \path _ ->
-        logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show path) (show merged)
+      sid <- allocTMScopeID
+      let merged = nodesToStruct sid allFields combinedPatterns combinedPendSubs
+      withAddrAndFocus $ \addr _ ->
+        logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
       -- in reduce, the new combined fields will be checked by the combined patterns.
       putTMTree merged
       reduce
@@ -1209,7 +1281,7 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         }
 
   -- Returns the intersection fields of the two structs. The relative order of the fields is preserved.
-  inter :: [(Path.StructSelector, Field Tree)]
+  inter :: [(Path.StructTASeg, Field Tree)]
   inter =
     fst $
       foldr
@@ -1232,7 +1304,7 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         (stcOrdLabels s1 ++ stcOrdLabels s2)
 
   -- select the fields in the struct that are in the keysSet.
-  select :: Struct Tree -> Set.Set Path.StructSelector -> [(Path.StructSelector, Field Tree)]
+  select :: Struct Tree -> Set.Set Path.StructTASeg -> [(Path.StructTASeg, Field Tree)]
   select s keysSet =
     foldr
       ( \(key, sv) acc -> case sv of
@@ -1242,16 +1314,17 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
       []
       [(key, stcSubs s Map.! key) | key <- stcOrdLabels s, key `Set.member` keysSet]
 
-  allFields :: [(Path.StructSelector, Field Tree)]
+  allFields :: [(Path.StructTASeg, Field Tree)]
   allFields = inter ++ select s1 disjKeysSet1 ++ select s2 disjKeysSet2
 
   nodesToStruct ::
-    [(Path.StructSelector, Field Tree)] -> [StructPattern Tree] -> [PendingSElem Tree] -> Tree
-  nodesToStruct nodes patterns pends =
+    Int -> [(Path.StructTASeg, Field Tree)] -> [StructPattern Tree] -> [PendingSElem Tree] -> Tree
+  nodesToStruct sid nodes patterns pends =
     mkStructTree $
-      Struct
-        { stcOrdLabels = map fst nodes
-        , stcSubs = Map.fromList $ map (\(sel, f) -> (sel, SField f)) nodes
+      emptyStruct
+        { stcID = sid
+        , stcOrdLabels = map fst nodes
+        , stcSubs = Map.fromList $ map (\(seg, f) -> (seg, SField f)) nodes
         , stcPendSubs = pends
         , stcPatterns = patterns
         , stcClosed = stcClosed s1 || stcClosed s2
@@ -1277,8 +1350,8 @@ checkPermittedLabels base isNewEmbedded new =
       -- If the new struct has new labels, we need to check if they are in the field patterns of the base struct.
       res <-
         mapM
-          ( \sel -> case sel of
-              StringSelector s -> do
+          ( \seg -> case seg of
+              StringTASeg s -> do
                 -- foldM only returns a non-bottom value when the new label is in the patterns, otherwise it returns a
                 -- Nothing or a bottom.
                 r <-
@@ -1288,7 +1361,7 @@ checkPermittedLabels base isNewEmbedded new =
                           then return iacc
                           else do
                             inDiscardSubTM
-                              (StructSelector (PatternSelector i))
+                              (StructTASeg (PatternTASeg i))
                               ( mkMutableTree $ mkUnifyNode (mkAtomTree $ String s) (mkNewTree $ TNBounds pat)
                               )
                               (reduce >> Just <$> getTMTree)
@@ -1296,16 +1369,16 @@ checkPermittedLabels base isNewEmbedded new =
                     Nothing
                     (zip [0 ..] basePatterns)
 
-                return (sel, r)
-              _ -> throwErrSt $ printf "unexpected selector: %s" (show sel)
+                return (seg, r)
+              _ -> throwErrSt $ printf "unexpected segment: %s" (show seg)
           )
           (Set.toList diff)
 
-      withDebugInfo $ \path _ ->
+      withAddrAndFocus $ \addr _ ->
         logDebugStr $
           printf
-            "checkPermittedLabels: path: %s, isNewEmbedde: %s, diff: %s, r: %s"
-            (show path)
+            "checkPermittedLabels: addr: %s, isNewEmbedde: %s, diff: %s, r: %s"
+            (show addr)
             (show isNewEmbedded)
             (show $ Set.toList diff)
             (show res)
@@ -1333,8 +1406,8 @@ unifyLeftDisj
           , utEmbedded = isEmbedded2
           }
         ) = do
-    withDebugInfo $ \path _ ->
-      logDebugStr $ printf "unifyLeftDisj: path: %s, dj: %s, right: %s" (show path) (show ut1) (show ut2)
+    withAddrAndFocus $ \addr _ ->
+      logDebugStr $ printf "unifyLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
     case treeNode t2 of
       TNMutable _ -> unifyLeftOther ut2 ut1
       TNConstraint _ -> unifyLeftOther ut2 ut1
@@ -1361,11 +1434,11 @@ unifyLeftDisj
         (Disj{dsjDefault = Nothing}, Disj{}) -> unifyLeftDisj (dj2, ut2) ut1
         -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
         (Disj{dsjDefault = Just df1, dsjDisjuncts = ds1}, Disj{dsjDefault = Just df2, dsjDisjuncts = ds2}) -> do
-          withDebugInfo $ \path _ ->
+          withAddrAndFocus $ \addr _ ->
             logDebugStr $
               printf
-                "unifyLeftDisj: path: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
-                (show path)
+                "unifyLeftDisj: addr: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
+                (show addr)
                 (show d1)
                 (show df1)
                 (show ds1)
@@ -1373,8 +1446,8 @@ unifyLeftDisj
                 (show ds2)
           df <- unifyUTreesInTemp (ut1{utVal = df1}) (ut2{utVal = df2})
           dss <- manyToMany (d1, isEmbedded1, ds1) (d2, isEmbedded2, ds2)
-          withDebugInfo $ \path _ ->
-            logDebugStr $ printf "unifyLeftDisj: path: %s, U2, df: %s, dss: %s" (show path) (show df) (show dss)
+          withAddrAndFocus $ \addr _ ->
+            logDebugStr $ printf "unifyLeftDisj: addr: %s, U2, df: %s, dss: %s" (show addr) (show df) (show dss)
           treeFromNodes (Just df) dss >>= putTMTree
       -- this is the case for a disjunction unified with a value.
       _ -> case dj1 of
@@ -1484,7 +1557,7 @@ close recur args
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
       let a = head args
-      r <- reduceMutableArg unaryOpSelector a
+      r <- reduceMutableArg unaryOpTASeg a
       case treeNode r of
         -- If the argument is pending, wait for the result.
         TNMutable _ -> return ()
@@ -1501,7 +1574,7 @@ closeTree recur a =
                 Map.map
                   ( \case
                       SField sf -> let new = closeTree recur (ssfField sf) in SField $ sf{ssfField = new}
-                      SLocal lb -> let new = closeTree recur (lbValue lb) in SLocal $ lb{lbValue = new}
+                      SLet lb -> let new = closeTree recur (lbValue lb) in SLet $ lb{lbValue = new}
                   )
                   (stcSubs s)
               else

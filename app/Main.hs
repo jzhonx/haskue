@@ -29,7 +29,7 @@ options =
 main :: IO ()
 main = do
   opts <- execParser (info (options <**> helper) fullDesc)
-  file <- readFile (ecFilePath opts)
+  file <- readFile (ecFileTreeAddr opts)
   x <- runExceptT $ runIO file opts
   case x of
     Left err -> putStrLn err

@@ -192,13 +192,13 @@ unaryExpr = do
       return $ ue <$ ul
 
 primaryExpr :: Parser (Lexeme PrimaryExpr)
-primaryExpr = chainPrimExpr primOperand (selector <|> index <|> arguments)
+primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
  where
   primOperand :: Parser (Lexeme PrimaryExpr)
   primOperand = fmap PrimExprOperand <$> operand
 
-  selector :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
-  selector = do
+  segment :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
+  segment = do
     _ <- lexeme $ (,TokenDot) <$> char '.'
     selLex <-
       (fmap IDSelector <$> identifier)

@@ -3,8 +3,10 @@ module SpecTest where
 import qualified AST
 import Class
 import Config
+import Control.Monad (unless)
 import Control.Monad.Except (runExcept, runExceptT, throwError)
 import Data.ByteString.Builder
+import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
@@ -20,13 +22,13 @@ import Value.Tree
 newCompleteStruct :: [String] -> [(String, Tree)] -> Tree
 newCompleteStruct labels subs =
   mkNewTree . TNStruct $
-    Struct
+    emptyStruct
       { stcSubs =
           Map.fromList
             ( map
                 ( \(k, v) ->
                     let (s, a) = selAttr k
-                     in ( Path.StringSelector s
+                     in ( Path.StringTASeg s
                         , SField $
                             Field
                               { ssfField = v
@@ -38,8 +40,8 @@ newCompleteStruct labels subs =
             )
       , stcOrdLabels =
           if Prelude.null labels
-            then map (Path.StringSelector . fst . selAttr . fst) subs
-            else map (Path.StringSelector . fst . selAttr) labels
+            then map (Path.StringTASeg . fst . selAttr . fst) subs
+            else map (Path.StringTASeg . fst . selAttr) labels
       , stcPendSubs = []
       , stcPatterns = []
       , stcClosed = False
@@ -70,7 +72,7 @@ newCompleteStruct labels subs =
 newStruct :: [(String, Tree)] -> Tree
 newStruct = newCompleteStruct []
 
-mkSimpleLink :: Path -> Tree
+mkSimpleLink :: Path.Reference -> Tree
 mkSimpleLink p = mkMutableTree $ mkRefMutable p
 
 startEval :: String -> IO (Either String Tree)
@@ -84,8 +86,8 @@ assertStructs (Tree{treeNode = TNStruct exp}) (Tree{treeNode = TNStruct act}) = 
   mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
 assertStructs _ _ = assertFailure "Not structs"
 
-strSel :: String -> Selector
-strSel = StructSelector . StringSelector
+strSel :: String -> Path.Selector
+strSel = Path.StringSel
 
 testBottom :: IO ()
 testBottom = do
@@ -545,9 +547,9 @@ testSelector1 = do
       Disj
         (Just fieldEDefault)
         [newStruct [("a", newAtomDisj [Int 2] [Int 1, Int 2])], fieldEDefault]
-  pathC = Path [strSel "c"]
-  pendValC = mkSimpleLink $ pathFromList [strSel "T", strSel "z"]
-  pathF = Path [strSel "f"]
+  -- addrC = TreeAddr [strSel "c"]
+  pendValC = mkSimpleLink $ Path.Reference [strSel "T", strSel "z"]
+  -- addrF = TreeAddr [strSel "f"]
   disjF = newAtomDisj [Int 4] [Int 3, Int 4]
   expStruct =
     newStruct
@@ -773,14 +775,6 @@ testCycles7 = do
  where
   selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
 
-testCycles8 :: IO ()
-testCycles8 = do
-  s <- readFile "tests/spec/cycles8.cue"
-  val <- startEval s
-  case val of
-    Left err -> assertFailure err
-    Right x -> x @?= mkBottomTree ""
-
 testCycles9 :: IO ()
 testCycles9 = do
   s <- readFile "tests/spec/cycles9.cue"
@@ -818,6 +812,54 @@ testCycles11 = do
   myListInnerSC =
     expandWithClosed True $
       newStruct [("head", mkAtomTree $ Int 2), ("tail", mkAtomTree Null)]
+
+testCyclesSC1 :: IO ()
+testCyclesSC1 = do
+  s <- readFile "tests/spec/cycles_sc1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
+
+testCyclesPC1 :: IO ()
+testCyclesPC1 = do
+  s <- readFile "tests/spec/cycles_pc1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> cmpStructs x exp
+ where
+  exp =
+    newStruct
+      [
+        ( "p"
+        , newStruct
+            [ ("a", selfCycle)
+            , ("b", selfCycle)
+            ]
+        )
+      ]
+  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
+
+testCyclesPC2 :: IO ()
+testCyclesPC2 = do
+  s <- readFile "tests/spec/cycles_pc2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> cmpStructs x exp
+ where
+  exp =
+    newStruct
+      [
+        ( "p"
+        , newStruct
+            [ ("a", selfCycle)
+            , ("b", selfCycle)
+            ]
+        )
+      ]
+  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
 
 testIncomplete :: IO ()
 testIncomplete = do
@@ -894,6 +936,14 @@ testDup3 = do
                 ]
             )
           ]
+
+testDynamicFieldErr1 :: IO ()
+testDynamicFieldErr1 = do
+  s <- readFile "tests/spec/dynfield_err1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "values mismatch" y
 
 testRef1 :: IO ()
 testRef1 = do
@@ -1198,7 +1248,7 @@ testCnstr2 = do
                   mkBinaryOp
                     AST.Add
                     (\_ _ -> throwError "not implemented")
-                    (mkSimpleLink $ pathFromList [strSel "a"])
+                    (mkSimpleLink $ Path.Reference [strSel "a"])
                     (mkAtomTree $ Int 100)
               )
         )
@@ -1263,7 +1313,7 @@ testPat2 = do
                             mkBinaryOp
                               AST.Disjunction
                               (\_ _ -> throwError "not implemented")
-                              (mkSimpleLink $ pathFromList [strSel "firstName"])
+                              (mkSimpleLink $ Path.Reference [strSel "firstName"])
                               (mkBoundsTree [BdType BdString])
                         )
                       ]
@@ -1511,20 +1561,114 @@ testDef6 = do
     Left err -> assertFailure err
     Right y -> y @?= mkBottomTree ""
 
+testLet1 :: IO ()
+testLet1 = do
+  s <- readFile "tests/spec/let1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("x1", mkAtomTree $ Int 1)
+      , ("x2", mkAtomTree $ Int 1)
+      , ("x3", mkAtomTree $ Int 2)
+      ]
+
+testLet2 :: IO ()
+testLet2 = do
+  s <- readFile "tests/spec/let2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("a", newStruct [("y", mkSimpleLink $ Path.Reference [strSel "x", strSel "b"])])
+      , ("b", newStruct [("z", mkAtomTree $ Int 1)])
+      ]
+
+testLet3 :: IO ()
+testLet3 = do
+  s <- readFile "tests/spec/let3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", mkAtomTree $ Int 1)]
+
+testLetErr1 :: IO ()
+testLetErr1 = do
+  s <- readFile "tests/spec/let_err1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "unreferenced" y
+
+testLetErr2 :: IO ()
+testLetErr2 = do
+  s <- readFile "tests/spec/let_err2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "can not have both alias and field with name" y
+
+testLetErr3 :: IO ()
+testLetErr3 = do
+  s <- readFile "tests/spec/let_err3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "can not have both alias and field with name" y
+
+testLetErr4 :: IO ()
+testLetErr4 = do
+  s <- readFile "tests/spec/let_err4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "redeclared in same scope" y
+
 specTests :: TestTree
 specTests =
   testGroup
     "specTest"
     [ testCase "basic" testBasic
-    , testCase "bottom" testBottom
-    , testCase "unaryop" testUnaryOp
     , testCase "binop" testBinop
     , testCase "binop2" testBinOp2
     , testCase "binop3" testBinOp3
     , testCase "binop_cmp_eq" testBinOpCmpEq
     , testCase "binop_cmp_ne" testBinOpCmpNE
+    , testCase "bottom" testBottom
     , testCase "bounds1" testBounds1
     , testCase "bounds2" testBounds2
+    , testCase "close1" testClose1
+    , testCase "close2" testClose2
+    , testCase "close3" testClose3
+    , testCase "cnstr1" testCnstr1
+    , testCase "cnstr2" testCnstr2
+    , testCase "cycles1" testCycles1
+    , testCase "cycles10" testCycles10
+    , testCase "cycles11" testCycles11
+    , testCase "cycles2" testCycles2
+    , testCase "cycles3" testCycles3
+    , testCase "cycles4" testCycles4
+    , testCase "cycles5" testCycles5
+    , testCase "cycles6" testCycles6
+    , testCase "cycles7" testCycles7
+    , testCase "cycles9" testCycles9
+    , testCase "cycles_sc1" testCyclesSC1
+    , testCase "cycles_pc1" testCyclesPC1
+    , testCase "cycles_pc2" testCyclesPC2
+    , testCase "def1" testDef1
+    , testCase "def2" testDef2
+    , testCase "def3" testDef3
+    , testCase "def4" testDef4
+    , testCase "def5" testDef5
+    , testCase "def6" testDef6
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
@@ -1532,30 +1676,27 @@ specTests =
     , testCase "disj5" testDisj5
     , testCase "disj6" testDisj6
     , testCase "disj7" testDisj7
-    , testCase "vars1" testVars1
-    , testCase "vars2" testVars2
-    , testCase "vars3" testVars3
-    , testCase "selector1" testSelector1
-    , testCase "unify1" testUnify1
-    , testCase "unify2" testUnify2
-    , testCase "unify3" testUnify3
-    , testCase "unify4" testUnify4
-    , testCase "unify5" testUnify5
-    , testCase "cycles1" testCycles1
-    , testCase "cycles2" testCycles2
-    , testCase "cycles3" testCycles3
-    , testCase "cycles4" testCycles4
-    , testCase "cycles5" testCycles5
-    , testCase "cycles6" testCycles6
-    , testCase "cycles7" testCycles7
-    , testCase "cycles8" testCycles8
-    , testCase "cycles9" testCycles9
-    , testCase "cycles10" testCycles10
-    , testCase "cycles11" testCycles11
-    , testCase "incomplete" testIncomplete
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2
     , testCase "dup3" testDup3
+    , testCase "dynfield_err1" testDynamicFieldErr1
+    , testCase "embed1" testEmbed1
+    , testCase "embed2" testEmbed2
+    , testCase "embed3" testEmbed3
+    , testCase "embed4" testEmbed4
+    , testCase "incomplete" testIncomplete
+    , testCase "index1" testIndex1
+    , testCase "let1" testLet1
+    , testCase "let2" testLet2
+    , testCase "let3" testLet3
+    , testCase "let_err1" testLetErr1
+    , testCase "let_err2" testLetErr2
+    , testCase "let_err3" testLetErr3
+    , testCase "let_err4" testLetErr4
+    , testCase "list1" testList1
+    , testCase "pattern1" testPat1
+    , testCase "pattern2" testPat2
+    , testCase "pattern3" testPat3
     , testCase "ref1" testRef1
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
@@ -1563,43 +1704,63 @@ specTests =
     , testCase "ref6" testRef6
     , testCase "ref7" testRef7
     , testCase "ref8" testRef8
+    , testCase "selector1" testSelector1
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
     , testCase "struct3" testStruct3
     , testCase "struct4" testStruct4
     , testCase "struct5" testStruct5
-    , testCase "list1" testList1
-    , testCase "index1" testIndex1
-    , testCase "cnstr1" testCnstr1
-    , testCase "cnstr2" testCnstr2
-    , testCase "pattern1" testPat1
-    , testCase "pattern2" testPat2
-    , testCase "pattern3" testPat3
-    , testCase "close1" testClose1
-    , testCase "close2" testClose2
-    , testCase "close3" testClose3
-    , testCase "embed1" testEmbed1
-    , testCase "embed2" testEmbed2
-    , testCase "embed3" testEmbed3
-    , testCase "embed4" testEmbed4
-    , testCase "def1" testDef1
-    , testCase "def2" testDef2
-    , testCase "def3" testDef3
-    , testCase "def4" testDef4
-    , testCase "def5" testDef5
-    , testCase "def6" testDef6
+    , testCase "unaryop" testUnaryOp
+    , testCase "unify1" testUnify1
+    , testCase "unify2" testUnify2
+    , testCase "unify3" testUnify3
+    , testCase "unify4" testUnify4
+    , testCase "unify5" testUnify5
+    , testCase "vars1" testVars1
+    , testCase "vars2" testVars2
+    , testCase "vars3" testVars3
     ]
 
+-- | Compare two struct fields. Other elements such as local bindings are ignored.
 cmpStructs :: Tree -> Tree -> IO ()
-cmpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
-  assertEqual "labels" (stcOrdLabels exp) (stcOrdLabels act)
-  assertEqual "fields-length" (length $ stcSubs exp) (length $ stcSubs act)
-  mapM_ (\(k, v) -> assertEqual (show k) v (stcSubs act Map.! k)) (Map.toList $ stcSubs exp)
-  mapM_ (\(k, v) -> assertEqual (show k) (stcSubs exp Map.! k) v) (Map.toList $ stcSubs act)
-  assertEqual "patterns" (stcPatterns exp) (stcPatterns act)
-  assertEqual "pendings" (stcPendSubs exp) (stcPendSubs act)
-  assertEqual "close" (stcClosed exp) (stcClosed act)
-cmpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
+cmpStructs = cmpStructsMsg ""
+
+cmpStructsMsg :: String -> Tree -> Tree -> IO ()
+cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
+  assertEqual (withMsg "labels") (stcOrdLabels exp) (stcOrdLabels act)
+  assertEqual (withMsg "fields-length") (length expFields) (length actFields)
+  mapM_
+    ( \(k, v) -> cmpStructVals (show k) v (actFields Map.! k)
+    )
+    (Map.toList expFields)
+  mapM_
+    ( \(k, v) -> cmpStructVals (show k) (expFields Map.! k) v
+    )
+    (Map.toList actFields)
+  assertEqual (withMsg "patterns") (stcPatterns exp) (stcPatterns act)
+  assertEqual (withMsg "pendings") (stcPendSubs exp) (stcPendSubs act)
+  assertEqual (withMsg "close") (stcClosed exp) (stcClosed act)
+ where
+  withMsg :: String -> String
+  withMsg s = if Prelude.null msg then s else msg ++ ": " ++ s
+
+  onlyField :: Map.Map StructTASeg (StructVal Tree) -> Map.Map StructTASeg (StructVal Tree)
+  onlyField =
+    Map.filterWithKey
+      ( \sel sv -> case sv of
+          SField _ -> True
+          _ -> False
+      )
+
+  expFields = onlyField $ stcSubs exp
+  actFields = onlyField $ stcSubs act
+
+  cmpStructVals :: String -> StructVal Tree -> StructVal Tree -> IO ()
+  cmpStructVals msg (SField act) (SField exp) = do
+    cmpStructsMsg (withMsg "field") (ssfField act) (ssfField exp)
+    assertEqual (withMsg "attr") (ssfAttr exp) (ssfAttr act)
+  cmpStructVals msg sv1 sv2 = assertEqual msg sv1 sv2
+cmpStructsMsg msg act exp = assertEqual msg exp act
 
 cmpExpStructs :: Tree -> Tree -> IO ()
 cmpExpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
@@ -1610,3 +1771,9 @@ cmpExpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = 
       then assertEqual (show k) v (stcSubs act Map.! k)
       else assertFailure $ printf "Field %s not found" (show k)
 cmpExpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
+
+assertBottom :: String -> Tree -> IO ()
+assertBottom msg (Tree{treeNode = TNBottom (Bottom err)}) =
+  unless (msg `isInfixOf` err) $
+    assertFailure (printf "in bottom msg, \"%s\" not found in \"%s\"" msg err)
+assertBottom msg v = assertFailure $ printf "Not a bottom: %s" (show v)

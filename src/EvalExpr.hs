@@ -12,6 +12,7 @@ import Config
 import Control.Monad (foldM)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader)
+import Control.Monad.State.Strict (MonadState, get, put)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
@@ -23,7 +24,7 @@ import Text.Printf (printf)
 import Util
 import Value.Tree
 
-type EvalEnv m = (Env m, MonadReader (Config Tree) m)
+type EvalEnv m = (Env m, MonadReader (Config Tree) m, MonadState Int m)
 
 evalSourceFile :: (EvalEnv m) => SourceFile -> m Tree
 evalSourceFile (SourceFile decls) = do
@@ -34,7 +35,7 @@ evalSourceFile (SourceFile decls) = do
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
 level deeper with the label as the key.
 Every eval* function should return a tree cursor that is at the same level as the input tree cursor.
-For example, if the path of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
+For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
 evalExpr :: (EvalEnv m) => Expression -> m Tree
@@ -60,7 +61,8 @@ evalLiteral lit = return v
 
 evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
 evalDecls decls = do
-  (t, embeds) <- foldM evalDecl (mkStructTree emptyStruct, []) decls
+  sid <- allocSID
+  (t, embeds) <- foldM evalDecl (mkStructTree (emptyStruct{stcID = sid}), []) decls
   return $
     if null embeds
       then t
@@ -69,6 +71,13 @@ evalDecls decls = do
           (\acc embed -> mkMutableTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
           t
           embeds
+
+allocSID :: (EvalEnv m) => m Int
+allocSID = do
+  i <- get
+  let j = i + 1
+  put j
+  return j
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree and the list of embeddings to be unified.
 evalDecl :: (EvalEnv m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
@@ -110,7 +119,8 @@ evalFdLabels lbls e =
       do
         logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
         sf2 <- evalFdLabels (l2 : rs) e
-        let val = mkNewTree . TNStruct $ mkStructFromAdders [sf2]
+        sid <- allocSID
+        let val = mkNewTree . TNStruct $ mkStructFromAdders sid [sf2]
         adder <- mkAdder l1 val
         logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
         return adder
@@ -154,9 +164,9 @@ evalFdLabels lbls e =
 addNewStructElem :: StructElemAdder Tree -> Struct Tree -> Tree
 addNewStructElem adder struct = case adder of
   (Static name sf) ->
-    let sel = Path.StringSelector name
+    let seg = Path.StringTASeg name
      in fromMaybe
-          ( case stcSubs struct Map.!? sel of
+          ( case lookupStructVal name struct of
               Just (SField extSF) ->
                 let
                   unifySFOp =
@@ -166,15 +176,15 @@ addNewStructElem adder struct = case adder of
                         , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                         }
                  in
-                  mkStructTree $ struct{stcSubs = Map.insert sel unifySFOp (stcSubs struct)}
-              Just (SLocal _) ->
+                  mkStructTree $ struct{stcSubs = Map.insert seg unifySFOp (stcSubs struct)}
+              Just (SLet _) ->
                 mkBottomTree $
                   printf "can not have both alias and field with name %s in the same scope" name
               Nothing ->
                 mkStructTree $
                   struct
-                    { stcOrdLabels = stcOrdLabels struct ++ [sel]
-                    , stcSubs = Map.insert sel (SField sf) (stcSubs struct)
+                    { stcOrdLabels = stcOrdLabels struct ++ [seg]
+                    , stcSubs = Map.insert seg (SField sf) (stcSubs struct)
                     }
           )
           (declCheck name False)
@@ -185,20 +195,20 @@ addNewStructElem adder struct = case adder of
       ( mkStructTree $
           struct
             { stcSubs =
-                Map.insert (Path.StringSelector name) (SLocal $ LocalBinding False val) (stcSubs struct)
+                Map.insert (Path.LetTASeg name) (SLet $ LetBinding False val) (stcSubs struct)
             }
       )
       (declCheck name True)
  where
   aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
-  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in the same scope" name
+  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
 
   declCheck :: String -> Bool -> Maybe Tree
   declCheck name isLocal =
-    case (stcSubs struct Map.!? Path.StringSelector name, isLocal) of
+    case (lookupStructVal name struct, isLocal) of
       (Just (SField _), True) -> Just $ aliasErr name
-      (Just (SLocal _), True) -> Just $ lbRedeclErr name
-      (Just (SLocal _), False) -> Just $ aliasErr name
+      (Just (SLet _), True) -> Just $ lbRedeclErr name
+      (Just (SLet _), False) -> Just $ aliasErr name
       _ -> Nothing
 
 evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree
@@ -239,15 +249,15 @@ evalPrimExpr (PrimExprArguments primExpr aes) = do
 {- | Evaluates the selector.
 Parameters:
 - pe is the primary expression.
-- sel is the selector.
-- path is the path to the current expression that contains the selector.
+- sel is the segment.
+- addr is the addr to the current expression that contains the segment.
 For example, { a: b: x.y }
-If the field is "y", and the path is "a.b", expr is "x.y", the structPath is "x".
+If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
-evalSelector pe astSel tree =
-  return $ mkIndexMutableTree tree (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
+evalSelector pe astSel recv =
+  return $ mkIndexMutableTree recv (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -255,9 +265,9 @@ evalSelector pe astSel tree =
 
 evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
-evalIndex pe (AST.Index e) tree = do
+evalIndex pe (AST.Index e) recv = do
   sel <- evalExpr e
-  return $ mkIndexMutableTree tree sel (UnaryExprPrimaryExpr pe)
+  return $ mkIndexMutableTree recv sel (UnaryExprPrimaryExpr pe)
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
@@ -300,8 +310,8 @@ evalDisj e1 e2 = do
  where
   reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
-    t1 <- reduceMutableArg binOpLeftSelector unt1
-    t2 <- reduceMutableArg binOpRightSelector unt2
+    t1 <- reduceMutableArg binOpLeftTASeg unt1
+    t2 <- reduceMutableArg binOpRightTASeg unt2
     if not (isTreeValue t1) || not (isTreeValue t2)
       then
         logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)

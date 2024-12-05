@@ -11,7 +11,7 @@ import Config
 import Control.Monad.Reader (MonadReader)
 import Env
 import Error
-import Path
+import qualified Path
 import TMonad
 
 type MutableEnv s m t = (TMonad s m t, MonadReader (Config t) m)
@@ -41,7 +41,7 @@ data MutableType = RegularMutable | DisjMutable | IndexMutable
   deriving (Eq, Show)
 
 data Reference t = Reference
-  { refPath :: Path
+  { refPath :: Path.Reference
   , refValue :: Maybe t
   }
 
@@ -202,15 +202,15 @@ mkBinaryOpDir ::
   (BuildASTExpr t) =>
   AST.BinaryOp ->
   (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
-  (BinOpDirect, t) ->
-  (BinOpDirect, t) ->
+  (Path.BinOpDirect, t) ->
+  (Path.BinOpDirect, t) ->
   Mutable t
 mkBinaryOpDir rep op (d1, t1) (_, t2) =
   case d1 of
-    L -> mkBinaryOp rep op t1 t2
-    R -> mkBinaryOp rep op t2 t1
+    Path.L -> mkBinaryOp rep op t1 t2
+    Path.R -> mkBinaryOp rep op t2 t1
 
-mkRefMutable :: Path -> Mutable t
+mkRefMutable :: Path.Reference -> Mutable t
 mkRefMutable tp =
   Ref $
     Reference
