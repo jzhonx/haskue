@@ -75,6 +75,7 @@ evalConfig =
     , cfClose = close
     , cfReduce = reduce
     , cfDeref = deref
+    , cfIndex = index
     }
 
 evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> Bool -> m Tree

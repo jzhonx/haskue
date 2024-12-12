@@ -20,6 +20,8 @@ type MutableEnv s m t = (TMonad s m t, MonadReader (Config t) m)
 data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
+  | Index (Indexer t)
+  | MutStub
 
 -- | StatefulFunc is a tree node whose value can be changed.
 data StatefulFunc t = StatefulFunc
@@ -37,7 +39,7 @@ data StatefulFunc t = StatefulFunc
   -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
 
-data MutableType = RegularMutable | DisjMutable | IndexMutable
+data MutableType = RegularMutable | DisjMutable
   deriving (Eq, Show)
 
 data Reference t = Reference
@@ -45,20 +47,35 @@ data Reference t = Reference
   , refValue :: Maybe t
   }
 
+data Indexer t = Indexer
+  { idxSels :: [t]
+  , idxValue :: Maybe t
+  }
+
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
+  (==) (Index i1) (Index i2) = i1 == i2
+  (==) MutStub MutStub = True
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
-  buildASTExpr c (Ref r) = buildASTExpr c r
+  buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
+  buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
+  buildASTExpr _ MutStub = throwErrSt "AST should not be built from MutStub"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
     sfnName f1 == sfnName f2
       && sfnType f1 == sfnType f2
       && sfnArgs f1 == sfnArgs f2
+
+instance (Eq t) => Eq (Reference t) where
+  (==) r1 r2 = refPath r1 == refPath r2
+
+instance (Eq t) => Eq (Indexer t) where
+  (==) i1 i2 = idxSels i1 == idxSels i2
 
 instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
@@ -67,21 +84,15 @@ instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
       then sfnExpr mut
       else maybe (sfnExpr mut) (buildASTExpr c) (sfnValue mut)
 
-instance (Eq t) => Eq (Reference t) where
-  (==) r1 r2 = refPath r1 == refPath r2
+getRefFromMutable :: Mutable t -> Maybe (Reference t)
+getRefFromMutable mut = case mut of
+  Ref ref -> Just ref
+  _ -> Nothing
 
-instance (BuildASTExpr t) => BuildASTExpr (Reference t) where
-  buildASTExpr _ _ = throwErrSt "AST should not be built from Reference"
-
-isMutableRef :: Mutable t -> Bool
-isMutableRef mut = case mut of
-  Ref _ -> True
-  _ -> False
-
-isMutableIndex :: Mutable t -> Bool
-isMutableIndex mut = case mut of
-  SFunc m -> sfnType m == IndexMutable
-  _ -> False
+getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
+getIndexFromMutable mut = case mut of
+  Index idx -> Just idx
+  _ -> Nothing
 
 requireMutableConcrete :: StatefulFunc t -> Bool
 requireMutableConcrete mut
@@ -91,18 +102,20 @@ requireMutableConcrete _ = False
 getMutName :: Mutable t -> String
 getMutName (SFunc mut) = sfnName mut
 getMutName (Ref ref) = "ref " ++ show (refPath ref)
+getMutName (Index _) = "index"
+getMutName MutStub = "mutStub"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
+getMutVal (Index idx) = idxValue idx
+getMutVal MutStub = Nothing
 
-setMutVal :: Mutable t -> t -> Mutable t
-setMutVal (SFunc mut) t = SFunc $ mut{sfnValue = Just t}
-setMutVal (Ref ref) t = Ref $ ref{refValue = Just t}
-
-resetMutVal :: Mutable t -> Mutable t
-resetMutVal (SFunc mut) = SFunc $ mut{sfnValue = Nothing}
-resetMutVal (Ref ref) = Ref $ ref{refValue = Nothing}
+setMutVal :: Maybe t -> Mutable t -> Mutable t
+setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
+setMutVal m (Ref ref) = Ref $ ref{refValue = m}
+setMutVal m (Index idx) = Index $ idx{idxValue = m}
+setMutVal _ MutStub = MutStub
 
 invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -110,14 +123,6 @@ invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
 modifyRegMut :: (StatefulFunc t -> StatefulFunc t) -> Mutable t -> Mutable t
 modifyRegMut f (SFunc m) = SFunc $ f m
 modifyRegMut _ r = r
-
-mutValStub :: Mutable t
-mutValStub =
-  SFunc $
-    emptySFunc
-      { sfnName = "mvStub"
-      , sfnMethod = \_ -> throwErrSt "mutateValStub: sfnMethod should not be called"
-      }
 
 emptySFunc :: StatefulFunc t
 emptySFunc =
@@ -217,3 +222,6 @@ mkRefMutable tp =
       { refPath = tp
       , refValue = Nothing
       }
+
+emptyIndexer :: Indexer t
+emptyIndexer = Indexer{idxSels = [], idxValue = Nothing}

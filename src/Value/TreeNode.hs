@@ -82,6 +82,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableTASeg (MutableArgTASeg i), SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
+    | (MutableTASeg (MutableArgTASeg i), Index idx) <- (seg, mut) -> idxSels idx `indexList` i
     | MutableTASeg MutableValTASeg <- seg -> getMutVal mut
     -- This has to be the last case because the explicit function segment has the highest priority.
     | otherwise -> getMutVal mut >>= subTree seg
@@ -106,19 +107,26 @@ setSubTreeTN seg subT parT = do
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
-      | (MutableTASeg (MutableArgTASeg i), SFunc f) <- (seg, mut) -> do
+      | (MutableTASeg (MutableArgTASeg i)) <- seg
+      , SFunc f <- mut -> do
           let
             args = sfnArgs f
             l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
-      | MutableTASeg MutableValTASeg <- seg -> return . TNMutable $ setMutVal mut subT
+      | (MutableTASeg (MutableArgTASeg i)) <- seg
+      , Index idx <- mut -> do
+          let
+            sels = idxSels idx
+            l = TNMutable . Index $ idx{idxSels = take i sels ++ [subT] ++ drop (i + 1) sels}
+          return l
+      | MutableTASeg MutableValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
       -- If the segment is not a mutable segment, then the sub value must have been the sfnValue value.
       | otherwise ->
           maybe
             (throwErrSt $ printf "setSubTreeTN: mutable value is not found for non-function segment %s" (show seg))
             ( \r -> do
                 updatedR <- setSubTree seg subT r
-                return (TNMutable $ setMutVal mut updatedR)
+                return (TNMutable $ setMutVal (Just updatedR) mut)
             )
             (getMutVal mut)
     (_, TNDisj d)
@@ -146,7 +154,6 @@ setSubTreeTN seg subT parT = do
  where
   updateParStruct :: (MonadError String m) => Struct t -> StructTASeg -> m (TreeNode t)
   updateParStruct parStruct labelSeg
-    -- \| b@(TNBottom _) <- getTreeNode subT = return b
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | Just name <- getStrFromSeg labelSeg
@@ -182,7 +189,7 @@ setSubTreeTN seg subT parT = do
   insertErrMsg :: String
   insertErrMsg =
     printf
-      "propValUp: cannot insert child to parent, segment: %s, child:\n%s\nparent:\n%s"
+      "setSubTreeTN: cannot insert child to parent, segment: %s, child:\n%s\nparent:\n%s"
       (show seg)
       (show subT)
       (show parT)

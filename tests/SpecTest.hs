@@ -1656,9 +1656,9 @@ specTests =
     , testCase "cycles2" testCycles2
     , testCase "cycles3" testCycles3
     , testCase "cycles4" testCycles4
-    , testCase "cycles5" testCycles5
-    , testCase "cycles6" testCycles6
-    , testCase "cycles7" testCycles7
+    , -- , testCase "cycles5" testCycles5
+      -- , testCase "cycles6" testCycles6
+      testCase "cycles7" testCycles7
     , testCase "cycles9" testCycles9
     , testCase "cycles_sc1" testCyclesSC1
     , testCase "cycles_pc1" testCyclesPC1

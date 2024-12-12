@@ -188,3 +188,9 @@ treeDepthCheck = do
   crumbs <- getTMCrumbs
   let depth = length crumbs
   when (depth > 1000) $ throwError "tree depth exceeds 1000"
+
+getTMInUnify :: (TMonad s m t) => m Bool
+getTMInUnify = ctxInUnify <$> getTMContext
+
+setTMInUnify :: (TMonad s m t) => Bool -> m ()
+setTMInUnify b = modifyTMContext (\ctx -> ctx{ctxInUnify = b})

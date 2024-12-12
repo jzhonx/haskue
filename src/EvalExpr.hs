@@ -10,7 +10,7 @@ import AST
 import Class
 import Config
 import Control.Monad (foldM)
-import Control.Monad.Except (throwError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState, get, put)
 import qualified Data.Map.Strict as Map
@@ -22,7 +22,7 @@ import Reduction
 import TMonad
 import Text.Printf (printf)
 import Util
-import Value.Tree
+import Value.Tree as VT
 
 type EvalEnv m = (Env m, MonadReader (Config Tree) m, MonadState Int m)
 
@@ -130,7 +130,7 @@ evalFdLabels lbls e =
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> return $ Static key (Value.Tree.Field val attr)
+            (sselFrom -> Just key) -> return $ Static key (VT.Field val attr)
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
               return $ Dynamic (DynamicField attr selTree se val)
@@ -171,7 +171,7 @@ addNewStructElem adder struct = case adder of
                 let
                   unifySFOp =
                     SField $
-                      Value.Tree.Field
+                      VT.Field
                         { ssfField = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
                         , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                         }
@@ -244,7 +244,13 @@ evalPrimExpr e@(PrimExprIndex primExpr idx) = do
 evalPrimExpr (PrimExprArguments primExpr aes) = do
   p <- evalPrimExpr primExpr
   args <- mapM evalExpr aes
-  mutApplier p args
+  replaceFuncArgs p args
+
+-- | mutApplier creates a new function tree for the original function with the arguments applied.
+replaceFuncArgs :: (MonadError String m) => Tree -> [Tree] -> m Tree
+replaceFuncArgs t args = case getMutableFromTree t of
+  Just (SFunc fn) -> return . setTN t $ TNMutable . SFunc $ fn{sfnArgs = args}
+  _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
 Parameters:
@@ -256,8 +262,8 @@ If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
-evalSelector pe astSel recv =
-  return $ mkIndexMutableTree recv (mkAtomTree (String sel)) (UnaryExprPrimaryExpr pe)
+evalSelector _ astSel oprnd =
+  mkIndexMutableTree oprnd (mkAtomTree (String sel))
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -265,9 +271,17 @@ evalSelector pe astSel recv =
 
 evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
-evalIndex pe (AST.Index e) recv = do
+evalIndex _ (AST.Index e) oprnd = do
   sel <- evalExpr e
-  return $ mkIndexMutableTree recv sel (UnaryExprPrimaryExpr pe)
+  mkIndexMutableTree oprnd sel
+
+-- | Create an index function node.
+mkIndexMutableTree :: (EvalEnv m) => Tree -> Tree -> m Tree
+mkIndexMutableTree oprnd selArg = case treeNode oprnd of
+  TNMutable m
+    | Just idx <- getIndexFromMutable m ->
+        return $ mkMutableTree $ VT.Index $ idx{idxSels = idxSels idx ++ [selArg]}
+  _ -> return $ mkMutableTree $ VT.Index $ emptyIndexer{idxSels = [oprnd, selArg]}
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.

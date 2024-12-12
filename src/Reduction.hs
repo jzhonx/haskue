@@ -42,7 +42,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
   -- save the original expression before effects are applied to the focus of the tree.
   origExpr <- treeOrig <$> getTMTree
   withTree $ \t -> case treeNode t of
-    TNMutable _ -> mutate False
+    TNMutable _ -> mutate
     TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
@@ -52,7 +52,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    when (isTreeAddrAccessible addr) $ notify (mutate False)
+    when (isTreeAddrAccessible addr) notify
 
   pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
@@ -86,7 +86,7 @@ reduceMutableArg seg sub = withTree $ \t -> do
 
 reduceUnifyRefArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
 reduceUnifyRefArg seg sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) (mutate True)
+  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) reduce
   return $ fromJust ret
 
 -- Evaluate the argument of the given mutable.
@@ -345,29 +345,6 @@ mkVarLinkTree var = do
   let mut = mkRefMutable (Path.Reference [StringSel var])
   return $ mkMutableTree mut
 
--- | Create an index function node.
-mkIndexMutableTree :: Tree -> Tree -> AST.UnaryExpr -> Tree
-mkIndexMutableTree recvArg selArg ue = mkMutableTree $ case treeNode recvArg of
-  TNMutable m
-    | isMutableIndex m ->
-        modifyRegMut
-          ( \mut ->
-              mut
-                { sfnArgs = sfnArgs mut ++ [selArg]
-                , sfnExpr = return $ AST.ExprUnaryExpr ue
-                }
-          )
-          m
-  _ ->
-    SFunc
-      emptySFunc
-        { sfnName = "index"
-        , sfnType = IndexMutable
-        , sfnArgs = [recvArg, selArg]
-        , sfnExpr = return $ AST.ExprUnaryExpr ue
-        , sfnMethod = index
-        }
-
 {- | Index the tree with the segments. The index should have a list of arguments where the first argument is the tree
 to be indexed, and the rest of the arguments are the segments.
 -}
@@ -375,6 +352,7 @@ index :: (TreeMonad s m) => [Tree] -> m ()
 index ts@(t : _)
   | length ts > 1 = do
       idxRefM <- treesToRef <$> mapM evalIndexArg [1 .. length ts - 1]
+      logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
       whenJustE idxRefM $ \idxRef -> case treeNode t of
         TNMutable mut
           -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
@@ -388,7 +366,7 @@ index ts@(t : _)
         _ -> do
           res <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 0) t
           putTMTree res
-          logDebugStr $ printf "index: tree is reduced to %s, idxRef: %s" (show res) (show idxRef)
+          logDebugStr $ printf "index: tree is reduced to %s" (show res)
 
           unlessFocusBottom () $ do
             -- descendTM can not be used here because it would change the tree cursor.
@@ -957,7 +935,7 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     logDebugStr $ printf "unifyLeftAtom: creating constraint, t: %s" (show unifyOp)
     -- TODO: this is hack now. The unifyOp has a mutStub, which makes the buildASTExpr unhappy.
     let emptyUnifyOp = case getMutableFromTree unifyOp of
-          Just mut -> mkMutableTree $ resetMutVal mut
+          Just mut -> mkMutableTree $ setMutVal Nothing mut
           _ -> unifyOp
     e <- maybe (buildASTExpr False emptyUnifyOp) return (treeOrig unifyOp)
     logDebugStr $ printf "unifyLeftAtom: creating constraint, e: %s, t: %s" (show e) (show unifyOp)
@@ -1196,20 +1174,20 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 -- | unifyLeftOther is the sink of the unification process.
 unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
-  case (treeNode t1, treeNode t2) of
-    (TNMutable mut, _) -> do
+  case treeNode t1 of
+    (TNMutable mut) -> do
       withAddrAndFocus $ \addr _ ->
         logDebugStr $
           printf "unifyLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
       r1 <-
-        (if isMutableRef mut then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpTASeg d1) t1
+        (if isJust (getRefFromMutable mut) then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpTASeg d1) t1
       case treeNode r1 of
         TNMutable _ -> return ()
         _ -> unifyUTrees (ut1{utVal = r1}) ut2
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
-    (TNConstraint c1, _) -> do
+    (TNConstraint c1) -> do
       r <- unifyUTrees (ut1{utVal = mkNewTree (TNAtom $ cnsAtom c1)}) ut2
       na <- getTMTree
       putTMTree $ case treeNode na of
@@ -1222,7 +1200,7 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
     -- unification.
     -- We can just return the second value.
-    (TNRefCycle _, _) -> putTMTree t2 >> reduce
+    (TNRefCycle _) -> putTMTree t2 >> reduce
     _ -> putNotUnifiable
  where
   putNotUnifiable :: (TreeMonad s m) => m ()
@@ -1516,25 +1494,14 @@ unifyUTreesInTemp ut1 ut2 =
     (mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
     $ reduce >> getTMTree
 
--- | mutApplier creates a new function tree for the original function with the arguments applied.
-mutApplier :: (MonadError String m) => Tree -> [Tree] -> m Tree
-mutApplier t args = case treeNode t of
-  TNMutable mut ->
-    return . mkMutableTree . SFunc $
-      emptySFunc
-        { sfnName = "mutApplier"
-        , sfnMethod = \_ -> putTMTree . mkMutableTree $ modifyRegMut (\m -> m{sfnArgs = args}) mut
-        }
-  _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
-
-mkReduceMut :: Tree -> Tree
-mkReduceMut t =
-  mkMutableTree . SFunc $
-    emptySFunc
-      { sfnName = "reduce"
-      , sfnArgs = []
-      , sfnMethod = \_ -> putTMTree t >> reduce
-      }
+-- mkReduceMut :: Tree -> Tree
+-- mkReduceMut t =
+--   mkMutableTree . SFunc $
+--     emptySFunc
+--       { sfnName = "reduce"
+--       , sfnArgs = []
+--       , sfnMethod = \_ -> putTMTree t >> reduce
+--       }
 
 -- built-in functions
 builtinMutableTable :: [(String, Tree)]

@@ -34,12 +34,20 @@ import Value.Tree
 
 It will try all parent nodes to notify the dependents.
 -}
-notify :: (TreeMonad s m) => ((TreeMonad s m) => m ()) -> m ()
-notify reduceMutable = withAddrAndFocus $ \addr t -> debugSpan
+notify :: (TreeMonad s m) => m ()
+notify = withAddrAndFocus $ \addr t -> debugSpan
   (printf "notify: addr: %s, new value: %s" (show addr) (show t))
   $ do
     cs <- getTMCrumbs
-    nt <- getTMTree
+    rawT <- do
+      focus <- getTMTree
+      e <- buildASTExpr False focus
+      Config{cfEvalExpr = evalExpr} <- ask
+      curSID <- getTMScopeID
+      (rawT, newSID) <- runStateT (evalExpr e) curSID
+      setTMScopeID newSID
+      return rawT
+
     -- We should not use root value to notify.
     when (length cs > 1) $ do
       notifiers <- ctxNotifiers <$> getTMContext
@@ -48,7 +56,7 @@ notify reduceMutable = withAddrAndFocus $ \addr t -> debugSpan
         notifs = fromMaybe [] (Map.lookup srcRefAddr notifiers)
       logDebugStr $ printf "notifyWithTC: srcRefAddr: %s, notifs %s" (show srcRefAddr) (show notifs)
       unless (null notifs) $ do
-        notifyWithTree nt notifs reduceMutable
+        notifyWithTree rawT notifs
         -- The current focus notifying its dependents means it is referred.
         markReferred
       inParentTM $ do
@@ -57,7 +65,7 @@ notify reduceMutable = withAddrAndFocus $ \addr t -> debugSpan
         -- notifying the dependents.
         -- Because once parent is done with reducing, it will notify its dependents.
         inReducing <- parentIsReducing $ tcTreeAddr ptc
-        unless inReducing $ notify reduceMutable
+        unless inReducing notify
  where
   parentIsReducing parTreeAddr = do
     stack <- ctxReduceStack <$> getTMContext
@@ -82,11 +90,11 @@ inParentTM f = do
     ok <- descendTMSeg seg
     unless ok $ throwErrSt $ printf "failed to go down with seg %s" (show seg)
 
-notifyWithTree :: (TreeMonad s m) => Tree -> [TreeAddr] -> ((TreeMonad s m) => m ()) -> m ()
-notifyWithTree nt notifs reduceMutable = do
+notifyWithTree :: (TreeMonad s m) => Tree -> [TreeAddr] -> m ()
+notifyWithTree rawT notifs = do
   mapM_
     ( \dep ->
-        inAbsRemoteTMMaybe dep (populateRef nt reduceMutable)
+        inAbsRemoteTMMaybe dep (populateRef rawT)
           -- Remove the notifier if the receiver is not found. The receiver might be relocated. For example,
           -- the receiver could first be reduced in a unifying function reducing arguments phase with addr a/fa0.
           -- Then the receiver is relocated to a due to unifying fields.
@@ -122,31 +130,25 @@ inAbsRemoteTMMaybe p f = do
 
 The tree focus is set to the ref mutable.
 -}
-populateRef :: (TreeMonad s m) => Tree -> ((TreeMonad s m) => m ()) -> m ()
-populateRef nt reduceMutable = withAddrAndFocus $ \addr x ->
-  debugSpan (printf "populateRef: addr: %s, focus: %s, new value: %s" (show addr) (show x) (show nt)) $ do
-    mustMutable $ \_ -> case treeNode nt of
-      TNMutable newMut ->
-        maybe
-          (return ()) -- If the new value is a pure function (mutable without any values), just skip the reduction.
-          ( \res -> do
-              logDebugStr $ printf "populateRef: addr: %s, new res of function: %s" (show addr) (show res)
-              void $ tryReduceMut (Just res)
-          )
-          (getMutVal newMut)
-      _ -> void $ tryReduceMut (Just nt)
+populateRef :: (TreeMonad s m) => Tree -> m ()
+populateRef rawT = withAddrAndFocus $ \addr x ->
+  debugSpan (printf "populateRef: addr: %s, focus: %s, new value: %s" (show addr) (show x) (show rawT)) $ do
+    case getMutableFromTree x of
+      Just (Ref _) -> do
+        mustSetMutValTree rawT
+        tryReduceRef
+        reduceLAMut addr
+      _ -> logDebugStr "populateRef: the focus is not a ref mutable"
 
-    reduceLAMut addr reduceMutable
-
-reduceLAMut :: (TreeMonad s m) => TreeAddr -> ((TreeMonad s m) => m ()) -> m ()
-reduceLAMut from reduceMutable = do
+reduceLAMut :: (TreeMonad s m) => TreeAddr -> m ()
+reduceLAMut from = do
   -- Locate the lowest ancestor mutable to trigger the re-evaluation of the ancestor mutable.
   -- Notice the tree focus now changes to the LA mutable.
   locateLAMutable
   addr <- getTMAbsAddr
   withTree $ \t -> case treeNode t of
-    TNMutable fn
-      | isMutableRef fn -> do
+    TNMutable mut
+      | Just _ <- getRefFromMutable mut -> do
           when (from /= addr) $
             throwErrSt $
               printf "the lowest ancestor mutable %s is not the same as the ref addr: %s" (show addr) (show from)
@@ -159,13 +161,14 @@ reduceLAMut from reduceMutable = do
               "populateRef: lowest ancestor mutable is a reference, addr: %s, node: %s, trigger notify"
               (show addr)
               (show t)
-          notify reduceMutable
+          notify
       -- re-evaluate the highest mutable when it is not a reference.
       | otherwise -> do
           logDebugStr $
             printf "populateRef: re-evaluating the lowest ancestor mutable, addr: %s, node: %s" (show addr) (show t)
-          reduceMutable
-          notify reduceMutable
+          Config{cfReduce = reduce} <- ask
+          reduce
+          notify
     _ -> logDebugStr "populateRef: the lowest ancestor node is not found"
 
 -- Locate the lowest ancestor mutable.
@@ -197,10 +200,8 @@ deref ::
   (TreeMonad s m) =>
   -- | the reference addr
   Path.Reference ->
-  -- | If true, the target value is not reduced.
-  Bool ->
   m ()
-deref ref skipReduce = withAddrAndFocus $ \addr _ ->
+deref ref = withAddrAndFocus $ \addr _ ->
   debugSpan (printf "deref: addr: %s, ref: %s" (show addr) (show ref)) $ do
     isInfEval <- checkInfinite ref
     if isInfEval
@@ -226,17 +227,7 @@ deref ref skipReduce = withAddrAndFocus $ \addr _ ->
                               "deref, addr: %s, self-cycle: %s, skipping add notifier"
                               (show addr)
                               (show tar)
-                    _ -> do
-                      addNotifier ref
-
-                      unless skipReduce $ do
-                        logDebugStr $
-                          printf
-                            "deref, addr: %s, ref: %s, will reduce deref'd value."
-                            (show addr)
-                            (show ref)
-                        Config{cfReduce = reduce} <- ask
-                        reduce
+                    _ -> addNotifier ref
               )
               rM
 

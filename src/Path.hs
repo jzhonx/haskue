@@ -22,6 +22,9 @@ instance Show Selector where
 instance Show Reference where
   show (Reference sels) = intercalate "." (map show sels)
 
+emptyRef :: Reference
+emptyRef = Reference []
+
 headSel :: Reference -> Maybe Selector
 headSel (Reference []) = Nothing
 headSel (Reference sels) = Just $ sels !! 0

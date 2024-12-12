@@ -33,4 +33,6 @@ class TreeOp a where
   isTreeValue :: a -> Bool
 
   treeHasRef :: a -> Bool
+
+  -- TODO: rename
   treeHasAtom :: a -> Bool

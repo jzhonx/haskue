@@ -239,6 +239,13 @@ buildRepTreeTN t tn = case tn of
         val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (refValue ref)
        in
         consRep (symbol, show $ refPath ref, consFields val, [])
+    Index idx ->
+      let
+        args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
+        val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (idxValue idx)
+       in
+        consRep (symbol, mempty, consFields (args ++ val), [])
+    MutStub -> consRep (symbol, mempty, [], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
  where
@@ -269,6 +276,8 @@ instance BuildASTExpr Tree where
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeOrig t)
+      Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeOrig t)
+      MutStub -> throwErrSt "expression not found for stub mutable"
     TNConstraint c -> maybe (return $ cnsValidator c) return (treeOrig t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -392,6 +401,8 @@ showTreeSymbol t = case treeNode t of
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
+    Index _ -> "idx"
+    MutStub -> "stub"
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
@@ -414,15 +425,17 @@ subNodes t = case treeNode t of
 
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
-mutHasRef (SFunc mut) = argsHaveRef (sfnArgs mut)
- where
-  argsHaveRef :: [Tree] -> Bool
-  argsHaveRef =
-    any
-      ( \x -> case treeNode x of
-          TNMutable subFn -> mutHasRef subFn
-          _ -> False
-      )
+mutHasRef (SFunc fn) = argsHaveRef (sfnArgs fn)
+mutHasRef (Index idxer) = argsHaveRef (idxSels idxer)
+mutHasRef MutStub = False
+
+argsHaveRef :: [Tree] -> Bool
+argsHaveRef =
+  any
+    ( \x -> case treeNode x of
+        TNMutable subFn -> mutHasRef subFn
+        _ -> False
+    )
 
 -- Helpers
 
@@ -500,13 +513,15 @@ mkStructTree :: Struct Tree -> Tree
 mkStructTree s = mkNewTree (TNStruct s)
 
 mutValStubTree :: Tree
-mutValStubTree = mkMutableTree mutValStub
-
-convRefCycleTree :: Tree -> Tree
-convRefCycleTree t = setTN t (TNRefCycle RefCycleVert)
+mutValStubTree = mkMutableTree MutStub
 
 withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
 withTN f = withTree (f . treeNode)
+
+modifyTMTN :: (TreeMonad s m) => TreeNode Tree -> m ()
+modifyTMTN tn = do
+  t <- getTMTree
+  putTMTree $ setTN t tn
 
 unlessFocusBottom :: (TreeMonad s m) => a -> m a -> m a
 unlessFocusBottom a f = do
@@ -554,7 +569,7 @@ dumpEntireTree msg = do
       when mermaid $ do
         logDebugStr "--- dump entire tree states: ---"
         notifiers <- ctxNotifiers <$> getTMContext
-        logDebugStr $ printf "notifiers: %s" (show $ Map.toList notifiers)
+        logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
         tc <- getTMCursor
         rtc <- propUpTCUntil Path.RootTASeg tc
 

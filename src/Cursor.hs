@@ -52,6 +52,8 @@ data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxScopeID :: Int
   , ctxReduceStack :: [TreeAddr]
+  , ctxInUnify :: Bool
+  -- ^ Whether the context is in the unify process. It will be set only one time once the highest node has set it.
   , ctxNotifiers :: Map.Map TreeAddr [TreeAddr]
   , ctxTrace :: Trace
   }
@@ -81,6 +83,7 @@ emptyContext =
     { ctxCrumbs = []
     , ctxScopeID = 0
     , ctxReduceStack = []
+    , ctxInUnify = False
     , ctxNotifiers = Map.empty
     , ctxTrace = emptyTrace
     }
@@ -186,3 +189,11 @@ propUpTCUntil _ (ValCursor _ []) = throwErrSt "already at the top"
 propUpTCUntil seg tc@(ValCursor _ ((s, _) : _))
   | s == seg = return tc
   | otherwise = propValUp tc >>= propUpTCUntil seg
+
+showNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
+showNotifiers notifiers =
+  let s = Map.foldrWithKey go "" notifiers
+   in if null s then "[]" else "[" ++ s ++ "\n]"
+ where
+  go :: TreeAddr -> [TreeAddr] -> String -> String
+  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
