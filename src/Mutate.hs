@@ -1,15 +1,15 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Mutate where
 
-import qualified AST
 import Class
 import Config
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Control.Monad.Reader (ask)
 import Cursor
 import qualified Data.Map.Strict as Map
@@ -52,38 +52,53 @@ mutate = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
     Index idx -> mutateIndexer idx
     MutStub -> throwErrSt "mutate: mut stub"
 
+  -- delete the notification receivers that have the /addr/fv prefix.
+  delNotifRecvPrefix (appendSeg (MutableTASeg MutableValTASeg) addr)
+
 mutateRef :: (TreeMonad s m) => VT.Reference Tree -> m ()
 mutateRef ref = do
-  inUnify <- getTMInUnify
-  if inUnify
-    then withAddrAndFocus $ \addr _ ->
-      logDebugStr $ printf "mutateRef: addr: %s, in unifying process, skip mutating ref" (show addr)
-    else do
-      Config{cfDeref = deref} <- ask
-      runInMutValEnv $ deref (refPath ref)
-      withAddrAndFocus $ \addr focus ->
-        logDebugStr $ printf "mutateRef: addr: %s, deref result: %s" (show addr) (show focus)
-      tryReduceRef
+  Config{cfDeref = deref} <- ask
+  runInMutValEnv $ deref (refPath ref)
+  withAddrAndFocus $ \addr focus ->
+    logDebugStr $ printf "mutateRef: addr: %s, deref result: %s" (show addr) (show focus)
+  tryReduceRef
 
 tryReduceRef :: (TreeMonad s m) => m ()
 tryReduceRef = do
   -- Make sure the mutable is still the focus of the tree.
   assertMVNotRef
 
-  isParUnify <- isParentFuncUnify
-  withAddrAndFocus $ \addr _ ->
-    logDebugStr $ printf "mutateRef: addr: %s, isParUnify: %s" (show addr) (show isParUnify)
-  withNewInUnify isParUnify $ do
-    Config{cfReduce = reduce} <- ask
-    runWithMutVal reduce
-    withAddrAndFocus $ \addr focus ->
-      logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
-  mvM <- getTMMutVal
-  if
-    | Just mv <- mvM, isRefResReducible mv -> reduceToMutVal mv
-    -- If the result is not reducible, then we need to reset the mutable value to Nothing.
-    | Just _ <- mvM >>= getMutableFromTree -> resetTMMutVal
-    | otherwise -> return ()
+  addr <- getTMAbsAddr
+
+  -- If the ref finds a value and the value has an expression, then we should set the expression to the ref.
+  maybe
+    (return ())
+    ( \mv -> mustMutable $ \case
+        Ref r -> do
+          logDebugStr $ printf "tryReduceRef: addr: %s, set expr: %s" (show addr) (show $ treeOrig mv)
+          modifyTMTN (TNMutable . Ref $ r{refExpr = treeOrig mv})
+        _ -> return ()
+    )
+    =<< getTMMutVal
+
+  Config{cfReduce = reduce} <- ask
+  runWithMutVal reduce
+  withAddrAndFocus $ \_ focus ->
+    logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
+  maybe
+    (return ())
+    ( \mv ->
+        if
+          | isRefResReducible mv -> reduceToMutVal mv
+          -- If the result is another mutable
+          | Just imut <- getMutableFromTree mv -> do
+              case getMutVal imut of
+                Just imv -> mustSetMutValTree imv
+                -- If the function has no result, then we need to reset the mutable value to Nothing.
+                _ -> resetTMMutVal
+          | otherwise -> return ()
+    )
+    =<< getTMMutVal
  where
   assertMVNotRef = do
     mvM <- getTMMutVal
@@ -92,22 +107,6 @@ tryReduceRef = do
       _ -> return ()
 
   isRefResReducible t = treeHasAtom t || isTreeBottom t || isTreeRefCycleTail t
-
-  isParentFuncUnify = do
-    par <- getTMParent
-    seg <- getTMTASeg
-    return $ case (seg, treeNode par) of
-      (MutableTASeg (MutableArgTASeg _), TNMutable (SFunc fn))
-        | sfnName fn == show AST.Unify -> True
-      _ -> False
-
-  withNewInUnify :: (TreeMonad s m) => Bool -> m a -> m a
-  withNewInUnify inUnify f = do
-    oldInUnify <- getTMInUnify
-    setTMInUnify (oldInUnify || inUnify)
-    r <- f
-    setTMInUnify oldInUnify
-    return r
 
 mutateFunc :: (TreeMonad s m) => StatefulFunc Tree -> m ()
 mutateFunc fn = withTree $ \t -> do
@@ -136,18 +135,13 @@ mutateIndexer idxer = do
         case getMutableFromTree mv of
           -- If the mutval is a ref, then we need to replace the mutable with the result and reduce it.
           Just (Ref _) -> do
-            -- assertMVIsRef mut
             modifyTMTN (treeNode mv)
             reduce
           _ -> reduceToMutVal mv
     )
     =<< getTMMutVal
- where
-  assertMVIsRef mut = do
-    case getMutVal mut >>= getMutableFromTree of
-      Just (Ref _) -> return ()
-      _ -> throwErrSt "mutateIndexer: mutable value must be a ref"
 
+-- | Replace the mutable tree node with the mutval.
 reduceToMutVal :: (TreeMonad s m) => Tree -> m ()
 reduceToMutVal val = do
   modifyTMTN (treeNode val)
@@ -182,21 +176,21 @@ deleted.
 delNotifRecvPrefix :: (TMonad s m t) => TreeAddr -> m ()
 delNotifRecvPrefix addrPrefix = do
   withContext $ \ctx -> do
-    putTMContext $ ctx{ctxNotifiers = del (ctxNotifiers ctx)}
+    putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ del (ctxNotifGraph ctx)}
   withAddrAndFocus $ \addr _ -> do
-    notifiers <- ctxNotifiers <$> getTMContext
+    notifiers <- ctxNotifGraph <$> getTMContext
     logDebugStr $
       printf
-        "delNotifRecvs: addr: %s delete receiver prefix: %s, ref_addr: %s, updated notifiers: %s"
+        "delNotifRecvs: addr: %s delete receiver prefix: %s, updated notifiers: %s"
         (show addr)
         (show addrPrefix)
-        (show refTreeAddrPrefix)
         (showNotifiers notifiers)
  where
-  refTreeAddrPrefix = getReferableAddr addrPrefix
+  delEmptyElem :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  delEmptyElem = Map.filter (not . null)
 
   del :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
-  del = Map.map (filter (\p -> not (isPrefix refTreeAddrPrefix p)))
+  del = Map.map (filter (\p -> not (isPrefix addrPrefix p)))
 
 runInMutValEnv :: (TreeMonad s m) => m () -> m ()
 runInMutValEnv f = do

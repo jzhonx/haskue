@@ -14,11 +14,11 @@ import Config
 import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (ask)
-import Control.Monad.State.Strict (gets, runStateT)
+import Control.Monad.State.Strict (gets)
 import Cursor
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
 import Error
 import Mutate
@@ -28,6 +28,11 @@ import TMonad
 import Text.Printf (printf)
 import Util
 import Value.Tree
+
+fullReduce :: (TreeMonad s m) => m ()
+fullReduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "fullReduce, addr: %s" (show addr)) $ do
+  reduce
+  drainNotifQueue
 
 -- | Reduce the tree to the lowest form.
 reduce :: (TreeMonad s m) => m ()
@@ -52,7 +57,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
     -- Attach the original expression to the reduced tree.
     putTMTree $ setOrig t origExpr
     -- Only notify dependents when we are not in a temporary node.
-    when (isTreeAddrAccessible addr) notify
+    when (isTreeAddrAccessible addr) (addToTMNotifQ $ finalizedAddr addr)
 
   pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
@@ -384,104 +389,6 @@ index ts@(t : _)
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
 index _ = throwErrSt "invalid index arguments"
-
-postValidation :: (TreeMonad s m) => m ()
-postValidation = do
-  logDebugStr "postValidation: start"
-
-  ctx <- getTMContext
-  -- remove all notifiers.
-  putTMContext $ ctx{ctxNotifiers = Map.empty}
-  -- first rewrite all functions to their results if the results exist.
-  snapshotTM
-
-  -- then validate all constraints.
-  traverseTM $ withTN $ \case
-    TNConstraint c -> validateCnstr c
-    TNStruct s -> validateStruct s
-    _ -> return ()
-
--- | Traverse all the one-level sub nodes of the tree.
-traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
- where
-  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
-  go (sel, sub) = unlessFocusBottom () $ do
-    res <- inSubTM sel sub (f >> getTMTree)
-    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
-    t <- getTMTree
-    case (treeNode t, treeNode res) of
-      (TNStruct _, TNBottom _) -> putTMTree res
-      _ -> return ()
-
-{- | Traverse the leaves of the tree cursor in the following order
-1. Traverse the current node.
-2. Traverse the sub-tree with the segment.
--}
-traverseTM :: (TreeMonad s m) => m () -> m ()
-traverseTM f = f >> traverseSub (traverseTM f)
-
-{- | Traverse the tree and replace the Mutable node with the result of the mutator if it exists, otherwise the
-original mutator node is kept.
--}
-snapshotTM :: (TreeMonad s m) => m ()
-snapshotTM =
-  traverseTM $ withTN $ \case
-    TNMutable m -> maybe (return ()) putTMTree (getMutVal m)
-    _ -> return ()
-
--- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
--- will be assigned to the constraint in the propValUp.
-validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
-validateCnstr c = withTree $ \_ -> do
-  withAddrAndFocus $ \addr _ -> do
-    tc <- getTMCursor
-    Config{cfCreateCnstr = cc} <- ask
-    logDebugStr $
-      printf
-        "validateCnstr: addr: %s, validator: %s, cc: %s constraint unify tc:\n%s"
-        (show addr)
-        (show (cnsValidator c))
-        (show cc)
-        (show tc)
-
-  -- make sure return the latest atom
-  let atomT = mkAtomVTree $ cnsAtom c
-  Config{cfEvalExpr = evalExpr} <- ask
-  -- run the validator in a sub context.
-  res <- inTempSubTM (mkBottomTree "no value yet") $ do
-    t <- do
-      curSID <- getTMScopeID
-      (t, newSID) <- runStateT (evalExpr $ cnsValidator c) curSID
-      setTMScopeID newSID
-      return t
-    putTMTree t
-    reduce >> getTMTree
-
-  putTMTree $
-    if
-      | isTreeBottom res -> res
-      | isTreeAtom res -> atomT
-      -- incomplete case
-      | isTreeMutable res -> res
-      | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
-
-validateStruct :: (TreeMonad s m) => Struct Tree -> m ()
-validateStruct s =
-  let errM =
-        Map.foldrWithKey
-          ( \seg sv acc ->
-              if isNothing acc && checkSV sv
-                then Just $ mkBottomTree $ printf "unreferenced let clause %s" (show seg)
-                else acc
-          )
-          Nothing
-          (stcSubs s)
-   in maybe (return ()) putTMTree errM
- where
-  checkSV :: StructVal Tree -> Bool
-  checkSV (SLet (LetBinding{lbReferred = False})) = True
-  checkSV _ = False
 
 dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m ()
 dispUnaryOp op _t = do
@@ -1175,12 +1082,11 @@ unifyBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 unifyLeftOther :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   case treeNode t1 of
-    (TNMutable mut) -> do
+    (TNMutable _) -> do
       withAddrAndFocus $ \addr _ ->
         logDebugStr $
           printf "unifyLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
-      r1 <-
-        (if isJust (getRefFromMutable mut) then reduceUnifyRefArg else reduceMutableArg) (Path.toBinOpTASeg d1) t1
+      r1 <- reduceMutableArg (Path.toBinOpTASeg d1) t1
       case treeNode r1 of
         TNMutable _ -> return ()
         _ -> unifyUTrees (ut1{utVal = r1}) ut2
@@ -1234,6 +1140,7 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
       -- in reduce, the new combined fields will be checked by the combined patterns.
       putTMTree merged
+      rewriteRefCycleVert
       reduce
  where
   fields1 = stcSubs s1
@@ -1308,6 +1215,14 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         , stcClosed = stcClosed s1 || stcClosed s2
         }
 unifyStructs isEitherEmbeded dt1@(Path.R, _) dt2 = unifyStructs isEitherEmbeded dt2 dt1
+
+rewriteRefCycleVert :: (TreeMonad s m) => m ()
+rewriteRefCycleVert = traverseTM $ withTree $ \t -> case treeNode t of
+  TNRefCycle RefCycleVert -> do
+    e <- buildASTExpr False t
+    nt <- evalExprTM e
+    putTMTree $ setTN t (treeNode nt)
+  _ -> return ()
 
 {- | Check if the new labels from the new struct are permitted based on the base struct.
 The isNewEmbedded flag indicates whether the new struct is embedded in the base struct.
@@ -1493,15 +1408,6 @@ unifyUTreesInTemp ut1 ut2 =
   inTempSubTM
     (mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
     $ reduce >> getTMTree
-
--- mkReduceMut :: Tree -> Tree
--- mkReduceMut t =
---   mkMutableTree . SFunc $
---     emptySFunc
---       { sfnName = "reduce"
---       , sfnArgs = []
---       , sfnMethod = \_ -> putTMTree t >> reduce
---       }
 
 -- built-in functions
 builtinMutableTable :: [(String, Tree)]

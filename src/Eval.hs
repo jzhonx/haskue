@@ -26,6 +26,7 @@ import Error
 import EvalExpr
 import Parser (parseSourceFile)
 import Path
+import PostReduce
 import Reduction
 import Ref
 import Text.Printf (printf)
@@ -89,7 +90,7 @@ evalFile sf mermaid = do
             rootTC = ValCursor root [(RootTASeg, mkNewTree TNTop)]
             cv = cvFromCur rootTC
           logDebugStr $ printf "---- start reduce tree ----"
-          res <- execStateT reduce cv
+          res <- execStateT fullReduce cv
           logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )

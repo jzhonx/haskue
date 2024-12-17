@@ -628,6 +628,47 @@ testUnify5 = do
     Left err -> assertFailure err
     Right y -> cmpStructs y $ newStruct [("x", newStruct [("a", mkAtomTree $ Int 3)])]
 
+testUnify6 :: IO ()
+testUnify6 = do
+  s <- readFile "tests/spec/unify6.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp =
+    newStruct
+      [ ("a", sij)
+      , ("b", sij)
+      , ("c", mkAtomTree $ Int 1)
+      , ("res", sij)
+      ]
+  sij = newStruct [("i1", newStruct [("j1", mkAtomTree $ Int 1)])]
+
+testUnify7 :: IO ()
+testUnify7 = do
+  s <- readFile "tests/spec/unify7.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", sx), ("y", sy), ("z", sz)]
+  sx = newStruct [("a", mkBoundsTree [BdType BdInt]), ("b", mkBoundsTree [BdType BdInt])]
+  sy = newStruct [("a", mkAtomTree $ Int 1)]
+  sz = newStruct [("a", mkAtomTree $ Int 1), ("b", mkBoundsTree [BdType BdInt])]
+
+testUnify8 :: IO ()
+testUnify8 = do
+  s <- readFile "tests/spec/unify8.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("res", se), ("x", se), ("a", se), ("b", se)]
+  se = newStruct []
+
 testCycles1 :: IO ()
 testCycles1 = do
   s <- readFile "tests/spec/cycles1.cue"
@@ -1078,6 +1119,21 @@ testRef8 = do
  where
   sb = newStruct [("b", mkAtomTree $ Int 3)]
   sa = newStruct [("a", sb)]
+
+testRef9 :: IO ()
+testRef9 = do
+  s <- readFile "tests/spec/ref9.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("a", mkAtomTree $ Int 1)
+          , ("x", sa)
+          ]
+ where
+  sa = newStruct [("d", mkAtomTree $ Int 1), ("z", mkAtomTree $ Int 1)]
 
 testStruct1 :: IO ()
 testStruct1 = do
@@ -1656,9 +1712,9 @@ specTests =
     , testCase "cycles2" testCycles2
     , testCase "cycles3" testCycles3
     , testCase "cycles4" testCycles4
-    , -- , testCase "cycles5" testCycles5
-      -- , testCase "cycles6" testCycles6
-      testCase "cycles7" testCycles7
+    , testCase "cycles5" testCycles5
+    , testCase "cycles6" testCycles6
+    , testCase "cycles7" testCycles7
     , testCase "cycles9" testCycles9
     , testCase "cycles_sc1" testCyclesSC1
     , testCase "cycles_pc1" testCyclesPC1
@@ -1704,6 +1760,7 @@ specTests =
     , testCase "ref6" testRef6
     , testCase "ref7" testRef7
     , testCase "ref8" testRef8
+    , testCase "ref9" testRef9
     , testCase "selector1" testSelector1
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2
@@ -1716,13 +1773,21 @@ specTests =
     , testCase "unify3" testUnify3
     , testCase "unify4" testUnify4
     , testCase "unify5" testUnify5
+    , testCase "unify6" testUnify6
+    , testCase "unify7" testUnify7
+    , testCase "unify8" testUnify8
     , testCase "vars1" testVars1
     , testCase "vars2" testVars2
     , testCase "vars3" testVars3
     ]
 
 -- | Compare two struct fields. Other elements such as local bindings are ignored.
-cmpStructs :: Tree -> Tree -> IO ()
+cmpStructs ::
+  -- | act
+  -- | exp
+  Tree ->
+  Tree ->
+  IO ()
 cmpStructs = cmpStructsMsg ""
 
 cmpStructsMsg :: String -> Tree -> Tree -> IO ()

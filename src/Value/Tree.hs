@@ -238,7 +238,12 @@ buildRepTreeTN t tn = case tn of
       let
         val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (refValue ref)
        in
-        consRep (symbol, show $ refPath ref, consFields val, [])
+        consRep
+          ( symbol
+          , show (refPath ref) <> printf ", E:%s" (if isJust $ refExpr ref then "Y" else "N")
+          , consFields val
+          , []
+          )
     Index idx ->
       let
         args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
@@ -282,7 +287,7 @@ instance BuildASTExpr Tree where
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
-      RefCycleVertMerger _ -> throwErrSt "RefCycleVert should not be used in the AST"
+      RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -368,7 +373,7 @@ treeToMermaid msg evalTreeAddr root = do
                     <> (if null meta then mempty else " " <> meta)
                     -- print whether the node has an original expression.
                     -- Currently disabled.
-                    <> printf ", %s" (if isJust $ treeOrig t then "Y" else "N")
+                    <> printf ", TO:%s" (if isJust $ treeOrig t then "Y" else "N")
                 )
           )
 
@@ -406,6 +411,7 @@ showTreeSymbol t = case treeNode t of
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
+-- TODO: pending and dynamic sub nodes
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct ->
@@ -418,6 +424,7 @@ subNodes t = case treeNode t of
     ]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
+  TNMutable (Index idx) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (idxSels idx)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultTASeg, x)]) (dsjDefault d)
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
@@ -568,7 +575,7 @@ dumpEntireTree msg = do
       Config{cfMermaid = mermaid} <- ask
       when mermaid $ do
         logDebugStr "--- dump entire tree states: ---"
-        notifiers <- ctxNotifiers <$> getTMContext
+        notifiers <- ctxNotifGraph <$> getTMContext
         logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
         tc <- getTMCursor
         rtc <- propUpTCUntil Path.RootTASeg tc
@@ -606,3 +613,23 @@ getAnnotatedTCAddr tc = go tc []
           StructTASeg (StringTASeg name) -> maybe False snd (getStructField name par)
           _ -> False
      in go (ValCursor par cs) ((seg, SegNote isLocal) : acc)
+
+-- | Traverse all the one-level sub nodes of the tree.
+traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
+traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
+ where
+  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
+  go (sel, sub) = unlessFocusBottom () $ do
+    res <- inSubTM sel sub (f >> getTMTree)
+    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
+    t <- getTMTree
+    case (treeNode t, treeNode res) of
+      (TNStruct _, TNBottom _) -> putTMTree res
+      _ -> return ()
+
+{- | Traverse the leaves of the tree cursor in the following order
+1. Traverse the current node.
+2. Traverse the sub-tree with the segment.
+-}
+traverseTM :: (TreeMonad s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)

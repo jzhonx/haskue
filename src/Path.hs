@@ -146,7 +146,7 @@ instance Show BinOpDirect where
 {- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype TreeAddr = TreeAddr {getTreeAddr :: [TASeg]}
+newtype TreeAddr = TreeAddr {getTreeSegs :: [TASeg]}
   deriving (Eq, Ord)
 
 showTreeAddr :: TreeAddr -> String
@@ -235,21 +235,48 @@ prefixTreeAddr (TreeAddr pxs) (TreeAddr pys) = TreeAddr . reverse <$> go (revers
 
 {- | Get the relative addr from the first addr to the second addr.
 
-@param px: The first addr.
-@param py: The second addr.
-
 For example, relTreeAddr (TreeAddr [StringTASeg "a", StringTASeg "b"]) (TreeAddr [StringTASeg "a", StringTASeg "c"])
 returns TreeAddr [ParentTASeg, StringTASeg "c"]
 -}
-relTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
+relTreeAddr ::
+  -- | px, first addr
+  TreeAddr ->
+  -- | py, second addr
+  TreeAddr ->
+  TreeAddr
 relTreeAddr px py =
   let prefixLen = maybe 0 (\(TreeAddr xs) -> length xs) (prefixTreeAddr px py)
-      upDist = length (getTreeAddr px) - prefixLen
-      pySegsRest = drop prefixLen (reverse (getTreeAddr py))
+      upDist = length (getTreeSegs px) - prefixLen
+      pySegsRest = drop prefixLen (reverse (getTreeSegs py))
    in TreeAddr $ reverse $ replicate upDist ParentTASeg ++ pySegsRest
 
+{- | Trim the address by cutting off the prefix.
+
+If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
+first addr is returned.
+-}
+trimPrefixTreeAddr ::
+  -- | address
+  TreeAddr ->
+  -- | prefix address
+  TreeAddr ->
+  TreeAddr
+trimPrefixTreeAddr x pre
+  | not (isPrefix pre x) = x
+  | otherwise =
+      let
+        segs = reverse $ getTreeSegs x
+        prelen = length $ getTreeSegs pre
+       in
+        TreeAddr $ reverse $ drop prelen segs
+
 -- | Check if addr x is a prefix of addr y.
-isPrefix :: TreeAddr -> TreeAddr -> Bool
+isPrefix ::
+  -- | x
+  TreeAddr ->
+  -- | y
+  TreeAddr ->
+  Bool
 isPrefix x y =
   let TreeAddr xs = x
       TreeAddr ys = y
@@ -279,14 +306,3 @@ hasTemp (TreeAddr xs) = TempTASeg `elem` xs
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
-
-{- | Return the referable part of the addr by removing the mutable value segments.
-
-For example, /p/fv should return /p.
--}
-getReferableAddr :: TreeAddr -> TreeAddr
-getReferableAddr p = TreeAddr $ filter (not . isMutValSeg) (getTreeAddr p)
- where
-  isMutValSeg :: TASeg -> Bool
-  isMutValSeg (MutableTASeg MutableValTASeg) = True
-  isMutValSeg _ = False

@@ -183,14 +183,25 @@ getTMScopeID = ctxScopeID <$> getTMContext
 setTMScopeID :: (TMonad s m t) => Int -> m ()
 setTMScopeID newID = modifyTMContext (\ctx -> ctx{ctxScopeID = newID})
 
+getTMNotifQ :: (TMonad s m t) => m [TreeAddr]
+getTMNotifQ = ctxNotifQueue <$> getTMContext
+
+addToTMNotifQ :: (TMonad s m t) => TreeAddr -> m ()
+addToTMNotifQ addr = modifyTMContext (\ctx -> ctx{ctxNotifQueue = addr : ctxNotifQueue ctx})
+
+popTMNotifQ :: (TMonad s m t) => m (Maybe TreeAddr)
+popTMNotifQ = do
+  ctx <- getTMContext
+  case ctxNotifQueue ctx of
+    [] -> return Nothing
+    _ -> do
+      -- TODO: efficiency
+      let addr = last (ctxNotifQueue ctx)
+      putTMContext ctx{ctxNotifQueue = init (ctxNotifQueue ctx)}
+      return (Just addr)
+
 treeDepthCheck :: (TMonad s m t) => m ()
 treeDepthCheck = do
   crumbs <- getTMCrumbs
   let depth = length crumbs
   when (depth > 1000) $ throwError "tree depth exceeds 1000"
-
-getTMInUnify :: (TMonad s m t) => m Bool
-getTMInUnify = ctxInUnify <$> getTMContext
-
-setTMInUnify :: (TMonad s m t) => Bool -> m ()
-setTMInUnify b = modifyTMContext (\ctx -> ctx{ctxInUnify = b})

@@ -52,9 +52,9 @@ data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxScopeID :: Int
   , ctxReduceStack :: [TreeAddr]
-  , ctxInUnify :: Bool
-  -- ^ Whether the context is in the unify process. It will be set only one time once the highest node has set it.
-  , ctxNotifiers :: Map.Map TreeAddr [TreeAddr]
+  , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
+  , ctxNotifQueue :: [TreeAddr]
+  -- ^ The notif queue is a list of addresses that will trigger the notification.
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
@@ -83,8 +83,8 @@ emptyContext =
     { ctxCrumbs = []
     , ctxScopeID = 0
     , ctxReduceStack = []
-    , ctxInUnify = False
-    , ctxNotifiers = Map.empty
+    , ctxNotifGraph = Map.empty
+    , ctxNotifQueue = []
     , ctxTrace = emptyTrace
     }
 
@@ -93,9 +93,9 @@ The first element is the source addr, which is the addr that is being watched.
 The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
 addCtxNotifier :: Context t -> (TreeAddr, TreeAddr) -> Context t
-addCtxNotifier ctx (src, dep) = ctx{ctxNotifiers = Map.insert src newDepList oldMap}
+addCtxNotifier ctx (src, dep) = ctx{ctxNotifGraph = Map.insert src newDepList oldMap}
  where
-  oldMap = ctxNotifiers ctx
+  oldMap = ctxNotifGraph ctx
   depList = fromMaybe [] $ Map.lookup src oldMap
   newDepList = if dep `elem` depList then depList else dep : depList
 

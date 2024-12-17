@@ -26,6 +26,7 @@ library
         Mutate,
         Parser,
         Path,
+        PostReduce,
         Reduction,
         Ref,
         TMonad,
