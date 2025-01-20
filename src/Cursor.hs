@@ -52,6 +52,7 @@ data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxScopeID :: Int
   , ctxReduceStack :: [TreeAddr]
+  , ctxNotifEnabled :: Bool
   , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
   , ctxNotifQueue :: [TreeAddr]
   -- ^ The notif queue is a list of addresses that will trigger the notification.
@@ -85,6 +86,7 @@ emptyContext =
     , ctxReduceStack = []
     , ctxNotifGraph = Map.empty
     , ctxNotifQueue = []
+    , ctxNotifEnabled = True
     , ctxTrace = emptyTrace
     }
 

@@ -53,11 +53,12 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
     TNDisj _ -> traverseSub reduce
     _ -> return ()
 
-  withTree $ \t -> do
-    -- Attach the original expression to the reduced tree.
-    putTMTree $ setOrig t origExpr
-    -- Only notify dependents when we are not in a temporary node.
-    when (isTreeAddrAccessible addr) (addToTMNotifQ $ finalizedAddr addr)
+  -- Attach the original expression to the reduced tree.
+  withTree $ \t -> putTMTree $ setOrig t origExpr
+
+  notifyEnabled <- getTMNotifEnabled
+  -- Only notify dependents when we are not in a temporary node.
+  when (isTreeAddrAccessible addr && notifyEnabled) (addToTMNotifQ $ finalizedAddr addr)
 
   pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)

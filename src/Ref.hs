@@ -4,7 +4,6 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Ref (
   deref,
@@ -19,9 +18,10 @@ where
 import qualified AST
 import Class
 import Config
-import Control.Monad (foldM, unless, when)
+import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (ask)
-import Control.Monad.State.Strict (runStateT)
+import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put, runStateT)
+import Control.Monad.Trans (lift)
 import Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe)
@@ -43,49 +43,103 @@ notify :: (TreeMonad s m) => m ()
 notify = withAddrAndFocus $ \addr t -> debugSpan
   (printf "notify: addr: %s, new value: %s" (show addr) (show t))
   $ do
-    cs <- getTMCrumbs
-    e <- do
-      focus <- getTMTree
-      -- First try to get the expression from the tree. If the expression is not found, then build the expression.
-      -- The reason for not found could be the tree is unified by a dynamic field.
-      maybe
-        (buildASTExpr False focus)
-        return
-        (treeOrig focus)
+    origNotifEnabled <- getTMNotifEnabled
+    setTMNotifEnabled False
+    let
+      visiting = [addr]
+      -- The initial node has already been reduced.
+      q = [(addr, False)]
 
+    evalStateT bfsLoopQ (BFSState visiting q)
+    setTMNotifEnabled origNotifEnabled
+
+data BFSState = BFSState
+  { _bfsVisiting :: [TreeAddr]
+  , bfsQueue :: [(TreeAddr, Bool)]
+  }
+
+type BFSMonad m a = StateT BFSState m a
+
+bfsLoopQ :: (TreeMonad s m) => BFSMonad m ()
+bfsLoopQ = do
+  state@(BFSState{bfsQueue = q}) <- get
+  case q of
+    [] -> return ()
+    ((addr, toReduce) : xs) -> do
+      put state{bfsQueue = xs}
+      addrFound <-
+        lift $
+          inAbsRemoteTMMaybe addr (when toReduce reduceLAMut)
+            >>= maybe
+              ( do
+                  -- Remove the notification if the receiver is not found. The receiver might be relocated. For example,
+                  -- the receiver could first be reduced in a unifying function reducing arguments phase with addr a/fa0.
+                  -- Then the receiver is relocated to a due to unifying fields.
+                  delNotifRecvPrefix addr
+                  return False
+              )
+              (const $ return True)
+
+      when
+        addrFound
+        ( do
+            upUntilRoot
+            void . lift $ goTMAbsAddr addr
+        )
+      bfsLoopQ
+ where
+  -- Check all the ancestors to notify the dependents.
+  -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
+  upUntilRoot :: (TreeMonad s m) => BFSMonad m ()
+  upUntilRoot = do
+    cs <- lift getTMCrumbs
     -- We should not use root value to notify.
     when (length cs > 1) $ do
-      notifyG <- ctxNotifGraph <$> getTMContext
-      let
-        -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
-        -- finalized address can be notified.
-        -- For example, { a: r, r: {y:{}}, p: a.y}. p's a.y references the finalized address while a's value might always
-        -- have address of /a/fv/y.
-        srcFinalizedAddr = finalizedAddr addr
-        recvs = fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
-      logDebugStr $ printf "notify: srcRefAddr: %s, recvs %s" (show addr) (show recvs)
-      unless (null recvs) $ do
-        notifyWithTree e recvs
-        -- The current focus notifying its dependents means it is referred.
-        markReferred
-      inParentTM $ do
+      recvs <- lift $ do
+        notifyG <- ctxNotifGraph <$> getTMContext
+        addr <- getTMAbsAddr
+        let
+          -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
+          -- finalized address can be notified.
+          -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might always
+          -- have address of /a/fv/y.
+          srcFinalizedAddr = finalizedAddr addr
+        return $ fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
+
+      -- The current focus notifying its dependents means it is referred.
+      unless (null recvs) $ lift markReferred
+
+      -- Add the receivers to the visited list and the queue.
+      modify $ \state ->
+        foldr
+          ( \recv s@(BFSState v q) ->
+              if recv `notElem` v
+                then
+                  BFSState (recv : v) (q ++ [(recv, True)])
+                else s
+          )
+          state
+          recvs
+
+      inReducing <- lift $ do
         ptc <- getTMCursor
         -- We must check if the parent is reducing. If the parent is reducing, we should not go up and keep
         -- notifying the dependents.
         -- Because once parent is done with reducing, it will notify its dependents.
-        inReducing <- parentIsReducing $ tcTreeAddr ptc
-        unless inReducing $ do
-          parAddr <- getTMAbsAddr
-          addToTMNotifQ (finalizedAddr parAddr)
- where
-  parentIsReducing parTreeAddr = do
-    stack <- ctxReduceStack <$> getTMContext
-    return $ length stack > 1 && stack !! 1 == parTreeAddr
+        parentIsReducing $ tcTreeAddr ptc
+
+      unless inReducing $ do
+        lift propUpTM
+        upUntilRoot
 
   markReferred :: (TreeMonad s m) => m ()
   markReferred = do
     tc <- getTMCursor
     putTMCursor $ markTCFocusReferred tc
+
+  parentIsReducing parTreeAddr = do
+    stack <- ctxReduceStack <$> getTMContext
+    return $ length stack > 1 && stack !! 1 == parTreeAddr
 
 drainNotifQueue :: (TreeMonad s m) => m ()
 drainNotifQueue = do
@@ -117,15 +171,15 @@ inParentTM f = do
     ok <- descendTMSeg seg
     unless ok $ throwErrSt $ printf "failed to go down with seg %s" (show seg)
 
-notifyWithTree :: (TreeMonad s m) => AST.Expression -> [TreeAddr] -> m ()
-notifyWithTree e recvs = do
+notifyWithTree :: (TreeMonad s m) => [TreeAddr] -> m ()
+notifyWithTree recvs = do
   mapM_
     ( \dep ->
         inAbsRemoteTMMaybe
           dep
           ( do
               addr <- getTMAbsAddr
-              hasDiff <- checkRefHasDiff e
+              hasDiff <- checkRefHasDiff undefined
               if hasDiff
                 then do
                   logDebugStr $ printf "notifyWithTree: addr: %s, difference found" (show addr)

@@ -163,6 +163,9 @@ instance Show TreeAddr where
 emptyTreeAddr :: TreeAddr
 emptyTreeAddr = TreeAddr []
 
+rootTreeAddr :: TreeAddr
+rootTreeAddr = TreeAddr [RootTASeg]
+
 isTreeAddrEmpty :: TreeAddr -> Bool
 isTreeAddrEmpty (TreeAddr []) = True
 isTreeAddrEmpty _ = False

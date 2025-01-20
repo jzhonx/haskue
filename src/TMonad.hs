@@ -5,16 +5,14 @@
 module TMonad where
 
 import Class
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Control.Monad.Except (throwError)
 import Control.Monad.State.Strict (MonadState, gets, modify)
 import Cursor
-import Data.Maybe (fromJust)
 import Env
 import Error
 import GHC.Stack (HasCallStack)
 import Path
-import Text.Printf (printf)
 import Util
 
 type TMonad s m t =
@@ -199,6 +197,12 @@ popTMNotifQ = do
       let addr = last (ctxNotifQueue ctx)
       putTMContext ctx{ctxNotifQueue = init (ctxNotifQueue ctx)}
       return (Just addr)
+
+getTMNotifEnabled :: (TMonad s m t) => m Bool
+getTMNotifEnabled = ctxNotifEnabled <$> getTMContext
+
+setTMNotifEnabled :: (TMonad s m t) => Bool -> m ()
+setTMNotifEnabled b = modifyTMContext (\ctx -> ctx{ctxNotifEnabled = b})
 
 treeDepthCheck :: (TMonad s m t) => m ()
 treeDepthCheck = do
