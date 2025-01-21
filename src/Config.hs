@@ -23,11 +23,12 @@ type MM s m t = (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasC
 data Config t = Config
   { cfCreateCnstr :: Bool
   , cfMermaid :: Bool
+  , cfShowMutArgs :: Bool
   , cfEvalExpr :: forall m. (EM m t) => AST.Expression -> m t
   , cfClose :: forall s m. (MM s m t) => Bool -> [t] -> m ()
   , cfReduce :: forall s m. (MM s m t) => m ()
-  , cfDeref :: forall s m. (MM s m t) => Reference -> m ()
-  , cfIndex :: forall s m. (MM s m t) => [t] -> m ()
+  , cfDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
+  , cfIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
   }
 
 instance Show (Config t) where
@@ -38,9 +39,10 @@ emptyConfig =
   Config
     { cfCreateCnstr = False
     , cfMermaid = False
+    , cfShowMutArgs = False
     , cfEvalExpr = \_ -> throwErrSt "cfEvalExpr not set"
     , cfClose = \_ _ -> throwErrSt "cfClose not set"
     , cfReduce = throwErrSt "cfReduce not set"
-    , cfDeref = \_ -> throwErrSt "cfDeref not set"
-    , cfIndex = \_ -> throwErrSt "cfIndex not set"
+    , cfDeref = \_ _ -> throwErrSt "cfDeref not set"
+    , cfIndex = \_ _ -> throwErrSt "cfIndex not set"
     }

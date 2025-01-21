@@ -37,6 +37,7 @@ data TreeNode t
   | TNBounds Bounds
   | TNConstraint (Constraint t)
   | TNRefCycle RefCycle
+  | TNStructuralCycle StructuralCycle
   | TNMutable (Mutable t)
   | TNTop
   | TNBottom Bottom
@@ -72,9 +73,12 @@ subTreeTN seg t = case (seg, getTreeNode t) of
           SField sf -> Just $ ssfField sf
           _ -> Nothing
     PatternTASeg i -> Just (psfValue $ stcPatterns struct !! i)
-    PendingTASeg i -> case stcPendSubs struct !! i of
-      DynamicPend dsf -> Just (dsfValue dsf)
-      PatternPend _ val -> Just val
+    PendingTASeg i -> do
+      -- pending elements can be resolved, so the index might not be valid.
+      p <- stcPendSubs struct `indexList` i
+      case p of
+        DynamicPend dsf -> Just (dsfValue dsf)
+        PatternPend _ val -> Just val
     LetTASeg name ->
       lookupStructVal name struct >>= \case
         SLet lb -> Just (lbValue lb)

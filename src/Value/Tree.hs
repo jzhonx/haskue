@@ -48,7 +48,7 @@ import Value.Struct
 import Value.TreeNode
 
 class TreeRepBuilderIter a where
-  iterRepTree :: a -> TreeRep
+  iterRepTree :: a -> TreeRepBuildOption -> TreeRep
 
 -- TreeMonad stores the tree structure in its state.
 type TreeMonad s m =
@@ -69,6 +69,10 @@ data Tree = Tree
   , treeOrig :: Maybe AST.Expression
   , treeTemp :: Maybe Tree
   -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
+  }
+
+newtype TreeRepBuildOption = TreeRepBuildOption
+  { trboShowMutArgs :: Bool
   }
 
 data TreeRep = TreeRep
@@ -124,12 +128,12 @@ instance TreeRepBuilder Tree where
   repTree = treeToSimpleStr
 
 instance TreeRepBuilderIter Tree where
-  iterRepTree t =
-    let trf = buildRepTreeTN t (treeNode t)
+  iterRepTree t opt =
+    let trf = buildRepTreeTN t (treeNode t) opt
      in trf{trFields = trFields trf ++ maybe [] (\x -> [TreeRepField (show TempTASeg) "" x]) (treeTemp t)}
 
-buildRepTreeTN :: Tree -> TreeNode Tree -> TreeRep
-buildRepTreeTN t tn = case tn of
+buildRepTreeTN :: Tree -> TreeNode Tree -> TreeRepBuildOption -> TreeRep
+buildRepTreeTN t tn opt = case tn of
   TNAtom leaf -> consRep (mempty, show (amvAtom leaf), [], [])
   -- TODO: segment
   TNBounds b ->
@@ -219,10 +223,14 @@ buildRepTreeTN t tn = case tn of
     RefCycleVert -> consRep (symbol, "vert", [], [])
     RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
     RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
+  TNStructuralCycle (StructuralCycle p) -> consRep (symbol, "inf: " ++ show p, [], [])
   TNMutable m -> case m of
     SFunc mut ->
       let
-        args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (sfnArgs mut)
+        args =
+          if trboShowMutArgs opt
+            then zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (sfnArgs mut)
+            else []
         val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (sfnValue mut)
        in
         consRep
@@ -240,8 +248,9 @@ buildRepTreeTN t tn = case tn of
        in
         consRep
           ( symbol
-          , show (refPath ref) <> printf ", E:%s" (if isJust $ refExpr ref then "Y" else "N")
-          , consFields val
+          , show (refPath ref) <> ", from:" <> show (refOrigAddrs ref)
+          , -- <> printf ", E:%s" (if isJust $ refExpr ref then "Y" else "N")
+            consFields val
           , []
           )
     Index idx ->
@@ -249,7 +258,7 @@ buildRepTreeTN t tn = case tn of
         args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
         val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (idxValue idx)
        in
-        consRep (symbol, mempty, consFields (args ++ val), [])
+        consRep (symbol, "", consFields (args ++ val), [])
     MutStub -> consRep (symbol, mempty, [], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -288,13 +297,17 @@ instance BuildASTExpr Tree where
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
       RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
+    TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
 
+defaultTreeRepBuildOption :: TreeRepBuildOption
+defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = False}
+
 treeToSimpleStr :: Int -> Tree -> String
 treeToSimpleStr toff t =
-  let TreeRep symbol meta fields listedMetas = iterRepTree t
+  let TreeRep symbol meta fields listedMetas = iterRepTree t defaultTreeRepBuildOption
    in "("
         <> (if null symbol then meta else symbol <> " " <> meta)
         <> ( if null fields
@@ -347,8 +360,8 @@ addrToMermaidNodeID (TreeAddr sels) = go (reverse sels)
   go (sel : xs) = mapSel sel ++ "_" ++ go xs
   go [] = "nil"
 
-treeToMermaid :: (MonadState Int m) => String -> TreeAddr -> Tree -> m String
-treeToMermaid msg evalTreeAddr root = do
+treeToMermaid :: (MonadState Int m) => TreeRepBuildOption -> String -> TreeAddr -> Tree -> m String
+treeToMermaid opt msg evalTreeAddr root = do
   let w = printf "---\ntitle: %s, addr %s\n---\n" msg (show evalTreeAddr) <> "flowchart TD"
   rest <- subgraph 0 root "root"
   return $
@@ -360,7 +373,7 @@ treeToMermaid msg evalTreeAddr root = do
   subgraph :: (MonadState Int m) => Int -> Tree -> String -> m String
   subgraph toff t treeID = do
     let
-      (TreeRep symbol meta subReps _) = iterRepTree t
+      (TreeRep symbol meta subReps _) = iterRepTree t opt
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
       curTreeRepStr =
@@ -373,7 +386,7 @@ treeToMermaid msg evalTreeAddr root = do
                     <> (if null meta then mempty else " " <> meta)
                     -- print whether the node has an original expression.
                     -- Currently disabled.
-                    <> printf ", TO:%s" (if isJust $ treeOrig t then "Y" else "N")
+                    -- <> printf ", TO:%s" (if isJust $ treeOrig t then "Y" else "N")
                 )
           )
 
@@ -403,6 +416,7 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNConstraint{} -> "Cnstr"
   TNRefCycle _ -> "RC"
+  TNStructuralCycle _ -> "SC"
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
@@ -489,6 +503,11 @@ isTreeRefCycleTail t = case treeNode t of
   -- TNRefCycle (RefCycleHori _) -> True
   _ -> False
 
+isTreeStructuralCycle :: Tree -> Bool
+isTreeStructuralCycle t = case treeNode t of
+  TNStructuralCycle _ -> True
+  _ -> False
+
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeTemp = Nothing}
 
@@ -572,7 +591,7 @@ dumpEntireTree msg = do
     TNBottom _ -> return ()
     TNTop -> return ()
     _ -> do
-      Config{cfMermaid = mermaid} <- ask
+      Config{cfMermaid = mermaid, cfShowMutArgs = showMutArgs} <- ask
       when mermaid $ do
         logDebugStr "--- dump entire tree states: ---"
         notifiers <- ctxNotifGraph <$> getTMContext
@@ -583,7 +602,7 @@ dumpEntireTree msg = do
         let
           t = vcFocus rtc
           evalTreeAddr = addrFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid msg evalTreeAddr t) 0
+          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr t) 0
         logDebugStr $ printf "\n```mermaid\n%s\n```" s
 
         logDebugStr "--- dump entire tree done ---"

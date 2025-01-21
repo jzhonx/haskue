@@ -1,11 +1,22 @@
-# 
-# The argument is the path to the input file.
+#!/usr/bin/env bash
 
-args=("$@")
-input=${args[0]}
+# Ensure at least one argument is provided
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <input-file> | show"
+  exit 1
+fi
 
+# If the first argument is "show", run the file server and exit
+if [[ "$1" == "show" ]]; then
+  go run tools/fileserv/main.go --file=_debug/output.md
+  exit 0
+fi
+
+input="$1"
 cabal build
-# gtimeout 0.1s cabal run haskue -- -d $input 2> t.log
-gtimeout 0.1s cabal run haskue -- -d -m $input 2> t.log
+gtimeout 0.1s cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
 echo ""
-go run ../haskue-tools/logp/main.go -input=t.log
+go run tools/logp/main.go -input=_debug/t.log -output=_debug/output.md
+
+# show the size of the output.md
+ls -lh _debug/output.md

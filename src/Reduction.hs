@@ -13,7 +13,7 @@ import Class
 import Config
 import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.Except (MonadError)
-import Control.Monad.Reader (ask)
+import Control.Monad.Reader (ask, local)
 import Control.Monad.State.Strict (gets)
 import Cursor
 import Data.List (sort)
@@ -51,6 +51,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
     TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
+    TNStructuralCycle _ -> putTMTree $ mkBottomTree "structural cycle"
     _ -> return ()
 
   -- Attach the original expression to the reduced tree.
@@ -58,7 +59,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
 
   notifyEnabled <- getTMNotifEnabled
   -- Only notify dependents when we are not in a temporary node.
-  when (isTreeAddrAccessible addr && notifyEnabled) (addToTMNotifQ $ finalizedAddr addr)
+  when (isTreeAddrAccessible addr && notifyEnabled) (addToTMNotifQ $ referableAddr addr)
 
   pop
   dumpEntireTree $ printf "reduce id=%s done" (show trID)
@@ -66,6 +67,18 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
   push addr = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
 
   pop = modifyTMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
+
+-- | Only reduce the tree to the first level.
+shallowReduce :: (TreeMonad s m) => m ()
+shallowReduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "shallowReduce, addr: %s" (show addr)) $ do
+  -- save the original expression before effects are applied to the focus of the tree.
+  origExpr <- treeOrig <$> getTMTree
+  withTree $ \t -> case treeNode t of
+    TNMutable _ -> local (\r -> r{cfReduce = shallowReduce}) mutate
+    _ -> return ()
+
+  -- Attach the original expression to the reduced tree.
+  withTree $ \t -> putTMTree $ setOrig t origExpr
 
 -- ###
 -- Reduce tree nodes
@@ -83,37 +96,32 @@ reduceAtomOpArg seg sub =
             then rM
             else Nothing
     )
-    reduce
 
 reduceMutableArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
 reduceMutableArg seg sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) reduce
+  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t)
   return $ fromJust ret
 
-reduceUnifyRefArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
-reduceUnifyRefArg seg sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t) reduce
-  return $ fromJust ret
+{- | Evaluate the argument of the given mutable.
 
--- Evaluate the argument of the given mutable.
--- This does not reduce the argument whose type is mutable.
--- Notice that if the argument is a mutable and the value of the mutable, such as struct or disjunction, is not
--- reducible, the value is still returned because the parent mutable needs the value.
+Notice that if the argument is a mutable and the mutval, such as struct or disjunction, is not
+reducible, the value is still returned because the parent mutable needs the value.
+-}
 reduceMutableArgMaybe ::
   (TreeMonad s m) =>
   TASeg ->
   Tree ->
   (Maybe Tree -> Maybe Tree) ->
-  m () ->
   m (Maybe Tree)
-reduceMutableArgMaybe seg sub csHandler reducer = withAddrAndFocus $ \addr _ ->
+reduceMutableArgMaybe seg sub csHandler = withAddrAndFocus $ \addr _ ->
   debugSpan (printf "reduceMutableArgMaybe, addr: %s, seg: %s" (show addr) (show seg)) $
     -- We are currently in the Mutable's val field. We need to go up to the Mutable.
     mutValToArgsTM
       seg
       sub
       ( do
-          reducer
+          Config{cfReduce = _reduce} <- ask
+          _reduce
           withTree $ \x -> return $ case treeNode x of
             TNMutable mut -> csHandler (getMutVal mut)
             _ -> Just x
@@ -351,11 +359,13 @@ mkVarLinkTree var = do
   let mut = mkRefMutable (Path.Reference [StringSel var])
   return $ mkMutableTree mut
 
-{- | Index the tree with the segments. The index should have a list of arguments where the first argument is the tree
-to be indexed, and the rest of the arguments are the segments.
+{- | Index the tree with the segments.
+
+The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
+arguments are the segments.
 -}
-index :: (TreeMonad s m) => [Tree] -> m ()
-index ts@(t : _)
+index :: (TreeMonad s m) => Maybe (TreeAddr, TreeAddr) -> [Tree] -> m ()
+index origAddrsM ts@(t : _)
   | length ts > 1 = do
       idxRefM <- treesToRef <$> mapM evalIndexArg [1 .. length ts - 1]
       logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
@@ -366,7 +376,8 @@ index ts@(t : _)
           | (Ref ref) <- mut -> do
               let
                 newRef = appendRefs (refPath ref) idxRef
-                refMutable = mkRefMutable newRef
+                -- Use the index's original addrs since it is the referable node
+                refMutable = Ref $ ref{refPath = newRef, refOrigAddrs = origAddrsM}
               putTMTree (mkMutableTree refMutable)
         -- in-place expression, like ({}).a, or regular functions.
         _ -> do
@@ -381,15 +392,15 @@ index ts@(t : _)
               (throwErrSt $ printf "%s is not found" (show idxRef))
               (putTMTree . vcFocus)
               (goDownTCAddr (refToAddr idxRef) tc)
-            withAddrAndFocus $ \_ r ->
-              logDebugStr $ printf "index: the indexed is %s" (show r)
+
+            withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
  where
   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
   evalIndexArg i = mutValToArgsTM (MutableTASeg $ MutableArgTASeg i) (ts !! i) (reduce >> getTMTree)
 
   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
   whenJustE m f = maybe (return ()) f m
-index _ = throwErrSt "invalid index arguments"
+index _ _ = throwErrSt "invalid index arguments"
 
 dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m ()
 dispUnaryOp op _t = do
@@ -699,6 +710,7 @@ mkUnifyUTreesNode :: UTree -> UTree -> Mutable Tree
 mkUnifyUTreesNode ut1 ut2 =
   mkBinaryOp AST.Unify (\a b -> unifyUTrees (ut1{utVal = a}) (ut2{utVal = b})) (utVal ut1) (utVal ut2)
 
+-- | UTree is a tree with a direction and an embedded flag.
 data UTree = UTree
   { utVal :: Tree
   , utDir :: Path.BinOpDirect
@@ -771,6 +783,12 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withAddrAndFocus $
       (_, TNBounds b2) -> unifyLeftBound (b2, ut2) ut1
       _ -> unifyLeftOther ut1 ut2
 
+    -- reduce the merged tree
+    withTree $ \t -> case getMutableFromTree t of
+      -- If the unify result is incomplete, skip the reduction.
+      Just MutStub -> return ()
+      _ -> reduce
+
 unifyLeftTop :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftTop ut1 ut2 = do
   case treeNode . utVal $ ut2 of
@@ -781,8 +799,7 @@ unifyLeftTop ut1 ut2 = do
     -- Notice that this is different from the behavior of the latest CUE. The latest CUE would do the following:
     -- {_, _h: int} & {_h: "hidden"} -> _|_.
     TNStruct _ | utEmbedded ut1 -> putTMTree (utVal ut1)
-    -- The ut2 has not been reduced yet.
-    _ -> putTMTree (utVal ut2) >> reduce
+    _ -> putTMTree (utVal ut2)
 
 unifyLeftAtom :: (TreeMonad s m) => (AtomV, UTree) -> UTree -> m ()
 unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = do
@@ -1085,11 +1102,13 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   case treeNode t1 of
     (TNMutable _) -> do
       withAddrAndFocus $ \addr _ ->
-        logDebugStr $
-          printf "unifyLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
-      r1 <- reduceMutableArg (Path.toBinOpTASeg d1) t1
+        logDebugStr $ printf "unifyLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
+      -- If the left value is mutable, we should shallow reduce the left value first.
+      r1 <-
+        local (\r -> r{cfReduce = shallowReduce}) $
+          reduceMutableArg (Path.toBinOpTASeg d1) t1
       case treeNode r1 of
-        TNMutable _ -> return ()
+        TNMutable _ -> return () -- No concrete value exists.
         _ -> unifyUTrees (ut1{utVal = r1}) ut2
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
@@ -1107,7 +1126,30 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     -- results in this value. Implementations should detect cycles of this kind, ignore r, and take v as the result of
     -- unification.
     -- We can just return the second value.
-    (TNRefCycle _) -> putTMTree t2 >> reduce
+    (TNRefCycle _) -> putTMTree t2
+    -- TODO: comment
+    TNStructuralCycle (StructuralCycle infAddr) -> do
+      curPath <- getTMAbsAddr
+      logDebugStr $
+        printf
+          "unifyLeftOther: unifying with structural cycle, inf path: %s, current path: %s"
+          (show infAddr)
+          (show curPath)
+      if isPrefix infAddr curPath
+        then putTMTree $ mkBottomTree "structural cycle"
+        else do
+          orig <-
+            maybe (throwErrSt "original expression is not found") return (treeOrig t1)
+              >>= evalExprTM
+          r1 <-
+            local (\r -> r{cfReduce = shallowReduce}) $
+              reduceMutableArg (Path.toBinOpTASeg d1) orig
+          logDebugStr $
+            printf
+              "unifyLeftOther: found structural cycle, trying original deref'd %s with %s"
+              (show r1)
+              (show t2)
+          unifyUTrees ut1{utVal = r1} ut2
     _ -> putNotUnifiable
  where
   putNotUnifiable :: (TreeMonad s m) => m ()
@@ -1141,8 +1183,6 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
       -- in reduce, the new combined fields will be checked by the combined patterns.
       putTMTree merged
-      rewriteRefCycleVert
-      reduce
  where
   fields1 = stcSubs s1
   fields2 = stcSubs s2
@@ -1216,14 +1256,6 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         , stcClosed = stcClosed s1 || stcClosed s2
         }
 unifyStructs isEitherEmbeded dt1@(Path.R, _) dt2 = unifyStructs isEitherEmbeded dt2 dt1
-
-rewriteRefCycleVert :: (TreeMonad s m) => m ()
-rewriteRefCycleVert = traverseTM $ withTree $ \t -> case treeNode t of
-  TNRefCycle RefCycleVert -> do
-    e <- buildASTExpr False t
-    nt <- evalExprTM e
-    putTMTree $ setTN t (treeNode nt)
-  _ -> return ()
 
 {- | Check if the new labels from the new struct are permitted based on the base struct.
 The isNewEmbedded flag indicates whether the new struct is embedded in the base struct.
@@ -1374,6 +1406,12 @@ unifyLeftDisj
         then mapM (\y -> oneToMany (ld2, em2, y) (ld1, em1, ts1)) ts2
         else mapM (\x -> oneToMany (ld1, em1, x) (ld2, em2, ts2)) ts1
 
+unifyUTreesInTemp :: (TreeMonad s m) => UTree -> UTree -> m Tree
+unifyUTreesInTemp ut1 ut2 =
+  inTempSubTM
+    (mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
+    $ reduce >> getTMTree
+
 treeFromNodes :: (MonadError String m) => Maybe Tree -> [[Tree]] -> m Tree
 treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
   -- if there is no non-bottom disjuncts, we return the first bottom.
@@ -1403,12 +1441,6 @@ treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
 
   dedup :: [Tree] -> [Tree]
   dedup = foldr (\y acc -> if y `elem` acc then acc else y : acc) []
-
-unifyUTreesInTemp :: (TreeMonad s m) => UTree -> UTree -> m Tree
-unifyUTreesInTemp ut1 ut2 =
-  inTempSubTM
-    (mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
-    $ reduce >> getTMTree
 
 -- built-in functions
 builtinMutableTable :: [(String, Tree)]

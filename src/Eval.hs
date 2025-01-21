@@ -36,8 +36,18 @@ import Value.Tree
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecMermaidGraph :: Bool
+  , ecShowMutArgs :: Bool
   , ecFileTreeAddr :: String
   }
+
+emptyEvalConfig :: EvalConfig
+emptyEvalConfig =
+  EvalConfig
+    { ecDebugLogging = False
+    , ecMermaidGraph = False
+    , ecShowMutArgs = False
+    , ecFileTreeAddr = ""
+    }
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m [AST.Declaration]
 runIO s conf =
@@ -47,31 +57,32 @@ runIO s conf =
  where
   res :: (MonadError String m, MonadLogger m) => m [AST.Declaration]
   res = do
-    ast <- runStr s (ecMermaidGraph conf)
+    ast <- runStr s conf
     case ast of
       AST.ExprUnaryExpr
         (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls)))) -> return decls
       _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
-runTreeIO s = runNoLoggingT $ runTreeStr s False
+runTreeIO s = runNoLoggingT $ runTreeStr s emptyEvalConfig
 
-runStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m AST.Expression
-runStr s mermaid = do
-  t <- runTreeStr s mermaid
+runStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m AST.Expression
+runStr s conf = do
+  t <- runTreeStr s conf
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> throwError $ printf "error: %s" msg
     _ -> runReaderT (buildASTExpr False t) emptyConfig
 
-runTreeStr :: (MonadError String m, MonadLogger m) => String -> Bool -> m Tree
+runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
-evalConfig :: Config Tree
-evalConfig =
+defaultConfig :: Config Tree
+defaultConfig =
   Config
     { cfCreateCnstr = False
     , cfMermaid = False
+    , cfShowMutArgs = False
     , cfEvalExpr = evalExpr
     , cfClose = close
     , cfReduce = reduce
@@ -79,8 +90,8 @@ evalConfig =
     , cfIndex = index
     }
 
-evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> Bool -> m Tree
-evalFile sf mermaid = do
+evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m Tree
+evalFile sf conf = do
   rootTC <-
     runReaderT
       ( do
@@ -94,17 +105,19 @@ evalFile sf mermaid = do
           logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      evalConfig
+      defaultConfig
         { cfCreateCnstr = True
-        , cfMermaid = mermaid
+        , cfMermaid = ecMermaidGraph conf
+        , cfShowMutArgs = ecShowMutArgs conf
         }
 
   finalized <-
     runReaderT
       (execStateT postValidation rootTC)
-      evalConfig
+      defaultConfig
         { cfCreateCnstr = False
-        , cfMermaid = mermaid
+        , cfMermaid = ecMermaidGraph conf
+        , cfShowMutArgs = ecShowMutArgs conf
         }
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

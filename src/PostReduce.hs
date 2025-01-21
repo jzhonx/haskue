@@ -64,8 +64,7 @@ validateCnstr c = withTree $ \_ -> do
   let atomT = mkAtomVTree $ cnsAtom c
   -- run the validator in a sub context.
   res <- inTempSubTM (mkBottomTree "no value yet") $ do
-    t <- evalExprTM (cnsValidator c)
-    putTMTree t
+    putTMTree =<< evalExprTM (cnsValidator c)
     fullReduce >> getTMTree
 
   putTMTree $

@@ -11,6 +11,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Debug.Trace
 import Eval (runTreeIO)
+import GHC.Stack (HasCallStack)
 import Parser
 import Path
 import System.IO (readFile)
@@ -88,6 +89,9 @@ assertStructs _ _ = assertFailure "Not structs"
 
 strSel :: String -> Path.Selector
 strSel = Path.StringSel
+
+emptyHoriCycle :: TreeNode Tree
+emptyHoriCycle = TNRefCycle (RefCycleHori (emptyTreeAddr, emptyTreeAddr))
 
 testBottom :: IO ()
 testBottom = do
@@ -669,9 +673,8 @@ testUnify8 = do
   exp = newStruct [("res", se), ("x", se), ("a", se), ("b", se)]
   se = newStruct []
 
-testCycles1 :: IO ()
-testCycles1 = do
-  s <- readFile "tests/spec/cycles1.cue"
+testCycles_Ref1 = do
+  s <- readFile "tests/spec/cycles_ref1.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -684,11 +687,10 @@ testCycles1 = do
           , ("d", selfCycle)
           ]
  where
-  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
+  selfCycle = mkNewTree emptyHoriCycle
 
-testCycles2 :: IO ()
-testCycles2 = do
-  s <- readFile "tests/spec/cycles2.cue"
+testCycles_Ref2 = do
+  s <- readFile "tests/spec/cycles_ref2.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -705,9 +707,8 @@ testCycles2 = do
             )
           ]
 
-testCycles3 :: IO ()
-testCycles3 = do
-  s <- readFile "tests/spec/cycles3.cue"
+testCycles_Ref3 = do
+  s <- readFile "tests/spec/cycles_ref3.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -718,9 +719,8 @@ testCycles3 = do
           , ("b", mkAtomTree $ Int 100)
           ]
 
-testCycles4 :: IO ()
-testCycles4 = do
-  s <- readFile "tests/spec/cycles4.cue"
+testCycles_Ref4 = do
+  s <- readFile "tests/spec/cycles_ref4.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -746,9 +746,31 @@ testCycles4 = do
             )
           ]
 
-testCycles5 :: IO ()
-testCycles5 = do
-  s <- readFile "tests/spec/cycles5.cue"
+testCycles_Ref4_2 = do
+  s <- readFile "tests/spec/cycles_ref4_2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right val' ->
+      val'
+        @?= newStruct
+          [
+            ( "x"
+            , newStruct
+                [
+                  ( "a"
+                  , mkNewTree (TNRefCycle RefCycleVert)
+                  )
+                ,
+                  ( "b"
+                  , mkNewTree (TNRefCycle RefCycleVert)
+                  )
+                ]
+            )
+          ]
+
+testCycles_Ref5 = do
+  s <- readFile "tests/spec/cycles_ref5.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -768,9 +790,8 @@ testCycles5 = do
       , ("z", mkAtomTree $ Int 3)
       ]
 
-testCycles6 :: IO ()
-testCycles6 = do
-  s <- readFile "tests/spec/cycles6.cue"
+testCycles_Ref6 = do
+  s <- readFile "tests/spec/cycles_ref6.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -798,9 +819,8 @@ testCycles6 = do
   zyx = innerStructGen ["z", "y", "x"]
   yxz = innerStructGen ["y", "x", "z"]
 
-testCycles7 :: IO ()
-testCycles7 = do
-  s <- readFile "tests/spec/cycles7.cue"
+testCycles_Ref7 = do
+  s <- readFile "tests/spec/cycles_ref7.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -814,27 +834,67 @@ testCycles7 = do
           , ("z2", newStruct [("a", mkAtomTree $ Int 2), ("b", mkAtomTree $ Int 2)])
           ]
  where
-  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
+  selfCycle = mkNewTree emptyHoriCycle
 
-testCycles9 :: IO ()
-testCycles9 = do
-  s <- readFile "tests/spec/cycles9.cue"
+testCyclesSCErr1 = do
+  s <- readFile "tests/spec/cycles_sc_err1.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
     Right x -> x @?= mkBottomTree ""
 
-testCycles10 :: IO ()
-testCycles10 = do
-  s <- readFile "tests/spec/cycles10.cue"
+testCyclesSCErr2 = do
+  s <- readFile "tests/spec/cycles_sc_err2.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
     Right x -> x @?= mkBottomTree ""
 
-testCycles11 :: IO ()
-testCycles11 = do
-  s <- readFile "tests/spec/cycles11.cue"
+testCyclesSCErr3 = do
+  s <- readFile "tests/spec/cycles_sc_err3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
+
+testCyclesSCErr3_2 = do
+  s <- readFile "tests/spec/cycles_sc_err3_2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> x @?= mkBottomTree ""
+
+testCyclesSC1 = do
+  s <- readFile "tests/spec/cycles_sc1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct [("#List", listS)]
+ where
+  listS = newStruct [("head", mkNewTree TNTop), ("tail", mkAtomTree Null)]
+
+testCyclesSC2 = do
+  s <- readFile "tests/spec/cycles_sc2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("#List", listS)
+          ,
+            ( "MyList"
+            , expandWithClosed True $
+                newStruct [("head", mkAtomTree $ Int 1), ("tail", mkAtomTree Null)]
+            )
+          ]
+ where
+  listS = newStruct [("head", mkNewTree TNTop), ("tail", mkAtomTree Null)]
+
+testCyclesSC3 = do
+  s <- readFile "tests/spec/cycles_sc3.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -854,13 +914,26 @@ testCycles11 = do
     expandWithClosed True $
       newStruct [("head", mkAtomTree $ Int 2), ("tail", mkAtomTree Null)]
 
-testCyclesSC1 :: IO ()
-testCyclesSC1 = do
-  s <- readFile "tests/spec/cycles_sc1.cue"
+testCyclesSC4 = do
+  s <- readFile "tests/spec/cycles_sc4.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right x -> x @?= mkBottomTree ""
+    Right x ->
+      cmpExpStructs x $
+        newStruct
+          [ ("x", newStruct [("#List", listS)])
+          ,
+            ( "MyList"
+            , expandWithClosed True $
+                newStruct [("head", mkAtomTree $ Int 1), ("tail", myListInnerSC)]
+            )
+          ]
+ where
+  listS = newStruct [("head", mkNewTree TNTop), ("tail", mkAtomTree Null)]
+  myListInnerSC =
+    expandWithClosed True $
+      newStruct [("head", mkAtomTree $ Int 2), ("tail", mkAtomTree Null)]
 
 testCyclesPC1 :: IO ()
 testCyclesPC1 = do
@@ -880,7 +953,7 @@ testCyclesPC1 = do
             ]
         )
       ]
-  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
+  selfCycle = mkNewTree emptyHoriCycle
 
 testCyclesPC2 :: IO ()
 testCyclesPC2 = do
@@ -900,7 +973,49 @@ testCyclesPC2 = do
             ]
         )
       ]
-  selfCycle = mkNewTree (TNRefCycle (RefCycleHori undefined))
+  selfCycle = mkNewTree emptyHoriCycle
+
+testCyclesPC3 :: IO ()
+testCyclesPC3 = do
+  s <- readFile "tests/spec/cycles_pc3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> cmpStructs x exp
+ where
+  exp =
+    newStruct
+      [
+        ( "p"
+        , newStruct
+            [ ("a", selfCycle)
+            , ("b", selfCycle)
+            , ("\"x\"", mkAtomTree $ String "a")
+            ]
+        )
+      ]
+  selfCycle = mkNewTree emptyHoriCycle
+
+testCyclesPC4 :: IO ()
+testCyclesPC4 = do
+  s <- readFile "tests/spec/cycles_pc4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right x -> cmpStructs x exp
+ where
+  exp =
+    newStruct
+      [
+        ( "p"
+        , newStruct
+            [ ("a", selfCycle)
+            , ("b", selfCycle)
+            , ("\"c\"", selfCycle)
+            ]
+        )
+      ]
+  selfCycle = mkNewTree emptyHoriCycle
 
 testIncomplete :: IO ()
 testIncomplete = do
@@ -1292,7 +1407,7 @@ testCnstr2 = do
  where
   exp =
     newStruct
-      [ ("a", mkNewTree (TNRefCycle (RefCycleHori undefined)))
+      [ ("a", mkNewTree emptyHoriCycle)
       ,
         ( "b"
         , mkMutableTree $
@@ -1706,19 +1821,26 @@ specTests =
     , testCase "close3" testClose3
     , testCase "cnstr1" testCnstr1
     , testCase "cnstr2" testCnstr2
-    , testCase "cycles1" testCycles1
-    , testCase "cycles10" testCycles10
-    , testCase "cycles11" testCycles11
-    , testCase "cycles2" testCycles2
-    , testCase "cycles3" testCycles3
-    , testCase "cycles4" testCycles4
-    , testCase "cycles5" testCycles5
-    , testCase "cycles6" testCycles6
-    , testCase "cycles7" testCycles7
-    , testCase "cycles9" testCycles9
-    , testCase "cycles_sc1" testCyclesSC1
     , testCase "cycles_pc1" testCyclesPC1
     , testCase "cycles_pc2" testCyclesPC2
+    , testCase "cycles_pc3" testCyclesPC3
+    , testCase "cycles_pc4" testCyclesPC4
+    , testCase "cycles_ref1" testCycles_Ref1
+    , testCase "cycles_ref2" testCycles_Ref2
+    , testCase "cycles_ref3" testCycles_Ref3
+    , testCase "cycles_ref4" testCycles_Ref4
+    , testCase "cycles_ref4_2" testCycles_Ref4_2
+    , testCase "cycles_ref5" testCycles_Ref5
+    , testCase "cycles_ref6" testCycles_Ref6
+    , testCase "cycles_ref7" testCycles_Ref7
+    , testCase "cycles_sc1" testCyclesSC1
+    , testCase "cycles_sc2" testCyclesSC2
+    , testCase "cycles_sc3" testCyclesSC3
+    , testCase "cycles_sc4" testCyclesSC4
+    , testCase "cycles_sc_err1" testCyclesSCErr1
+    , testCase "cycles_sc_err2" testCyclesSCErr2
+    , testCase "cycles_sc_err3" testCyclesSCErr3
+    , testCase "cycles_sc_err3_2" testCyclesSCErr3_2
     , testCase "def1" testDef1
     , testCase "def2" testDef2
     , testCase "def3" testDef3
@@ -1783,17 +1905,18 @@ specTests =
 
 -- | Compare two struct fields. Other elements such as local bindings are ignored.
 cmpStructs ::
+  (HasCallStack) =>
   -- | act
-  -- | exp
   Tree ->
+  -- | exp
   Tree ->
   IO ()
 cmpStructs = cmpStructsMsg ""
 
-cmpStructsMsg :: String -> Tree -> Tree -> IO ()
+cmpStructsMsg :: (HasCallStack) => String -> Tree -> Tree -> IO ()
 cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
-  assertEqual (withMsg "labels") (stcOrdLabels exp) (stcOrdLabels act)
-  assertEqual (withMsg "fields-length") (length expFields) (length actFields)
+  assertEqual (withMsg msg "labels") (stcOrdLabels exp) (stcOrdLabels act)
+  assertEqual (withMsg msg "fields-length") (length expFields) (length actFields)
   mapM_
     ( \(k, v) -> cmpStructVals (show k) v (actFields Map.! k)
     )
@@ -1802,13 +1925,10 @@ cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}
     ( \(k, v) -> cmpStructVals (show k) (expFields Map.! k) v
     )
     (Map.toList actFields)
-  assertEqual (withMsg "patterns") (stcPatterns exp) (stcPatterns act)
-  assertEqual (withMsg "pendings") (stcPendSubs exp) (stcPendSubs act)
-  assertEqual (withMsg "close") (stcClosed exp) (stcClosed act)
+  assertEqual (withMsg msg "patterns") (stcPatterns exp) (stcPatterns act)
+  assertEqual (withMsg msg "pendings") (stcPendSubs exp) (stcPendSubs act)
+  assertEqual (withMsg msg "close") (stcClosed exp) (stcClosed act)
  where
-  withMsg :: String -> String
-  withMsg s = if Prelude.null msg then s else msg ++ ": " ++ s
-
   onlyField :: Map.Map StructTASeg (StructVal Tree) -> Map.Map StructTASeg (StructVal Tree)
   onlyField =
     Map.filterWithKey
@@ -1820,12 +1940,15 @@ cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}
   expFields = onlyField $ stcSubs exp
   actFields = onlyField $ stcSubs act
 
-  cmpStructVals :: String -> StructVal Tree -> StructVal Tree -> IO ()
+  cmpStructVals :: (HasCallStack) => String -> StructVal Tree -> StructVal Tree -> IO ()
   cmpStructVals msg (SField act) (SField exp) = do
-    cmpStructsMsg (withMsg "field") (ssfField act) (ssfField exp)
-    assertEqual (withMsg "attr") (ssfAttr exp) (ssfAttr act)
+    cmpStructsMsg (withMsg msg "field") (ssfField act) (ssfField exp)
+    assertEqual (withMsg msg "attr") (ssfAttr exp) (ssfAttr act)
   cmpStructVals msg sv1 sv2 = assertEqual msg sv1 sv2
 cmpStructsMsg msg act exp = assertEqual msg exp act
+
+withMsg :: String -> String -> String
+withMsg msg s = if Prelude.null msg then s else msg ++ ": " ++ s
 
 cmpExpStructs :: Tree -> Tree -> IO ()
 cmpExpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do

@@ -3,6 +3,7 @@ module Path where
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 
 data Selector = StringSel String | IntSel Int
@@ -309,3 +310,36 @@ hasTemp (TreeAddr xs) = TempTASeg `elem` xs
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
+
+-- {- | Return the ref node addr by removing the last mutable value env segment.
+--
+-- For example, /.../p/fv should return /.../p.
+--
+-- It should only be used get the referable part of the source address because deref is called in the /fv environment.
+-- -}
+-- refNodeAddr :: TreeAddr -> TreeAddr
+-- refNodeAddr p =
+--   fromMaybe
+--     p
+--     ( do
+--         lseg <- lastSeg p
+--         if isMutValSeg lseg
+--           then initTreeAddr p
+--           else return p
+--     )
+--  where
+--   isMutValSeg :: TASeg -> Bool
+--   isMutValSeg (MutableTASeg MutableValTASeg) = True
+--   isMutValSeg _ = False
+--
+
+{- | Convert the address to referable address.
+
+Referable address is the address in which all the mutval segments are removed.
+-}
+referableAddr :: TreeAddr -> TreeAddr
+referableAddr p = TreeAddr $ filter (not . isMutValSeg) $ getTreeSegs p
+ where
+  isMutValSeg :: TASeg -> Bool
+  isMutValSeg (MutableTASeg MutableValTASeg) = True
+  isMutValSeg _ = False

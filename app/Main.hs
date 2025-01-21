@@ -20,6 +20,10 @@ options =
           <> short 'm'
           <> help "Output mermaid graph"
       )
+    <*> switch
+      ( long "show-mutable-args"
+          <> help "Show mutable args in the mermaid graph"
+      )
     <*> argument
       str
       ( metavar "FILE"

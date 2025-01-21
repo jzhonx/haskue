@@ -13,7 +13,7 @@ import Control.Monad (when)
 import Control.Monad.Reader (ask)
 import Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromJust, fromMaybe)
 import Error
 import Path
 import TMonad
@@ -30,13 +30,12 @@ isMutableTreeReducible fnT res =
   treeHasAtom res
     || isTreeBottom res
     || isTreeRefCycleTail res
+    || isTreeStructuralCycle res
     -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
     || not (treeHasRef fnT)
 
 {- | Mutate the Mutable. If the previous mutable mutates to another mutable, then this function will be recursively
  - called.
-
-@param reduceTar: whether to reduce the deref'd value.
 
 The mutation is run in the sub-tree indicated by MutableValTASeg. The mutMethod result will be put in the mutVal.
 
@@ -50,40 +49,30 @@ mutate = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
     Ref ref -> mutateRef ref
     SFunc fn -> mutateFunc fn
     Index idx -> mutateIndexer idx
-    MutStub -> throwErrSt "mutate: mut stub"
+    MutStub -> throwErrSt "mutate a stub"
 
-  -- delete the notification receivers that have the /addr/fv prefix.
-  delNotifRecvPrefix (appendSeg (MutableTASeg MutableValTASeg) addr)
+  -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
+  -- the mutval should not be notified.
+  -- If the mutable has been reduced to non-mutables, then notifiers should be kept.
+  withTree $ \t ->
+    maybe
+      (return ())
+      (const $ delMutValRecvs addr)
+      (getMutableFromTree t)
 
 mutateRef :: (TreeMonad s m) => VT.Reference Tree -> m ()
 mutateRef ref = do
   Config{cfDeref = deref} <- ask
-  runInMutValEnv $ deref (refPath ref)
+  runInMutValEnv $ deref (refPath ref) (refOrigAddrs ref)
   withAddrAndFocus $ \addr focus ->
     logDebugStr $ printf "mutateRef: addr: %s, deref result: %s" (show addr) (show focus)
-  tryReduceRef
 
-tryReduceRef :: (TreeMonad s m) => m ()
-tryReduceRef = do
   -- Make sure the mutable is still the focus of the tree.
   assertMVNotRef
 
-  addr <- getTMAbsAddr
-
-  -- If the ref finds a value and the value has an expression, then we should set the expression to the ref.
-  maybe
-    (return ())
-    ( \mv -> mustMutable $ \case
-        Ref r -> do
-          logDebugStr $ printf "tryReduceRef: addr: %s, set expr: %s" (show addr) (show $ treeOrig mv)
-          modifyTMTN (TNMutable . Ref $ r{refExpr = treeOrig mv})
-        _ -> return ()
-    )
-    =<< getTMMutVal
-
   Config{cfReduce = reduce} <- ask
   runWithMutVal reduce
-  withAddrAndFocus $ \_ focus ->
+  withAddrAndFocus $ \addr focus ->
     logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
   maybe
     (return ())
@@ -106,7 +95,7 @@ tryReduceRef = do
       Just (Ref _) -> throwErrSt "mutateRef: mutable value should not be a ref"
       _ -> return ()
 
-  isRefResReducible t = treeHasAtom t || isTreeBottom t || isTreeRefCycleTail t
+  isRefResReducible t = treeHasAtom t || isTreeBottom t || isTreeRefCycleTail t || isTreeStructuralCycle t
 
 mutateFunc :: (TreeMonad s m) => StatefulFunc Tree -> m ()
 mutateFunc fn = withTree $ \t -> do
@@ -128,7 +117,7 @@ mutateFunc fn = withTree $ \t -> do
 mutateIndexer :: (TreeMonad s m) => Indexer Tree -> m ()
 mutateIndexer idxer = do
   Config{cfIndex = index, cfReduce = reduce} <- ask
-  mustMutable $ \_ -> runInMutValEnv $ index (idxSels idxer)
+  mustMutable $ \_ -> runInMutValEnv $ index (idxOrigAddrs idxer) (idxSels idxer)
   maybe
     (return ())
     ( \mv ->
@@ -146,8 +135,6 @@ reduceToMutVal :: (TreeMonad s m) => Tree -> m ()
 reduceToMutVal val = do
   modifyTMTN (treeNode val)
   handleRefCycle
-  addr <- getTMAbsAddr
-  delNotifRecvPrefix addr
 
 {- | Convert the RefCycleTail to RefCycle if the addr is the same as the cycle start addr.
 
@@ -157,7 +144,7 @@ handleRefCycle :: (TreeMonad s m) => m ()
 handleRefCycle = withTree $ \val -> case treeNode val of
   TNRefCycle (RefCycleVertMerger (cycleStartTreeAddr, _)) -> do
     addr <- getTMAbsAddr
-    if cycleStartTreeAddr == addr
+    if referableAddr cycleStartTreeAddr == referableAddr addr
       then do
         logDebugStr $ printf "handleRefCycle: addr: %s, cycle head found" (show addr)
         -- The ref cycle tree must record the original tree.
@@ -166,8 +153,6 @@ handleRefCycle = withTree $ \val -> case treeNode val of
   _ -> return ()
 
 {- | Delete the notification receivers that have the specified prefix.
-
-This should be called when the reference becomes invalid.
 
 we need to delete receiver starting with the addr, not only the addr. For example, if the function
 is index and the first argument is a reference, then the first argument dependency should also be
@@ -191,6 +176,48 @@ delNotifRecvPrefix addrPrefix = do
 
   del :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
   del = Map.map (filter (\p -> not (isPrefix addrPrefix p)))
+
+{- | Delete the notification receivers of the sub values of the mutval.
+
+If the receiver addresss is the mutable address itself, then it should be skipped because the mutable could be a
+reference.
+
+If the receiver addresss is the mutable address plus the argument segment, then it should be skipped.
+-}
+delMutValRecvs :: (TMonad s m t) => TreeAddr -> m ()
+delMutValRecvs mutAddr = do
+  withContext $ \ctx ->
+    putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ delRecvs (ctxNotifGraph ctx)}
+  withAddrAndFocus $ \addr _ -> do
+    notifiers <- ctxNotifGraph <$> getTMContext
+    logDebugStr $
+      printf
+        "delMutValRecvs: addr: %s delete mutval receiver: %s, updated notifiers to: %s"
+        (show addr)
+        (show mutAddr)
+        (showNotifiers notifiers)
+ where
+  delEmptyElem :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  delEmptyElem = Map.filter (not . null)
+
+  -- Delete the receivers that have the mutable address as the prefix.
+  delRecvs :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  delRecvs =
+    Map.map
+      ( filter
+          ( \recv ->
+              let
+                isAddrSub = isPrefix mutAddr recv && recv /= mutAddr
+                rest = trimPrefixTreeAddr recv mutAddr
+                isAddrMutArg = isAddrSub && isSegMutArg (fromJust (headSeg rest))
+               in
+                not isAddrSub || isAddrMutArg
+          )
+      )
+
+  isSegMutArg :: TASeg -> Bool
+  isSegMutArg (MutableTASeg (MutableArgTASeg _)) = True
+  isSegMutArg _ = False
 
 runInMutValEnv :: (TreeMonad s m) => m () -> m ()
 runInMutValEnv f = do

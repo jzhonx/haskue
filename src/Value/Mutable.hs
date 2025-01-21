@@ -47,11 +47,19 @@ data Reference t = Reference
   , refExpr :: Maybe AST.Expression
   -- ^ refExpr is used to avoid the unnecessary reduction of the reference. If the referenced expression
   -- is not changed, no need to reduce it again.
+  , refOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
+  -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
+  -- expression.
+  -- If it is, the address of the scope is stored here.
+  -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
+  -- The first is the subtree root address, the second is the value address.
   , refValue :: Maybe t
   }
 
 data Indexer t = Indexer
   { idxSels :: [t]
+  , idxOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
+  -- ^ See refOrigAddrs.
   , idxValue :: Maybe t
   }
 
@@ -224,8 +232,9 @@ mkRefMutable tp =
     Reference
       { refPath = tp
       , refExpr = Nothing
+      , refOrigAddrs = Nothing
       , refValue = Nothing
       }
 
 emptyIndexer :: Indexer t
-emptyIndexer = Indexer{idxSels = [], idxValue = Nothing}
+emptyIndexer = Indexer{idxSels = [], idxValue = Nothing, idxOrigAddrs = Nothing}

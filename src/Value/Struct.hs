@@ -23,6 +23,9 @@ data Struct t = Struct
   , stcPatterns :: [StructPattern t]
   , stcPendSubs :: [PendingSElem t]
   , stcClosed :: Bool
+  -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
+  , stcRecurClosed :: Bool
+  -- ^ The recur closed flag is used to indicate that the struct is closed and all the fields are closed as well.
   }
 
 data LabelAttr = LabelAttr
@@ -218,6 +221,7 @@ emptyStruct =
     , stcPendSubs = []
     , stcPatterns = []
     , stcClosed = False
+    , stcRecurClosed = False
     }
 
 addStructField :: Struct t -> String -> Field t -> Struct t
