@@ -1250,6 +1250,15 @@ testRef9 = do
  where
   sa = newStruct [("d", mkAtomTree $ Int 1), ("z", mkAtomTree $ Int 1)]
 
+testRefErr1 :: IO ()
+testRefErr1 = do
+  s <- readFile "tests/spec/ref_err1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "not found" y
+ where
+
 testStruct1 :: IO ()
 testStruct1 = do
   s <- readFile "tests/spec/struct1.cue"
@@ -1883,6 +1892,7 @@ specTests =
     , testCase "ref7" testRef7
     , testCase "ref8" testRef8
     , testCase "ref9" testRef9
+    , testCase "ref_err1" testRefErr1
     , testCase "selector1" testSelector1
     , testCase "struct1" testStruct1
     , testCase "struct2" testStruct2

@@ -270,13 +270,18 @@ addCtxNotifier.
 -}
 addNotifier :: (TreeMonad s m) => Path.Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
 addNotifier ref origAddrsM = do
-  srcAddr <- referableAddr <$> refToPotentialAddr ref origAddrsM
+  srcAddrM <- refToPotentialAddr ref origAddrsM >>= \x -> return $ referableAddr <$> x
   -- Since we are in the /fv environment, we need to get the referable addr.
   recvAddr <- referableAddr <$> getTMAbsAddr
 
-  logDebugStr $ printf "addNotifier: (%s -> %s)" (show srcAddr) (show recvAddr)
-  ctx <- getTMContext
-  putTMContext $ addCtxNotifier ctx (srcAddr, recvAddr)
+  maybe
+    (logDebugStr $ printf "addNotifier: ref %s is not found" (show ref))
+    ( \srcAddr -> do
+        ctx <- getTMContext
+        putTMContext $ addCtxNotifier ctx (srcAddr, recvAddr)
+        logDebugStr $ printf "addNotifier: (%s -> %s)" (show srcAddr) (show recvAddr)
+    )
+    srcAddrM
 
 {- | Get the value pointed by the reference.
 
@@ -600,25 +605,26 @@ traverseTC f tc = do
 
 {- | Convert the reference target to absolute tree addr.
 
-The target might not exist at the time, but the first identifier must be found, which means this function should be
-called when the first identifier is already found.
+It does not follow the reference.
 -}
-refToPotentialAddr :: (TreeMonad s m) => Path.Reference -> Maybe (TreeAddr, TreeAddr) -> m TreeAddr
+refToPotentialAddr :: (TreeMonad s m) => Path.Reference -> Maybe (TreeAddr, TreeAddr) -> m (Maybe TreeAddr)
 refToPotentialAddr ref origAddrsM = do
   let fstSel = fromJust $ headSel ref
-  let f =
-        maybe
-          (throwErrSt $ printf "ident of the reference %s is not found" (show ref))
-          (return . fst)
-          =<< searchTMVar fstSel
+  let f = searchTMVar fstSel >>= (\x -> return $ fst <$> x)
 
   -- Search the address of the first identifier, whether from the current env or the original env.
-  fstSegAbsAddr <- maybe f (\(origSubTAddr, _) -> inAbsRemoteTM origSubTAddr f) origAddrsM
+  fstSegAbsAddrM <- maybe f (\(origSubTAddr, _) -> inAbsRemoteTM origSubTAddr f) origAddrsM
+
+  -- If the first segment is not found, return Nothing.
   return $
-    maybe
-      fstSegAbsAddr
-      (\rest -> refToAddr rest `appendTreeAddr` fstSegAbsAddr)
-      (tailRef ref)
+    fstSegAbsAddrM
+      >>= ( \fstSegAbsAddr ->
+              Just $
+                maybe
+                  fstSegAbsAddr
+                  (\rest -> refToAddr rest `appendTreeAddr` fstSegAbsAddr)
+                  (tailRef ref)
+          )
 
 -- | Locate the reference and if the reference is found, run the action.
 locateRefAndRun :: (TreeMonad s m) => Path.Reference -> m (Either Tree (Maybe a)) -> m (Either Tree (Maybe a))
