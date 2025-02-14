@@ -642,8 +642,9 @@ locateRefAndRun ref f = do
     Left err -> return $ Left err
     Right False -> return $ Right Nothing
     Right True -> f
-  backM <- goTMAbsAddr origAbsAddr
-  unless backM $ throwErrSt $ printf "failed to go back to the original addr %s" (show origAbsAddr)
+
+  ok <- goTMAbsAddr origAbsAddr
+  unless ok $ throwErrSt $ printf "failed to go back to the original addr %s" (show origAbsAddr)
   return res
 
 -- | Locate the node in the lowest ancestor tree by specified addr. The addr must start with a locatable var.

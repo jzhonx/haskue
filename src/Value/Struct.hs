@@ -57,23 +57,6 @@ data LetBinding t = LetBinding
   }
   deriving (Show, Eq, Functor)
 
-{- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
-possible.
--}
-data DynamicField t = DynamicField
-  { dsfAttr :: LabelAttr
-  , dsfLabel :: t
-  , dsfLabelExpr :: AST.Expression
-  , dsfValue :: t
-  }
-  deriving (Show)
-
-data StructPattern t = StructPattern
-  { psfPattern :: Bounds
-  , psfValue :: t
-  }
-  deriving (Show)
-
 {- | LocalPend is needed because the existence of the local binding is dependent on whether its scope has not defined
 it.
 -}
@@ -84,6 +67,25 @@ data PendingSElem t
     -- value.
     PatternPend t t
   deriving (Show, Eq)
+
+{- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
+possible.
+-}
+data DynamicField t = DynamicField
+  { dsfAttr :: LabelAttr
+  , dsfLabel :: t
+  , dsfLabelExpr :: AST.Expression
+  , dsfValue :: t
+  -- ^ The value is only for the storage purpose. It will not be reduced during reducing pending elements.
+  }
+  deriving (Show)
+
+data StructPattern t = StructPattern
+  { psfPattern :: Bounds
+  , psfValue :: t
+  -- ^ The value is only for the storage purpose. It will not be reduced during reducing pending elements.
+  }
+  deriving (Show)
 
 data StructElemAdder t
   = Static String (Field t)
@@ -175,10 +177,15 @@ structStrLabels struct = stcOrdLabels struct ++ Map.keys (Map.filter isLocal (st
 structPendIndexes :: Struct t -> [Int]
 structPendIndexes s = [0 .. length (stcPendSubs s) - 1]
 
-modifyPendElemVal :: (t -> t) -> PendingSElem t -> PendingSElem t
-modifyPendElemVal f pse = case pse of
-  DynamicPend dsf -> DynamicPend dsf{dsfValue = f (dsfValue dsf)}
-  PatternPend pattern val -> PatternPend pattern (f val)
+getPendElemSub :: PendingSElem t -> t
+getPendElemSub pse = case pse of
+  DynamicPend dsf -> dsfLabel dsf
+  PatternPend pat _ -> pat
+
+modifyPendElemSub :: t -> PendingSElem t -> PendingSElem t
+modifyPendElemSub t pse = case pse of
+  DynamicPend dsf -> DynamicPend dsf{dsfLabel = t}
+  PatternPend _ val -> PatternPend t val
 
 defaultLabelAttr :: LabelAttr
 defaultLabelAttr = LabelAttr SFCRegular True

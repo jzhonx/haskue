@@ -61,6 +61,7 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) _ _ = False
 
 {- | descend into the tree with the given segment.
+
 This should only be used by TreeCursor.
 -}
 subTreeTN :: (TreeOp t, HasTreeNode t, Show t) => TASeg -> t -> Maybe t
@@ -76,9 +77,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     PendingTASeg i -> do
       -- pending elements can be resolved, so the index might not be valid.
       p <- stcPendSubs struct `indexList` i
-      case p of
-        DynamicPend dsf -> Just (dsfValue dsf)
-        PatternPend _ val -> Just val
+      return $ getPendElemSub p
     LetTASeg name ->
       lookupStructVal name struct >>= \case
         SLet lb -> Just (lbValue lb)
@@ -179,12 +178,12 @@ setSubTreeTN seg subT parT = do
           return (TNStruct newStruct)
     | PendingTASeg i <- labelSeg =
         let
-          psf = stcPendSubs parStruct !! i
-          newPSF = modifyPendElemVal (const subT) psf
+          pends = stcPendSubs parStruct
+          psf = pends !! i
+          newPSF = modifyPendElemSub subT psf
           newStruct =
             parStruct
-              { stcPendSubs =
-                  take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
+              { stcPendSubs = take i pends ++ [newPSF] ++ drop (i + 1) pends
               }
          in
           return (TNStruct newStruct)
