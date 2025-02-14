@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Value.Struct where
 
@@ -58,7 +57,7 @@ data LetBinding t = LetBinding
   }
   deriving (Show, Eq, Functor)
 
-{- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field)fields are not
+{- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
 possible.
 -}
 data DynamicField t = DynamicField
@@ -79,8 +78,11 @@ data StructPattern t = StructPattern
 it.
 -}
 data PendingSElem t
-  = DynamicPend (DynamicField t)
-  | PatternPend t t
+  = -- | DynamicPend is in the form of {(dyn_label): value}.
+    DynamicPend (DynamicField t)
+  | -- | PatternPend is in the form of {[pattern]: value}. The first element is the pattern, the second element is the
+    -- value.
+    PatternPend t t
   deriving (Show, Eq)
 
 data StructElemAdder t
@@ -242,6 +244,12 @@ addStructLocal struct s t =
           (Path.StringTASeg s)
           (SLet $ LetBinding{lbValue = t, lbReferred = False})
           (stcSubs struct)
+    }
+
+addStructPattern :: Struct t -> StructPattern t -> Struct t
+addStructPattern struct psf =
+  struct
+    { stcPatterns = stcPatterns struct ++ [psf]
     }
 
 markLocalReferred :: String -> Struct t -> Struct t

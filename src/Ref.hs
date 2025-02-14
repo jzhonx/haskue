@@ -487,39 +487,45 @@ copyRefVal dstAddr trail tar = do
     TNConstraint c -> return (mkAtomVTree $ cnsAtom c)
     _ -> do
       -- evaluate the original expression.
-      _orig <- do
-        e <- maybe (buildASTExpr False tar) return $ treeOrig tar
-        evalExprTM e
-
-      tc <- getTMCursor
-      raw <- markOuterIdents _orig tc
-
-      Config{cfClose = close} <- ask
+      orig <- evalTarExpr
       let visited = Set.insert dstAddr trail
-      addr <- getTMAbsAddr
-      val <-
-        if any addrHasDef visited
-          then do
-            logDebugStr $
-              printf
-                "deref: addr: %s, visitedRefs: %s, has definition, recursively close the value."
-                (show addr)
-                (show $ Set.toList visited)
-            return . mkMutableTree . SFunc $
-              emptySFunc
-                { sfnArgs = [raw]
-                , sfnName = "deref_close"
-                , sfnMethod = close True
-                }
-          else return raw
-      logDebugStr $
-        printf
-          "deref: addr: %s, deref'd val is: %s, visited: %s, tar: %s"
-          (show addr)
-          (show val)
-          (show $ Set.toList visited)
-          (show tar)
+      val <- checkRefDef orig visited
+
+      withAddrAndFocus $ \addr _ ->
+        logDebugStr $
+          printf
+            "deref: addr: %s, deref'd val is: %s, visited: %s, tar: %s"
+            (show addr)
+            (show val)
+            (show $ Set.toList visited)
+            (show tar)
       return val
+ where
+  evalTarExpr = do
+    orig <-
+      maybe (buildASTExpr False tar) return (treeOrig tar)
+        >>= evalExprTM
+
+    tc <- getTMCursor
+    markOuterIdents orig tc
+
+  checkRefDef orig visited = do
+    Config{cfClose = close} <- ask
+    if any addrHasDef visited
+      then do
+        withAddrAndFocus $ \addr _ ->
+          logDebugStr $
+            printf
+              "deref: addr: %s, visitedRefs: %s, has definition, recursively close the value."
+              (show addr)
+              (show $ Set.toList visited)
+        return . mkMutableTree . SFunc $
+          emptySFunc
+            { sfnArgs = [orig]
+            , sfnName = "deref_close"
+            , sfnMethod = close True
+            }
+      else return orig
 
 {- | Mark all outer references inside a container node with original value address.
 

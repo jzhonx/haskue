@@ -249,31 +249,21 @@ reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
       TNMutable _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
       _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
   PatternPend pattern val -> do
-    -- evaluate the pattern.
-    pat <- inDiscardSubTM (StructTASeg seg) pattern (reduce >> getTMTree)
-    withAddrAndFocus $ \addr _ ->
-      logDebugStr $
-        printf
-          "reducePendSElem: addr: %s, pattern is evaluated to %s"
-          (show addr)
-          (show pat)
-    case treeNode pat of
-      TNBottom _ -> putTMTree pat >> return False
-      TNBounds bds ->
-        if null (bdsList bds)
-          then putTMTree (mkBottomTree "patterns must be non-empty") >> return False
-          else do
-            let psf = StructPattern bds val
-            newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addPattern psf struct
-            putTMTree newStruct
-            withAddrAndFocus $ \addr _ ->
-              logDebugStr $ printf "reducePendSE: addr: %s, newStruct %s" (show addr) (show newStruct)
-            return True
-      -- The label expression does not evaluate to a bounds.
-      TNMutable _ -> return False
-      _ ->
-        putTMTree (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
-          >> return False
+    r <- reduceStructPendPattern pattern val
+    case r of
+      Left err -> putTMTree err >> return False
+      Right Nothing -> return False
+      Right (Just psf) -> do
+        newStruct <- mustStruct $ \struct -> return $ mkNewTree . TNStruct $ addStructPattern struct psf
+        putTMTree newStruct
+        withAddrAndFocus $ \addr _ ->
+          logDebugStr $
+            printf
+              "reducePendSE: addr: %s, new pattern: %s, newStruct %s"
+              (show addr)
+              (show psf)
+              (show newStruct)
+        return True
  where
   dynToField ::
     DynamicField Tree ->
@@ -293,11 +283,25 @@ reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
         { ssfField = dsfValue dsf
         , ssfAttr = dsfAttr dsf
         }
-
-  -- Add the pattern to the struct. Return the new struct and the index of the pattern.
-  addPattern :: StructPattern Tree -> Struct Tree -> Struct Tree
-  addPattern psf x = let patterns = stcPatterns x ++ [psf] in x{stcPatterns = patterns}
 reducePendSElem _ = throwErrSt "invalid segment field combination"
+
+-- | Reduce the pending pattern. The focus should be the struct.
+reduceStructPendPattern ::
+  (TreeMonad s m) => Tree -> Tree -> m (Either Tree (Maybe (StructPattern Tree)))
+reduceStructPendPattern pattern val = do
+  -- evaluate the pattern.
+  pat <- inTempSubTM pattern (reduce >> getTMTree)
+  withAddrAndFocus $ \addr _ ->
+    logDebugStr $ printf "reducePendSElem: addr: %s, pattern is evaluated to %s" (show addr) (show pat)
+  return $ case treeNode pat of
+    TNBottom _ -> Left pat
+    -- The label expression does not evaluate to a bounds.
+    TNMutable _ -> Right Nothing
+    TNBounds bds ->
+      if null (bdsList bds)
+        then Left (mkBottomTree "patterns must be non-empty")
+        else Right $ Just $ StructPattern bds val
+    _ -> Left (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
 
 {- | Apply the pattern to the existing static fields of the struct.
 
@@ -1170,7 +1174,11 @@ recursively, the only way is to reference the struct via a #ident.
 -}
 unifyStructs ::
   (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m ()
-unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
+unifyStructs isEitherEmbeded (Path.L, _s1) (_, _s2) = do
+  let
+    s1 = _s1
+    s2 = _s2
+
   lBtm1 <- checkPermittedLabels s1 isEitherEmbeded s2
   lBtm2 <- checkPermittedLabels s2 isEitherEmbeded s1
   case (lBtm1, lBtm2) of
@@ -1178,22 +1186,12 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
     (_, Just b2) -> putTMTree b2
     _ -> do
       sid <- allocTMScopeID
-      let merged = nodesToStruct sid allFields combinedPatterns combinedPendSubs
+      let merged = nodesToStruct sid (unionFields s1 s2) s1 s2
       withAddrAndFocus $ \addr _ ->
         logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
       -- in reduce, the new combined fields will be checked by the combined patterns.
       putTMTree merged
  where
-  fields1 = stcSubs s1
-  fields2 = stcSubs s2
-  l1Set = Map.keysSet fields1
-  l2Set = Map.keysSet fields2
-  interKeysSet = Set.intersection l1Set l2Set
-  disjKeysSet1 = Set.difference l1Set interKeysSet
-  disjKeysSet2 = Set.difference l2Set interKeysSet
-  combinedPendSubs = stcPendSubs s1 ++ stcPendSubs s2
-  combinedPatterns = stcPatterns s1 ++ stcPatterns s2
-
   mergeField :: Field Tree -> Field Tree -> Field Tree
   mergeField sf1 sf2 =
     let
@@ -1206,9 +1204,22 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         , ssfAttr = ua
         }
 
+  unionFields :: Struct Tree -> Struct Tree -> [(Path.StructTASeg, Field Tree)]
+  unionFields st1 st2 =
+    inter fields1 fields2 interKeysSet (stcOrdLabels st1 ++ stcOrdLabels st2)
+      ++ select st1 disjKeysSet1
+      ++ select st2 disjKeysSet2
+   where
+    fields1 = stcSubs st1
+    fields2 = stcSubs st2
+    l1Set = Map.keysSet fields1
+    l2Set = Map.keysSet fields2
+    interKeysSet = Set.intersection l1Set l2Set
+    disjKeysSet1 = Set.difference l1Set interKeysSet
+    disjKeysSet2 = Set.difference l2Set interKeysSet
+
   -- Returns the intersection fields of the two structs. The relative order of the fields is preserved.
-  inter :: [(Path.StructTASeg, Field Tree)]
-  inter =
+  inter fields1 fields2 interKeysSet ordLabels =
     fst $
       foldr
         ( \key (decl, visited) ->
@@ -1227,7 +1238,7 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
         )
         -- first element is the pairs, the second element is the visited keys set.
         ([], Set.empty)
-        (stcOrdLabels s1 ++ stcOrdLabels s2)
+        ordLabels
 
   -- select the fields in the struct that are in the keysSet.
   select :: Struct Tree -> Set.Set Path.StructTASeg -> [(Path.StructTASeg, Field Tree)]
@@ -1240,24 +1251,34 @@ unifyStructs isEitherEmbeded (Path.L, s1) (_, s2) = do
       []
       [(key, stcSubs s Map.! key) | key <- stcOrdLabels s, key `Set.member` keysSet]
 
-  allFields :: [(Path.StructTASeg, Field Tree)]
-  allFields = inter ++ select s1 disjKeysSet1 ++ select s2 disjKeysSet2
-
   nodesToStruct ::
-    Int -> [(Path.StructTASeg, Field Tree)] -> [StructPattern Tree] -> [PendingSElem Tree] -> Tree
-  nodesToStruct sid nodes patterns pends =
+    Int -> [(Path.StructTASeg, Field Tree)] -> Struct Tree -> Struct Tree -> Tree
+  nodesToStruct sid nodes st1 st2 =
     mkStructTree $
       emptyStruct
         { stcID = sid
         , stcOrdLabels = map fst nodes
         , stcSubs = Map.fromList $ map (\(seg, f) -> (seg, SField f)) nodes
-        , stcPendSubs = pends
-        , stcPatterns = patterns
-        , stcClosed = stcClosed s1 || stcClosed s2
+        , stcPendSubs = combinedPendSubs
+        , stcPatterns = combinedPatterns
+        , stcClosed = stcClosed st1 || stcClosed st2
         }
+   where
+    combinedPendSubs = stcPendSubs st1 ++ stcPendSubs st2
+    combinedPatterns = stcPatterns st1 ++ stcPatterns st2
 unifyStructs isEitherEmbeded dt1@(Path.R, _) dt2 = unifyStructs isEitherEmbeded dt2 dt1
 
+-- reducePendPatternForUnify :: (TreeMonad s m) => Struct Tree -> m (Struct Tree)
+-- reducePendPatternForUnify s = do
+--   foldM
+--     (\acc (i, pend) -> reducePendSElem (PendingTASeg i, pend) >>= \r -> return $ if r then i : acc else acc)
+--     []
+--     (zip [0 ..] (stcPendSubs s))
+--   reducedPatterns <- mapM (reduceStructPattern isEmbedded) (stcPatterns s)
+--   return s{stcPatterns = reducedPatterns}
+
 {- | Check if the new labels from the new struct are permitted based on the base struct.
+
 The isNewEmbedded flag indicates whether the new struct is embedded in the base struct.
 -}
 checkPermittedLabels :: (TreeMonad s m) => Struct Tree -> Bool -> Struct Tree -> m (Maybe Tree)
@@ -1469,7 +1490,7 @@ close recur args
         TNMutable _ -> return ()
         _ -> putTMTree $ closeTree recur r
 
--- | Closes a struct when the tree has struct.
+-- | Close a struct when the tree has struct.
 closeTree :: Bool -> Tree -> Tree
 closeTree recur a =
   case treeNode a of

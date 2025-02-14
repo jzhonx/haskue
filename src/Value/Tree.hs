@@ -141,7 +141,8 @@ buildRepTreeTN t tn opt = case tn of
       ( mempty
       , show b
       , []
-      , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
+      , []
+      -- , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
       )
   TNStruct s ->
     let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
@@ -163,9 +164,11 @@ buildRepTreeTN t tn opt = case tn of
         dlabelAttr :: DynamicField Tree -> String
         dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
 
+        -- pending pattern attribute
         plabelAttr :: String
         plabelAttr = ",e,patpend"
 
+        -- The tuple is (field name, field meta, field value)
         fields :: [(String, String, Tree)]
         fields =
           map
@@ -177,7 +180,7 @@ buildRepTreeTN t tn opt = case tn of
             )
             (structStrLabels s)
             ++ zipWith
-              ( \j k -> (show (StructTASeg $ PatternTASeg j), "", psfValue k)
+              ( \j k -> (show (StructTASeg $ PatternTASeg j), "," ++ show (psfPattern k), psfValue k)
               )
               [0 ..]
               (stcPatterns s)
@@ -191,12 +194,12 @@ buildRepTreeTN t tn opt = case tn of
               (structPendIndexes s)
 
         metas :: [(String, String)]
-        metas =
-          zipWith
-            (\j psf -> (show (StructTASeg $ PatternTASeg j), show (psfPattern psf)))
-            [0 ..]
-            (stcPatterns s)
-     in consRep
+        metas = []
+     in -- zipWith
+        --   (\j psf -> (show (StructTASeg $ PatternTASeg j), show (psfPattern psf)))
+        --   [0 ..]
+        --   (stcPatterns s)
+        consRep
           ( (if stcClosed s then "#" else mempty) <> symbol
           , ordLabels <> ", sid:" <> show (stcID s)
           , consFields fields
@@ -374,8 +377,10 @@ treeToMermaid opt msg evalTreeAddr root = do
   subgraph toff t treeID = do
     let
       (TreeRep symbol meta subReps _) = iterRepTree t opt
+
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
+
       curTreeRepStr =
         writeLine
           ( printf
@@ -391,12 +396,12 @@ treeToMermaid opt msg evalTreeAddr root = do
           )
 
     foldM
-      ( \acc (TreeRepField label _ sub) -> do
+      ( \acc (TreeRepField label attr sub) -> do
           let subTreeID = treeID ++ "_" ++ label
           rest <- subgraph (toff + 2) sub subTreeID
           return $
             acc
-              <> writeLine (printf "%s -->|%s| %s" treeID label subTreeID)
+              <> writeLine (printf "%s -->|%s| %s" treeID (label <> escape attr) subTreeID)
               <> rest
       )
       curTreeRepStr
@@ -405,6 +410,7 @@ treeToMermaid opt msg evalTreeAddr root = do
   escape :: String -> String
   escape = concatMap $ \case
     '"' -> "#quot;"
+    '?' -> "&#63;"
     c -> [c]
 
 showTreeSymbol :: Tree -> String
