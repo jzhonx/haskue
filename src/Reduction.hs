@@ -247,7 +247,11 @@ reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
       TNMutable _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
       _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
   PatternPend pattern val -> do
-    r <- reduceStructPendPattern pattern val
+    -- evaluate the pattern.
+    pat <- inSubTM (StructTASeg seg) pattern (reduce >> getTMTree)
+    withAddrAndFocus $ \addr _ ->
+      logDebugStr $ printf "reducePendSElem: addr: %s, pattern is evaluated to %s" (show addr) (show pat)
+    let r = patToStructPendPattern pat val
     case r of
       Left err -> putTMTree err >> return False
       Right Nothing -> return False
@@ -284,22 +288,17 @@ reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
 reducePendSElem _ = throwErrSt "invalid segment field combination"
 
 -- | Reduce the pending pattern. The focus should be the struct.
-reduceStructPendPattern ::
-  (TreeMonad s m) => Tree -> Tree -> m (Either Tree (Maybe (StructPattern Tree)))
-reduceStructPendPattern pattern val = do
-  -- evaluate the pattern.
-  pat <- inTempSubTM pattern (reduce >> getTMTree)
-  withAddrAndFocus $ \addr _ ->
-    logDebugStr $ printf "reducePendSElem: addr: %s, pattern is evaluated to %s" (show addr) (show pat)
-  return $ case treeNode pat of
-    TNBottom _ -> Left pat
-    -- The label expression does not evaluate to a bounds.
-    TNMutable _ -> Right Nothing
-    TNBounds bds ->
-      if null (bdsList bds)
-        then Left (mkBottomTree "patterns must be non-empty")
-        else Right $ Just $ StructPattern bds val
-    _ -> Left (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
+patToStructPendPattern ::
+  Tree -> Tree -> Either Tree (Maybe (StructPattern Tree))
+patToStructPendPattern pat val = case treeNode pat of
+  TNBottom _ -> Left pat
+  -- The label expression does not evaluate to a bounds.
+  TNMutable _ -> Right Nothing
+  TNBounds bds ->
+    if null (bdsList bds)
+      then Left (mkBottomTree "patterns must be non-empty")
+      else Right $ Just $ StructPattern bds val
+  _ -> Left (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
 
 {- | Apply the pattern to the existing static fields of the struct.
 
