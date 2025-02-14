@@ -80,18 +80,37 @@ runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 defaultConfig :: Config Tree
 defaultConfig =
   Config
-    { cfCreateCnstr = False
-    , cfMermaid = False
-    , cfShowMutArgs = False
-    , cfEvalExpr = evalExpr
-    , cfClose = close
-    , cfReduce = reduce
-    , cfDeref = deref
-    , cfIndex = index
+    { cfSettings =
+        Settings
+          { stMermaid = False
+          , stShowMutArgs = False
+          }
+    , cfRuntimeParams = RuntimeParams{rpCreateCnstr = False}
+    , cfFunctions =
+        Functions
+          { fnEvalExpr = evalExpr
+          , fnClose = close
+          , fnReduce = reduce
+          , fnDeref = deref
+          , fnIndex = index
+          , fnPropUpStructPost = propUpStructPost
+          }
     }
 
 evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m Tree
 evalFile sf conf = do
+  let evalConf =
+        defaultConfig
+          { cfSettings =
+              (cfSettings defaultConfig)
+                { stMermaid = ecMermaidGraph conf
+                , stShowMutArgs = ecShowMutArgs conf
+                }
+          , cfRuntimeParams =
+              (cfRuntimeParams defaultConfig)
+                { rpCreateCnstr = True
+                }
+          }
   rootTC <-
     runReaderT
       ( do
@@ -105,19 +124,11 @@ evalFile sf conf = do
           logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      defaultConfig
-        { cfCreateCnstr = True
-        , cfMermaid = ecMermaidGraph conf
-        , cfShowMutArgs = ecShowMutArgs conf
-        }
+      evalConf
 
   finalized <-
     runReaderT
       (execStateT postValidation rootTC)
-      defaultConfig
-        { cfCreateCnstr = False
-        , cfMermaid = ecMermaidGraph conf
-        , cfShowMutArgs = ecShowMutArgs conf
-        }
+      evalConf{cfRuntimeParams = (cfRuntimeParams evalConf){rpCreateCnstr = False}}
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

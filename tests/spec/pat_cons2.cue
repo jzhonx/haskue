@@ -1,0 +1,11 @@
+// This tests when the pattern of a constraint is a ref and when the ref's value changes,
+// the previously invalid value is valid.
+x: {
+	[y.z]: {f1: 1}
+	a: {f2: 2}
+	b: 1 // previously invalid value if string is matched.
+}
+y: {
+	z:     string
+	("z"): =~"a"
+}

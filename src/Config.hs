@@ -16,33 +16,68 @@ import Error
 import Path
 import Text.Printf (printf)
 import Util
+import Value.Struct
 
 type EM m t = (Env m, MonadReader (Config t) m, TreeOp t, MonadState Int m)
 type MM s m t = (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s)
 
+data Settings = Settings
+  { stMermaid :: Bool
+  , stShowMutArgs :: Bool
+  }
+  deriving (Show)
+
+newtype RuntimeParams = RuntimeParams
+  { rpCreateCnstr :: Bool
+  }
+  deriving (Show)
+
+data Functions t = Functions
+  { fnEvalExpr :: forall m. (EM m t) => AST.Expression -> m t
+  , fnClose :: forall s m. (MM s m t) => [t] -> m ()
+  , fnReduce :: forall s m. (MM s m t) => m ()
+  , fnDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
+  , fnIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
+  , fnPropUpStructPost :: forall s m. (MM s m t) => (StructTASeg, Struct t) -> m ()
+  }
+
 data Config t = Config
-  { cfCreateCnstr :: Bool
-  , cfMermaid :: Bool
-  , cfShowMutArgs :: Bool
-  , cfEvalExpr :: forall m. (EM m t) => AST.Expression -> m t
-  , cfClose :: forall s m. (MM s m t) => Bool -> [t] -> m ()
-  , cfReduce :: forall s m. (MM s m t) => m ()
-  , cfDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
-  , cfIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
+  { cfSettings :: Settings
+  , cfRuntimeParams :: RuntimeParams
+  , cfFunctions :: Functions t
   }
 
 instance Show (Config t) where
-  show c = printf "Config{cfCreateCnstr: %s, cfMermaid: %s}" (show $ cfCreateCnstr c) (show $ cfMermaid c)
+  show c = printf "Config{%s}" (show $ cfSettings c)
 
-emptyConfig :: (Config t)
+emptySettings :: Settings
+emptySettings =
+  Settings
+    { stMermaid = False
+    , stShowMutArgs = False
+    }
+
+emptyRuntimeParams :: RuntimeParams
+emptyRuntimeParams =
+  RuntimeParams
+    { rpCreateCnstr = False
+    }
+
+emptyFunctions :: Functions t
+emptyFunctions =
+  Functions
+    { fnEvalExpr = \_ -> throwErrSt "fnEvalExpr not set"
+    , fnClose = \_ -> throwErrSt "fnClose not set"
+    , fnReduce = throwErrSt "fnReduce not set"
+    , fnDeref = \_ _ -> throwErrSt "fnDeref not set"
+    , fnIndex = \_ _ -> throwErrSt "fnIndex not set"
+    , fnPropUpStructPost = \_ -> throwErrSt "fnPropUpStructPost not set"
+    }
+
+emptyConfig :: Config t
 emptyConfig =
   Config
-    { cfCreateCnstr = False
-    , cfMermaid = False
-    , cfShowMutArgs = False
-    , cfEvalExpr = \_ -> throwErrSt "cfEvalExpr not set"
-    , cfClose = \_ _ -> throwErrSt "cfClose not set"
-    , cfReduce = throwErrSt "cfReduce not set"
-    , cfDeref = \_ _ -> throwErrSt "cfDeref not set"
-    , cfIndex = \_ _ -> throwErrSt "cfIndex not set"
+    { cfSettings = emptySettings
+    , cfRuntimeParams = emptyRuntimeParams
+    , cfFunctions = emptyFunctions
     }

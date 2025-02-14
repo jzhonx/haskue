@@ -9,7 +9,7 @@ module PostReduce where
 
 import Class
 import Config
-import Control.Monad.Reader (ask)
+import Control.Monad.Reader (asks)
 import Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
@@ -51,7 +51,7 @@ validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
 validateCnstr c = withTree $ \_ -> do
   withAddrAndFocus $ \addr _ -> do
     tc <- getTMCursor
-    Config{cfCreateCnstr = cc} <- ask
+    RuntimeParams{rpCreateCnstr = cc} <- asks cfRuntimeParams
     logDebugStr $
       printf
         "validateCnstr: addr: %s, validator: %s, cc: %s constraint unify tc:\n%s"

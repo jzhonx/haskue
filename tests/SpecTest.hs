@@ -8,6 +8,7 @@ import Control.Monad.Except (runExcept, runExceptT, throwError)
 import Data.ByteString.Builder
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import Debug.Trace
 import Eval (runTreeIO)
@@ -32,8 +33,9 @@ newCompleteStruct labels subs =
                      in ( Path.StringTASeg s
                         , SField $
                             Field
-                              { ssfField = v
+                              { ssfValue = v
                               , ssfAttr = a
+                              , ssfCnstrs = []
                               }
                         )
                 )
@@ -44,7 +46,7 @@ newCompleteStruct labels subs =
             then map (Path.StringTASeg . fst . selAttr . fst) subs
             else map (Path.StringTASeg . fst . selAttr) labels
       , stcPendSubs = []
-      , stcPatterns = []
+      , stcCnstrs = []
       , stcClosed = False
       }
  where
@@ -466,7 +468,7 @@ testDisj4 = do
   case val of
     Left err -> assertFailure err
     Right y ->
-      cmpExpStructs y $
+      cmpStructs y $
         newStruct
           [
             ( "x"
@@ -504,7 +506,7 @@ testDisj5 = do
   case val of
     Left err -> assertFailure err
     Right y ->
-      cmpExpStructs y $
+      cmpStructs y $
         newStruct
           [ ("x1", mkAtomTree $ Int 1)
           , ("x2", mkAtomTree $ Int 1)
@@ -825,7 +827,7 @@ testCycles_Ref7 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("x", newStruct [("a", selfCycle), ("b", selfCycle)])
           , ("y", newStruct [("a", selfCycle), ("b", mkAtomTree $ Int 2)])
@@ -870,7 +872,7 @@ testCyclesSC1 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct [("#List", listS)]
  where
   listS = newStruct [("head", mkNewTree TNTop), ("tail", mkAtomTree Null)]
@@ -881,7 +883,7 @@ testCyclesSC2 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("#List", listS)
           ,
@@ -899,7 +901,7 @@ testCyclesSC3 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("#List", listS)
           ,
@@ -920,7 +922,7 @@ testCyclesSC4 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("x", newStruct [("#List", listS)])
           ,
@@ -1080,8 +1082,8 @@ testDup3 = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right val' ->
-      val'
+    Right y ->
+      y
         @?= newStruct
           [
             ( "x"
@@ -1091,6 +1093,19 @@ testDup3 = do
                 , ("c", mkAtomTree $ Int 2)
                 ]
             )
+          ]
+
+testDynamicField1 :: IO ()
+testDynamicField1 = do
+  s <- readFile "tests/spec/dynfield1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y ->
+      cmpStructs y $
+        newStruct
+          [ ("y", newStruct [("x", mkAtomTree $ String "a")])
+          , ("\"a\"", mkAtomTree $ Int 1)
           ]
 
 testDynamicFieldErr1 :: IO ()
@@ -1170,7 +1185,7 @@ testRef5 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("b", mkAtomTree $ Int 1)
           , ("c", newStruct [("z", mkAtomTree $ Int 1)])
@@ -1184,15 +1199,15 @@ testRef6 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("y", newStruct [("c", mkBoundsTree [BdType BdInt]), ("d", mkBoundsTree [BdType BdString])])
           , ("B", newStruct [("d", mkAtomTree $ Int 2)])
           ,
             ( "A"
             , newStruct
-                [ ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("d", mkBoundsTree [BdType BdString])])
-                , ("d", mkAtomTree $ Int 2)
+                [ ("d", mkAtomTree $ Int 2)
+                , ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("d", mkBoundsTree [BdType BdString])])
                 ]
             )
           ]
@@ -1204,7 +1219,7 @@ testRef7 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("y", newStruct [("c", mkBoundsTree [BdType BdInt]), ("e", mkAtomTree $ Int 2)])
           , ("r1", newStruct [("d", mkAtomTree $ Int 2)])
@@ -1212,8 +1227,8 @@ testRef7 = do
           ,
             ( "A"
             , newStruct
-                [ ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("e", mkAtomTree $ Int 2)])
-                , ("d", mkAtomTree $ Int 2)
+                [ ("d", mkAtomTree $ Int 2)
+                , ("b", newStruct [("c", mkBoundsTree [BdType BdInt]), ("e", mkAtomTree $ Int 2)])
                 ]
             )
           ]
@@ -1225,7 +1240,7 @@ testRef8 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("y", sa)
           , ("x", sa)
@@ -1242,7 +1257,7 @@ testRef9 = do
   case val of
     Left err -> assertFailure err
     Right x ->
-      cmpExpStructs x $
+      cmpStructs x $
         newStruct
           [ ("a", mkAtomTree $ Int 1)
           , ("x", sa)
@@ -1257,7 +1272,6 @@ testRefErr1 = do
   case val of
     Left err -> assertFailure err
     Right y -> assertBottom "not found" y
- where
 
 testStruct1 :: IO ()
 testStruct1 = do
@@ -1383,20 +1397,23 @@ testIndex1 = do
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right y -> cmpExpStructs y exp
+    Right y -> cmpStructs y exp
  where
+  ma = mkAtomTree
+  list12 = mkListTree [ma $ Int 1, ma $ Int 2]
+  list34 = mkListTree [ma $ Int 3, ma $ Int 4]
   exp =
     newStruct
-      ( map
-          (\(k, v) -> (k, mkAtomTree v))
-          [ ("x1", Int 14)
-          , ("x2", Int 4)
-          , ("x3", Int 9)
-          , ("x4", Int 3)
-          , ("x5", Int 1)
-          , ("z", Int 4)
-          ]
-      )
+      [ ("x0", mkListTree [ma $ Int 1, ma $ Int 4, ma $ Int 9])
+      , ("x1", ma $ Int 14)
+      , ("x2", ma $ Int 4)
+      , ("x3", ma $ Int 9)
+      , ("x4", ma $ Int 3)
+      , ("x5", ma $ Int 1)
+      , ("x", newDisj [list34] [list12, list34])
+      , ("y", newDisj [ma $ Int 1] [mkBoundsTree [BdType BdInt], ma $ Int 1])
+      , ("z", ma $ Int 4)
+      ]
 
 testCnstr1 :: IO ()
 testCnstr1 = do
@@ -1434,18 +1451,18 @@ testCnstr2 = do
         )
       ]
 
-expandWithPatterns :: [StructPattern Tree] -> Tree -> Tree
+expandWithPatterns :: [StructCnstr Tree] -> Tree -> Tree
 expandWithPatterns ps t = case t of
   Tree{treeNode = TNStruct s} ->
     mkStructTree $
       s
-        { stcPatterns = ps
+        { stcCnstrs = ps
         }
   _ -> error "Not a struct"
 
 testPat1 :: IO ()
 testPat1 = do
-  s <- readFile "tests/spec/pattern1.cue"
+  s <- readFile "tests/spec/pat1.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -1453,9 +1470,9 @@ testPat1 = do
  where
   exp =
     expandWithPatterns
-      [ StructPattern
-          { psfPattern = Bounds{bdsList = [BdType BdString]}
-          , psfValue = newStruct [("a", mkAtomTree $ Int 1)]
+      [ StructCnstr
+          { scsPattern = mkBoundsTree [BdType BdString]
+          , scsValue = newStruct [("a", mkAtomTree $ Int 1)]
           }
       ]
       ( newStruct
@@ -1471,7 +1488,7 @@ testPat1 = do
 
 testPat2 :: IO ()
 testPat2 = do
-  s <- readFile "tests/spec/pattern2.cue"
+  s <- readFile "tests/spec/pat2.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -1482,9 +1499,9 @@ testPat2 = do
       [
         ( "nameMap"
         , expandWithPatterns
-            [ StructPattern
-                { psfPattern = Bounds{bdsList = [BdType BdString]}
-                , psfValue =
+            [ StructCnstr
+                { scsPattern = mkBoundsTree [BdType BdString]
+                , scsValue =
                     newStruct
                       [ ("firstName", mkBoundsTree [BdType BdString])
                       ,
@@ -1521,13 +1538,178 @@ testPat2 = do
 
 testPat3 :: IO ()
 testPat3 = do
-  s <- readFile "tests/spec/pattern3.cue"
+  s <- readFile "tests/spec/pat3.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
-    Right y -> y @?= exp
+    Right y -> assertBottom "conflict" y
+
+testPat4 :: IO ()
+testPat4 = do
+  s <- readFile "tests/spec/pat4.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "conflict" y
+
+testPatCons1 :: IO ()
+testPatCons1 = do
+  s <- readFile "tests/spec/pat_cons1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
  where
-  exp = mkBottomTree ""
+  exp = newStruct [("x", sx), ("y", sy)]
+  sx =
+    expandWithPatterns
+      [ StructCnstr
+          { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
+          , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          }
+      ]
+      sxInner
+  sxInner =
+    newStruct
+      [ ("a", newStruct [("f2", mkAtomTree $ Int 2), ("f1", mkAtomTree $ Int 1)])
+      , ("b", newStruct [("f3", mkAtomTree $ Int 3)])
+      ]
+  sy =
+    newStruct
+      [
+        ( "z"
+        , mkBoundsTree [BdStrMatch (BdReMatch "a")]
+        )
+      ]
+
+testPatCons1Err :: IO ()
+testPatCons1Err = do
+  s <- readFile "tests/spec/pat_cons1_err.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> assertBottom "values not unifiable" y
+
+testPatCons2 :: IO ()
+testPatCons2 = do
+  s <- readFile "tests/spec/pat_cons2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", sx), ("y", sy)]
+  sx =
+    expandWithPatterns
+      [ StructCnstr
+          { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
+          , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          }
+      ]
+      sxInner
+  sxInner =
+    newStruct
+      [ ("a", newStruct [("f2", mkAtomTree $ Int 2), ("f1", mkAtomTree $ Int 1)])
+      , ("b", mkAtomTree $ Int 1)
+      ]
+  sy =
+    newStruct
+      [
+        ( "z"
+        , mkBoundsTree [BdStrMatch (BdReMatch "a")]
+        )
+      ]
+
+testPatCons3 :: IO ()
+testPatCons3 = do
+  s <- readFile "tests/spec/pat_cons3.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", sx), ("y", sy)]
+  sx =
+    expandWithPatterns
+      [ StructCnstr
+          { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
+          , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          }
+      ]
+      sxInner
+  sxInner =
+    newStruct
+      [ ("a", newStruct [("f2", mkAtomTree $ Int 2), ("f1", mkAtomTree $ Int 1)])
+      , ("\"b\"", newStruct [("f3", mkAtomTree $ Int 3)])
+      ]
+  sy =
+    newStruct
+      [
+        ( "z"
+        , mkBoundsTree [BdStrMatch (BdReMatch "a")]
+        )
+      ]
+
+testPatDyn1 :: IO ()
+testPatDyn1 = do
+  s <- readFile "tests/spec/pat_dyn1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", sx), ("y", sy)]
+  sx =
+    expandWithPatterns
+      [ StructCnstr
+          { scsPattern = mkBoundsTree [BdType BdString]
+          , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          }
+      ]
+      sxInner
+  sxInner =
+    newStruct
+      [ ("\"a\"", newStruct [("f2", mkAtomTree $ Int 2), ("f1", mkAtomTree $ Int 1)])
+      ]
+  sy =
+    newStruct
+      [
+        ( "z"
+        , mkAtomTree $ String "a"
+        )
+      ]
+
+testPatIncmpl1 :: IO ()
+testPatIncmpl1 = do
+  s <- readFile "tests/spec/pat_incmpl1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> cmpStructs y exp
+ where
+  exp = newStruct [("x", sx), ("y", sy)]
+  sx =
+    expandWithPatterns
+      [ StructCnstr
+          { scsPattern = mkSimpleLink $ Path.Reference [strSel "y", strSel "s"]
+          , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          }
+      ]
+      sxInner
+  sxInner =
+    newStruct
+      [
+        ( "a"
+        , mkMutableTree $
+            mkBinaryOp
+              AST.Add
+              (\_ _ -> throwError "not implemented")
+              (mkAtomTree $ Int 1)
+              (mkAtomTree $ Int 2)
+        )
+      ]
+  sy =
+    newStruct []
 
 testClose1 :: IO ()
 testClose1 = do
@@ -1561,9 +1743,9 @@ testClose3 = do
       ]
 
   patterna =
-    [ StructPattern
-        { psfPattern = Bounds{bdsList = [BdStrMatch $ BdReMatch "a"]}
-        , psfValue = mkBoundsTree [BdType BdInt]
+    [ StructCnstr
+        { scsPattern = mkBoundsTree [BdStrMatch $ BdReMatch "a"]
+        , scsValue = mkBoundsTree [BdType BdInt]
         }
     ]
   sxc =
@@ -1661,14 +1843,6 @@ testDef1 = do
   sSC = expandWithClosed True $ newStruct [("a", saC)]
   saC = expandWithClosed True $ newStruct [("c", mkAtomTree $ Bool True)]
 
-testDef2 :: IO ()
-testDef2 = do
-  s <- readFile "tests/spec/def2.cue"
-  val <- startEval s
-  case val of
-    Left err -> assertFailure err
-    Right y -> y @?= mkBottomTree ""
-
 testDef3 :: IO ()
 testDef3 = do
   s <- readFile "tests/spec/def3.cue"
@@ -1696,14 +1870,6 @@ testDef3 = do
       [ newStruct [("a", mkBoundsTree [BdType BdInt])]
       , newStruct [("b", mkBoundsTree [BdType BdInt])]
       ]
-
-testDef4 :: IO ()
-testDef4 = do
-  s <- readFile "tests/spec/def4.cue"
-  val <- startEval s
-  case val of
-    Left err -> assertFailure err
-    Right y -> y @?= mkBottomTree ""
 
 testDef5 :: IO ()
 testDef5 = do
@@ -1733,9 +1899,25 @@ testDef5 = do
       , ("d", mkAtomTree $ Int 3)
       ]
 
-testDef6 :: IO ()
-testDef6 = do
-  s <- readFile "tests/spec/def6.cue"
+testDefErr1 :: IO ()
+testDefErr1 = do
+  s <- readFile "tests/spec/def_err1.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testDefErr2 :: IO ()
+testDefErr2 = do
+  s <- readFile "tests/spec/def_err2.cue"
+  val <- startEval s
+  case val of
+    Left err -> assertFailure err
+    Right y -> y @?= mkBottomTree ""
+
+testDefErr3 :: IO ()
+testDefErr3 = do
+  s <- readFile "tests/spec/def_err3.cue"
   val <- startEval s
   case val of
     Left err -> assertFailure err
@@ -1812,6 +1994,60 @@ testLetErr4 = do
     Left err -> assertFailure err
     Right y -> assertBottom "redeclared in same scope" y
 
+-- | Compare two struct fields. Other elements such as local bindings are ignored.
+cmpStructs ::
+  (HasCallStack) =>
+  -- | act
+  Tree ->
+  -- | exp
+  Tree ->
+  IO ()
+cmpStructs = cmpStructsMsg ""
+
+cmpStructsMsg :: (HasCallStack) => String -> Tree -> Tree -> IO ()
+cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
+  assertEqual (withMsg msg "labels") (stcOrdLabels exp) (stcOrdLabels act)
+  assertEqual (withMsg msg "fields-length") (length expFields) (length actFields)
+  mapM_
+    ( \(k, v) -> cmpStructVals (show k) v (actFields Map.! k)
+    )
+    (Map.toList expFields)
+  mapM_
+    ( \(k, v) -> cmpStructVals (show k) (expFields Map.! k) v
+    )
+    (Map.toList actFields)
+  assertEqual (withMsg msg "patterns") (stcCnstrs exp) (stcCnstrs act)
+  -- We only need to compare valid pendings.
+  assertEqual (withMsg msg "pendings") (catMaybes $ stcPendSubs exp) (catMaybes $ stcPendSubs act)
+  assertEqual (withMsg msg "close") (stcClosed exp) (stcClosed act)
+ where
+  onlyField :: Map.Map StructTASeg (StructVal Tree) -> Map.Map StructTASeg (StructVal Tree)
+  onlyField =
+    Map.filterWithKey
+      ( \sel sv -> case sv of
+          SField _ -> True
+          _ -> False
+      )
+
+  expFields = onlyField $ stcSubs exp
+  actFields = onlyField $ stcSubs act
+cmpStructsMsg msg act exp = assertEqual msg exp act
+
+cmpStructVals :: (HasCallStack) => String -> StructVal Tree -> StructVal Tree -> IO ()
+cmpStructVals msg (SField act) (SField exp) = do
+  cmpStructsMsg (withMsg msg "field") (ssfValue act) (ssfValue exp)
+  assertEqual (withMsg msg "attr") (ssfAttr exp) (ssfAttr act)
+cmpStructVals msg sv1 sv2 = assertEqual msg sv1 sv2
+
+withMsg :: String -> String -> String
+withMsg msg s = if Prelude.null msg then s else msg ++ ": " ++ s
+
+assertBottom :: String -> Tree -> IO ()
+assertBottom msg (Tree{treeNode = TNBottom (Bottom err)}) =
+  unless (msg `isInfixOf` err) $
+    assertFailure (printf "in bottom msg, \"%s\" not found in \"%s\"" msg err)
+assertBottom msg v = assertFailure $ printf "Not a bottom: %s" (show v)
+
 specTests :: TestTree
 specTests =
   testGroup
@@ -1851,11 +2087,11 @@ specTests =
     , testCase "cycles_sc_err3" testCyclesSCErr3
     , testCase "cycles_sc_err3_2" testCyclesSCErr3_2
     , testCase "def1" testDef1
-    , testCase "def2" testDef2
     , testCase "def3" testDef3
-    , testCase "def4" testDef4
     , testCase "def5" testDef5
-    , testCase "def6" testDef6
+    , testCase "def_err1" testDefErr1
+    , testCase "def_err2" testDefErr2
+    , testCase "def_err3" testDefErr3
     , testCase "disj1" testDisj1
     , testCase "disj2" testDisj2
     , testCase "disj3" testDisj3
@@ -1866,6 +2102,7 @@ specTests =
     , testCase "dup1" testDup1
     , testCase "dup2" testDup2
     , testCase "dup3" testDup3
+    , testCase "dynfield1" testDynamicField1
     , testCase "dynfield_err1" testDynamicFieldErr1
     , testCase "embed1" testEmbed1
     , testCase "embed2" testEmbed2
@@ -1881,9 +2118,16 @@ specTests =
     , testCase "let_err3" testLetErr3
     , testCase "let_err4" testLetErr4
     , testCase "list1" testList1
-    , testCase "pattern1" testPat1
-    , testCase "pattern2" testPat2
-    , testCase "pattern3" testPat3
+    , testCase "pat1" testPat1
+    , testCase "pat2" testPat2
+    , testCase "pat3" testPat3
+    , testCase "pat4" testPat4
+    , testCase "pat_cons1" testPatCons1
+    , testCase "pat_cons1_err" testPatCons1Err
+    , testCase "pat_cons2" testPatCons2
+    , testCase "pat_cons3" testPatCons3
+    , testCase "pat_dyn1" testPatDyn1
+    , testCase "pat_incmpl1" testPatIncmpl1
     , testCase "ref1" testRef1
     , testCase "ref2" testRef2
     , testCase "ref3" testRef3
@@ -1912,66 +2156,3 @@ specTests =
     , testCase "vars2" testVars2
     , testCase "vars3" testVars3
     ]
-
--- | Compare two struct fields. Other elements such as local bindings are ignored.
-cmpStructs ::
-  (HasCallStack) =>
-  -- | act
-  Tree ->
-  -- | exp
-  Tree ->
-  IO ()
-cmpStructs = cmpStructsMsg ""
-
-cmpStructsMsg :: (HasCallStack) => String -> Tree -> Tree -> IO ()
-cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
-  assertEqual (withMsg msg "labels") (stcOrdLabels exp) (stcOrdLabels act)
-  assertEqual (withMsg msg "fields-length") (length expFields) (length actFields)
-  mapM_
-    ( \(k, v) -> cmpStructVals (show k) v (actFields Map.! k)
-    )
-    (Map.toList expFields)
-  mapM_
-    ( \(k, v) -> cmpStructVals (show k) (expFields Map.! k) v
-    )
-    (Map.toList actFields)
-  assertEqual (withMsg msg "patterns") (stcPatterns exp) (stcPatterns act)
-  assertEqual (withMsg msg "pendings") (stcPendSubs exp) (stcPendSubs act)
-  assertEqual (withMsg msg "close") (stcClosed exp) (stcClosed act)
- where
-  onlyField :: Map.Map StructTASeg (StructVal Tree) -> Map.Map StructTASeg (StructVal Tree)
-  onlyField =
-    Map.filterWithKey
-      ( \sel sv -> case sv of
-          SField _ -> True
-          _ -> False
-      )
-
-  expFields = onlyField $ stcSubs exp
-  actFields = onlyField $ stcSubs act
-
-  cmpStructVals :: (HasCallStack) => String -> StructVal Tree -> StructVal Tree -> IO ()
-  cmpStructVals msg (SField act) (SField exp) = do
-    cmpStructsMsg (withMsg msg "field") (ssfField act) (ssfField exp)
-    assertEqual (withMsg msg "attr") (ssfAttr exp) (ssfAttr act)
-  cmpStructVals msg sv1 sv2 = assertEqual msg sv1 sv2
-cmpStructsMsg msg act exp = assertEqual msg exp act
-
-withMsg :: String -> String -> String
-withMsg msg s = if Prelude.null msg then s else msg ++ ": " ++ s
-
-cmpExpStructs :: Tree -> Tree -> IO ()
-cmpExpStructs (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}) = do
-  mapM_ cmp (Map.toList $ stcSubs exp)
- where
-  cmp (k, v) =
-    if k `Map.member` stcSubs act
-      then assertEqual (show k) v (stcSubs act Map.! k)
-      else assertFailure $ printf "Field %s not found" (show k)
-cmpExpStructs v1 v2 = assertFailure $ printf "Not structs: %s, %s" (show v1) (show v2)
-
-assertBottom :: String -> Tree -> IO ()
-assertBottom msg (Tree{treeNode = TNBottom (Bottom err)}) =
-  unless (msg `isInfixOf` err) $
-    assertFailure (printf "in bottom msg, \"%s\" not found in \"%s\"" msg err)
-assertBottom msg v = assertFailure $ printf "Not a bottom: %s" (show v)

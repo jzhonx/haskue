@@ -1,6 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -10,7 +9,7 @@ module Mutate where
 import Class
 import Config
 import Control.Monad (when)
-import Control.Monad.Reader (ask)
+import Control.Monad.Reader (asks)
 import Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
@@ -62,7 +61,7 @@ mutate = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
 
 mutateRef :: (TreeMonad s m) => VT.Reference Tree -> m ()
 mutateRef ref = do
-  Config{cfDeref = deref} <- ask
+  Functions{fnDeref = deref} <- asks cfFunctions
   runInMutValEnv $ deref (refPath ref) (refOrigAddrs ref)
   withAddrAndFocus $ \addr focus ->
     logDebugStr $ printf "mutateRef: addr: %s, deref result: %s" (show addr) (show focus)
@@ -70,7 +69,7 @@ mutateRef ref = do
   -- Make sure the mutable is still the focus of the tree.
   assertMVNotRef
 
-  Config{cfReduce = reduce} <- ask
+  Functions{fnReduce = reduce} <- asks cfFunctions
   runWithMutVal reduce
   withAddrAndFocus $ \addr focus ->
     logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
@@ -116,7 +115,7 @@ mutateFunc fn = withTree $ \t -> do
 
 mutateIndexer :: (TreeMonad s m) => Indexer Tree -> m ()
 mutateIndexer idxer = do
-  Config{cfIndex = index, cfReduce = reduce} <- ask
+  Functions{fnIndex = index, fnReduce = reduce} <- asks cfFunctions
   mustMutable $ \_ -> runInMutValEnv $ index (idxOrigAddrs idxer) (idxSels idxer)
   maybe
     (return ())
@@ -158,7 +157,7 @@ we need to delete receiver starting with the addr, not only the addr. For exampl
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delNotifRecvPrefix :: (TMonad s m t) => TreeAddr -> m ()
+delNotifRecvPrefix :: (TreeMonad s m) => TreeAddr -> m ()
 delNotifRecvPrefix addrPrefix = do
   withContext $ \ctx -> do
     putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ del (ctxNotifGraph ctx)}
@@ -184,7 +183,7 @@ reference.
 
 If the receiver addresss is the mutable address plus the argument segment, then it should be skipped.
 -}
-delMutValRecvs :: (TMonad s m t) => TreeAddr -> m ()
+delMutValRecvs :: (TreeMonad s m) => TreeAddr -> m ()
 delMutValRecvs mutAddr = do
   withContext $ \ctx ->
     putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ delRecvs (ctxNotifGraph ctx)}

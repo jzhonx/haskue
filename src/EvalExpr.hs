@@ -43,7 +43,7 @@ evalExpr e = do
   t <- case e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
-  return $ setOrig t (Just e)
+  return $ setExpr t (Just e)
 
 evalLiteral :: (EvalEnv m) => Literal -> m Tree
 evalLiteral (StructLit s) = evalDecls s
@@ -99,7 +99,7 @@ evalDecl (x, embeds) decl = case treeNode x of
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
       let
-        adder = Local ident val
+        adder = LetSAdder ident val
         t = addNewStructElem adder struct
       return (t, embeds)
   _ -> throwErrSt "invalid struct"
@@ -130,14 +130,14 @@ evalFdLabels lbls e =
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> return $ Static key (VT.Field val attr)
+            (sselFrom -> Just key) -> return $ StaticSAdder key (VT.Field val attr [])
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
-              return $ Dynamic (DynamicField attr selTree se val)
+              return $ DynamicSAdder (DynamicField attr selTree se val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
-      return (Pattern pat val)
+      return (CnstrSAdder pat val)
 
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe String
@@ -163,7 +163,7 @@ evalFdLabels lbls e =
 -- Insert a new element into the struct. If the field is already in the struct, then unify the field with the new field.
 addNewStructElem :: StructElemAdder Tree -> Struct Tree -> Tree
 addNewStructElem adder struct = case adder of
-  (Static name sf) ->
+  (StaticSAdder name sf) ->
     let seg = Path.StringTASeg name
      in fromMaybe
           ( case lookupStructVal name struct of
@@ -172,8 +172,9 @@ addNewStructElem adder struct = case adder of
                   unifySFOp =
                     SField $
                       VT.Field
-                        { ssfField = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfField extSF) (ssfField sf))
+                        { ssfValue = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfValue extSF) (ssfValue sf))
                         , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
+                        , ssfCnstrs = []
                         }
                  in
                   mkStructTree $ struct{stcSubs = Map.insert seg unifySFOp (stcSubs struct)}
@@ -188,9 +189,9 @@ addNewStructElem adder struct = case adder of
                     }
           )
           (declCheck name False)
-  (Dynamic dsf) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [DynamicPend dsf]}
-  (Pattern pattern val) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [PatternPend pattern val]}
-  (Local name val) ->
+  (DynamicSAdder dsf) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [Just dsf]}
+  (CnstrSAdder pattern val) -> mkStructTree $ struct{stcCnstrs = stcCnstrs struct ++ [StructCnstr pattern val]}
+  (LetSAdder name val) ->
     fromMaybe
       ( mkStructTree $
           struct

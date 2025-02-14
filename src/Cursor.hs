@@ -135,6 +135,26 @@ parentTC :: TreeCursor t -> Maybe (TreeCursor t)
 parentTC (ValCursor _ []) = Nothing
 parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
 
+-- | Get the segment paired with the focus of the cursor.
+focusTCSeg :: (Env m) => TreeCursor t -> m TASeg
+focusTCSeg (ValCursor _ []) = throwErrSt "already at the top"
+focusTCSeg tc = return $ fst . head $ vcCrumbs tc
+
+{- | Propagates the changes made to the focus to the parent nodes.
+
+It stops at the root.
+-}
+propUpTC :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
+propUpTC (ValCursor _ []) = throwErrSt "already at the top"
+propUpTC tc@(ValCursor _ [(RootTASeg, _)]) = return tc
+propUpTC (ValCursor subT ((seg, parT) : cs)) = do
+  t <- setSubTree seg subT parT
+  return $ ValCursor t cs
+
+isTCTop :: TreeCursor t -> Bool
+isTCTop (ValCursor _ []) = True
+isTCTop _ = False
+
 showCursor :: (Show t, Show a) => ValCursor t a -> String
 showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
  where
@@ -156,6 +176,14 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
+showNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
+showNotifiers notifiers =
+  let s = Map.foldrWithKey go "" notifiers
+   in if null s then "[]" else "[" ++ s ++ "\n]"
+ where
+  go :: TreeAddr -> [TreeAddr] -> String -> String
+  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
+
 mkSubTC :: TASeg -> a -> TreeCursor t -> ValCursor t a
 mkSubTC seg a tc = ValCursor a ((seg, vcFocus tc) : vcCrumbs tc)
 
@@ -176,26 +204,3 @@ goDownTCSeg :: (TreeOp t) => TASeg -> TreeCursor t -> Maybe (TreeCursor t)
 goDownTCSeg seg tc = do
   nextTree <- subTree seg (vcFocus tc)
   return $ mkSubTC seg nextTree tc
-
--- | propUp propagates the changes made to the focus of the block to the parent block.
-propValUp :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
-propValUp (ValCursor _ []) = throwErrSt "already at the top"
-propValUp tc@(ValCursor _ [(RootTASeg, _)]) = return tc
-propValUp (ValCursor subT ((seg, parT) : cs)) = do
-  t <- setSubTree seg subT parT
-  return $ ValCursor t cs
-
--- | Propagate the value up until the lowest segment is matched.
-propUpTCUntil :: (Env m, TreeOp t) => TASeg -> TreeCursor t -> m (TreeCursor t)
-propUpTCUntil _ (ValCursor _ []) = throwErrSt "already at the top"
-propUpTCUntil seg tc@(ValCursor _ ((s, _) : _))
-  | s == seg = return tc
-  | otherwise = propValUp tc >>= propUpTCUntil seg
-
-showNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
-showNotifiers notifiers =
-  let s = Map.foldrWithKey go "" notifiers
-   in if null s then "[]" else "[" ++ s ++ "\n]"
- where
-  go :: TreeAddr -> [TreeAddr] -> String -> String
-  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps

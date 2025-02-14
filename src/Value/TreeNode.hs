@@ -6,7 +6,6 @@ module Value.TreeNode where
 
 import Class
 import Control.Monad.Except (MonadError)
-import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isNothing)
 import Env
 import Error
@@ -61,6 +60,7 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) _ _ = False
 
 {- | descend into the tree with the given segment.
+
 This should only be used by TreeCursor.
 -}
 subTreeTN :: (TreeOp t, HasTreeNode t, Show t) => TASeg -> t -> Maybe t
@@ -70,15 +70,13 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     StringTASeg name ->
       lookupStructVal name struct
         >>= \case
-          SField sf -> Just $ ssfField sf
+          SField sf -> Just $ ssfValue sf
           _ -> Nothing
-    PatternTASeg i -> Just (psfValue $ stcPatterns struct !! i)
+    PatternTASeg i -> Just (scsPattern $ stcCnstrs struct !! i)
     PendingTASeg i -> do
       -- pending elements can be resolved, so the index might not be valid.
-      p <- stcPendSubs struct `indexList` i
-      case p of
-        DynamicPend dsf -> Just (dsfValue dsf)
-        PatternPend _ val -> Just val
+      pM <- stcPendSubs struct `indexList` i
+      dsfLabel <$> pM
     LetTASeg name ->
       lookupStructVal name struct >>= \case
         SLet lb -> Just (lbValue lb)
@@ -164,30 +162,37 @@ setSubTreeTN seg subT parT = do
     , Just sv <- lookupStructVal name parStruct =
         let
           newSV = subT <$ sv
-          newStruct = parStruct{stcSubs = Map.insert labelSeg newSV (stcSubs parStruct)}
+          newStruct = updateStructSub labelSeg newSV parStruct
          in
           return (TNStruct newStruct)
     | PatternTASeg i <- labelSeg =
         let
-          psf = stcPatterns parStruct !! i
-          newPSF = psf{psfValue = subT}
+          psf = stcCnstrs parStruct !! i
+          newPSF = psf{scsPattern = subT}
           newStruct =
             parStruct
-              { stcPatterns = take i (stcPatterns parStruct) ++ [newPSF] ++ drop (i + 1) (stcPatterns parStruct)
+              { stcCnstrs = take i (stcCnstrs parStruct) ++ [newPSF] ++ drop (i + 1) (stcCnstrs parStruct)
               }
          in
           return (TNStruct newStruct)
     | PendingTASeg i <- labelSeg =
         let
-          psf = stcPendSubs parStruct !! i
-          newPSF = modifyPendElemVal (const subT) psf
-          newStruct =
-            parStruct
-              { stcPendSubs =
-                  take i (stcPendSubs parStruct) ++ [newPSF] ++ drop (i + 1) (stcPendSubs parStruct)
-              }
+          pends = stcPendSubs parStruct
+          psfM = pends !! i
          in
-          return (TNStruct newStruct)
+          maybe
+            (throwErrSt $ printf "pending element has been deleted, idx: %s" (show i))
+            ( \psf ->
+                let
+                  newPSF = psf{dsfLabel = subT}
+                  newStruct =
+                    parStruct
+                      { stcPendSubs = take i pends ++ [Just newPSF] ++ drop (i + 1) pends
+                      }
+                 in
+                  return (TNStruct newStruct)
+            )
+            psfM
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String

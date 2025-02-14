@@ -21,21 +21,14 @@ where
 
 import qualified AST
 import Class
-import Config
-import Control.Monad (foldM, when)
-import Control.Monad.Reader (MonadReader, ask)
-import Control.Monad.State.Strict (MonadState, evalState)
-import Cursor
+import Control.Monad (foldM)
+import Control.Monad.State.Strict (MonadState)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
-import Env
 import Error
-import GHC.Stack (HasCallStack)
 import Path
-import TMonad
 import Text.Printf (printf)
-import Util
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
@@ -50,30 +43,24 @@ import Value.TreeNode
 class TreeRepBuilderIter a where
   iterRepTree :: a -> TreeRepBuildOption -> TreeRep
 
--- TreeMonad stores the tree structure in its state.
-type TreeMonad s m =
-  ( Env m
-  , MonadState s m
-  , HasCtxVal s Tree Tree
-  , HasTrace s
-  , MonadReader (Config Tree) m
-  , HasCallStack
-  )
-
 -- Some rules:
 -- 1. If a node is a Mutable that contains references, then the node should not be supplanted to other places without
 -- changing the dependencies.
 -- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
   { treeNode :: TreeNode Tree
-  , treeOrig :: Maybe AST.Expression
-  , treeTemp :: Maybe Tree
+  , treeExpr :: Maybe AST.Expression
+  -- ^ treeExpr is the parsed expression.
+  , treeNonCnstrExpr :: Maybe AST.Expression
+  , -- If it is Nothing, then the tree has not been constrained.
+    -- If it is Just, then the expression is the non-constraint expression of one of the values in the unification tree.
+    treeTemp :: Maybe Tree
   -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
+  , treeRecurClosed :: Bool
+  -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
   }
 
-newtype TreeRepBuildOption = TreeRepBuildOption
-  { trboShowMutArgs :: Bool
-  }
+newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
 
 data TreeRep = TreeRep
   { trSymbol :: String
@@ -141,7 +128,8 @@ buildRepTreeTN t tn opt = case tn of
       ( mempty
       , show b
       , []
-      , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
+      , []
+      -- , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
       )
   TNStruct s ->
     let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
@@ -161,41 +149,37 @@ buildRepTreeTN t tn opt = case tn of
         slabelAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
 
         dlabelAttr :: DynamicField Tree -> String
-        dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",e,dynpend"
+        dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 
-        plabelAttr :: String
-        plabelAttr = ",e,patpend"
-
+        -- The tuple is (field name, field meta, field value)
         fields :: [(String, String, Tree)]
         fields =
           map
             ( \k ->
                 let sv = stcSubs s Map.! k
                  in case sv of
-                      SField sf -> (show k, slabelAttr sf, ssfField sf)
+                      SField sf -> (show k, slabelAttr sf, ssfValue sf)
                       SLet lb -> (show k, printf ",let,r:%s" (show $ lbReferred lb), lbValue lb)
             )
             (structStrLabels s)
             ++ zipWith
-              ( \j k -> (show (StructTASeg $ PatternTASeg j), "", psfValue k)
+              ( \j k -> (show (StructTASeg $ PatternTASeg j), ",v:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
               )
               [0 ..]
-              (stcPatterns s)
-            ++ map
-              ( \j ->
+              (stcCnstrs s)
+            ++ foldr
+              ( \j acc ->
                   let a = stcPendSubs s !! j
                    in case a of
-                        DynamicPend dsf -> (show (StructTASeg $ PendingTASeg j), dlabelAttr dsf, dsfValue dsf)
-                        PatternPend _ val -> (show (StructTASeg $ PendingTASeg j), plabelAttr, val)
+                        Just dsf ->
+                          (show (StructTASeg $ PendingTASeg j), dlabelAttr dsf, dsfLabel dsf) : acc
+                        _ -> (show (StructTASeg $ PendingTASeg j), ",pat_deleted", mkNewTree TNTop) : acc
               )
+              []
               (structPendIndexes s)
 
         metas :: [(String, String)]
-        metas =
-          zipWith
-            (\j psf -> (show (StructTASeg $ PatternTASeg j), show (psfPattern psf)))
-            [0 ..]
-            (stcPatterns s)
+        metas = []
      in consRep
           ( (if stcClosed s then "#" else mempty) <> symbol
           , ordLabels <> ", sid:" <> show (stcID s)
@@ -289,18 +273,19 @@ instance BuildASTExpr Tree where
     TNDisj d -> buildASTExpr cr d
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
-      Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeOrig t)
-      Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeOrig t)
+      Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
+      Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
       MutStub -> throwErrSt "expression not found for stub mutable"
-    TNConstraint c -> maybe (return $ cnsValidator c) return (treeOrig t)
+    TNConstraint c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
-      RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeOrig t)
+      RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeExpr t)
       RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
     TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
 
 instance Eq Tree where
-  (==) t1 t2 = treeNode t1 == treeNode t2
+  (==) t1 t2 =
+    treeNode t1 == treeNode t2 && treeRecurClosed t1 == treeRecurClosed t2
 
 defaultTreeRepBuildOption :: TreeRepBuildOption
 defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = False}
@@ -374,8 +359,10 @@ treeToMermaid opt msg evalTreeAddr root = do
   subgraph toff t treeID = do
     let
       (TreeRep symbol meta subReps _) = iterRepTree t opt
+
       writeLine :: String -> String
       writeLine content = indent toff <> content <> "\n"
+
       curTreeRepStr =
         writeLine
           ( printf
@@ -384,33 +371,33 @@ treeToMermaid opt msg evalTreeAddr root = do
               $ escape
                 ( symbol
                     <> (if null meta then mempty else " " <> meta)
-                    -- print whether the node has an original expression.
-                    -- Currently disabled.
-                    -- <> printf ", TO:%s" (if isJust $ treeOrig t then "Y" else "N")
+                    <> (if isJust $ treeExpr t then mempty else ",N")
+                    <> (if treeRecurClosed t then ",#" else mempty)
                 )
           )
 
     foldM
-      ( \acc (TreeRepField label _ sub) -> do
+      ( \acc (TreeRepField label attr sub) -> do
           let subTreeID = treeID ++ "_" ++ label
           rest <- subgraph (toff + 2) sub subTreeID
           return $
             acc
-              <> writeLine (printf "%s -->|%s| %s" treeID label subTreeID)
+              <> writeLine (printf "%s -->|%s| %s" treeID (label <> escape attr) subTreeID)
               <> rest
       )
       curTreeRepStr
       subReps
 
-  escape :: String -> String
-  escape = concatMap $ \case
-    '"' -> "#quot;"
-    c -> [c]
+escape :: String -> String
+escape = concatMap $ \case
+  '"' -> "#quot;"
+  '?' -> "&#63;"
+  c -> [c]
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
   TNAtom _ -> ""
-  TNBounds _ -> "b"
+  TNBounds _ -> "bds"
   TNStruct{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
@@ -425,17 +412,32 @@ showTreeSymbol t = case treeNode t of
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
--- TODO: pending and dynamic sub nodes
+escapedTreeSymbol :: Tree -> String
+escapedTreeSymbol t = case treeNode t of
+  TNStruct{} -> "struct"
+  TNList{} -> "list"
+  TNBottom _ -> "btm"
+  TNTop -> "top"
+  _ -> showTreeSymbol t
+
+escapedSimpleTreeStr :: Tree -> String
+escapedSimpleTreeStr t = case treeNode t of
+  TNStruct s -> escape $ "struct:" <> intercalate "," (map show $ stcOrdLabels s)
+  TNAtom _ -> "a"
+  _ -> escapedTreeSymbol t
+
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct ->
     [ ( StructTASeg s
       , case sv of
-          SField sf -> ssfField sf
+          SField sf -> ssfValue sf
           SLet lb -> lbValue lb
       )
     | (s, sv) <- Map.toList (stcSubs struct)
     ]
+      ++ [(StructTASeg $ PatternTASeg i, scsPattern c) | (i, c) <- zip [0 ..] (stcCnstrs struct)]
+      ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, Just dsf) <- zip [0 ..] (stcPendSubs struct)]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNMutable (Index idx) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (idxSels idx)]
@@ -460,11 +462,21 @@ argsHaveRef =
 
 -- Helpers
 
+emptyTree :: Tree
+emptyTree =
+  Tree
+    { treeNode = TNTop
+    , treeExpr = Nothing
+    , treeNonCnstrExpr = Nothing
+    , treeTemp = Nothing
+    , treeRecurClosed = False
+    }
+
 setTN :: Tree -> TreeNode Tree -> Tree
 setTN t n = t{treeNode = n}
 
-setOrig :: Tree -> Maybe AST.Expression -> Tree
-setOrig t eM = t{treeOrig = eM}
+setExpr :: Tree -> Maybe AST.Expression -> Tree
+setExpr t eM = t{treeExpr = eM}
 
 getAtomVFromTree :: Tree -> Maybe AtomV
 getAtomVFromTree t = case treeNode t of
@@ -474,6 +486,11 @@ getAtomVFromTree t = case treeNode t of
 getBottomFromTree :: Tree -> Maybe Bottom
 getBottomFromTree t = case treeNode t of
   TNBottom b -> Just b
+  _ -> Nothing
+
+getBoundsFromTree :: Tree -> Maybe Bounds
+getBoundsFromTree t = case treeNode t of
+  TNBounds b -> Just b
   _ -> Nothing
 
 getCnstrFromTree :: Tree -> Maybe (Constraint Tree)
@@ -509,7 +526,7 @@ isTreeStructuralCycle t = case treeNode t of
   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
-mkNewTree n = Tree{treeNode = n, treeOrig = Nothing, treeTemp = Nothing}
+mkNewTree n = emptyTree{treeNode = n}
 
 mkAtomVTree :: AtomV -> Tree
 mkAtomVTree v = mkNewTree (TNAtom v)
@@ -541,26 +558,6 @@ mkStructTree s = mkNewTree (TNStruct s)
 mutValStubTree :: Tree
 mutValStubTree = mkMutableTree MutStub
 
-withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
-withTN f = withTree (f . treeNode)
-
-modifyTMTN :: (TreeMonad s m) => TreeNode Tree -> m ()
-modifyTMTN tn = do
-  t <- getTMTree
-  putTMTree $ setTN t tn
-
-unlessFocusBottom :: (TreeMonad s m) => a -> m a -> m a
-unlessFocusBottom a f = do
-  t <- getTMTree
-  case treeNode t of
-    TNBottom _ -> return a
-    _ -> f
-
-mustMutable :: (TreeMonad s m) => (Mutable Tree -> m a) -> m a
-mustMutable f = withTree $ \t -> case treeNode t of
-  TNMutable fn -> f fn
-  _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
-
 treesToRef :: [Tree] -> Maybe Path.Reference
 treesToRef ts = Path.Reference <$> mapM treeToSel ts
  where
@@ -576,7 +573,7 @@ treesToRef ts = Path.Reference <$> mapM treeToSel ts
     _ -> Nothing
 
 addrToTrees :: TreeAddr -> Maybe [Tree]
-addrToTrees p = mapM selToTree (addrToList p)
+addrToTrees p = mapM selToTree (addrToNormOrdList p)
  where
   selToTree :: TASeg -> Maybe Tree
   selToTree sel = case sel of
@@ -584,71 +581,16 @@ addrToTrees p = mapM selToTree (addrToList p)
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
 
-dumpEntireTree :: (TreeMonad s m) => String -> m ()
-dumpEntireTree msg = do
-  withTN $ \case
-    TNAtom _ -> return ()
-    TNBottom _ -> return ()
-    TNTop -> return ()
-    _ -> do
-      Config{cfMermaid = mermaid, cfShowMutArgs = showMutArgs} <- ask
-      when mermaid $ do
-        logDebugStr "--- dump entire tree states: ---"
-        notifiers <- ctxNotifGraph <$> getTMContext
-        logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
-        tc <- getTMCursor
-        rtc <- propUpTCUntil Path.RootTASeg tc
-
-        let
-          t = vcFocus rtc
-          evalTreeAddr = addrFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr t) 0
-        logDebugStr $ printf "\n```mermaid\n%s\n```" s
-
-        logDebugStr "--- dump entire tree done ---"
-
 getStructField :: String -> Tree -> Maybe (Tree, Bool)
 getStructField name Tree{treeNode = TNStruct struct} = do
   sv <- lookupStructVal name struct
   case sv of
     SField sf ->
       if lbAttrIsVar (ssfAttr sf)
-        then Just (ssfField sf, False)
+        then Just (ssfValue sf, False)
         else Nothing
     SLet lb -> Just (lbValue lb, True)
 getStructField _ _ = Nothing
 
-newtype SegNote = SegNote
-  { snIsLetBinding :: Bool
-  }
-
-getAnnotatedTCAddr :: TreeCursor Tree -> [(TASeg, SegNote)]
-getAnnotatedTCAddr tc = go tc []
- where
-  go :: TreeCursor Tree -> [(TASeg, SegNote)] -> [(TASeg, SegNote)]
-  go (ValCursor _ []) acc = acc
-  go (ValCursor _ ((seg, par) : cs)) acc =
-    let isLocal = case seg of
-          StructTASeg (StringTASeg name) -> maybe False snd (getStructField name par)
-          _ -> False
-     in go (ValCursor par cs) ((seg, SegNote isLocal) : acc)
-
--- | Traverse all the one-level sub nodes of the tree.
-traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
- where
-  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
-  go (sel, sub) = unlessFocusBottom () $ do
-    res <- inSubTM sel sub (f >> getTMTree)
-    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
-    t <- getTMTree
-    case (treeNode t, treeNode res) of
-      (TNStruct _, TNBottom _) -> putTMTree res
-      _ -> return ()
-
-{- | Traverse the leaves of the tree cursor in the following order
-1. Traverse the current node.
-2. Traverse the sub-tree with the segment.
--}
-traverseTM :: (TreeMonad s m) => m () -> m ()
-traverseTM f = f >> traverseSub (traverseTM f)
+closeBasedOnPar :: Tree -> Tree -> Tree
+closeBasedOnPar par t = t{treeRecurClosed = treeRecurClosed par}

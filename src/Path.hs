@@ -3,7 +3,6 @@ module Path where
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 
 data Selector = StringSel String | IntSel Int
@@ -53,6 +52,7 @@ selToTASeg :: Selector -> TASeg
 selToTASeg (StringSel s) = StructTASeg $ StringTASeg s
 selToTASeg (IntSel i) = IndexTASeg i
 
+-- | TASeg is paired with a tree node.
 data TASeg
   = -- RootTASeg is a special segment that represents the root of the addr.
     -- It is crucial to distinguish between the absolute addr and the relative addr.
@@ -81,7 +81,9 @@ data StructTASeg
     -- let binding.
     StringTASeg String
   | PatternTASeg Int
-  | PendingTASeg Int
+  | -- | PendingTASeg is used to represent a pending field. It is indexed by the index of the pending field.
+    -- It is paired with either dsfLabel or scsPattern.
+    PendingTASeg Int
   | -- | A let binding is always indexed by the LetTASeg.
     LetTASeg
       -- | Identifier
@@ -90,9 +92,9 @@ data StructTASeg
 
 instance Show StructTASeg where
   show (StringTASeg s) = s
-  show (PendingTASeg i) = "sp_" ++ show i
   -- c stands for constraint.
   show (PatternTASeg i) = "sc_" ++ show i
+  show (PendingTASeg i) = "sp_" ++ show i
   show (LetTASeg s) = "let_" ++ s
 
 getStrFromSeg :: StructTASeg -> Maybe String
@@ -174,8 +176,9 @@ isTreeAddrEmpty _ = False
 addrFromList :: [TASeg] -> TreeAddr
 addrFromList segs = TreeAddr (reverse segs)
 
-addrToList :: TreeAddr -> [TASeg]
-addrToList (TreeAddr segs) = reverse segs
+-- | Convert a TreeAddr to normal order list, meaning the first segment is the first in the list.
+addrToNormOrdList :: TreeAddr -> [TASeg]
+addrToNormOrdList (TreeAddr segs) = reverse segs
 
 appendSeg :: TASeg -> TreeAddr -> TreeAddr
 appendSeg seg (TreeAddr xs) = TreeAddr (seg : xs)
