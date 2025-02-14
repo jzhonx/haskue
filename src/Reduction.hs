@@ -147,8 +147,7 @@ mutValToArgsTM subSeg sub f = doInMutTM $ mustMutable $ \_ -> inSubTM subSeg sub
 
 reduceStruct :: forall s m. (TreeMonad s m) => m ()
 reduceStruct = do
-  whenStruct () $ \s -> mapM_ (reduceStructVal . fst) (Map.toList . stcSubs $ s)
-  -- reduce the pendings.
+  -- reduce the pendings first. If the pendings become actual fields, then they will be reduced.
   delIdxes <- whenStruct [] $ \s ->
     foldM
       (\acc (i, pend) -> reducePendSElem (PendingTASeg i, pend) >>= \r -> return $ if r then i : acc else acc)
@@ -159,6 +158,8 @@ reduceStruct = do
       s
         { stcPendSubs = [pse | (i, pse) <- zip [0 ..] (stcPendSubs s), i `notElem` delIdxes]
         }
+
+  whenStruct () $ \s -> mapM_ (reduceStructVal . fst) (Map.toList . stcSubs $ s)
 
   -- pattern value should never be reduced because the references inside the pattern value should only be resolved in
   -- the unification node of the static field.
@@ -238,12 +239,9 @@ reducePendSElem (seg@(PendingTASeg _), pse) = case pse of
     case treeNode label of
       TNBottom _ -> putTMTree label >> return False
       TNAtom (AtomV (String s)) -> do
-        newSF <- mustStruct $ \struct -> do
+        mustStruct $ \struct -> do
           let newSF = dynToField dsf (lookupStructVal s struct)
           putTMTree $ mkStructTree $ addStructField struct s newSF
-          return newSF
-
-        reduceInStructSub (StringTASeg s) (ssfField newSF)
         return True
       -- TODO: implement mutable label
       TNMutable _ -> putTMTree (mkBottomTree "segment can only be a string") >> return False
