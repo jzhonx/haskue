@@ -162,7 +162,7 @@ drainNotifQueue = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsRemoteTMMaybe :: (TMonad s m t, Show t) => TreeAddr -> m a -> m (Maybe a)
+inAbsRemoteTMMaybe :: (TreeMonad s m) => TreeAddr -> m a -> m (Maybe a)
 inAbsRemoteTMMaybe p f = do
   origAbsAddr <- getTMAbsAddr
 
@@ -178,12 +178,12 @@ inAbsRemoteTMMaybe p f = do
         (show p)
   return tarM
  where
-  whenM :: (TMonad s m t) => m Bool -> m a -> m (Maybe a)
+  whenM :: (TreeMonad s m) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
     if b then Just <$> g else return Nothing
 
-inAbsRemoteTM :: (TMonad s m t, Show t) => TreeAddr -> m a -> m a
+inAbsRemoteTM :: (TreeMonad s m) => TreeAddr -> m a -> m a
 inAbsRemoteTM p f = do
   r <- inAbsRemoteTMMaybe p f
   maybe (throwErrSt $ printf "addr %s not found" (show p)) return r
@@ -726,7 +726,7 @@ searchTCVar sel@(StringSel name) tc = do
 searchTCVar _ _ = return Nothing
 
 -- | Go to the absolute addr in the tree.
-goTMAbsAddr :: (TMonad s m t, Show t) => TreeAddr -> m Bool
+goTMAbsAddr :: (TreeMonad s m) => TreeAddr -> m Bool
 goTMAbsAddr dst = do
   when (headSeg dst /= Just RootTASeg) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))

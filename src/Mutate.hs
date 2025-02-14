@@ -1,6 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -158,7 +157,7 @@ we need to delete receiver starting with the addr, not only the addr. For exampl
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delNotifRecvPrefix :: (TMonad s m t) => TreeAddr -> m ()
+delNotifRecvPrefix :: (TreeMonad s m) => TreeAddr -> m ()
 delNotifRecvPrefix addrPrefix = do
   withContext $ \ctx -> do
     putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ del (ctxNotifGraph ctx)}
@@ -184,7 +183,7 @@ reference.
 
 If the receiver addresss is the mutable address plus the argument segment, then it should be skipped.
 -}
-delMutValRecvs :: (TMonad s m t) => TreeAddr -> m ()
+delMutValRecvs :: (TreeMonad s m) => TreeAddr -> m ()
 delMutValRecvs mutAddr = do
   withContext $ \ctx ->
     putTMContext $ ctx{ctxNotifGraph = delEmptyElem $ delRecvs (ctxNotifGraph ctx)}

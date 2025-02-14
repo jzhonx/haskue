@@ -21,21 +21,15 @@ where
 
 import qualified AST
 import Class
-import Config
-import Control.Monad (foldM, when)
-import Control.Monad.Reader (MonadReader, ask)
-import Control.Monad.State.Strict (MonadState, evalState)
+import Control.Monad (foldM)
+import Control.Monad.State.Strict (MonadState)
 import Cursor
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
-import Env
 import Error
-import GHC.Stack (HasCallStack)
 import Path
-import TMonad
 import Text.Printf (printf)
-import Util
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
@@ -50,16 +44,6 @@ import Value.TreeNode
 class TreeRepBuilderIter a where
   iterRepTree :: a -> TreeRepBuildOption -> TreeRep
 
--- TreeMonad stores the tree structure in its state.
-type TreeMonad s m =
-  ( Env m
-  , MonadState s m
-  , HasCtxVal s Tree Tree
-  , HasTrace s
-  , MonadReader (Config Tree) m
-  , HasCallStack
-  )
-
 -- Some rules:
 -- 1. If a node is a Mutable that contains references, then the node should not be supplanted to other places without
 -- changing the dependencies.
@@ -71,9 +55,7 @@ data Tree = Tree
   -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
   }
 
-newtype TreeRepBuildOption = TreeRepBuildOption
-  { trboShowMutArgs :: Bool
-  }
+newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
 
 data TreeRep = TreeRep
   { trSymbol :: String
@@ -547,26 +529,6 @@ mkStructTree s = mkNewTree (TNStruct s)
 mutValStubTree :: Tree
 mutValStubTree = mkMutableTree MutStub
 
-withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
-withTN f = withTree (f . treeNode)
-
-modifyTMTN :: (TreeMonad s m) => TreeNode Tree -> m ()
-modifyTMTN tn = do
-  t <- getTMTree
-  putTMTree $ setTN t tn
-
-unlessFocusBottom :: (TreeMonad s m) => a -> m a -> m a
-unlessFocusBottom a f = do
-  t <- getTMTree
-  case treeNode t of
-    TNBottom _ -> return a
-    _ -> f
-
-mustMutable :: (TreeMonad s m) => (Mutable Tree -> m a) -> m a
-mustMutable f = withTree $ \t -> case treeNode t of
-  TNMutable fn -> f fn
-  _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
-
 treesToRef :: [Tree] -> Maybe Path.Reference
 treesToRef ts = Path.Reference <$> mapM treeToSel ts
  where
@@ -589,29 +551,6 @@ addrToTrees p = mapM selToTree (addrToList p)
     StructTASeg (StringTASeg s) -> Just $ mkAtomTree (String s)
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
-
-dumpEntireTree :: (TreeMonad s m) => String -> m ()
-dumpEntireTree msg = do
-  withTN $ \case
-    TNAtom _ -> return ()
-    TNBottom _ -> return ()
-    TNTop -> return ()
-    _ -> do
-      Config{cfMermaid = mermaid, cfShowMutArgs = showMutArgs} <- ask
-      when mermaid $ do
-        logDebugStr "--- dump entire tree states: ---"
-        notifiers <- ctxNotifGraph <$> getTMContext
-        logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
-        tc <- getTMCursor
-        rtc <- propUpTCUntil Path.RootTASeg tc
-
-        let
-          t = vcFocus rtc
-          evalTreeAddr = addrFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr t) 0
-        logDebugStr $ printf "\n```mermaid\n%s\n```" s
-
-        logDebugStr "--- dump entire tree done ---"
 
 getStructField :: String -> Tree -> Maybe (Tree, Bool)
 getStructField name Tree{treeNode = TNStruct struct} = do
@@ -638,23 +577,3 @@ getAnnotatedTCAddr tc = go tc []
           StructTASeg (StringTASeg name) -> maybe False snd (getStructField name par)
           _ -> False
      in go (ValCursor par cs) ((seg, SegNote isLocal) : acc)
-
--- | Traverse all the one-level sub nodes of the tree.
-traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
-traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
- where
-  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
-  go (sel, sub) = unlessFocusBottom () $ do
-    res <- inSubTM sel sub (f >> getTMTree)
-    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
-    t <- getTMTree
-    case (treeNode t, treeNode res) of
-      (TNStruct _, TNBottom _) -> putTMTree res
-      _ -> return ()
-
-{- | Traverse the leaves of the tree cursor in the following order
-1. Traverse the current node.
-2. Traverse the sub-tree with the segment.
--}
-traverseTM :: (TreeMonad s m) => m () -> m ()
-traverseTM f = f >> traverseSub (traverseTM f)

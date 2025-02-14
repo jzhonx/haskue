@@ -1,68 +1,74 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module TMonad where
 
-import Class
+import Config
 import Control.Monad (when)
 import Control.Monad.Except (throwError)
-import Control.Monad.State.Strict (MonadState, gets, modify)
+import Control.Monad.Reader (MonadReader, ask)
+import Control.Monad.State.Strict (MonadState, evalState, gets, modify)
 import Cursor
 import Env
 import Error
 import GHC.Stack (HasCallStack)
 import Path
+import Text.Printf (printf)
 import Util
+import Value.Tree
 
-type TMonad s m t =
-  ( TreeOp t
-  , Env m
+-- TreeMonad stores the tree structure in its state.
+type TreeMonad s m =
+  ( Env m
   , MonadState s m
-  , HasCtxVal s t t
+  , HasCtxVal s Tree Tree
   , HasTrace s
+  , MonadReader (Config Tree) m
   , HasCallStack
   )
 
-getTMAbsAddr :: (TMonad s m t) => m TreeAddr
+getTMAbsAddr :: (TreeMonad s m) => m TreeAddr
 getTMAbsAddr = gets (cvTreeAddr . getCtxVal)
 
-getTMContext :: (TMonad s m t) => m (Context t)
+getTMContext :: (TreeMonad s m) => m (Context Tree)
 getTMContext = gets (cvCtx . getCtxVal)
 
-putTMContext :: (TMonad s m t) => Context t -> m ()
+putTMContext :: (TreeMonad s m) => Context Tree -> m ()
 putTMContext ctx = modify $ \s ->
   let ct = getCtxVal s
    in setCtxVal s (ct{cvCtx = ctx})
 
-modifyTMContext :: (TMonad s m t) => (Context t -> Context t) -> m ()
+modifyTMContext :: (TreeMonad s m) => (Context Tree -> Context Tree) -> m ()
 modifyTMContext f = modify $ \s ->
   let ct = getCtxVal s
       ctx = cvCtx ct
    in setCtxVal s (ct{cvCtx = f ctx})
 
-getTMCrumbs :: (TMonad s m t) => m [TreeCrumb t]
+getTMCrumbs :: (TreeMonad s m) => m [TreeCrumb Tree]
 getTMCrumbs = ctxCrumbs <$> getTMContext
 
-putTMCrumbs :: (TMonad s m t) => [TreeCrumb t] -> m ()
+putTMCrumbs :: (TreeMonad s m) => [TreeCrumb Tree] -> m ()
 putTMCrumbs crumbs = modify $ \s ->
   let ct = getCtxVal s
       ctx = cvCtx ct
    in setCtxVal s (ct{cvCtx = ctx{ctxCrumbs = crumbs}})
 
-getTMTree :: (TMonad s m t) => m t
+getTMTree :: (TreeMonad s m) => m Tree
 getTMTree = gets (cvVal . getCtxVal)
 
-putTMTree :: (TMonad s m t) => t -> m ()
+putTMTree :: (TreeMonad s m) => Tree -> m ()
 putTMTree t = modify $ \s -> setCtxVal s (t <$ getCtxVal s)
 
-getTMCursor :: (TMonad s m t) => m (TreeCursor t)
+getTMCursor :: (TreeMonad s m) => m (TreeCursor Tree)
 getTMCursor = gets (getCVCursor . getCtxVal)
 
-putTMCursor :: (TMonad s m t) => TreeCursor t -> m ()
+putTMCursor :: (TreeMonad s m) => TreeCursor Tree -> m ()
 putTMCursor tc = putTMCrumbs (vcCrumbs tc) >> putTMTree (vcFocus tc)
 
-getTMTASeg :: (TMonad s m t) => m TASeg
+getTMTASeg :: (TreeMonad s m) => m TASeg
 getTMTASeg = do
   crumbs <- getTMCrumbs
   case crumbs of
@@ -70,10 +76,10 @@ getTMTASeg = do
     (seg, _) : _ -> return seg
 
 -- Propagate the value up until the lowest segment is passed.
-propUpTMSeg :: (TMonad s m t) => TASeg -> m ()
+propUpTMSeg :: (TreeMonad s m) => TASeg -> m ()
 propUpTMSeg seg = getTMCursor >>= go >>= putTMCursor
  where
-  go :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
+  go :: (Env m) => TreeCursor Tree -> m (TreeCursor Tree)
   go (ValCursor _ []) = throwErrSt "propUpTMSeg: already at the top"
   go tc@(ValCursor _ ((s, _) : _)) = do
     if s == seg
@@ -81,34 +87,34 @@ propUpTMSeg seg = getTMCursor >>= go >>= putTMCursor
       else propValUp tc >>= go
 
 -- Propagate the value up until the lowest segment is matched.
-propUpTMUntilSeg :: (TMonad s m t) => TASeg -> m ()
+propUpTMUntilSeg :: (TreeMonad s m) => TASeg -> m ()
 propUpTMUntilSeg seg = getTMCursor >>= propUpTCUntil seg >>= putTMCursor
 
-propUpTM :: (TMonad s m t) => m ()
+propUpTM :: (TreeMonad s m) => m ()
 propUpTM = getTMCursor >>= propValUp >>= putTMCursor
 
-withTree :: (TMonad s m t) => (t -> m a) -> m a
+withTree :: (TreeMonad s m) => (Tree -> m a) -> m a
 withTree f = getTMTree >>= f
 
-withContext :: (TMonad s m t) => (Context t -> m a) -> m a
+withContext :: (TreeMonad s m) => (Context Tree -> m a) -> m a
 withContext f = getTMContext >>= f
 
-withCtxTree :: (TMonad s m t) => (CtxTree t -> m a) -> m a
+withCtxTree :: (TreeMonad s m) => (CtxTree Tree -> m a) -> m a
 withCtxTree f = gets getCtxVal >>= f
 
-withAddrAndFocus :: (TMonad s m t) => (TreeAddr -> t -> m a) -> m a
+withAddrAndFocus :: (TreeMonad s m) => (TreeAddr -> Tree -> m a) -> m a
 withAddrAndFocus f = do
   addr <- getTMAbsAddr
   withTree (f addr)
 
-pushTMSub :: (TMonad s m t) => TASeg -> t -> m ()
+pushTMSub :: (TreeMonad s m) => TASeg -> Tree -> m ()
 pushTMSub seg tip = do
   t <- getTMTree
   crumbs <- getTMCrumbs
   putTMCrumbs ((seg, t) : crumbs)
   putTMTree tip
 
-inSubTM :: (TMonad s m t) => TASeg -> t -> m a -> m a
+inSubTM :: (TreeMonad s m) => TASeg -> Tree -> m a -> m a
 inSubTM seg t f = do
   pushTMSub seg t
   r <- f
@@ -119,14 +125,14 @@ inSubTM seg t f = do
 
 This does not propagate the value up.
 -}
-getTMParent :: (TMonad s m t) => m t
+getTMParent :: (TreeMonad s m) => m Tree
 getTMParent = do
   crumbs <- getTMCrumbs
   case crumbs of
     [] -> throwErrSt "already at the top"
     (_, t) : _ -> return t
 
-descendTM :: (TMonad s m t) => TreeAddr -> m Bool
+descendTM :: (TreeMonad s m) => TreeAddr -> m Bool
 descendTM dst = do
   tc <- getTMCursor
   maybe
@@ -134,18 +140,18 @@ descendTM dst = do
     (\r -> putTMCursor r >> return True)
     (goDownTCAddr dst tc)
 
-descendTMSeg :: (TMonad s m t) => TASeg -> m Bool
+descendTMSeg :: (TreeMonad s m) => TASeg -> m Bool
 descendTMSeg seg = descendTM (TreeAddr [seg])
 
 -- | discard the current focus, pop up and put the new focus.
-discardTMAndPut :: (TMonad s m t) => t -> m ()
+discardTMAndPut :: (TreeMonad s m) => Tree -> m ()
 discardTMAndPut new = modify $ \s ->
   let ct = getCtxVal s
       ctx = cvCtx ct
    in setCtxVal s (ct{cvVal = new, cvCtx = ctx{ctxCrumbs = tail (ctxCrumbs ctx)}})
 
 -- | discard the current focus, pop up and put the original focus in the crumbs back.
-discardTMAndPop :: (TMonad s m t) => m ()
+discardTMAndPop :: (TreeMonad s m) => m ()
 discardTMAndPop = do
   ctx <- getTMContext
   let
@@ -154,40 +160,40 @@ discardTMAndPop = do
   putTMContext ctx{ctxCrumbs = tail crumbs}
   putTMTree (snd t)
 
-inDiscardSubTM :: (TMonad s m t) => TASeg -> t -> m a -> m a
+inDiscardSubTM :: (TreeMonad s m) => TASeg -> Tree -> m a -> m a
 inDiscardSubTM seg t f = do
   pushTMSub seg t
   r <- f
   discardTMAndPop
   return r
 
-inTempSubTM :: (TMonad s m t) => t -> m a -> m a
+inTempSubTM :: (TreeMonad s m) => Tree -> m a -> m a
 inTempSubTM sub f = do
   pushTMSub TempTASeg sub
   r <- f
   propUpTMSeg TempTASeg
   return r
 
-allocTMScopeID :: (TMonad s m t) => m Int
+allocTMScopeID :: (TreeMonad s m) => m Int
 allocTMScopeID = do
   sid <- getTMScopeID
   let newSID = sid + 1
   setTMScopeID newSID
   return newSID
 
-getTMScopeID :: (TMonad s m t) => m Int
+getTMScopeID :: (TreeMonad s m) => m Int
 getTMScopeID = ctxScopeID <$> getTMContext
 
-setTMScopeID :: (TMonad s m t) => Int -> m ()
+setTMScopeID :: (TreeMonad s m) => Int -> m ()
 setTMScopeID newID = modifyTMContext (\ctx -> ctx{ctxScopeID = newID})
 
-getTMNotifQ :: (TMonad s m t) => m [TreeAddr]
+getTMNotifQ :: (TreeMonad s m) => m [TreeAddr]
 getTMNotifQ = ctxNotifQueue <$> getTMContext
 
-addToTMNotifQ :: (TMonad s m t) => TreeAddr -> m ()
+addToTMNotifQ :: (TreeMonad s m) => TreeAddr -> m ()
 addToTMNotifQ addr = modifyTMContext (\ctx -> ctx{ctxNotifQueue = addr : ctxNotifQueue ctx})
 
-popTMNotifQ :: (TMonad s m t) => m (Maybe TreeAddr)
+popTMNotifQ :: (TreeMonad s m) => m (Maybe TreeAddr)
 popTMNotifQ = do
   ctx <- getTMContext
   case ctxNotifQueue ctx of
@@ -198,14 +204,77 @@ popTMNotifQ = do
       putTMContext ctx{ctxNotifQueue = init (ctxNotifQueue ctx)}
       return (Just addr)
 
-getTMNotifEnabled :: (TMonad s m t) => m Bool
+getTMNotifEnabled :: (TreeMonad s m) => m Bool
 getTMNotifEnabled = ctxNotifEnabled <$> getTMContext
 
-setTMNotifEnabled :: (TMonad s m t) => Bool -> m ()
+setTMNotifEnabled :: (TreeMonad s m) => Bool -> m ()
 setTMNotifEnabled b = modifyTMContext (\ctx -> ctx{ctxNotifEnabled = b})
 
-treeDepthCheck :: (TMonad s m t) => m ()
+treeDepthCheck :: (TreeMonad s m) => m ()
 treeDepthCheck = do
   crumbs <- getTMCrumbs
   let depth = length crumbs
   when (depth > 1000) $ throwError "tree depth exceeds 1000"
+
+withTN :: (TreeMonad s m) => (TreeNode Tree -> m a) -> m a
+withTN f = withTree (f . treeNode)
+
+modifyTMTN :: (TreeMonad s m) => TreeNode Tree -> m ()
+modifyTMTN tn = do
+  t <- getTMTree
+  putTMTree $ setTN t tn
+
+unlessFocusBottom :: (TreeMonad s m) => a -> m a -> m a
+unlessFocusBottom a f = do
+  t <- getTMTree
+  case treeNode t of
+    TNBottom _ -> return a
+    _ -> f
+
+mustMutable :: (TreeMonad s m) => (Mutable Tree -> m a) -> m a
+mustMutable f = withTree $ \t -> case treeNode t of
+  TNMutable fn -> f fn
+  _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
+
+dumpEntireTree :: (TreeMonad s m) => String -> m ()
+dumpEntireTree msg = do
+  withTN $ \case
+    TNAtom _ -> return ()
+    TNBottom _ -> return ()
+    TNTop -> return ()
+    _ -> do
+      Config{cfMermaid = mermaid, cfShowMutArgs = showMutArgs} <- ask
+      when mermaid $ do
+        logDebugStr "--- dump entire tree states: ---"
+        notifiers <- ctxNotifGraph <$> getTMContext
+        logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
+        tc <- getTMCursor
+        rtc <- propUpTCUntil Path.RootTASeg tc
+
+        let
+          t = vcFocus rtc
+          evalTreeAddr = addrFromCrumbs (vcCrumbs tc)
+          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr t) 0
+        logDebugStr $ printf "\n```mermaid\n%s\n```" s
+
+        logDebugStr "--- dump entire tree done ---"
+
+-- | Traverse all the one-level sub nodes of the tree.
+traverseSub :: forall s m. (TreeMonad s m) => m () -> m ()
+traverseSub f = withTree $ \t -> mapM_ go (subNodes t)
+ where
+  go :: (TreeMonad s m) => (TASeg, Tree) -> m ()
+  go (sel, sub) = unlessFocusBottom () $ do
+    res <- inSubTM sel sub (f >> getTMTree)
+    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
+    t <- getTMTree
+    case (treeNode t, treeNode res) of
+      (TNStruct _, TNBottom _) -> putTMTree res
+      _ -> return ()
+
+{- | Traverse the leaves of the tree cursor in the following order
+1. Traverse the current node.
+2. Traverse the sub-tree with the segment.
+-}
+traverseTM :: (TreeMonad s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)

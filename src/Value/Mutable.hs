@@ -9,12 +9,23 @@ import qualified AST
 import Class
 import Config
 import Control.Monad.Reader (MonadReader)
+import Control.Monad.State.Strict (MonadState)
+import Cursor
 import Env
 import Error
+import GHC.Stack (HasCallStack)
 import qualified Path
-import TMonad
+import Util
 
-type MutableEnv s m t = (TMonad s m t, MonadReader (Config t) m)
+type MutableEnv s m t =
+  ( TreeOp t
+  , Env m
+  , MonadState s m
+  , HasCtxVal s t t
+  , HasTrace s
+  , HasCallStack
+  , MonadReader (Config t) m
+  )
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
