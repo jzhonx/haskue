@@ -539,7 +539,6 @@ markOuterIdents ::
   TreeCursor Tree ->
   m Tree
 markOuterIdents val ptc = do
-  -- let valScopeAddr = referableAddr $ tcTreeAddr ptc
   let subtAddr = tcTreeAddr ptc
   utc <- traverseTC (mark subtAddr) (val <$ ptc)
   logDebugStr $
@@ -712,7 +711,6 @@ The cursor will also be propagated to the parent block.
 -}
 searchTCVar :: (Env m) => Selector -> TreeCursor Tree -> m (Maybe (TreeCursor Tree, Bool))
 searchTCVar sel@(StringSel name) tc = do
-  -- logDebugStr $ printf "searchTCVar: %s, tc: %s" name (show tc)
   maybe
     (goUp tc)
     (\(field, isLB) -> return $ Just (mkSubTC (mkSeg isLB) field tc, isLB))

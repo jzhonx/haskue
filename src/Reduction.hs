@@ -164,7 +164,7 @@ reduceStruct = do
   -- pattern value should never be reduced because the references inside the pattern value should only be resolved in
   -- the unification node of the static field.
   -- See unify for more details.
-  whenStruct () $ \s -> mapM_ applyPatStaticFields (stcPatterns s)
+  whenStruct () $ \s -> mapM_ constrainFields (stcPatterns s)
 
   withAddrAndFocus $ \addr t ->
     logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
@@ -300,16 +300,16 @@ patToStructPendPattern pat val = case treeNode pat of
       else Right $ Just $ StructPattern bds val
   _ -> Left (mkBottomTree (printf "pattern should be bounds, but is %s" (show pat)))
 
-{- | Apply the pattern to the existing static fields of the struct.
+{- | Apply the pattern to the static fields of the struct.
 
 The tree focus should be the struct.
 -}
-applyPatStaticFields ::
+constrainFields ::
   (TreeMonad s m) =>
   StructPattern Tree ->
   m ()
-applyPatStaticFields psf = withAddrAndFocus $ \p _ -> debugSpan
-  (printf "applyPatStaticFields, addr: %s" (show p))
+constrainFields psf = withAddrAndFocus $ \p _ -> debugSpan
+  (printf "constrainFields, addr: %s" (show p))
   $ mustStruct
   $ \struct -> do
     let
@@ -329,7 +329,7 @@ applyPatStaticFields psf = withAddrAndFocus $ \p _ -> debugSpan
             )
         >>= return . filter (/= "")
 
-    logDebugStr $ printf "applyPatStaticFields: cnstrSegs: %s" (show cnstrSegs)
+    logDebugStr $ printf "constrainFields: cnstrSegs: %s" (show cnstrSegs)
 
     results <-
       foldM
@@ -1265,15 +1265,6 @@ unifyStructs isEitherEmbeded (Path.L, _s1) (_, _s2) = do
     combinedPatterns = stcPatterns st1 ++ stcPatterns st2
 unifyStructs isEitherEmbeded dt1@(Path.R, _) dt2 = unifyStructs isEitherEmbeded dt2 dt1
 
--- reducePendPatternForUnify :: (TreeMonad s m) => Struct Tree -> m (Struct Tree)
--- reducePendPatternForUnify s = do
---   foldM
---     (\acc (i, pend) -> reducePendSElem (PendingTASeg i, pend) >>= \r -> return $ if r then i : acc else acc)
---     []
---     (zip [0 ..] (stcPendSubs s))
---   reducedPatterns <- mapM (reduceStructPattern isEmbedded) (stcPatterns s)
---   return s{stcPatterns = reducedPatterns}
-
 {- | Check if the new labels from the new struct are permitted based on the base struct.
 
 The isNewEmbedded flag indicates whether the new struct is embedded in the base struct.
@@ -1298,12 +1289,13 @@ checkPermittedLabels base isNewEmbedded new =
               StringTASeg s -> do
                 -- foldM only returns a non-bottom value when the new label is in the patterns, otherwise it returns a
                 -- Nothing or a bottom.
+                -- It is ok if the res is a Mutable, since it represents incompleteness.
                 r <-
                   foldM
                     ( \iacc (i, pat) ->
                         if maybe False isTreeBottom iacc
                           then return iacc
-                          else do
+                          else
                             inDiscardSubTM
                               (StructTASeg (PatternTASeg i))
                               ( mkMutableTree $ mkUnifyNode (mkAtomTree $ String s) (mkNewTree $ TNBounds pat)
