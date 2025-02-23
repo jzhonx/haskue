@@ -13,10 +13,11 @@ import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState, get, put)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
-import Error
+import Exception
 import Path
 import Reduction
 import TMonad
@@ -61,7 +62,7 @@ evalLiteral lit = return v
 
 evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
 evalDecls decls = do
-  sid <- allocSID
+  sid <- allocOID
   (t, embeds) <- foldM evalDecl (mkStructTree (emptyStruct{stcID = sid}), []) decls
   return $
     if null embeds
@@ -72,8 +73,8 @@ evalDecls decls = do
           t
           embeds
 
-allocSID :: (EvalEnv m) => m Int
-allocSID = do
+allocOID :: (EvalEnv m) => m Int
+allocOID = do
   i <- get
   let j = i + 1
   put j
@@ -119,7 +120,7 @@ evalFdLabels lbls e =
       do
         logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
         sf2 <- evalFdLabels (l2 : rs) e
-        sid <- allocSID
+        sid <- allocOID
         let val = mkNewTree . TNStruct $ mkStructFromAdders sid [sf2]
         adder <- mkAdder l1 val
         logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
@@ -130,14 +131,16 @@ evalFdLabels lbls e =
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> return $ StaticSAdder key (VT.Field val attr [])
+            (sselFrom -> Just key) -> return $ StaticSAdder key (VT.emptyFieldMker val attr)
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
-              return $ DynamicSAdder (DynamicField attr selTree se val)
+              oid <- allocOID
+              return $ DynamicSAdder oid (DynamicField oid attr selTree se val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
-      return (CnstrSAdder pat val)
+      oid <- allocOID
+      return (CnstrSAdder oid pat val)
 
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe String
@@ -175,6 +178,8 @@ addNewStructElem adder struct = case adder of
                         { ssfValue = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfValue extSF) (ssfValue sf))
                         , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                         , ssfCnstrs = []
+                        , ssfPends = []
+                        , ssfNoStatic = False
                         }
                  in
                   mkStructTree $ struct{stcSubs = Map.insert seg unifySFOp (stcSubs struct)}
@@ -189,8 +194,10 @@ addNewStructElem adder struct = case adder of
                     }
           )
           (declCheck name False)
-  (DynamicSAdder dsf) -> mkStructTree $ struct{stcPendSubs = stcPendSubs struct ++ [Just dsf]}
-  (CnstrSAdder pattern val) -> mkStructTree $ struct{stcCnstrs = stcCnstrs struct ++ [StructCnstr pattern val]}
+  (DynamicSAdder i dsf) ->
+    mkStructTree $ struct{stcPendSubs = IntMap.insert i dsf (stcPendSubs struct)}
+  (CnstrSAdder i pattern val) ->
+    mkStructTree $ struct{stcCnstrs = IntMap.insert i (StructCnstr i pattern val) (stcCnstrs struct)}
   (LetSAdder name val) ->
     fromMaybe
       ( mkStructTree $

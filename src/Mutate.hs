@@ -12,8 +12,8 @@ import Control.Monad (when)
 import Control.Monad.Reader (asks)
 import Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe)
-import Error
+import Data.Maybe (fromJust, fromMaybe, isJust)
+import Exception
 import Path
 import TMonad
 import Text.Printf (printf)
@@ -22,16 +22,15 @@ import Value.Tree as VT
 
 {- | Check whether the mutator is reducible.
 
-The first argument is a mutable node, and the second argument is the value of the mutable.
+The first argument is a mutable node, and the second argument is the mutval.
 -}
 isMutableTreeReducible :: Tree -> Tree -> Bool
-isMutableTreeReducible fnT res =
-  treeHasAtom res
-    || isTreeBottom res
-    || isTreeRefCycleTail res
-    || isTreeStructuralCycle res
+isMutableTreeReducible mut mv =
+  isTreeBottom mv
+    || isTreeRefCycleTail mv
+    || isTreeStructuralCycle mv
     -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
-    || not (treeHasRef fnT)
+    || not (treeHasRef mut)
 
 {- | Mutate the Mutable. If the previous mutable mutates to another mutable, then this function will be recursively
  - called.
@@ -62,31 +61,46 @@ mutate = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
 mutateRef :: (TreeMonad s m) => VT.Reference Tree -> m ()
 mutateRef ref = do
   Functions{fnDeref = deref} <- asks cfFunctions
-  runInMutValEnv $ deref (refPath ref) (refOrigAddrs ref)
+  tarAddrM <- runInMutValEnv $ deref (refPath ref) (refOrigAddrs ref)
   withAddrAndFocus $ \addr focus ->
-    logDebugStr $ printf "mutateRef: addr: %s, deref result: %s" (show addr) (show focus)
+    logDebugStr $ printf "mutateRef: addr: %s, tarAddr: %s, tar: %s" (show addr) (show tarAddrM) (show focus)
 
   -- Make sure the mutable is still the focus of the tree.
   assertMVNotRef
 
-  Functions{fnReduce = reduce} <- asks cfFunctions
-  runWithMutVal reduce
-  withAddrAndFocus $ \addr focus ->
-    logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
-  maybe
-    (return ())
-    ( \mv ->
-        if
-          | isRefResReducible mv -> reduceToMutVal mv
-          -- If the result is another mutable
-          | Just imut <- getMutableFromTree mv -> do
-              case getMutVal imut of
-                Just imv -> mustSetMutValTree imv
-                -- If the function has no result, then we need to reset the mutable value to Nothing.
-                _ -> resetTMMutVal
-          | otherwise -> return ()
-    )
-    =<< getTMMutVal
+  cnstrValAddrM <- ctxCnstrValidatorAddr <$> getTMContext
+  if tarAddrM == cnstrValAddrM && isJust tarAddrM
+    then do
+      withAddrAndFocus $ \addr _ ->
+        logDebugStr $
+          printf
+            "mutateRef: addr: %s, validating cnstr, tarAddrM: %s"
+            (show addr)
+            (show tarAddrM)
+      mv <- getTMMutVal
+      case treeNode <$> mv of
+        Just (TNAtom _) -> reduceToMutVal $ fromJust mv
+        _ -> throwErrSt $ printf "constraint's atom not found, but got: %s" (show mv)
+    else do
+      Functions{fnReduce = reduce} <- asks cfFunctions
+      runWithMutVal reduce
+      withAddrAndFocus $ \addr focus ->
+        logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
+
+      maybe
+        (return ())
+        ( \mv ->
+            if
+              | isRefResReducible mv -> reduceToMutVal mv
+              -- The result is another mutable, when we reference another mutable.
+              | Just imut <- getMutableFromTree mv -> do
+                  case getMutVal imut of
+                    Just imv -> mustSetMutValTree imv
+                    -- If the function has no result, then we need to reset the mutable value to Nothing.
+                    _ -> resetTMMutVal
+              | otherwise -> return ()
+        )
+        =<< getTMMutVal
  where
   assertMVNotRef = do
     mvM <- getTMMutVal
@@ -94,7 +108,7 @@ mutateRef ref = do
       Just (Ref _) -> throwErrSt "mutateRef: mutable value should not be a ref"
       _ -> return ()
 
-  isRefResReducible t = treeHasAtom t || isTreeBottom t || isTreeRefCycleTail t || isTreeStructuralCycle t
+  isRefResReducible t = isTreeBottom t || isTreeRefCycleTail t || isTreeStructuralCycle t
 
 mutateFunc :: (TreeMonad s m) => StatefulFunc Tree -> m ()
 mutateFunc fn = withTree $ \t -> do
@@ -218,9 +232,9 @@ delMutValRecvs mutAddr = do
   isSegMutArg (MutableTASeg (MutableArgTASeg _)) = True
   isSegMutArg _ = False
 
-runInMutValEnv :: (TreeMonad s m) => m () -> m ()
+runInMutValEnv :: (TreeMonad s m) => m a -> m a
 runInMutValEnv f = do
-  mustMutable $ \mut -> do
+  r <- mustMutable $ \mut -> do
     let sub = fromMaybe mutValStubTree (getMutVal mut)
     inSubTM (MutableTASeg MutableValTASeg) sub f
   mustMutable $ \mut -> do
@@ -231,6 +245,7 @@ runInMutValEnv f = do
         return
         (getMutVal mut)
     when (mv == mutValStubTree) resetTMMutVal
+  return r
 
 runWithMutVal :: (TreeMonad s m) => m () -> m ()
 runWithMutVal f = do

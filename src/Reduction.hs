@@ -1,6 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -16,11 +15,12 @@ import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (asks, local)
 import Control.Monad.State.Strict (gets)
 import Cursor
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
-import Error
+import Exception
 import Mutate
 import Path
 import Ref
@@ -89,31 +89,38 @@ reduceAtomOpArg seg sub =
   reduceMutableArgMaybe
     seg
     sub
-    ( \rM -> case rM of
-        Nothing -> Nothing
-        Just r ->
-          if isMutableTreeReducible sub r
-            then rM
-            else Nothing
+    ( \rM -> do
+        r <- rM
+        _ <- getAtomFromTree r
+        rM
     )
 
+{- | Reduce the argument of the mutable.
+
+If nothing concrete can be returned, then the original argument is returned.
+-}
 reduceMutableArg :: (TreeMonad s m) => TASeg -> Tree -> m Tree
-reduceMutableArg seg sub = withTree $ \t -> do
-  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe t)
+reduceMutableArg seg sub = do
+  ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe sub)
   return $ fromJust ret
 
 {- | Evaluate the argument of the given mutable.
 
-Notice that if the argument is a mutable and the mutval, such as struct or disjunction, is not
+Returns concrete value. If no concrete value exists, returns Nothing.
+
+This will go to the parent node because we are in the mutval env and evaluate the mutable's argument.
+
+Notice that if the argument is a mutable and the mutval, such as struct or disjunction, which is not
 reducible, the value is still returned because the parent mutable needs the value.
 -}
 reduceMutableArgMaybe ::
   (TreeMonad s m) =>
   TASeg ->
   Tree ->
+  -- | The handler to handle the case when the result is a mutable. The handler will be called with the mutval.
   (Maybe Tree -> Maybe Tree) ->
   m (Maybe Tree)
-reduceMutableArgMaybe seg sub csHandler = withAddrAndFocus $ \addr _ ->
+reduceMutableArgMaybe seg sub mvHandler = withAddrAndFocus $ \addr _ ->
   debugSpan (printf "reduceMutableArgMaybe, addr: %s, seg: %s" (show addr) (show seg)) $
     -- We are currently in the Mutable's val field. We need to go up to the Mutable.
     mutValToArgsTM
@@ -123,7 +130,7 @@ reduceMutableArgMaybe seg sub csHandler = withAddrAndFocus $ \addr _ ->
           Functions{fnReduce = _reduce} <- asks cfFunctions
           _reduce
           withTree $ \x -> return $ case treeNode x of
-            TNMutable mut -> csHandler (getMutVal mut)
+            TNMutable mut -> mvHandler (getMutVal mut)
             _ -> Just x
       )
 
@@ -135,7 +142,8 @@ mutValToArgsTM :: (TreeMonad s m) => TASeg -> Tree -> m a -> m a
 mutValToArgsTM subSeg sub f = doInMutTM $ mustMutable $ \_ -> inSubTM subSeg sub f
  where
   -- Run the action in the parent tree. All changes will be propagated to the parent tree and back to the current
-  -- tree. After evaluating the argument environment, the focus of the tree should still be the mutable.
+  -- tree.
+  -- After evaluating the argument environment, the focus of the tree should still be the mutable.
   doInMutTM :: (TreeMonad s m) => m a -> m a
   doInMutTM action = do
     seg <- getTMTASeg
@@ -152,22 +160,18 @@ reduceStruct = do
   mustStruct $ \s -> do
     closed <- treeRecurClosed <$> getTMTree
     when closed $
-      putTMTree (mkStructTree $ s{stcClosed = True})
+      -- Use modifyTMTN instead of mkNewTree because tree attributes need to be preserved, such as treeRecurClosed.
+      modifyTMTN (TNStruct $ s{stcClosed = True})
 
   -- reduce the dynamic fields first. If the dynfields become actual fields, later they will be reduced.
   whenStruct () $ \s ->
     foldM
-      ( \acc (i, pendM) ->
-          maybe
-            (return acc)
-            ( \pend ->
-                -- Inserting reduced pending element into the struct is handled by propUpStructPost.
-                inSubTM (StructTASeg (PendingTASeg i)) (dsfLabel pend) reduce
-            )
-            pendM
+      ( \_ (i, pend) ->
+          -- Inserting reduced pending element into the struct is handled by propUpStructPost.
+          inSubTM (StructTASeg (PendingTASeg i)) (dsfLabel pend) reduce
       )
       ()
-      (zip [0 ..] (stcPendSubs s))
+      (IntMap.toList $ stcPendSubs s)
 
   whenStruct () $ \s ->
     foldM
@@ -179,27 +183,13 @@ reduceStruct = do
           inSubTM (StructTASeg (PatternTASeg i)) (scsPattern cnstr) reduce
       )
       ()
-      (zip [0 ..] (stcCnstrs s))
+      (IntMap.toList $ stcCnstrs s)
 
   -- Reduce all subs
-  whenStruct () $ \s ->
-    if allCnstrsReady s
-      then do
-        mapM_ (reduceStructVal . fst) (Map.toList . stcSubs $ s)
-        withAddrAndFocus $ \addr t ->
-          logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
-      else withAddrAndFocus $ \addr _ ->
-        logDebugStr $ printf "reduceStruct: addr: %s, not all constraints are ready" (show addr)
-
-allCnstrsReady :: Struct Tree -> Bool
-allCnstrsReady Struct{stcCnstrs = cnstrs} = all isPatternReady cnstrs
- where
-  isPatternReady (StructCnstr{scsPattern = pat}) = case treeNode pat of
-    TNMutable mut
-      | Nothing <- getMutVal mut -> False
-      -- If the mutable is a reference and it currently has stub value.
-      | Just (TNMutable MutStub) <- treeNode <$> getMutVal mut -> False
-    _ -> True
+  whenStruct () $ \s -> do
+    mapM_ (reduceStructVal . fst) (Map.toList . stcSubs $ s)
+    withAddrAndFocus $ \addr t ->
+      logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
 
 whenStruct :: (TreeMonad s m) => a -> (Struct Tree -> m a) -> m a
 whenStruct a f = do
@@ -241,25 +231,22 @@ reduceStructVal seg@(getStrFromSeg -> Just name) = whenStruct () $ \struct -> do
     Just (_, False)
       | foundLet -> putTMTree aliasErr
     -- If there is no conflict, then reduce the sub.
-    _ -> reduceInStructSub seg sub
+    _ -> whenStruct () $ \_ -> inSubTM (StructTASeg seg) sub reduce
  where
   aliasErr = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr = mkBottomTree $ printf "%s redeclared in same scope" name
 reduceStructVal seg = throwErrSt $ printf "invalid segment %s" (show seg)
 
-reduceInStructSub :: (TreeMonad s m) => StructTASeg -> Tree -> m ()
-reduceInStructSub seg sub = do
-  -- The segment should be a struct segment.
-  whenStruct () $ \_ -> do
-    inSubTM (StructTASeg seg) sub reduce
+{- | Handle the post process of propagating value into struct.
 
--- | Handle the post process of propagating value into struct.
+The focus of the tree must be a struct.
+-}
 propUpStructPost :: (TreeMonad s m) => (StructTASeg, Struct Tree) -> m ()
 propUpStructPost (PendingTASeg i, _struct) = withAddrAndFocus $ \p _ ->
   debugSpan (printf "propUpStructPost_dynamic, addr: %s" (show p)) $ do
-    dsf <- maybe (throwErrSt "pending element has been deleted") return (stcPendSubs _struct !! i)
+    let dsf = stcPendSubs _struct IntMap.! i
     either
-      putTMTree
+      modifyTMNodeWithTree
       ( \(struct, fieldM) -> do
           -- Constrain the new field with all existing constraints.
           (newStruct, matchedSegs) <-
@@ -267,34 +254,37 @@ propUpStructPost (PendingTASeg i, _struct) = withAddrAndFocus $ \p _ ->
               (return (struct, []))
               ( \(name, field) -> do
                   (items, matchedSegs) <- do
-                    let allCnstrsWithIdx = zip [0 ..] (stcCnstrs struct)
+                    let allCnstrsWithIdx = IntMap.toList $ stcCnstrs struct
                     (newSub, matchedCnstrs) <- constrainField name (ssfValue field) allCnstrsWithIdx
                     return
                       ( [(name, newSub, matchedCnstrs)]
                       , if not (null matchedCnstrs) then [StringTASeg name] else []
                       )
-                  return (updateStructWithCnstrItems struct items, matchedSegs)
+                  return (updateFieldsWithAppliedCnstrs struct items, matchedSegs)
               )
               fieldM
           withAddrAndFocus $ \addr _ ->
             logDebugStr $
               printf
-                "propUpPendStructPost_dynamic: addr: %s, new struct: %s, matchedSegs: %s"
+                "propUpStructPost_dynamic: addr: %s, new struct: %s, matchedSegs: %s"
                 (show addr)
                 (show $ mkStructTree newStruct)
                 (show matchedSegs)
-          putTMTree (mkStructTree newStruct)
+          modifyTMNodeWithTree (mkStructTree newStruct)
 
-          -- Reduce the updated struct values.
+          -- Check the permission of the label of newly created field.
+          whenStruct () $ \s -> checkNewLabelPerm s (PendingTASeg i)
+
+          -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
           whenStruct () $ \_ -> mapM_ reduceStructVal matchedSegs
       )
-      (updateStructDynamicPend _struct i dsf)
+      (updateStructPend _struct dsf)
 propUpStructPost (PatternTASeg i, struct) = withAddrAndFocus $ \p _ ->
   debugSpan (printf "propUpStructPost_constraint, addr: %s, idx: %s" (show p) (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
     let
       prevMatchedNames = matchedByCnstr i (getSFieldPairs struct)
-      cnstr = stcCnstrs struct !! i
+      cnstr = stcCnstrs struct IntMap.! i
     newMatchedNames <- filterMatchedNames cnstr (map fst $ getSFieldPairs struct)
     -- New constraint might have the following effect:
     -- A. It matches fewer fields than the previous constraint with narrower constraints.
@@ -313,15 +303,15 @@ propUpStructPost (PatternTASeg i, struct) = withAddrAndFocus $ \p _ ->
     removedItems <-
       removeAppliedCnstr
         i
-        (stcCnstrs struct)
+        (IntMap.toList $ stcCnstrs struct)
         (filter (\(seg, _) -> seg `Set.member` removedNames) (getSFieldPairs struct))
 
     addedItems <-
       applyMoreCnstr
         (i, cnstr)
         (filter (\(seg, _) -> seg `Set.member` addedNames) (getSFieldPairs struct))
-    let newStruct = updateStructWithCnstrItems struct (removedItems ++ addedItems)
-    putTMTree (mkStructTree newStruct)
+    let newStruct = updateFieldsWithAppliedCnstrs struct (removedItems ++ addedItems)
+    modifyTMNodeWithTree (mkStructTree newStruct)
 
     let affectedSegs = map StringTASeg $ Set.toList removedNames ++ Set.toList addedNames
 
@@ -339,8 +329,11 @@ propUpStructPost (PatternTASeg i, struct) = withAddrAndFocus $ \p _ ->
             (show addedItems)
             (show $ mkStructTree newStruct)
 
+    whenStruct () $ \s -> checkNewPatternPerm s (PatternTASeg i)
+
     -- Reduce the updated struct values.
     whenStruct () $ \_ -> mapM_ reduceStructVal affectedSegs
+
     withTree $ \t ->
       logDebugStr $ printf "propUpPendStructPost_constraint: new value: %s" (show t)
  where
@@ -370,27 +363,30 @@ mustStruct f = withTree $ \t -> case treeNode t of
 
 {- | Update the struct with the reduced pending element.
 
-It returns the new struct and a boolean indicating if the label is reduced to a string.
+It returns the new struct and a pair, containing reduced string and the newly created/updated field.
 -}
-updateStructDynamicPend ::
+updateStructPend ::
   Struct Tree ->
-  Int ->
   DynamicField Tree ->
   Either Tree (Struct Tree, Maybe (String, Field Tree))
-updateStructDynamicPend struct i dsf =
-  let sub = dsfLabel dsf
-   in case treeNode sub of
-        TNBottom _ -> Left sub
-        -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
-        -- have been reduced to a string.
-        TNMutable _ -> return (struct, Nothing)
-        TNAtom (AtomV (String s)) ->
-          let
-            unifier l r = mkMutableTree $ mkUnifyNode l r
-            newSF = dynToField dsf (lookupStructVal s struct) unifier
-           in
-            return (markPendDeleted i $ addStructField struct s newSF, Just (s, newSF))
-        _ -> Left (mkBottomTree "label can only be a string")
+updateStructPend struct df = case treeNode label of
+  TNBottom _ -> Left label
+  TNMutable mut
+    -- TODO: atom can become bottom or not found.
+    | Just (TNAtom (AtomV (String s))) <- treeNode <$> getMutVal mut -> updateLabel s
+    -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
+    -- have been reduced to a string.
+    | otherwise -> return (struct, Nothing)
+  TNAtom (AtomV (String s)) -> updateLabel s
+  _ -> Left (mkBottomTree "label can only be a string")
+ where
+  label = dsfLabel df
+  updateLabel s =
+    let
+      unifier l r = mkMutableTree $ mkUnifyNode l r
+      newSF = dynToField df (lookupStructVal s struct) unifier
+     in
+      return (convertPendDyn struct s newSF, Just (s, newSF))
 
 {- | Apply pattern constraints ([pattern]: constraint) to the static field.
 
@@ -431,16 +427,18 @@ bindFieldWithCnstr name fval psf = do
 -- | Returns whether the pattern matches the label.
 patMatchLabel :: (TreeMonad s m) => Tree -> String -> m Bool
 patMatchLabel pat name = case treeNode pat of
-  TNMutable mut ->
-    maybe
-      (return False)
-      ( -- The lable mutable might be a reference. The pending element should not be marked as deleted.
-        \val -> case treeNode val of
-          -- If the mutable is a reference and it currently has no value.
-          TNMutable MutStub -> return False
-          _ -> match val
-      )
-      (getMutVal mut)
+  TNMutable mut
+    -- If the mutable is a reference or an index, then we should try to use the value of the mutable.
+    | Nothing <- getSFuncFromMutable mut ->
+        maybe
+          (return False)
+          ( -- The lable mutable might be a reference. The pending element should not be marked as deleted.
+            \val -> case treeNode val of
+              -- If the mutable is a reference and it currently has no value.
+              TNMutable MutStub -> return False
+              _ -> match val
+          )
+          (getMutVal mut)
   _ -> match pat
  where
   match v = do
@@ -448,26 +446,29 @@ patMatchLabel pat name = case treeNode pat of
       segOp = mkMutableTree $ mkUnifyNode (mkAtomTree $ String name) v
     -- Since segOps a list of unify nodes that unify the string with the bounds, we can use inDiscardSubTM to
     -- evaluate the unify nodes and get the strings.
-    r <- inDiscardSubTM TempTASeg segOp (reduce >> getTMTree)
+    r <-
+      -- We should not create constraints in this context because we should not delay the evaluation of the
+      -- pattern.
+      local (\r -> r{cfRuntimeParams = (cfRuntimeParams r){rpCreateCnstr = False}}) $
+        inDiscardSubTM TempTASeg segOp (reduce >> getTMTree)
     -- Filter the strings from the results. Non-string results are ignored meaning the fields do not match the
     -- pattern.
-    case treeNode r of
-      TNAtom (AtomV (String _)) -> return True
+    case getAtomFromTree r of
+      Just (String _) -> return True
       _ -> return False
 
-{- | Update the struct with the cnstr items.
+{- | Update the struct field with the cnstr items.
 
-If the cnstr items introduce new fields that are not in the struct, then the new fields are ignored.
+If the cnstr items introduce new fields that are not in the struct, then they are ignored.
 -}
-updateStructWithCnstrItems :: Struct Tree -> [(String, Tree, [Int])] -> Struct Tree
-updateStructWithCnstrItems struct =
+updateFieldsWithAppliedCnstrs :: Struct Tree -> [(String, Tree, [Int])] -> Struct Tree
+updateFieldsWithAppliedCnstrs struct =
   foldr
-    ( \(name, v, matchedCnstrs) acc ->
-        let seg = StringTASeg name
-         in maybe
-              acc
-              (\field -> updateStructSub seg (SField field{ssfValue = v, ssfCnstrs = matchedCnstrs}) acc)
-              (lookupStructVal name struct >>= getFieldFromSV)
+    ( \(name, val, matchedCnstrs) acc ->
+        maybe
+          acc
+          (\field -> updateStructSub (StringTASeg name) (SField field{ssfValue = val, ssfCnstrs = matchedCnstrs}) acc)
+          (lookupStructVal name struct >>= getFieldFromSV)
     )
     struct
 
@@ -490,7 +491,7 @@ This is done by re-applying existing constraints except the one that is removed.
 removeAppliedCnstr ::
   (TreeMonad s m) =>
   Int ->
-  [StructCnstr Tree] ->
+  [(Int, StructCnstr Tree)] ->
   [(String, Field Tree)] ->
   m [(String, Tree, [Int])]
 removeAppliedCnstr delIdx allCnstrs subs = do
@@ -498,7 +499,7 @@ removeAppliedCnstr delIdx allCnstrs subs = do
     ( \accSubs (name, field) -> do
         let
           updatedIdxes = filter (/= delIdx) (ssfCnstrs field)
-          updatedCnstrs = filter (\(i, _) -> i `elem` updatedIdxes) (zip [0 ..] allCnstrs)
+          updatedCnstrs = filter (\(i, _) -> i `elem` updatedIdxes) allCnstrs
           fval = ssfValue field
         raw <-
           maybe (throwErrSt "non-constrained expression is not found") return (treeNonCnstrExpr fval)
@@ -522,6 +523,122 @@ applyMoreCnstr (i, cnstr) =
         (nv, _) <- bindFieldWithCnstr name (ssfValue field) cnstr
         return (name, nv, ssfCnstrs field ++ [i])
     )
+
+checkNewLabelPerm :: (TreeMonad s m) => Struct Tree -> StructTASeg -> m ()
+checkNewLabelPerm struct (PendingTASeg i) =
+  let perms = getPermInfoForDyn struct i
+   in mapM_ (validatePermItem struct) perms
+checkNewLabelPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+
+checkNewPatternPerm :: (TreeMonad s m) => Struct Tree -> StructTASeg -> m ()
+checkNewPatternPerm struct (PatternTASeg i) =
+  let perms = getPermInfoForPattern struct i
+   in mapM_ (validatePermItem struct) perms
+checkNewPatternPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+
+validatePermItem :: (TreeMonad s m) => Struct Tree -> PermItem -> m ()
+validatePermItem struct p =
+  let
+    labels = piLabels p `Set.union` dynIdxesToLabels (piDyns p)
+    cnstrs = IntMap.fromList $ map (\i -> (i, stcCnstrs struct IntMap.! i)) (Set.toList $ piCnstrs p)
+    opLabels = Set.toList $ piOpLabels p `Set.union` dynIdxesToLabels (piOpDyns p)
+   in
+    checkLabelsPerm labels cnstrs True False opLabels
+ where
+  dynIdxesToLabels :: Set.Set Int -> Set.Set StructTASeg
+  dynIdxesToLabels idxes =
+    Set.fromList
+      ( catMaybes $
+          map
+            ( \i ->
+                StringTASeg <$> getStringFromTree (dsfLabel $ stcPendSubs struct IntMap.! i)
+            )
+            (Set.toList idxes)
+      )
+
+{- | Check the labels' permission.
+
+The focus of the tree must be a struct.
+-}
+checkLabelsPerm ::
+  (TreeMonad s m) => Set.Set StructTASeg -> IntMap.IntMap (StructCnstr Tree) -> Bool -> Bool -> [StructTASeg] -> m ()
+checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded =
+  mapM_
+    ( \opLabel ->
+        checkPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded opLabel
+          >>= maybe
+            (return ())
+            -- If the checkPerm returns a bottom, update the bottom to the struct.
+            ( \btm -> do
+                mustStruct $ \struct -> do
+                  sv <-
+                    maybe
+                      (throwErrSt "struct-value is not found")
+                      return
+                      ( do
+                          name <- getStrFromSeg opLabel
+                          lookupStructVal name struct
+                      )
+                  modifyTMTN $ TNStruct $ updateStructSub opLabel (btm <$ sv) struct
+            )
+    )
+
+checkPerm ::
+  (TreeMonad s m) =>
+  Set.Set StructTASeg ->
+  IntMap.IntMap (StructCnstr Tree) ->
+  Bool ->
+  Bool ->
+  StructTASeg ->
+  m (Maybe Tree)
+checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel = do
+  r <- _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
+  logDebugStr $
+    printf
+      "checkPerm: newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s, r: %s"
+      (show newLabel)
+      (show baseLabels)
+      (show baseAllCnstrs)
+      (show isBaseClosed)
+      (show isEitherEmbedded)
+      (show r)
+  return r
+
+_checkPerm ::
+  (TreeMonad s m) =>
+  Set.Set StructTASeg ->
+  IntMap.IntMap (StructCnstr Tree) ->
+  Bool ->
+  Bool ->
+  StructTASeg ->
+  m (Maybe Tree)
+_checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
+  | not isBaseClosed || isEitherEmbedded = return Nothing
+  | Nothing <- getStrFromSeg newLabel = throwErrSt $ printf "unexpected new label: %s" (show newLabel)
+  | newLabel `Set.member` baseLabels = return Nothing
+  | Just name <- getStrFromSeg newLabel = do
+      -- A "new" field is allowed if there is at least one pattern that matches the field.
+      allowed <-
+        foldM
+          ( \acc cnstr ->
+              if acc
+                then return acc
+                else do
+                  let pat = scsPattern cnstr
+                  r <- patMatchLabel pat name
+                  logDebugStr $ printf "checkPerm: pat: %s, name: %s, r: %s" (show pat) name (show r)
+                  return r
+          )
+          -- By default, "new" label is not allowed.
+          False
+          (IntMap.elems baseAllCnstrs)
+
+      logDebugStr $ printf "checkPerm: newLabel: %s, allowed: %s" (show newLabel) (show allowed)
+
+      -- A field is disallowed if no pattern exists or no pattern matches the label.
+      if allowed
+        then return Nothing
+        else return . Just $ mkBottomTree $ printf "%s is not allowed" (show newLabel)
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> m Tree
@@ -891,7 +1008,7 @@ data UTree = UTree
   }
 
 instance Show UTree where
-  show (UTree t d e) = printf "(%s,e:%s,\n%s)" (show d) (show e) (show t)
+  show (UTree t d e) = printf "(%s,embed:%s,\n%s)" (show d) (show e) (show t)
 
 unify :: (TreeMonad s m) => Tree -> Tree -> m ()
 unify t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R False)
@@ -954,6 +1071,10 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withAddrAndFocus $
       (TNBounds b1, _) -> unifyLeftBound (b1, ut1) ut2
       (_, TNBounds b2) -> unifyLeftBound (b2, ut2) ut1
       _ -> unifyLeftOther ut1 ut2
+
+    -- close the merged tree
+    withTree $ \t ->
+      putTMTree (t{treeRecurClosed = treeRecurClosed t1 || treeRecurClosed t2})
 
     -- reduce the merged tree
     withTree $ \t -> case getMutableFromTree t of
@@ -1333,7 +1454,7 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
 unifyLeftStruct :: (TreeMonad s m) => (Struct Tree, UTree) -> UTree -> m ()
 unifyLeftStruct (s1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = case treeNode t2 of
   -- If either of the structs is embedded, closed struct restrictions are ignored.
-  TNStruct s2 -> unifyStructs (utEmbedded ut1 || utEmbedded ut2) (d1, s1) (d2, s2)
+  TNStruct s2 -> unifyStructs (d1, utEmbedded ut1, s1) (d2, utEmbedded ut2, s2)
   _ -> unifyLeftOther ut2 ut1
 
 {- | unify two structs.
@@ -1344,38 +1465,42 @@ For closedness, unification only generates a closed struct but not a recursively
 recursively, the only way is to reference the struct via a #ident.
 -}
 unifyStructs ::
-  (TreeMonad s m) => Bool -> (Path.BinOpDirect, Struct Tree) -> (Path.BinOpDirect, Struct Tree) -> m ()
-unifyStructs isEitherEmbeded (Path.L, _s1) (_, _s2) = do
-  let
-    s1 = _s1
-    s2 = _s2
+  (TreeMonad s m) => (Path.BinOpDirect, Bool, Struct Tree) -> (Path.BinOpDirect, Bool, Struct Tree) -> m ()
+unifyStructs (Path.L, isEmbed1, s1) (_, isEmbed2, s2) = do
+  -- lBtm1 <- checkPermittedLabels s1 isEitherEmbeded s2
+  -- lBtm2 <- checkPermittedLabels s2 isEitherEmbeded s1
+  -- case (lBtm1, lBtm2) of
+  --   (Just b1, _) -> putTMTree b1
+  --   (_, Just b2) -> putTMTree b2
+  -- _ -> do
 
-  lBtm1 <- checkPermittedLabels s1 isEitherEmbeded s2
-  lBtm2 <- checkPermittedLabels s2 isEitherEmbeded s1
-  case (lBtm1, lBtm2) of
-    (Just b1, _) -> putTMTree b1
-    (_, Just b2) -> putTMTree b2
-    _ -> do
-      sid <- allocTMScopeID
-      let merged = nodesToStruct sid (unionFields s1 s2) s1 s2
-      withAddrAndFocus $ \addr _ ->
-        logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
-      -- in reduce, the new combined fields will be checked by the combined patterns.
-      putTMTree merged
+  -- withAddrAndFocus $ \addr t ->
+  --   logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
+
+  sid <- allocTMObjID
+  let merged = nodesToStruct sid (unionFields s1 s2) s1 s2
+  withAddrAndFocus $ \addr _ ->
+    logDebugStr $ printf "unifyStructs: %s gets updated to tree:\n%s" (show addr) (show merged)
+  -- in reduce, the new combined fields will be checked by the combined patterns.
+  putTMTree merged
+
+  let isEitherEmbeded = isEmbed1 || isEmbed2
+  checkLabelsPerm (Set.fromList $ stcOrdLabels s1) (stcCnstrs s1) (stcClosed s1) isEitherEmbeded (stcOrdLabels s2)
+  checkLabelsPerm (Set.fromList $ stcOrdLabels s2) (stcCnstrs s2) (stcClosed s2) isEitherEmbeded (stcOrdLabels s1)
  where
   -- merge two fields by creating a unify node with merged attributes.
-  mergeField :: Field Tree -> Field Tree -> Field Tree
-  mergeField sf1 sf2 =
+  mkUnifiedField :: Field Tree -> Field Tree -> Field Tree
+  mkUnifiedField sf1 sf2 =
     let
-      ua = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
       -- No original node exists yet
       f = mkUnifyNode (ssfValue sf1) (ssfValue sf2)
      in
       Field
         { ssfValue = mkMutableTree f
-        , ssfAttr = ua
-        , -- TODO
-          ssfCnstrs = []
+        , ssfAttr = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
+        , ssfCnstrs = ssfCnstrs sf1 ++ ssfCnstrs sf2
+        , ssfPends = ssfPends sf1 ++ ssfPends sf2
+        , ssfNoStatic = ssfNoStatic sf1 && ssfNoStatic sf2
         }
 
   -- merge two fields that are not let-bindings.
@@ -1391,7 +1516,7 @@ unifyStructs isEitherEmbeded (Path.L, _s1) (_, _s2) = do
               | seg `Set.member` l1Set && seg `Set.member` l2Set
               , Just sf1 <- f1M
               , Just sf2 <- f2M ->
-                  (seg, mergeField sf1 sf2) : acc
+                  (seg, mkUnifiedField sf1 sf2) : acc
               | seg `Set.member` l1Set, Just sf1 <- f1M -> (seg, sf1) : acc
               | seg `Set.member` l2Set, Just sf2 <- f2M -> (seg, sf2) : acc
               | otherwise -> acc
@@ -1420,75 +1545,38 @@ unifyStructs isEitherEmbeded (Path.L, _s1) (_, _s2) = do
         , stcPendSubs = combinedPendSubs
         , stcCnstrs = combinedPatterns
         , stcClosed = stcClosed st1 || stcClosed st2
+        , stcPerms =
+            -- st1 and st2 could be both closed.
+            stcPerms st1
+              ++ stcPerms st2
+              -- st2 as an opposite struct of st1
+              ++ ( if not isEmbed2 && stcClosed st1
+                    then [mkPermItem st1 st2]
+                    else []
+                 )
+              -- st1 as an opposite struct of st2
+              ++ ( if not isEmbed1 && stcClosed st2
+                    then [mkPermItem st2 st1]
+                    else []
+                 )
         }
    where
-    combinedPendSubs = stcPendSubs st1 ++ stcPendSubs st2
-    combinedPatterns = stcCnstrs st1 ++ stcCnstrs st2
-unifyStructs isEitherEmbeded dt1@(Path.R, _) dt2 = unifyStructs isEitherEmbeded dt2 dt1
+    combinedPendSubs = IntMap.union (stcPendSubs st1) (stcPendSubs st2)
+    -- The combined patterns are the patterns of the first struct and the patterns of the second struct.
+    combinedPatterns = IntMap.union (stcCnstrs st1) (stcCnstrs st2)
 
-{- | Check if the new labels from the new struct are permitted based on the base struct.
-
-The isNewEmbedded flag indicates whether the new struct is embedded in the base struct.
--}
-checkPermittedLabels :: (TreeMonad s m) => Struct Tree -> Bool -> Struct Tree -> m (Maybe Tree)
-checkPermittedLabels base isNewEmbedded new =
-  -- According to the spec, An embedded value of type struct is unified with the struct in which it is embedded, but
-  -- disregarding the restrictions imposed by closed structs.
-  if not (stcClosed base) || isNewEmbedded
-    then return Nothing
-    else do
-      let
-        baseLabels = Set.fromList $ stcOrdLabels base
-        basePatterns = map scsPattern (stcCnstrs base)
-        newLabels = Set.fromList $ stcOrdLabels new
-        -- diff is the new labels that are not in the base struct.
-        diff = Set.difference newLabels baseLabels
-
-      -- If the new struct has new labels, we need to check if they are allowed by the field patterns of the base
-      -- struct.
-      -- A "new" field is allowed if there is at least one pattern that matches the field.
-      res <-
-        mapM
-          ( \seg -> case seg of
-              StringTASeg s -> do
-                -- foldM only returns whether the new label is allowed by the patterns.
-                r <-
-                  foldM
-                    ( \iacc pat ->
-                        if iacc
-                          then return iacc
-                          else do
-                            r <- patMatchLabel pat s
-                            logDebugStr $ printf "checkPermittedLabels: pat: %s, s: %s, r: %s" (show pat) s (show r)
-                            return r
-                    )
-                    -- By default, "new" label is not allowed.
-                    False
-                    basePatterns
-
-                return (seg, r)
-              _ -> throwErrSt $ printf "unexpected segment: %s" (show seg)
-          )
-          (Set.toList diff)
-
-      -- A field is disallowed if no pattern exists or no pattern matches the label.
-      let disallowed = map fst $ filter (not . snd) res
-
-      withAddrAndFocus $ \addr _ ->
-        logDebugStr $
-          printf
-            "checkPermittedLabels: addr: %s, isNewEmbedde: %s, basePatterns: %s, diff: %s, r: %s, disallowed: %s"
-            (show addr)
-            (show isNewEmbedded)
-            (show basePatterns)
-            (show $ Set.toList diff)
-            (show res)
-            (show disallowed)
-
-      -- When no new labels or all new labels are in the patterns, we return the new labels.
-      if null disallowed
-        then return Nothing
-        else return . Just $ mkBottomTree $ printf "fields: %s are not allowed" (show disallowed)
+    mkPermItem :: Struct Tree -> Struct Tree -> PermItem
+    mkPermItem struct opStruct =
+      PermItem
+        { piCnstrs = Set.fromList $ IntMap.keys $ stcCnstrs struct
+        , -- TODO: exclude let bindings
+          piLabels = Set.fromList $ stcOrdLabels struct
+        , piDyns = Set.fromList $ IntMap.keys $ stcPendSubs struct
+        , -- TODO: exclude let bindings
+          piOpLabels = Set.fromList $ stcOrdLabels opStruct
+        , piOpDyns = Set.fromList $ IntMap.keys $ stcPendSubs opStruct
+        }
+unifyStructs dt1@(Path.R, _, _) dt2 = unifyStructs dt2 dt1
 
 mkNodeWithDir ::
   (TreeMonad s m) => UTree -> UTree -> (Tree -> Tree -> m ()) -> m ()

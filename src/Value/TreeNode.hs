@@ -6,9 +6,10 @@ module Value.TreeNode where
 
 import Class
 import Control.Monad.Except (MonadError)
+import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
 import Env
-import Error
+import Exception
 import Path
 import Text.Printf (printf)
 import Value.Atom
@@ -72,11 +73,10 @@ subTreeTN seg t = case (seg, getTreeNode t) of
         >>= \case
           SField sf -> Just $ ssfValue sf
           _ -> Nothing
-    PatternTASeg i -> Just (scsPattern $ stcCnstrs struct !! i)
-    PendingTASeg i -> do
+    PatternTASeg i -> scsPattern <$> stcCnstrs struct IntMap.!? i
+    PendingTASeg i ->
       -- pending elements can be resolved, so the index might not be valid.
-      pM <- stcPendSubs struct `indexList` i
-      dsfLabel <$> pM
+      dsfLabel <$> stcPendSubs struct IntMap.!? i
     LetTASeg name ->
       lookupStructVal name struct >>= \case
         SLet lb -> Just (lbValue lb)
@@ -167,32 +167,19 @@ setSubTreeTN seg subT parT = do
           return (TNStruct newStruct)
     | PatternTASeg i <- labelSeg =
         let
-          psf = stcCnstrs parStruct !! i
+          psf = stcCnstrs parStruct IntMap.! i
           newPSF = psf{scsPattern = subT}
-          newStruct =
-            parStruct
-              { stcCnstrs = take i (stcCnstrs parStruct) ++ [newPSF] ++ drop (i + 1) (stcCnstrs parStruct)
-              }
+          newStruct = parStruct{stcCnstrs = IntMap.insert i newPSF (stcCnstrs parStruct)}
          in
           return (TNStruct newStruct)
     | PendingTASeg i <- labelSeg =
         let
           pends = stcPendSubs parStruct
-          psfM = pends !! i
+          psf = pends IntMap.! i
+          newPSF = psf{dsfLabel = subT}
+          newStruct = parStruct{stcPendSubs = IntMap.insert i newPSF pends}
          in
-          maybe
-            (throwErrSt $ printf "pending element has been deleted, idx: %s" (show i))
-            ( \psf ->
-                let
-                  newPSF = psf{dsfLabel = subT}
-                  newStruct =
-                    parStruct
-                      { stcPendSubs = take i pends ++ [Just newPSF] ++ drop (i + 1) pends
-                      }
-                 in
-                  return (TNStruct newStruct)
-            )
-            psfM
+          return (TNStruct newStruct)
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String

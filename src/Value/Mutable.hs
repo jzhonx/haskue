@@ -12,7 +12,7 @@ import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
 import Cursor
 import Env
-import Error
+import Exception
 import GHC.Stack (HasCallStack)
 import qualified Path
 import Util
@@ -63,7 +63,7 @@ data Reference t = Reference
   -- expression.
   -- If it is, the address of the scope is stored here.
   -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
-  -- The first is the subtree root address, the second is the value address.
+  -- The first is the subtree root address, the second is the abs address of the value in the subtree.
   , refValue :: Maybe t
   }
 
@@ -114,6 +114,11 @@ getRefFromMutable mut = case mut of
 getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
 getIndexFromMutable mut = case mut of
   Index idx -> Just idx
+  _ -> Nothing
+
+getSFuncFromMutable :: Mutable t -> Maybe (StatefulFunc t)
+getSFuncFromMutable mut = case mut of
+  SFunc s -> Just s
   _ -> Nothing
 
 requireMutableConcrete :: StatefulFunc t -> Bool

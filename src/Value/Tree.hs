@@ -23,10 +23,11 @@ import qualified AST
 import Class
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState)
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
-import Error
+import Exception
 import Path
 import Text.Printf (printf)
 import Value.Atom
@@ -117,7 +118,17 @@ instance TreeRepBuilder Tree where
 instance TreeRepBuilderIter Tree where
   iterRepTree t opt =
     let trf = buildRepTreeTN t (treeNode t) opt
-     in trf{trFields = trFields trf ++ maybe [] (\x -> [TreeRepField (show TempTASeg) "" x]) (treeTemp t)}
+     in trf
+          { trMeta =
+              ( if not $ isTreeAtom t
+                  then
+                    (if treeRecurClosed t then "t_#," else "")
+                      ++ (if isJust (treeExpr t) then "" else "t_N,")
+                  else []
+              )
+                ++ trMeta trf
+          , trFields = trFields trf ++ maybe [] (\x -> [TreeRepField (show TempTASeg) "" x]) (treeTemp t)
+          }
 
 buildRepTreeTN :: Tree -> TreeNode Tree -> TreeRepBuildOption -> TreeRep
 buildRepTreeTN t tn opt = case tn of
@@ -162,21 +173,19 @@ buildRepTreeTN t tn opt = case tn of
                       SLet lb -> (show k, printf ",let,r:%s" (show $ lbReferred lb), lbValue lb)
             )
             (structStrLabels s)
-            ++ zipWith
-              ( \j k -> (show (StructTASeg $ PatternTASeg j), ",v:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
+            ++ map
+              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j), ",v:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
               )
-              [0 ..]
-              (stcCnstrs s)
+              (IntMap.toList $ stcCnstrs s)
             ++ foldr
-              ( \j acc ->
-                  let a = stcPendSubs s !! j
-                   in case a of
-                        Just dsf ->
-                          (show (StructTASeg $ PendingTASeg j), dlabelAttr dsf, dsfLabel dsf) : acc
-                        _ -> (show (StructTASeg $ PendingTASeg j), ",pat_deleted", mkNewTree TNTop) : acc
+              ( \(j, dsf) acc ->
+                  -- case a of
+                  --   Just dsf ->
+                  (show (StructTASeg $ PendingTASeg j), dlabelAttr dsf, dsfLabel dsf) : acc
+                  -- _ -> (show (StructTASeg $ PendingTASeg j), ",pat_deleted", mkNewTree TNTop) : acc
               )
               []
-              (structPendIndexes s)
+              (IntMap.toList $ stcPendSubs s)
 
         metas :: [(String, String)]
         metas = []
@@ -199,7 +208,7 @@ buildRepTreeTN t tn opt = case tn of
       , mempty
       , consFields
           [ ("atom", mempty, mkAtomVTree (cnsAtom c))
-          , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
+          -- , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
           ]
       , []
       )
@@ -232,7 +241,11 @@ buildRepTreeTN t tn opt = case tn of
        in
         consRep
           ( symbol
-          , show (refPath ref) <> ", from:" <> show (refOrigAddrs ref)
+          , show (refPath ref)
+              <> maybe
+                mempty
+                (\from -> ", from:" <> show from)
+                (refOrigAddrs ref)
           , -- <> printf ", E:%s" (if isJust $ refExpr ref then "Y" else "N")
             consFields val
           , []
@@ -284,11 +297,10 @@ instance BuildASTExpr Tree where
     TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
 
 instance Eq Tree where
-  (==) t1 t2 =
-    treeNode t1 == treeNode t2 && treeRecurClosed t1 == treeRecurClosed t2
+  (==) t1 t2 = treeNode t1 == treeNode t2
 
 defaultTreeRepBuildOption :: TreeRepBuildOption
-defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = False}
+defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True}
 
 treeToSimpleStr :: Int -> Tree -> String
 treeToSimpleStr toff t =
@@ -370,9 +382,9 @@ treeToMermaid opt msg evalTreeAddr root = do
               treeID
               $ escape
                 ( symbol
-                    <> (if null meta then mempty else " " <> meta)
-                    <> (if isJust $ treeExpr t then mempty else ",N")
-                    <> (if treeRecurClosed t then ",#" else mempty)
+                    <> (if null meta then mempty else ", " <> meta)
+                    -- <> (if isJust $ treeExpr t then mempty else ",N")
+                    -- <> (if treeRecurClosed t then ",#" else mempty)
                 )
           )
 
@@ -436,8 +448,8 @@ subNodes t = case treeNode t of
       )
     | (s, sv) <- Map.toList (stcSubs struct)
     ]
-      ++ [(StructTASeg $ PatternTASeg i, scsPattern c) | (i, c) <- zip [0 ..] (stcCnstrs struct)]
-      ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, Just dsf) <- zip [0 ..] (stcPendSubs struct)]
+      ++ [(StructTASeg $ PatternTASeg i, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
+      ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNMutable (Index idx) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (idxSels idx)]
@@ -478,6 +490,13 @@ setTN t n = t{treeNode = n}
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
 
+getAtomFromTree :: Tree -> Maybe Atom
+getAtomFromTree t = case treeNode t of
+  TNAtom (AtomV a) -> Just a
+  TNConstraint c -> Just (amvAtom $ cnsAtom c)
+  TNDisj dj -> dsjDefault dj >>= getAtomFromTree
+  _ -> Nothing
+
 getAtomVFromTree :: Tree -> Maybe AtomV
 getAtomVFromTree t = case treeNode t of
   TNAtom a -> Just a
@@ -512,6 +531,11 @@ getStructFromTree :: Tree -> Maybe (Struct Tree)
 getStructFromTree t = case treeNode t of
   TNStruct s -> Just s
   _ -> Nothing
+
+getStringFromTree :: Tree -> Maybe String
+getStringFromTree t = case treeNode t of
+  (TNMutable mut) -> getMutVal mut >>= getStringFromTree
+  _ -> getAtomVFromTree t >>= getStringFromAtomV
 
 -- | Check if the node is a reducible ref cycle.
 isTreeRefCycleTail :: Tree -> Bool
@@ -563,6 +587,13 @@ treesToRef ts = Path.Reference <$> mapM treeToSel ts
  where
   treeToSel :: Tree -> Maybe Selector
   treeToSel t = case treeNode t of
+    -- TODO: Think about changing mutval.
+    TNMutable mut
+      | Just v <- getMutVal mut -> concreteToSel v
+    _ -> concreteToSel t
+
+  concreteToSel :: Tree -> Maybe Selector
+  concreteToSel t = case treeNode t of
     TNAtom a
       | (String s) <- va -> Just (StringSel s)
       | (Int j) <- va -> Just (IntSel $ fromIntegral j)
@@ -591,6 +622,3 @@ getStructField name Tree{treeNode = TNStruct struct} = do
         else Nothing
     SLet lb -> Just (lbValue lb, True)
 getStructField _ _ = Nothing
-
-closeBasedOnPar :: Tree -> Tree -> Tree
-closeBasedOnPar par t = t{treeRecurClosed = treeRecurClosed par}

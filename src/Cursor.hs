@@ -15,7 +15,7 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
-import Error
+import Exception
 import Path
 import Util
 
@@ -50,12 +50,13 @@ type CtxTree t = CtxVal t t
 
 data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
-  , ctxScopeID :: Int
+  , ctxObjID :: Int
   , ctxReduceStack :: [TreeAddr]
   , ctxNotifEnabled :: Bool
   , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
   , ctxNotifQueue :: [TreeAddr]
   -- ^ The notif queue is a list of addresses that will trigger the notification.
+  , ctxCnstrValidatorAddr :: Maybe TreeAddr
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
@@ -82,11 +83,12 @@ emptyContext :: Context t
 emptyContext =
   Context
     { ctxCrumbs = []
-    , ctxScopeID = 0
+    , ctxObjID = 0
     , ctxReduceStack = []
     , ctxNotifGraph = Map.empty
     , ctxNotifQueue = []
     , ctxNotifEnabled = True
+    , ctxCnstrValidatorAddr = Nothing
     , ctxTrace = emptyTrace
     }
 

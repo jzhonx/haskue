@@ -1,7 +1,7 @@
 module Value.Cycle where
 
 import Class
-import Error
+import Exception
 import Path
 
 {- | A reference cycle occurs if a field references itself, either directly or indirectly.

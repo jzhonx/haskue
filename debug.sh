@@ -32,12 +32,27 @@ if [[ "$1" == "show" ]]; then
   exit 0
 fi
 
-input="$1"
-cabal build
-# Run the program with the input file and redirect the output to a log file.
-gtimeout 0.1s cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
-echo ""
-go run tools/logp/main.go -input=_debug/t.log -output=_debug/output.md
+if [[ "$1" == "run" ]]; then
+  input="$2"
+  timeout="$3"
 
-# show the size of the output.md
-ls -lh _debug/output.md
+  cabal build
+  echo ""
+  # Run the program with the input file and redirect the output to a log file.
+  if [[ -z "$timeout" ]]; then
+    cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
+  else
+    gtimeout $timeout cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
+  fi
+
+  go run tools/logp/main.go -input=_debug/t.log -output=_debug/output.md
+
+  # show the size of the output.md
+  ls -lh _debug/output.md
+
+  exit 0
+fi
+
+# invalid command
+echo "Invalid command: $1"
+exit 1

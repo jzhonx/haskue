@@ -57,3 +57,11 @@ instance Eq AtomV where
 
 instance BuildASTExpr AtomV where
   buildASTExpr c (AtomV v) = buildASTExpr c v
+
+getStringFromAtom :: Atom -> Maybe String
+getStringFromAtom a = case a of
+  String s -> Just s
+  _ -> Nothing
+
+getStringFromAtomV :: AtomV -> Maybe String
+getStringFromAtomV (AtomV a) = getStringFromAtom a

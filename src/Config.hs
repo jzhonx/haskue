@@ -12,7 +12,7 @@ import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
 import Cursor
 import Env
-import Error
+import Exception
 import Path
 import Text.Printf (printf)
 import Util
@@ -36,7 +36,7 @@ data Functions t = Functions
   { fnEvalExpr :: forall m. (EM m t) => AST.Expression -> m t
   , fnClose :: forall s m. (MM s m t) => [t] -> m ()
   , fnReduce :: forall s m. (MM s m t) => m ()
-  , fnDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
+  , fnDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m (Maybe TreeAddr)
   , fnIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
   , fnPropUpStructPost :: forall s m. (MM s m t) => (StructTASeg, Struct t) -> m ()
   }

@@ -22,7 +22,7 @@ import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
 import Cursor
-import Error
+import Exception
 import EvalExpr
 import Parser (parseSourceFile)
 import Path

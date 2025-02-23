@@ -27,8 +27,11 @@ postValidation = do
   ctx <- getTMContext
   -- remove all notifiers.
   putTMContext $ ctx{ctxNotifGraph = Map.empty}
-  -- first rewrite all functions to their results if the results exist.
+
+  -- rewrite all functions to their results if the results exist.
   snapshotTM
+
+  withTree $ \t -> logDebugStr $ printf "postValidation: tree: %s" (show t)
 
   -- then validate all constraints.
   traverseTM $ withTN $ \case
@@ -48,33 +51,38 @@ snapshotTM =
 -- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
 -- will be assigned to the constraint in the propValUp.
 validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
-validateCnstr c = withTree $ \_ -> do
-  withAddrAndFocus $ \addr _ -> do
-    tc <- getTMCursor
-    RuntimeParams{rpCreateCnstr = cc} <- asks cfRuntimeParams
-    logDebugStr $
-      printf
-        "validateCnstr: addr: %s, validator: %s, cc: %s constraint unify tc:\n%s"
-        (show addr)
-        (show (cnsValidator c))
-        (show cc)
-        (show tc)
+validateCnstr c = do
+  addr <- getTMAbsAddr
+  logDebugStr $
+    printf
+      "validateCnstr: addr: %s, validator: %s"
+      (show addr)
+      (show (cnsValidator c))
+  modifyTMContext $ \ctx -> ctx{ctxCnstrValidatorAddr = Just addr}
 
   -- make sure return the latest atom
   let atomT = mkAtomVTree $ cnsAtom c
   -- run the validator in a sub context.
+  -- We should never trigger others because the field is supposed to be atom and no value changes.
   res <- inTempSubTM (mkBottomTree "no value yet") $ do
-    putTMTree =<< evalExprTM (cnsValidator c)
+    raw <- evalExprTM (cnsValidator c)
+    putTMTree raw
+    -- TODO: replace all refs that refer to the cnstr with the atom
     fullReduce >> getTMTree
+
+  modifyTMContext $ \ctx -> ctx{ctxCnstrValidatorAddr = Nothing}
 
   putTMTree $
     if
       | isTreeBottom res -> res
       | isTreeAtom res -> atomT
+      -- The result might be a mutable due to an atom unifying with a mutable.
+      | Just a <- getMutableFromTree res >>= getMutVal, isTreeAtom a -> atomT
       -- incomplete case
       | isTreeMutable res -> res
       | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
+-- | Validate if a struct has any unreferenced let clauses.
 validateStruct :: (TreeMonad s m) => Struct Tree -> m ()
 validateStruct s =
   let errM =

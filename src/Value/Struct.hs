@@ -5,10 +5,12 @@ module Value.Struct where
 
 import qualified AST
 import Class
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe)
+import qualified Data.Set as Set
 import Env
-import Error
+import Exception
 import qualified Path
 
 data Struct t = Struct
@@ -19,11 +21,12 @@ data Struct t = Struct
   -- definitions. The length of this list should be equal to the size of the stcSubs map.
   , stcSubs :: Map.Map Path.StructTASeg (StructVal t)
   -- ^ The raws map is used to store the raw values of the static fields, excluding the let bindings.
-  , stcCnstrs :: [StructCnstr t]
-  , stcPendSubs :: [Maybe (DynamicField t)]
-  -- ^ We should not shrink the size of the list because any index of it might still be referred.
+  , stcCnstrs :: IntMap.IntMap (StructCnstr t)
+  , stcPendSubs :: IntMap.IntMap (DynamicField t)
+  -- ^ We should not shrink the list as it is a heap list.
   , stcClosed :: Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
+  , stcPerms :: [PermItem]
   }
 
 data LabelAttr = LabelAttr
@@ -48,6 +51,10 @@ data Field t = Field
   , ssfAttr :: LabelAttr
   , ssfCnstrs :: [Int]
   -- ^ Which constraints are applied to the field.
+  , ssfPends :: [Int]
+  -- ^ Which dynamic fields are applied to the field.
+  , ssfNoStatic :: Bool
+  -- ^ Whether the field is created only by dynamic fields.
   }
   deriving (Show, Functor)
 
@@ -62,7 +69,8 @@ data LetBinding t = LetBinding
 possible.
 -}
 data DynamicField t = DynamicField
-  { dsfAttr :: LabelAttr
+  { dsfID :: Int
+  , dsfAttr :: LabelAttr
   , dsfLabel :: t
   , dsfLabelExpr :: AST.Expression
   , dsfValue :: t
@@ -75,7 +83,8 @@ data DynamicField t = DynamicField
 The first element is the pattern, the second element is the value.
 -}
 data StructCnstr t = StructCnstr
-  { scsPattern :: t
+  { scsID :: Int
+  , scsPattern :: t
   , scsValue :: t
   -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing pending
   -- elements.
@@ -84,9 +93,18 @@ data StructCnstr t = StructCnstr
 
 data StructElemAdder t
   = StaticSAdder String (Field t)
-  | DynamicSAdder (DynamicField t)
-  | CnstrSAdder t t
+  | DynamicSAdder Int (DynamicField t)
+  | CnstrSAdder Int t t
   | LetSAdder String t
+  deriving (Show)
+
+data PermItem = PermItem
+  { piCnstrs :: Set.Set Int
+  , piLabels :: Set.Set Path.StructTASeg
+  , piDyns :: Set.Set Int
+  , piOpLabels :: Set.Set Path.StructTASeg
+  , piOpDyns :: Set.Set Int
+  }
   deriving (Show)
 
 instance (Eq t) => Eq (Struct t) where
@@ -143,7 +161,7 @@ instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
             foldr
               (\dsf acc -> processDynField dsf : acc)
               []
-              (catMaybes $ stcPendSubs s)
+              (IntMap.elems $ stcPendSubs s)
         return $ AST.litCons $ AST.StructLit (stcs ++ dyns)
 
 instance (Eq t) => Eq (StructCnstr t) where
@@ -165,9 +183,6 @@ structStrLabels struct = stcOrdLabels struct ++ Map.keys (Map.filter isLet (stcS
  where
   isLet (SLet _) = True
   isLet _ = False
-
-structPendIndexes :: Struct t -> [Int]
-structPendIndexes s = [0 .. length (stcPendSubs s) - 1]
 
 defaultLabelAttr :: LabelAttr
 defaultLabelAttr = LabelAttr SFCRegular True
@@ -194,23 +209,25 @@ mkStructFromAdders sid as =
     [(Path.StringTASeg s, SField sf) | StaticSAdder s sf <- as]
       ++ [(Path.StringTASeg s, SLet $ LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
   pendings =
-    foldr
-      ( \x acc ->
-          case x of
-            DynamicSAdder dsf -> Just dsf : acc
-            _ -> acc
-      )
-      []
-      as
+    IntMap.fromList $
+      foldr
+        ( \x acc ->
+            case x of
+              DynamicSAdder oid dsf -> (oid, dsf) : acc
+              _ -> acc
+        )
+        []
+        as
   cnstrs =
-    foldr
-      ( \x acc ->
-          case x of
-            CnstrSAdder pattern val -> StructCnstr pattern val : acc
-            _ -> acc
-      )
-      []
-      as
+    IntMap.fromList $
+      foldr
+        ( \x acc ->
+            case x of
+              CnstrSAdder oid pattern val -> (oid, StructCnstr oid pattern val) : acc
+              _ -> acc
+        )
+        []
+        as
 
 emptyStruct :: Struct t
 emptyStruct =
@@ -218,20 +235,39 @@ emptyStruct =
     { stcID = 0
     , stcOrdLabels = []
     , stcSubs = Map.empty
-    , stcPendSubs = []
-    , stcCnstrs = []
+    , stcPendSubs = IntMap.empty
+    , stcCnstrs = IntMap.empty
     , stcClosed = False
+    , stcPerms = []
     }
 
-addStructField ::
+emptyFieldMker :: t -> LabelAttr -> Field t
+emptyFieldMker t a =
+  Field
+    { ssfValue = t
+    , ssfAttr = a
+    , ssfCnstrs = []
+    , ssfPends = []
+    , ssfNoStatic = False
+    }
+
+{- | Convert a pending dynamic field to a field.
+
+It marks the pending dynamic field as deleted.
+-}
+convertPendDyn ::
   Struct t -> String -> Field t -> Struct t
-addStructField struct s sf =
+convertPendDyn struct s sf =
   struct
     { stcSubs = Map.insert (Path.StringTASeg s) (SField sf) (stcSubs struct)
     , stcOrdLabels =
-        if Path.StringTASeg s `elem` stcOrdLabels struct
-          then stcOrdLabels struct
-          else stcOrdLabels struct ++ [Path.StringTASeg s]
+        stcOrdLabels struct
+          -- TODO: use Map to lookup
+          ++ ( if Path.StringTASeg s `elem` stcOrdLabels struct
+                then []
+                else [Path.StringTASeg s]
+             )
+             -- , stcPendSubs = IntMap.insert dynIdx Nothing (stcPendSubs struct)
     }
 
 dynToField ::
@@ -244,16 +280,26 @@ dynToField df sfM unifier = case sfM of
   -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
   -- in a scope can be ignored.
   Just (SField sf) ->
-    Field
-      { ssfValue = unifier (ssfValue sf) (dsfValue df)
-      , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr df)
-      , ssfCnstrs = []
-      }
+    -- If the dynamic field is already applied to the field, then we do not apply it again.
+    if dsfID df `elem` ssfPends sf
+      then sf
+      else
+        Field
+          { ssfValue = unifier (ssfValue sf) (dsfValue df)
+          , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr df)
+          , -- The dynamic field just turns into a regular field. No constraints are applied.
+            ssfCnstrs = []
+          , ssfPends = ssfPends sf ++ [dsfID df]
+          , ssfNoStatic = False
+          }
   _ ->
     Field
       { ssfValue = dsfValue df
       , ssfAttr = dsfAttr df
-      , ssfCnstrs = []
+      , -- Same as above.
+        ssfCnstrs = []
+      , ssfPends = [dsfID df]
+      , ssfNoStatic = True
       }
 
 addStructLetBind :: Struct t -> String -> t -> Struct t
@@ -264,12 +310,6 @@ addStructLetBind struct s t =
           (Path.StringTASeg s)
           (SLet $ LetBinding{lbValue = t, lbReferred = False})
           (stcSubs struct)
-    }
-
-addStructCnstr :: Struct t -> StructCnstr t -> Struct t
-addStructCnstr struct psf =
-  struct
-    { stcCnstrs = stcCnstrs struct ++ [psf]
     }
 
 markLetBindReferred :: String -> Struct t -> Struct t
@@ -285,7 +325,7 @@ markLetBindReferred name struct =
 
 -- | Determines whether the struct has empty fields, including both static and dynamic fields.
 hasEmptyFields :: Struct t -> Bool
-hasEmptyFields s = Map.null (stcSubs s) && not (null (catMaybes $ stcPendSubs s))
+hasEmptyFields s = Map.null (stcSubs s) && null (stcPendSubs s)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -314,14 +354,31 @@ getFieldFromSV sv = case sv of
   SField f -> Just f
   _ -> Nothing
 
-markPendDeleted :: Int -> Struct t -> Struct t
-markPendDeleted i struct =
-  struct
-    { stcPendSubs = take i (stcPendSubs struct) ++ Nothing : drop (i + 1) (stcPendSubs struct)
-    }
+{- | Update the struct with the given segment and value.
 
+The segment should already exist in the struct.
+-}
 updateStructSub :: Path.StructTASeg -> StructVal t -> Struct t -> Struct t
 updateStructSub seg sub struct =
   struct
     { stcSubs = Map.insert seg sub (stcSubs struct)
     }
+
+{- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic
+field is allowed or whether the dynamic field allows other fields.
+-}
+getPermInfoForDyn :: Struct t -> Int -> [PermItem]
+getPermInfoForDyn struct i =
+  foldr
+    ( \p acc ->
+        if i `Set.member` piDyns p || i `Set.member` piOpDyns p then p : acc else acc
+    )
+    []
+    (stcPerms struct)
+
+{- | Given a struct and the index of a constraint, return the permission information to check whether the constraint
+allows other fields.
+-}
+getPermInfoForPattern :: Struct t -> Int -> [PermItem]
+getPermInfoForPattern struct i =
+  foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)

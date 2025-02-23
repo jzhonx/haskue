@@ -6,6 +6,7 @@
 
 module TMonad where
 
+import Class
 import Config
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
@@ -13,7 +14,7 @@ import Control.Monad.Reader (MonadReader, ask, asks)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify)
 import Cursor
 import Env
-import Error
+import Exception
 import GHC.Stack (HasCallStack)
 import Path
 import Text.Printf (printf)
@@ -120,6 +121,9 @@ modifyTMTN tn = do
   t <- getTMTree
   putTMTree $ setTN t tn
 
+modifyTMNodeWithTree :: (TreeMonad s m) => Tree -> m ()
+modifyTMNodeWithTree t = modifyTMTN (treeNode t)
+
 -- TreeMonad operations
 
 -- PropUp operations
@@ -132,13 +136,23 @@ propUpTM :: (TreeMonad s m) => m ()
 propUpTM = do
   tc <- getTMCursor
   seg <- focusTCSeg tc
-  propUpTC tc >>= putTMCursor
-  withTree $ \t -> case (seg, getStructFromTree t) of
-    (StructTASeg sseg, Just struct) -> do
-      Functions{fnPropUpStructPost = propUpStructPost} <- asks cfFunctions
-      propUpStructPost (sseg, struct)
-    -- invalid combination should have been ruled out by the propUpTC
-    _ -> return ()
+  focus <- getTMTree
+  if isTreeBottom focus && isSegStruct seg
+    then do
+      _discardTMAndPop
+      putTMTree focus
+    else do
+      propUpTC tc >>= putTMCursor
+      withTree $ \t -> case (seg, getStructFromTree t) of
+        (StructTASeg sseg, Just struct) -> do
+          Functions{fnPropUpStructPost = propUpStructPost} <- asks cfFunctions
+          propUpStructPost (sseg, struct)
+        -- invalid combination should have been ruled out by the propUpTC
+        _ -> return ()
+ where
+  isSegStruct :: TASeg -> Bool
+  isSegStruct (StructTASeg _) = True
+  isSegStruct _ = False
 
 -- Propagate the value up until the lowest segment is matched.
 propUpTMUntilSeg :: (TreeMonad s m) => TASeg -> m ()
@@ -171,21 +185,22 @@ It closes the sub tree based on the parent tree.
 -}
 descendTMSeg :: (TreeMonad s m) => TASeg -> m Bool
 descendTMSeg seg = do
-  tc@(ValCursor t _) <- getTMCursor
+  tc <- getTMCursor
   maybe
     (return False)
-    (\r -> putTMCursor (closeBasedOnPar t <$> r) >> return True)
+    (\r -> putTMCursor r >> return True)
     (goDownTCSeg seg tc)
 
 -- Push down operations
 
+-- | Push down the segment with the new value.
 _pushTMSub :: (TreeMonad s m) => TASeg -> Tree -> m ()
-_pushTMSub seg tip = do
-  (ValCursor t crumbs) <- getTMCursor
+_pushTMSub seg sub = do
+  (ValCursor p crumbs) <- getTMCursor
   putTMCursor $
     ValCursor
-      (closeBasedOnPar t tip)
-      ((seg, t) : crumbs)
+      sub
+      ((seg, p) : crumbs)
 
 -- Push and pop operations
 
@@ -200,18 +215,18 @@ inDiscardSubTM :: (TreeMonad s m) => TASeg -> Tree -> m a -> m a
 inDiscardSubTM seg t f = do
   _pushTMSub seg t
   r <- f
-  discardTMAndPop
+  _discardTMAndPop
   return r
- where
-  -- \| discard the current focus, pop up and put the original focus in the crumbs back.
-  discardTMAndPop :: (TreeMonad s m) => m ()
-  discardTMAndPop = do
-    ctx <- getTMContext
-    let
-      crumbs = ctxCrumbs ctx
-      headC = head crumbs
-    putTMContext ctx{ctxCrumbs = tail crumbs}
-    putTMTree (snd headC)
+
+-- | discard the current focus, pop up and put the original focus in the crumbs back.
+_discardTMAndPop :: (TreeMonad s m) => m ()
+_discardTMAndPop = do
+  ctx <- getTMContext
+  let
+    crumbs = ctxCrumbs ctx
+    headC = head crumbs
+  putTMContext ctx{ctxCrumbs = tail crumbs}
+  putTMTree (snd headC)
 
 inTempSubTM :: (TreeMonad s m) => Tree -> m a -> m a
 inTempSubTM sub f = do
@@ -220,20 +235,20 @@ inTempSubTM sub f = do
   propUpTM
   return r
 
--- ScopeID
+-- ObjID
 
-allocTMScopeID :: (TreeMonad s m) => m Int
-allocTMScopeID = do
-  sid <- getTMScopeID
-  let newSID = sid + 1
-  setTMScopeID newSID
-  return newSID
+allocTMObjID :: (TreeMonad s m) => m Int
+allocTMObjID = do
+  oid <- getTMObjID
+  let newOID = oid + 1
+  setTMObjID newOID
+  return newOID
 
-getTMScopeID :: (TreeMonad s m) => m Int
-getTMScopeID = ctxScopeID <$> getTMContext
+getTMObjID :: (TreeMonad s m) => m Int
+getTMObjID = ctxObjID <$> getTMContext
 
-setTMScopeID :: (TreeMonad s m) => Int -> m ()
-setTMScopeID newID = modifyTMContext (\ctx -> ctx{ctxScopeID = newID})
+setTMObjID :: (TreeMonad s m) => Int -> m ()
+setTMObjID newID = modifyTMContext (\ctx -> ctx{ctxObjID = newID})
 
 getTMNotifQ :: (TreeMonad s m) => m [TreeAddr]
 getTMNotifQ = ctxNotifQueue <$> getTMContext

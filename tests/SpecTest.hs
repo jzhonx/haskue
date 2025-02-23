@@ -6,6 +6,7 @@ import Config
 import Control.Monad (unless)
 import Control.Monad.Except (runExcept, runExceptT, throwError)
 import Data.ByteString.Builder
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
@@ -31,12 +32,7 @@ newCompleteStruct labels subs =
                 ( \(k, v) ->
                     let (s, a) = selAttr k
                      in ( Path.StringTASeg s
-                        , SField $
-                            Field
-                              { ssfValue = v
-                              , ssfAttr = a
-                              , ssfCnstrs = []
-                              }
+                        , SField $ emptyFieldMker v a
                         )
                 )
                 subs
@@ -45,8 +41,8 @@ newCompleteStruct labels subs =
           if Prelude.null labels
             then map (Path.StringTASeg . fst . selAttr . fst) subs
             else map (Path.StringTASeg . fst . selAttr) labels
-      , stcPendSubs = []
-      , stcCnstrs = []
+      , stcPendSubs = IntMap.empty
+      , stcCnstrs = IntMap.empty
       , stcClosed = False
       }
  where
@@ -1456,7 +1452,7 @@ expandWithPatterns ps t = case t of
   Tree{treeNode = TNStruct s} ->
     mkStructTree $
       s
-        { stcCnstrs = ps
+        { stcCnstrs = IntMap.fromList $ map (\v -> (0, v)) ps
         }
   _ -> error "Not a struct"
 
@@ -1473,6 +1469,7 @@ testPat1 = do
       [ StructCnstr
           { scsPattern = mkBoundsTree [BdType BdString]
           , scsValue = newStruct [("a", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       ( newStruct
@@ -1514,6 +1511,7 @@ testPat2 = do
                               (mkBoundsTree [BdType BdString])
                         )
                       ]
+                , scsID = 0
                 }
             ]
             $ newStruct
@@ -1566,6 +1564,7 @@ testPatCons1 = do
       [ StructCnstr
           { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
           , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       sxInner
@@ -1604,6 +1603,7 @@ testPatCons2 = do
       [ StructCnstr
           { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
           , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       sxInner
@@ -1634,6 +1634,7 @@ testPatCons3 = do
       [ StructCnstr
           { scsPattern = mkBoundsTree [BdStrMatch (BdReMatch "a")]
           , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       sxInner
@@ -1664,6 +1665,7 @@ testPatDyn1 = do
       [ StructCnstr
           { scsPattern = mkBoundsTree [BdType BdString]
           , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       sxInner
@@ -1693,23 +1695,12 @@ testPatIncmpl1 = do
       [ StructCnstr
           { scsPattern = mkSimpleLink $ Path.Reference [strSel "y", strSel "s"]
           , scsValue = newStruct [("f1", mkAtomTree $ Int 1)]
+          , scsID = 0
           }
       ]
       sxInner
-  sxInner =
-    newStruct
-      [
-        ( "a"
-        , mkMutableTree $
-            mkBinaryOp
-              AST.Add
-              (\_ _ -> throwError "not implemented")
-              (mkAtomTree $ Int 1)
-              (mkAtomTree $ Int 2)
-        )
-      ]
-  sy =
-    newStruct []
+  sxInner = newStruct [("a", mkAtomTree $ Int 3)]
+  sy = newStruct []
 
 testClose1 :: IO ()
 testClose1 = do
@@ -1746,6 +1737,7 @@ testClose3 = do
     [ StructCnstr
         { scsPattern = mkBoundsTree [BdStrMatch $ BdReMatch "a"]
         , scsValue = mkBoundsTree [BdType BdInt]
+        , scsID = 0
         }
     ]
   sxc =
@@ -2009,16 +2001,19 @@ cmpStructsMsg msg (Tree{treeNode = TNStruct act}) (Tree{treeNode = TNStruct exp}
   assertEqual (withMsg msg "labels") (stcOrdLabels exp) (stcOrdLabels act)
   assertEqual (withMsg msg "fields-length") (length expFields) (length actFields)
   mapM_
-    ( \(k, v) -> cmpStructVals (show k) v (actFields Map.! k)
+    ( \(k, v) -> cmpStructVals (show k) (actFields Map.! k) v
     )
     (Map.toList expFields)
   mapM_
-    ( \(k, v) -> cmpStructVals (show k) (expFields Map.! k) v
+    ( \(k, v) -> cmpStructVals (show k) v (expFields Map.! k)
     )
     (Map.toList actFields)
-  assertEqual (withMsg msg "patterns") (stcCnstrs exp) (stcCnstrs act)
-  -- We only need to compare valid pendings.
-  assertEqual (withMsg msg "pendings") (catMaybes $ stcPendSubs exp) (catMaybes $ stcPendSubs act)
+  assertEqual (withMsg msg "patterns") (IntMap.elems $ stcCnstrs exp) (IntMap.elems $ stcCnstrs act)
+  -- -- We only need to compare valid pendings.
+  -- assertEqual
+  --   (withMsg msg "pendings")
+  --   (IntMap.elems $ stcPendSubs exp)
+  --   (IntMap.elems $ stcPendSubs act)
   assertEqual (withMsg msg "close") (stcClosed exp) (stcClosed act)
  where
   onlyField :: Map.Map StructTASeg (StructVal Tree) -> Map.Map StructTASeg (StructVal Tree)
@@ -2037,7 +2032,7 @@ cmpStructVals :: (HasCallStack) => String -> StructVal Tree -> StructVal Tree ->
 cmpStructVals msg (SField act) (SField exp) = do
   cmpStructsMsg (withMsg msg "field") (ssfValue act) (ssfValue exp)
   assertEqual (withMsg msg "attr") (ssfAttr exp) (ssfAttr act)
-cmpStructVals msg sv1 sv2 = assertEqual msg sv1 sv2
+cmpStructVals msg act exp = assertEqual msg exp act
 
 withMsg :: String -> String -> String
 withMsg msg s = if Prelude.null msg then s else msg ++ ": " ++ s

@@ -26,7 +26,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Env
-import Error
+import Exception
 import Mutate
 import Path
 import TMonad
@@ -239,14 +239,18 @@ locateLAMutable = do
 {- | Dereference the reference.
 
 It keeps dereferencing until the target node is not a reference node or a cycle is
-detected. If the target is found, a copy of the target value is put to the tree.
+detected.
+
+If the target is found, a copy of the target value is put to the tree.
+
+The target address is also returned.
 -}
 deref ::
   (TreeMonad s m) =>
   -- | the reference addr
   Path.Reference ->
   Maybe (TreeAddr, TreeAddr) ->
-  m ()
+  m (Maybe TreeAddr)
 deref ref origAddrsM = withAddrAndFocus $ \addr _ ->
   debugSpan (printf "deref: addr: %s, origValAddr: %s, ref: %s" (show addr) (show origAddrsM) (show ref)) $ do
     -- Add the notifier anyway.
@@ -255,11 +259,12 @@ deref ref origAddrsM = withAddrAndFocus $ \addr _ ->
     let refAddr = referableAddr addr
     rE <- getDstVal ref origAddrsM (Set.fromList [refAddr])
     case rE of
-      Left err -> putTMTree err
-      Right Nothing -> return ()
-      Right (Just (_, tar)) -> do
+      Left err -> putTMTree err >> return Nothing
+      Right Nothing -> return Nothing
+      Right (Just (tarAddr, tar)) -> do
         logDebugStr $ printf "deref: addr: %s, ref: %s, target is found: %s" (show addr) (show ref) (show tar)
         putTMTree tar
+        return $ Just tarAddr
 
 {- | Add a notifier to the context.
 
@@ -304,7 +309,8 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
         (show $ Set.toList trail)
     )
     $ do
-      let f = locateRefAndRun ref (fetch srcAddr)
+      recurClose <- treeRecurClosed <$> getTMTree
+      let f = locateRefAndRun ref (fetch srcAddr recurClose)
       rE <-
         maybe
           f
@@ -351,7 +357,7 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
     return r
 
   -- Fetch the value of the reference.
-  fetch srcAddr = do
+  fetch srcAddr recurClose = do
     dstAddr <- getTMAbsAddr
     logDebugStr $
       printf "deref_getDstVal ref: %s, ref is found, src: %s, dst: %s" (show ref) (show srcAddr) (show dstAddr)
@@ -407,7 +413,7 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
     r <-
       if noError
         then do
-          copyRefVal dstAddr trail val
+          copyRefVal trail recurClose val
         else
           return val
     return . Right $ Just (dstAddr, r)
@@ -467,7 +473,7 @@ indexerToRef t = case getMutableFromTree t of
           idxRefM
   go _ = throwErrSt "invalid index arguments"
 
-{- | Copy the value of the reference.
+{- | Copy the value of the reference from within the dst environment.
 
 dstAddr and trail are used to decide whether to close the deref'd value.
 
@@ -476,14 +482,15 @@ The value of a reference is a copy of the expression associated with the field t
 any references within that expression bound to the respective copies of the fields they were originally
 bound to.
 -}
-copyRefVal :: (TreeMonad s m) => TreeAddr -> Set.Set TreeAddr -> Tree -> m Tree
-copyRefVal dstAddr trail tar = do
+copyRefVal :: (TreeMonad s m) => Set.Set TreeAddr -> Bool -> Tree -> m Tree
+copyRefVal trail recurClose tar = do
   case treeNode tar of
     -- The atom value is final, so we can just return it.
     TNAtom _ -> return tar
     TNBottom _ -> return tar
     TNConstraint c -> return (mkAtomVTree $ cnsAtom c)
     _ -> do
+      dstAddr <- getTMAbsAddr
       -- evaluate the original expression.
       orig <- evalTarExpr
       let visited = Set.insert dstAddr trail
@@ -492,7 +499,7 @@ copyRefVal dstAddr trail tar = do
       withAddrAndFocus $ \addr _ ->
         logDebugStr $
           printf
-            "deref: addr: %s, deref'd val is: %s, visited: %s, tar: %s"
+            "deref: addr: %s, deref's copy is: %s, visited: %s, tar: %s"
             (show addr)
             (show val)
             (show $ Set.toList visited)
@@ -508,22 +515,19 @@ copyRefVal dstAddr trail tar = do
     markOuterIdents raw tc
 
   checkRefDef orig visited = do
-    -- Functions{fnClose = close} <- asks cfFunctions
-    if any addrHasDef visited
+    let shouldClose = any addrHasDef visited
+    if shouldClose || recurClose
       then do
         withAddrAndFocus $ \addr _ ->
           logDebugStr $
             printf
-              "deref: addr: %s, visitedRefs: %s, has definition, recursively close the value."
+              "deref: addr: %s, visitedRefs: %s, has definition or recurClose: %s is set, recursively close the value. %s"
               (show addr)
               (show $ Set.toList visited)
-        return $ orig{treeRecurClosed = True}
-      -- return . mkMutableTree . SFunc $
-      --   emptySFunc
-      --     { sfnArgs = [orig]
-      --     , sfnName = "deref_close"
-      --     , sfnMethod = close True
-      --     }
+              (show recurClose)
+              (show orig)
+        tc <- getTMCursor
+        markRecurClosed orig tc
       else return orig
 
 {- | Mark all outer references inside a container node with original value address.
@@ -601,6 +605,22 @@ markOuterIdents val ptc = do
     var <- selToVar fstSel
     resM <- searchTCVar var tc
     return $ fst <$> resM
+
+markRecurClosed :: (Env m) => Tree -> TreeCursor Tree -> m Tree
+markRecurClosed val ptc = do
+  utc <- traverseTC mark (val <$ ptc)
+  return $ vcFocus utc
+ where
+  mark :: (Env m) => TreeCursor Tree -> m Tree
+  mark tc = do
+    let focus = vcFocus tc
+    return $
+      focus
+        { treeRecurClosed = True
+        , treeNode = case treeNode focus of
+            TNStruct struct -> TNStruct $ struct{stcClosed = True}
+            _ -> treeNode focus
+        }
 
 {- | Visit every node in the tree in pre-order and apply the function.
 
@@ -776,7 +796,7 @@ goTMAbsAddr dst = do
 evalExprTM :: (TreeMonad s m) => AST.Expression -> m Tree
 evalExprTM e = do
   Functions{fnEvalExpr = evalExpr} <- asks cfFunctions
-  curSID <- getTMScopeID
-  (rawT, newSID) <- runStateT (evalExpr e) curSID
-  setTMScopeID newSID
+  curSID <- getTMObjID
+  (rawT, newOID) <- runStateT (evalExpr e) curSID
+  setTMObjID newOID
   return rawT

@@ -11,10 +11,10 @@ data Constraint t = Constraint
   -- It should only be used in validating the constraint.
   , cnsValidator :: AST.Expression
   -- ^ validator is used when validateCnstrs is called. It is the unification operation node.
-  -- The reason for using AST.Expression instead of t is that the tree could be reduced by RefCycleTail.
-  -- Consider the case, {a: (a + 1) & 200}. If a+1 is reduced first, then the "a" becomes a RCTail, which will be reduced
-  -- to atom with 200. Then the validator would be incorrectly set to RCTail. The original expr of the (a+1) is the
-  -- correct validator.
+  -- The reason for using AST.Expression instead of value is that the tree could be reduced by RefCycleTail.
+  -- Consider the case, {a: (a + 1) & 200}. If a+1 is reduced first, then the "a" becomes a RCTail, which will be
+  -- reduced to atom with 200. Then the validator would be incorrectly set to RCTail. The original expr of the (a+1) is
+  -- the correct validator.
   }
 
 instance (Eq t) => Eq (Constraint t) where

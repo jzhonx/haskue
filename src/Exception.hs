@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 
-module Error where
+module Exception where
 
 import Control.Monad.Except (MonadError, throwError)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
