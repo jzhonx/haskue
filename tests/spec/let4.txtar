@@ -1,0 +1,7 @@
+-- let4 --
+// string field "x" is not incompatible with let binding x.
+"x": 1
+let x = 2
+y: x
+-- exp --
+error: can not have both alias and field with name x in the same scope

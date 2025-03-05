@@ -1,0 +1,25 @@
+-- pat_dyn1 --
+x: {
+	[string]: {f1: 1}
+	(y.z): {f2: 2}
+}
+
+y: {
+	// z was type string
+	z:     string
+	("z"): "a"
+}
+-- exp --
+x: {
+    a: {
+        f2: 2
+        f1: 1
+  }
+    (y.z): {
+        f2: 2
+  }
+}
+y: {
+    z: "a"
+    (z): "a"
+}

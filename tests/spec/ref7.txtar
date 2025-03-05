@@ -1,0 +1,31 @@
+-- ref7 --
+// This case tests that a reference to a function field in a function node is resolved correctly.
+y: A.b
+r1: {d: 2}
+r2: {e: 2}
+A: r1 & {
+	b: c: int
+} // A is a function node that has temporary result because B is a reference and evaluated to mutable result.
+
+("A"): {b: r2}
+-- exp --
+y: {
+    c: int
+    e: 2
+}
+r1: {
+    d: 2
+}
+r2: {
+    e: 2
+}
+A: {
+    d: 2
+    b: {
+        c: int
+        e: 2
+  }
+}
+(A): {
+    b: r2
+}

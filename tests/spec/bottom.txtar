@@ -1,0 +1,5 @@
+-- bottom --
+a: 1
+b: 1 & 2
+-- exp --
+error: values mismatch: 1 != 2

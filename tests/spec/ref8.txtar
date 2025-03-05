@@ -1,0 +1,19 @@
+-- ref8 --
+// this tests whether the chained reference is resolved correctly.
+y: x
+x: {a: z}
+z: {b: 1 + 2}
+-- exp --
+y: {
+    a: {
+        b: 3
+  }
+}
+x: {
+    a: {
+        b: 3
+  }
+}
+z: {
+    b: 3
+}

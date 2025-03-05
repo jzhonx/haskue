@@ -1,0 +1,4 @@
+-- dynfield_err1 --
+("x"): 2 & 1
+-- exp --
+error: values mismatch: 2 != 1

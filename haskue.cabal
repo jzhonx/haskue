@@ -100,4 +100,5 @@ Test-Suite haskue-unit-test
         containers,
         transformers,
         monad-logger,
+        directory,
   default-language: Haskell2010

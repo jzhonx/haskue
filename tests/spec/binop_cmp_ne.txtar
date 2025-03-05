@@ -1,0 +1,37 @@
+-- binop_cmp_ne --
+i0: 1 != 2
+i1: 2 != 2
+i2: 2 != 1
+
+b0: true != false
+b1: true != true
+b2: false != true
+
+s0: "a" != "b"
+s1: "a" != "a"
+s2: "b" != "a"
+
+n0: null != null
+n1: null != "a"
+n2: "a" != null
+n3: null != {}
+n4: {} != null
+n5: null != (*1 | 2)
+n6: (*1 | 2) != null
+-- exp --
+i0: true
+i1: false
+i2: true
+b0: true
+b1: false
+b2: true
+s0: true
+s1: false
+s2: true
+n0: false
+n1: true
+n2: true
+n3: true
+n4: true
+n5: true
+n6: true

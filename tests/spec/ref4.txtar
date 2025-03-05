@@ -1,0 +1,24 @@
+-- ref4 --
+a: {
+	place:    string
+	greeting: place
+}
+// dep: a.place -> a.greeting
+
+// referencing a will make dependencies change.
+// b.place -> b.greeting
+b: a & {place: "world"}
+c: a & {place: "you"}
+-- exp --
+a: {
+    place: string
+    greeting: string
+}
+b: {
+    place: "world"
+    greeting: "world"
+}
+c: {
+    place: "you"
+    greeting: "you"
+}

@@ -1,0 +1,8 @@
+-- cycles_sc_err3 --
+// infinite evaluation
+f: {
+	n: int
+	out: n + (f & {n: 1}).out
+}
+-- exp --
+error: structural cycle

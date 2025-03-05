@@ -1,0 +1,20 @@
+-- cycles_sc3 --
+#List: {
+	head: _
+	tail: null | #List
+}
+MyList: #List & {
+	head: 1, tail: {head: 2}
+}
+-- exp --
+#List: {
+    head: _
+    tail: null
+}
+MyList: {
+    head: 1
+    tail: {
+        head: 2
+        tail: null
+  }
+}

@@ -1,0 +1,7 @@
+-- cycles_sc_err3_2 --
+// infinite evaluation
+f: {
+	out: f & {}
+}
+-- exp --
+error: structural cycle

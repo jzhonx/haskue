@@ -1,0 +1,20 @@
+-- pat_ref2 --
+x: {
+	[y.z]: {f1: 1}
+	a: {}
+}
+z: x.a.f1
+y: {
+	// z was type string
+	z:     string
+	("z"): "b"
+}
+-- exp --
+x: {
+    a: {}
+}
+z: 1
+y: {
+    z: "b"
+    (z): "b"
+}

@@ -1,0 +1,13 @@
+-- ref9 --
+// this tests that chained references are resolved correctly.
+a: x.z // simple substitution would not work here.
+x: {
+	d: 1
+	z: d
+}
+-- exp --
+a: 1
+x: {
+    d: 1
+    z: 1
+}

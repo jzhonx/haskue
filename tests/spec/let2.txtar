@@ -1,0 +1,16 @@
+-- let2 --
+a: {
+	let x = {z: 2}
+	y: x.b
+}
+b: {
+	let y = 1
+	z: y
+}
+-- exp --
+a: {
+    y: x.b
+}
+b: {
+    z: 1
+}

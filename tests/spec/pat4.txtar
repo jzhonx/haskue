@@ -1,0 +1,10 @@
+-- pat4 --
+x: {
+	[y.d]: int
+} & {
+	a: true
+}
+
+y: d: =~"a"
+-- exp --
+error: bounds "int" and "true" conflict

@@ -1,0 +1,10 @@
+-- close1 --
+x: close({
+	a: 1
+})
+
+y: x & {
+	b: 2 // error: field "b" not allowed in struct.
+}
+-- exp --
+error: b is not allowed

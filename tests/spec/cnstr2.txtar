@@ -1,0 +1,7 @@
+-- cnstr2 --
+// the result of b is incomplete
+a: a
+b: 200 & (a + 100)
+-- exp --
+a: _
+b: 200 & a + 100

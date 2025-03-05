@@ -1,0 +1,10 @@
+-- basic.cue --
+a: true
+b: false
+c: _
+d: null
+-- exp_basic.cue --
+a: true
+b: false
+c: _
+d: null

@@ -1,0 +1,8 @@
+-- disj4 --
+x: *"a" | string
+y: *"a" | string
+z: x & y
+-- exp --
+x: "a"
+y: "a"
+z: "a"

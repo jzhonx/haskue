@@ -37,4 +37,4 @@ main = do
   x <- runExceptT $ runIO file opts
   case x of
     Left err -> putStrLn err
-    Right decls -> hPutBuilder stdout (declsBld 0 decls)
+    Right b -> hPutBuilder stdout b

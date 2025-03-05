@@ -1,0 +1,17 @@
+-- pat_ref1 --
+x: {
+	[y.z]: {f1: 1}
+	a: 1
+}
+z: x.a
+y: {
+	// z was type string
+	z:     string
+	("z"): "b"
+}
+-- exp --
+error: values not unifiable: L:
+(1), R:
+({} ord:[f1], sid:3
+ (f1,v (1))
+)

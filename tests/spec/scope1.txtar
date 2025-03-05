@@ -1,0 +1,9 @@
+-- scope1 --
+{
+	x: 42
+}
+{
+	y: x
+}
+-- exp --
+error: identifier x is not found

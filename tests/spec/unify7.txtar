@@ -1,0 +1,19 @@
+-- unify7 --
+x: {
+	a: int
+	b: x.a
+}
+y: {a: 1}
+z: x & y
+-- exp --
+x: {
+    a: int
+    b: int
+}
+y: {
+    a: 1
+}
+z: {
+    a: 1
+    b: int
+}

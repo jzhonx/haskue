@@ -1,0 +1,20 @@
+-- struct4 --
+// dynamic fields
+a:   "foo"
+b:   "bar"
+(a): "baz"
+
+(a + b): "qux"
+
+(a)?: string
+(b)!: string
+-- exp --
+a: "foo"
+b: "bar"
+foo: "baz"
+foobar: "qux"
+bar!: string
+(a): "baz"
+(a + b): "qux"
+(a)?: string
+(b)!: string

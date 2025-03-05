@@ -1,0 +1,5 @@
+-- let_err1 --
+// unreferenced variable x
+let x = 0
+-- exp --
+error: unreferenced let clause let_x

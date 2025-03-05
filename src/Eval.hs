@@ -10,6 +10,7 @@ module Eval (
   runIO,
   runTreeIO,
   evalFile,
+  emptyEvalConfig,
 )
 where
 
@@ -22,8 +23,12 @@ import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
 import Cursor
-import Exception
+import Data.ByteString.Builder (
+  Builder,
+  string7,
+ )
 import EvalExpr
+import Exception
 import Parser (parseSourceFile)
 import Path
 import PostReduce
@@ -49,30 +54,34 @@ emptyEvalConfig =
     , ecFileTreeAddr = ""
     }
 
-runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m [AST.Declaration]
+runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
 runIO s conf =
   if ecDebugLogging conf
     then runStderrLoggingT res
     else runNoLoggingT res
  where
-  res :: (MonadError String m, MonadLogger m) => m [AST.Declaration]
+  res :: (MonadError String m, MonadLogger m) => m Builder
   res = do
-    ast <- runStr s conf
-    case ast of
-      AST.ExprUnaryExpr
-        (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls)))) -> return decls
+    r <- runStr s conf
+    case r of
+      Left err -> return $ string7 err
+      Right
+        ( AST.ExprUnaryExpr
+            (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls))))
+          ) ->
+          return (declsBld 0 decls)
       _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
 runTreeIO s = runNoLoggingT $ runTreeStr s emptyEvalConfig
 
-runStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m AST.Expression
+runStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m (Either String AST.Expression)
 runStr s conf = do
   t <- runTreeStr s conf
   case treeNode t of
     -- print the error message to the console.
-    TNBottom (Bottom msg) -> throwError $ printf "error: %s" msg
-    _ -> runReaderT (buildASTExpr False t) emptyConfig
+    TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+    _ -> Right <$> runReaderT (buildASTExpr False t) emptyConfig
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf

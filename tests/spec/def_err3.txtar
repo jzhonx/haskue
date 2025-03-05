@@ -1,0 +1,12 @@
+-- def_err3 --
+#A: {a: int}
+
+B: {
+	#A
+	b: c: int
+}
+
+x: B
+x: d: 3 // not allowed, as closed by embedded #A
+-- exp --
+error: d is not allowed

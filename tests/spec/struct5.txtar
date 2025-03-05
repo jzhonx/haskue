@@ -1,0 +1,22 @@
+-- struct5 --
+// This tests dynamic field can change an existing field.
+a: {
+	c: "b"
+}
+b: {
+	x: "x"
+}
+(a.c): {
+	y: "y"
+}
+-- exp --
+a: {
+    c: "b"
+}
+b: {
+    x: "x"
+    y: "y"
+}
+(a.c): {
+    y: "y"
+}

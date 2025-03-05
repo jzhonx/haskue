@@ -1,0 +1,5 @@
+-- cycles_sc_err2 --
+// infinite structure
+a: b: a
+-- exp --
+error: structural cycle
