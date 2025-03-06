@@ -11,8 +11,16 @@ y: {
 	("z"): =~"a"
 }
 -- exp --
-error: values not unifiable: L:
-(1), R:
-({} ord:[f1], sid:3
- (f1,v (1))
-)
+x: {
+    a: {
+        f2: 2
+        f1: 1
+  }
+    b: {
+        f3: 3
+  }
+}
+y: {
+    z: =~a
+    (z): =~"a"
+}

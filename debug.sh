@@ -6,6 +6,13 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
+if [[ "$1" == "conv" ]]; then
+  cd tools/extrtxtar
+  go run main.go -input="../../$2" -output="../../_debug/_t.cue"
+  cd ../..
+  exit 0
+fi
+
 if [[ "$1" == "ce" ]]; then
   cue eval $2
   exit 0
@@ -17,12 +24,14 @@ if [[ "$1" == "cr" ]]; then
 fi
 
 if [[ "$1" == "cmp" ]]; then
+  # if the input is empty, use the path, _debug/_t.cue
+  input="${2:-_debug/_t.cue}"
   echo "---- CUE ----"
   echo ""
-  cue eval $2
+  cue eval $input
   echo "---- HASKUE ----"
   echo ""
-  cabal run haskue -- $2
+  cabal run haskue -- $input
   exit 0
 fi
 
@@ -33,7 +42,8 @@ if [[ "$1" == "show" ]]; then
 fi
 
 if [[ "$1" == "run" ]]; then
-  input="$2"
+  # if the input is empty, use the path, _debug/_t.cue
+  input="${2:-_debug/_t.cue}"
   timeout="$3"
 
   cabal build
