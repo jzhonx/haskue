@@ -29,6 +29,7 @@ library
         PostReduce,
         Reduction,
         Ref,
+        TCursorOps,
         TMonad,
         Util,
         Value.Atom,

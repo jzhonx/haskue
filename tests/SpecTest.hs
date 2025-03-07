@@ -41,7 +41,7 @@ cmpStrings exp act = do
   let _exp = BS.lines exp
       _act = BS.lines act
   if length _exp /= length _act
-    then assertFailure $ printf "Expected %d lines, got %d" (length _exp) (length _act)
+    then assertFailure $ printf "Expected %d lines, got %d. got:\n%s" (length _exp) (length _act) (show _act)
     else mapM_ (\(i, e, a) -> assertEqual ("line " ++ show i) e a) (zip3 [0 ..] _exp _act)
 
 createTest :: String -> String -> TestTree

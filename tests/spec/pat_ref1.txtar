@@ -10,8 +10,10 @@ y: {
 	("z"): "b"
 }
 -- exp --
-error: values not unifiable: L:
-(1), R:
-({} ord:[f1], sid:3
- (f1,v (1))
-)
+x: {
+    a: 1
+}
+z: 1
+y: {
+    z: "b"
+}

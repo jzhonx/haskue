@@ -35,6 +35,9 @@ debugSpan msg f = do
   modify $ \s -> setTrace s (closeTR{traceStack = tail $ traceStack closeTR})
   return res
 
+getTraceID :: (MonadState s m, HasTrace s) => m Int
+getTraceID = gets $ traceID . getTrace
+
 emptyTrace :: Trace
 emptyTrace = Trace 0 []
 

@@ -7,18 +7,40 @@
 
 module PostReduce where
 
-import Class
-import Config
-import Control.Monad.Reader (asks)
-import Cursor
+import Class (TreeOp (isTreeAtom, isTreeBottom, isTreeMutable))
+import Cursor (Context (ctxCnstrValidatorAddr, ctxNotifGraph))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
-import Reduction
-import Ref
-import TMonad
+import Reduction (fullReduce)
+import Ref (evalExprTM)
+import TMonad (
+  TreeMonad,
+  getTMAbsAddr,
+  getTMContext,
+  getTMTree,
+  inTempSubTM,
+  modifyTMContext,
+  putTMContext,
+  putTMTree,
+  traverseTM,
+  withTN,
+  withTree,
+ )
 import Text.Printf (printf)
-import Util
-import Value.Tree
+import Util (logDebugStr)
+import Value.Tree (
+  AtomCnstr (cnsAtom, cnsValidator),
+  CnstredVal (cnsedVal),
+  LetBinding (LetBinding, lbReferred),
+  Struct (stcSubs),
+  StructVal (SLet),
+  Tree,
+  TreeNode (TNAtomCnstr, TNCnstredVal, TNMutable, TNStruct),
+  getMutVal,
+  getMutableFromTree,
+  mkAtomVTree,
+  mkBottomTree,
+ )
 
 postValidation :: (TreeMonad s m) => m ()
 postValidation = do
@@ -35,22 +57,26 @@ postValidation = do
 
   -- then validate all constraints.
   traverseTM $ withTN $ \case
-    TNConstraint c -> validateCnstr c
+    TNAtomCnstr c -> validateCnstr c
     TNStruct s -> validateStruct s
     _ -> return ()
 
-{- | Traverse the tree and replace the Mutable node with the result of the mutator if it exists, otherwise the
+{- | Traverse the tree and does the following things with the node:
+
+1. replace the Mutable node with the result of the mutator if it exists, otherwise the
 original mutator node is kept.
+2. replace the CnstredVal node with its value.
 -}
 snapshotTM :: (TreeMonad s m) => m ()
 snapshotTM =
   traverseTM $ withTN $ \case
     TNMutable m -> maybe (return ()) putTMTree (getMutVal m)
+    TNCnstredVal c -> putTMTree $ cnsedVal c
     _ -> return ()
 
 -- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
 -- will be assigned to the constraint in the propValUp.
-validateCnstr :: (TreeMonad s m) => Constraint Tree -> m ()
+validateCnstr :: (TreeMonad s m) => AtomCnstr Tree -> m ()
 validateCnstr c = do
   addr <- getTMAbsAddr
   logDebugStr $

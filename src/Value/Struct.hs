@@ -9,7 +9,6 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Set as Set
-import Env
 import Exception
 import qualified Path
 
@@ -116,53 +115,7 @@ instance (Eq t) => Eq (Struct t) where
       && stcClosed s1 == stcClosed s2
 
 instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
-  -- Patterns are not included in the AST.
-  buildASTExpr concrete s =
-    let
-      processSVal :: (Env m, BuildASTExpr t) => (Path.StructTASeg, StructVal t) -> m AST.Declaration
-      processSVal (Path.StringTASeg sel, SField sf) = do
-        e <- buildASTExpr concrete (ssfValue sf)
-        return $
-          AST.FieldDecl $
-            AST.Field
-              [ labelCons (ssfAttr sf) $
-                  if lbAttrIsVar (ssfAttr sf)
-                    then AST.LabelID sel
-                    else AST.LabelString sel
-              ]
-              e
-      processSVal _ = throwErrSt "invalid struct segment or struct value"
-
-      processDynField :: (Env m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
-      processDynField sf = do
-        e <- buildASTExpr concrete (dsfValue sf)
-        return $
-          AST.FieldDecl $
-            AST.Field
-              [ labelCons (dsfAttr sf) $ AST.LabelNameExpr (dsfLabelExpr sf)
-              ]
-              e
-
-      labelCons :: LabelAttr -> AST.LabelName -> AST.Label
-      labelCons attr ln =
-        AST.Label $
-          AST.LabelName
-            ln
-            ( case lbAttrCnstr attr of
-                SFCRegular -> AST.RegularLabel
-                SFCRequired -> AST.RequiredLabel
-                SFCOptional -> AST.OptionalLabel
-            )
-     in
-      do
-        stcs <- mapM processSVal [(l, stcSubs s Map.! l) | l <- stcOrdLabels s]
-        dyns <-
-          sequence $
-            foldr
-              (\dsf acc -> processDynField dsf : acc)
-              []
-              (IntMap.elems $ stcPendSubs s)
-        return $ AST.litCons $ AST.StructLit (stcs ++ dyns)
+  buildASTExpr _ _ = throwErrSt "not implemented"
 
 instance (Eq t) => Eq (StructCnstr t) where
   (==) f1 f2 = scsPattern f1 == scsPattern f2 && scsValue f1 == scsValue f2

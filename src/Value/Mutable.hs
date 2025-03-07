@@ -6,16 +6,16 @@
 module Value.Mutable where
 
 import qualified AST
-import Class
-import Config
+import Class (BuildASTExpr (..), TreeOp)
+import Config (Config)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
-import Cursor
-import Env
-import Exception
+import Cursor (HasCtxVal)
+import Env (Env)
+import Exception (throwErrSt)
 import GHC.Stack (HasCallStack)
 import qualified Path
-import Util
+import Util (HasTrace)
 
 type MutableEnv s m t =
   ( TreeOp t
@@ -32,7 +32,6 @@ data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
   | Index (Indexer t)
-  | MutStub
 
 -- | StatefulFunc is a tree node whose value can be changed.
 data StatefulFunc t = StatefulFunc
@@ -78,14 +77,12 @@ instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
   (==) (Index i1) (Index i2) = i1 == i2
-  (==) MutStub MutStub = True
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
   buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
-  buildASTExpr _ MutStub = throwErrSt "AST should not be built from MutStub"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
@@ -130,19 +127,16 @@ getMutName :: Mutable t -> String
 getMutName (SFunc mut) = sfnName mut
 getMutName (Ref ref) = "ref " ++ show (refPath ref)
 getMutName (Index _) = "index"
-getMutName MutStub = "mutStub"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
 getMutVal (Index idx) = idxValue idx
-getMutVal MutStub = Nothing
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 setMutVal m (Index idx) = Index $ idx{idxValue = m}
-setMutVal _ MutStub = MutStub
 
 invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)

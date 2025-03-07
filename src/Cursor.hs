@@ -4,7 +4,6 @@
 
 module Cursor where
 
-import Class
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -15,9 +14,9 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
-import Exception
-import Path
-import Util
+import Exception (throwErrSt)
+import Path (TASeg, TreeAddr (TreeAddr))
+import Util (HasTrace (..), Trace, emptyTrace)
 
 class HasCtxVal s t a | s -> a, s -> t where
   getCtxVal :: s -> CtxVal t a
@@ -142,17 +141,6 @@ focusTCSeg :: (Env m) => TreeCursor t -> m TASeg
 focusTCSeg (ValCursor _ []) = throwErrSt "already at the top"
 focusTCSeg tc = return $ fst . head $ vcCrumbs tc
 
-{- | Propagates the changes made to the focus to the parent nodes.
-
-It stops at the root.
--}
-propUpTC :: (Env m, TreeOp t) => TreeCursor t -> m (TreeCursor t)
-propUpTC (ValCursor _ []) = throwErrSt "already at the top"
-propUpTC tc@(ValCursor _ [(RootTASeg, _)]) = return tc
-propUpTC (ValCursor subT ((seg, parT) : cs)) = do
-  t <- setSubTree seg subT parT
-  return $ ValCursor t cs
-
 isTCTop :: TreeCursor t -> Bool
 isTCTop (ValCursor _ []) = True
 isTCTop _ = False
@@ -188,21 +176,3 @@ showNotifiers notifiers =
 
 mkSubTC :: TASeg -> a -> TreeCursor t -> ValCursor t a
 mkSubTC seg a tc = ValCursor a ((seg, vcFocus tc) : vcCrumbs tc)
-
-goDownTCAddr :: (TreeOp t) => TreeAddr -> TreeCursor t -> Maybe (TreeCursor t)
-goDownTCAddr (TreeAddr sels) = go (reverse sels)
- where
-  go :: (TreeOp t) => [TASeg] -> TreeCursor t -> Maybe (TreeCursor t)
-  go [] cursor = Just cursor
-  go (x : xs) cursor = do
-    nextCur <- goDownTCSeg x cursor
-    go xs nextCur
-
-{- | Go down the TreeCursor with the given segment and return the new cursor.
-
-It handles the case when the current node is a disjunction node.
--}
-goDownTCSeg :: (TreeOp t) => TASeg -> TreeCursor t -> Maybe (TreeCursor t)
-goDownTCSeg seg tc = do
-  nextTree <- subTree seg (vcFocus tc)
-  return $ mkSubTC seg nextTree tc

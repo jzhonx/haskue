@@ -22,8 +22,3 @@ A: {
         d: string
   }
 }
-(A): {
-    b: {
-        d: string
-  }
-}

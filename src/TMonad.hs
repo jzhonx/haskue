@@ -17,6 +17,7 @@ import Env
 import Exception
 import GHC.Stack (HasCallStack)
 import Path
+import TCursorOps
 import Text.Printf (printf)
 import Util
 import Value.Tree
@@ -298,8 +299,10 @@ dumpEntireTree msg = do
     TNBottom _ -> return ()
     TNTop -> return ()
     _ -> do
+      seg <- getTMTASeg
       Config{cfSettings = Settings{stMermaid = mermaid, stShowMutArgs = showMutArgs}} <- ask
-      when mermaid $ do
+      -- Do not dump the entire tree if the segment is TempTASeg.
+      when (mermaid && seg /= TempTASeg) $ do
         logDebugStr "--- dump entire tree states: ---"
         notifiers <- ctxNotifGraph <$> getTMContext
         logDebugStr $ printf "notifiers: %s" (showNotifiers notifiers)
@@ -307,15 +310,15 @@ dumpEntireTree msg = do
         rtc <- up Path.RootTASeg tc
 
         let
-          t = vcFocus rtc
-          evalTreeAddr = addrFromCrumbs (vcCrumbs tc)
-          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr t) 0
+          top = vcFocus rtc
+          evalTreeAddr = tcTreeAddr tc
+          s = evalState (treeToMermaid (TreeRepBuildOption{trboShowMutArgs = showMutArgs}) msg evalTreeAddr top) 0
         logDebugStr $ printf "\n```mermaid\n%s\n```" s
 
         logDebugStr "--- dump entire tree done ---"
  where
   up :: (Env m) => TASeg -> TreeCursor Tree -> m (TreeCursor Tree)
-  up seg tc = do
+  up seg tc =
     if isMatched tc
       then return tc
       else do

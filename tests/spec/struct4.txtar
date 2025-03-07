@@ -14,7 +14,3 @@ b: "bar"
 foo: "baz"
 foobar: "qux"
 bar!: string
-(a): "baz"
-(a + b): "qux"
-(a)?: string
-(b)!: string

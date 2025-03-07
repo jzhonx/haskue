@@ -59,9 +59,12 @@ data TASeg
     RootTASeg
   | StructTASeg StructTASeg
   | IndexTASeg Int
-  | MutableTASeg MutableTASeg
   | DisjDefaultTASeg
   | DisjDisjunctTASeg Int
+  | -- | SubValTASeg is used to represent the only sub value of a value.
+    SubValTASeg
+  | -- | MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
+    MutableArgTASeg Int
   | ParentTASeg
   | TempTASeg
   deriving (Eq, Ord)
@@ -70,9 +73,10 @@ instance Show TASeg where
   show RootTASeg = "/"
   show (StructTASeg s) = show s
   show (IndexTASeg i) = "i" ++ show i
-  show (MutableTASeg f) = show f
   show DisjDefaultTASeg = "d*"
   show (DisjDisjunctTASeg i) = "dj" ++ show i
+  show (MutableArgTASeg i) = "fa" ++ show i
+  show SubValTASeg = "sv"
   show ParentTASeg = ".."
   show TempTASeg = "tmp"
 
@@ -93,8 +97,8 @@ data StructTASeg
 instance Show StructTASeg where
   show (StringTASeg s) = s
   -- c stands for constraint.
-  show (PatternTASeg i) = "sc_" ++ show i
-  show (PendingTASeg i) = "sp_" ++ show i
+  show (PatternTASeg i) = "cns_" ++ show i
+  show (PendingTASeg i) = "dyn_" ++ show i
   show (LetTASeg s) = "let_" ++ s
 
 getStrFromSeg :: StructTASeg -> Maybe String
@@ -102,24 +106,14 @@ getStrFromSeg (StringTASeg s) = Just s
 getStrFromSeg (LetTASeg s) = Just s
 getStrFromSeg _ = Nothing
 
--- MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
-data MutableTASeg
-  = MutableArgTASeg Int
-  | MutableValTASeg
-  deriving (Eq, Ord)
-
-instance Show MutableTASeg where
-  show (MutableArgTASeg i) = "fa" ++ show i
-  show MutableValTASeg = "fv"
-
 unaryOpTASeg :: TASeg
-unaryOpTASeg = MutableTASeg $ MutableArgTASeg 0
+unaryOpTASeg = MutableArgTASeg 0
 
 binOpLeftTASeg :: TASeg
-binOpLeftTASeg = MutableTASeg $ MutableArgTASeg 0
+binOpLeftTASeg = MutableArgTASeg 0
 
 binOpRightTASeg :: TASeg
-binOpRightTASeg = MutableTASeg $ MutableArgTASeg 1
+binOpRightTASeg = MutableArgTASeg 1
 
 toBinOpTASeg :: BinOpDirect -> TASeg
 toBinOpTASeg L = binOpLeftTASeg
@@ -132,9 +126,9 @@ isSegAccessible seg = case seg of
   (StructTASeg (StringTASeg _)) -> True
   (StructTASeg (LetTASeg _)) -> True
   (IndexTASeg _) -> True
-  -- If a addr ends with a mutval segment, for example /p/fv, then it is accessible.
+  -- If a addr ends with a mutval segment, for example /p/sv, then it is accessible.
   -- It it the same as /p.
-  (MutableTASeg MutableValTASeg) -> True
+  SubValTASeg -> True
   -- If a addr ends with a disj default segment, for example /p/d*, then it is accessible.
   -- It it the same as /p.
   DisjDefaultTASeg -> True
@@ -200,7 +194,8 @@ canonicalizeAddr :: TreeAddr -> TreeAddr
 canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter (not . isIgnored) xs
  where
   isIgnored :: TASeg -> Bool
-  isIgnored (MutableTASeg _) = True
+  isIgnored (MutableArgTASeg _) = True
+  isIgnored SubValTASeg = True
   -- TODO: remove temp
   isIgnored TempTASeg = True
   isIgnored _ = False
@@ -314,35 +309,13 @@ hasTemp (TreeAddr xs) = TempTASeg `elem` xs
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
 
--- {- | Return the ref node addr by removing the last mutable value env segment.
---
--- For example, /.../p/fv should return /.../p.
---
--- It should only be used get the referable part of the source address because deref is called in the /fv environment.
--- -}
--- refNodeAddr :: TreeAddr -> TreeAddr
--- refNodeAddr p =
---   fromMaybe
---     p
---     ( do
---         lseg <- lastSeg p
---         if isMutValSeg lseg
---           then initTreeAddr p
---           else return p
---     )
---  where
---   isMutValSeg :: TASeg -> Bool
---   isMutValSeg (MutableTASeg MutableValTASeg) = True
---   isMutValSeg _ = False
---
-
 {- | Convert the address to referable address.
 
 Referable address is the address in which all the mutval segments are removed.
 -}
 referableAddr :: TreeAddr -> TreeAddr
-referableAddr p = TreeAddr $ filter (not . isMutValSeg) $ getTreeSegs p
+referableAddr p = TreeAddr $ filter (not . isSubValSeg) $ getTreeSegs p
  where
-  isMutValSeg :: TASeg -> Bool
-  isMutValSeg (MutableTASeg MutableValTASeg) = True
-  isMutValSeg _ = False
+  isSubValSeg :: TASeg -> Bool
+  isSubValSeg SubValTASeg = True
+  isSubValSeg _ = False
