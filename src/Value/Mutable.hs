@@ -6,16 +6,16 @@
 module Value.Mutable where
 
 import qualified AST
-import Class
-import Config
+import Class (BuildASTExpr (..), TreeOp)
+import Config (Config)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
-import Cursor
-import Env
-import Exception
+import Cursor (HasCtxVal)
+import Env (Env)
+import Exception (throwErrSt)
 import GHC.Stack (HasCallStack)
 import qualified Path
-import Util
+import Util (HasTrace)
 
 type MutableEnv s m t =
   ( TreeOp t

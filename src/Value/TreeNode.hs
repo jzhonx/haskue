@@ -35,10 +35,11 @@ data TreeNode t
   | --  TNAtom contains an atom value.
     TNAtom AtomV
   | TNBounds Bounds
-  | TNConstraint (Constraint t)
+  | TNAtomCnstr (AtomCnstr t)
   | TNRefCycle RefCycle
   | TNStructuralCycle StructuralCycle
   | TNMutable (Mutable t)
+  | TNCnstredVal (CnstredVal t)
   | TNTop
   | TNBottom Bottom
 
@@ -47,7 +48,7 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
-  (==) (TNConstraint c1) (TNConstraint c2) = c1 == c2
+  (==) (TNAtomCnstr c1) (TNAtomCnstr c2) = c1 == c2
   (==) (TNRefCycle c1) (TNRefCycle c2) = c1 == c2
   (==) (TNDisj dj1) n2@(TNAtom _) =
     if isNothing (dsjDefault dj1)
@@ -56,6 +57,8 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
   (==) (TNMutable f1) (TNMutable f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
+  (==) (TNCnstredVal v1) (TNCnstredVal v2) = v1 == v2
+  (==) (TNStructuralCycle c1) (TNStructuralCycle c2) = c1 == c2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) _ _ = False
@@ -94,11 +97,14 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     | DisjDisjunctTASeg i <- seg -> dsjDisjuncts d `indexList` i
     -- This has to be the last case because the explicit disjunct segment has the highest priority.
     | otherwise -> dsjDefault d >>= subTree seg
+  -- CnstredVal is just a wrapper of a value. If we have additional segments, we should descend into the value.
+  (_, TNCnstredVal cv) -> subTree seg (cnsedVal cv)
   _ -> Nothing
  where
   indexList :: [a] -> Int -> Maybe a
   indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
+-- | Set the sub tree with the given segment and new tree.
 setSubTreeTN ::
   forall m t. (Env m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
 setSubTreeTN seg subT parT = do
@@ -141,7 +147,7 @@ setSubTreeTN seg subT parT = do
           maybe
             ( throwErrSt $
                 printf
-                  "setSubTreeTN: default disjunction value is not found for non-disjunction segment %s"
+                  "default disjunction value is not found for non-disjunction segment %s"
                   (show seg)
             )
             ( \dft -> do
@@ -149,6 +155,12 @@ setSubTreeTN seg subT parT = do
                 return (TNDisj $ d{dsjDefault = Just updatedDftT})
             )
             (dsjDefault d)
+    -- The sub tree structure has two levels of sub trees shown in the below. We have to update the subT up to the
+    -- top level.
+    -- CnstredVal (parT) --> CnstredVal's inner val -->|seg| subT
+    (_, TNCnstredVal cv) -> do
+      updatedInner <- setSubTree seg subT (cnsedVal cv)
+      return $ TNCnstredVal cv{cnsedVal = updatedInner}
     (ParentTASeg, _) -> throwErrSt "setSubTreeTN: ParentTASeg is not allowed"
     (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
     _ -> throwErrSt insertErrMsg

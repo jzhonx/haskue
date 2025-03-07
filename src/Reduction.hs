@@ -8,26 +8,157 @@
 module Reduction where
 
 import qualified AST
-import Class
-import Config
+import Class (
+  BuildASTExpr (buildASTExpr),
+  TreeOp (isTreeBottom),
+ )
+import Config (
+  Config (cfFunctions, cfRuntimeParams),
+  Functions (Functions, fnReduce),
+  RuntimeParams (RuntimeParams, rpCreateCnstr),
+ )
 import Control.Monad (foldM, forM, unless, when)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (asks, local)
 import Control.Monad.State.Strict (gets)
-import Cursor
+import Cursor (
+  Context (Context, ctxReduceStack),
+  ValCursor (vcFocus),
+  goDownTCAddr,
+ )
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
-import Exception
-import Mutate
-import Path
-import Ref
-import TMonad
+import Env (Env)
+import Exception (throwErrSt)
+import Mutate (mutate)
+import Path (
+  BinOpDirect (..),
+  MutableTASeg (MutableArgTASeg),
+  Reference (Reference),
+  Selector (StringSel),
+  StructTASeg (PatternTASeg, PendingTASeg, StringTASeg),
+  TASeg (MutableTASeg, StructTASeg, TempTASeg),
+  TreeAddr,
+  appendRefs,
+  appendSeg,
+  getStrFromSeg,
+  isPrefix,
+  isTreeAddrAccessible,
+  refToAddr,
+  referableAddr,
+  toBinOpTASeg,
+  unaryOpTASeg,
+ )
+import Ref (drainNotifQueue, evalExprTM, searchTMVarInPar)
+import TMonad (
+  TreeMonad,
+  addToTMNotifQ,
+  allocTMObjID,
+  descendTMSeg,
+  dumpEntireTree,
+  getTMAbsAddr,
+  getTMCursor,
+  getTMNotifEnabled,
+  getTMParent,
+  getTMTASeg,
+  getTMTree,
+  inDiscardSubTM,
+  inSubTM,
+  inTempSubTM,
+  modifyTMContext,
+  modifyTMNodeWithTree,
+  modifyTMTN,
+  mustMutable,
+  propUpTM,
+  putTMTree,
+  traverseSub,
+  treeDepthCheck,
+  unlessFocusBottom,
+  withAddrAndFocus,
+  withTree,
+ )
 import Text.Printf (printf)
-import Util
-import Value.Tree
+import Util (
+  HasTrace (getTrace),
+  Trace (traceID),
+  debugSpan,
+  logDebugStr,
+ )
+import Value.Tree (
+  Atom (..),
+  AtomCnstr (cnsAtom),
+  AtomV (..),
+  BdNumCmp (..),
+  BdNumCmpOp (..),
+  BdStrMatch (..),
+  BdType (..),
+  Bottom (Bottom),
+  Bound (..),
+  Bounds (bdsList),
+  CnstredVal (CnstredVal, cnsedOrigExpr, cnsedVal),
+  Disj (..),
+  DynamicField (dsfLabel),
+  Field (..),
+  Mutable (MutStub, Ref, SFunc),
+  MutableType (DisjMutable),
+  Number (..),
+  PermItem (..),
+  RefCycle (RefCycleVertMerger),
+  Reference (refOrigAddrs, refPath),
+  StatefulFunc (sfnArgs, sfnMethod, sfnName, sfnType),
+  Struct (
+    stcClosed,
+    stcCnstrs,
+    stcID,
+    stcOrdLabels,
+    stcPendSubs,
+    stcPerms,
+    stcSubs
+  ),
+  StructCnstr (scsPattern, scsValue),
+  StructVal (SField),
+  StructuralCycle (StructuralCycle),
+  Tree (Tree, treeExpr, treeNode, treeRecurClosed),
+  TreeNode (..),
+  bdRep,
+  convertPendDyn,
+  dynToField,
+  emptySFunc,
+  emptyStruct,
+  getAtomFromTree,
+  getCnstredValFromTree,
+  getFieldFromSV,
+  getMutVal,
+  getMutableFromTree,
+  getPermInfoForDyn,
+  getPermInfoForPattern,
+  getSFuncFromMutable,
+  getStringFromTree,
+  getSubFromSV,
+  hasEmptyFields,
+  lookupStructVal,
+  mergeAttrs,
+  mkAtomTree,
+  mkBinaryOp,
+  mkBottomTree,
+  mkBoundsTree,
+  mkCnstrTree,
+  mkCnstredValTree,
+  mkDisjTree,
+  mkMutableTree,
+  mkNewTree,
+  mkRefMutable,
+  mkStructTree,
+  setMutVal,
+  setTN,
+  subNodes,
+  treesToRef,
+  updateCnstrAtom,
+  updateStructSub,
+ )
 
 fullReduce :: (TreeMonad s m) => m ()
 fullReduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "fullReduce, addr: %s" (show addr)) $ do
@@ -51,6 +182,7 @@ reduce = withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (sho
     TNStruct _ -> reduceStruct
     TNList _ -> traverseSub reduce
     TNDisj _ -> traverseSub reduce
+    TNCnstredVal cv -> reduceCnstredVal cv
     TNStructuralCycle _ -> putTMTree $ mkBottomTree "structural cycle"
     _ -> return ()
 
@@ -415,11 +547,10 @@ bindFieldWithCnstr name fval psf = do
   matched <- patMatchLabel selPattern name
   logDebugStr $ printf "bindFieldWithCnstr: %s with %s, matched: %s" name (show selPattern) (show matched)
 
-  let op = mkMutableTree $ mkUnifyNode fval (scsValue psf)
-  fieldExpr <- maybe (buildASTExpr False fval) return (treeExpr fval)
+  let op = mkMutableTree $ mkUnifyNode fval (mkCnstredValTree (scsValue psf) Nothing)
   return
     ( if matched
-        then op{treeNonCnstrExpr = Just fieldExpr}
+        then op
         else fval
     , matched
     )
@@ -502,7 +633,7 @@ removeAppliedCnstr delIdx allCnstrs subs = do
           updatedCnstrs = filter (\(i, _) -> i `elem` updatedIdxes) allCnstrs
           fval = ssfValue field
         raw <-
-          maybe (throwErrSt "non-constrained expression is not found") return (treeNonCnstrExpr fval)
+          maybe (buildASTExpr False fval) return (treeExpr fval)
             >>= evalExprTM
         logDebugStr $ printf "removeAppliedCnstr: %s, updatedIdxes: %s, raw: %s" name (show updatedIdxes) (show raw)
         (newSub, matchedCnstrs) <- constrainField name raw updatedCnstrs
@@ -639,6 +770,14 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
       if allowed
         then return Nothing
         else return . Just $ mkBottomTree $ printf "%s is not allowed" (show newLabel)
+
+reduceCnstredVal :: (TreeMonad s m) => CnstredVal Tree -> m ()
+reduceCnstredVal cv = do
+  -- Replace the cnstred value with the inner value.
+  putTMTree (cnsedVal cv)
+  reduce
+  r <- getTMTree
+  modifyTMTN $ TNCnstredVal cv{cnsedVal = r}
 
 -- | Create a new identifier reference.
 mkVarLinkTree :: (MonadError String m) => String -> m Tree
@@ -892,10 +1031,10 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
     logDebugStr $ printf "regBinLeftOther: addr: %s, %s: %s, %s: %s" (show addr) (show d1) (show t1) (show d2) (show t2)
   case (treeNode t1, t2) of
     (TNRefCycle _, _) -> return ()
-    (TNConstraint c, _) -> do
+    (TNAtomCnstr c, _) -> do
       na <- regBinDir op (d1, mkNewTree (TNAtom $ cnsAtom c)) (d2, t2) >> getTMTree
       case treeNode na of
-        TNAtom atom -> putTMTree (mkNewTree (TNConstraint $ updateCnstrAtom atom c))
+        TNAtom atom -> putTMTree (mkNewTree (TNAtomCnstr $ updateCnstrAtom atom c))
         _ -> undefined
     _ -> putTMTree (mkBottomTree mismatchErr)
  where
@@ -1057,6 +1196,9 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withAddrAndFocus $
   debugSpan (printf ("unifying, addr: %s:, %s" ++ "\n" ++ "with %s") (show addr) (show ut1) (show ut2)) $ do
     -- Each case should handle embedded case when the left value is embedded.
     case (treeNode t1, treeNode t2) of
+      -- CnstredVal has the highest priority, because the real operand is the value of the CnstredVal.
+      (TNCnstredVal c, _) -> unifyLeftCnstredVal (c, ut1) ut2
+      (_, TNCnstredVal c) -> unifyLeftCnstredVal (c, ut2) ut1
       (TNBottom _, _) -> putTMTree t1
       (_, TNBottom _) -> putTMTree t2
       (TNTop, _) -> unifyLeftTop ut1 ut2
@@ -1081,6 +1223,28 @@ unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = withAddrAndFocus $
       -- If the unify result is incomplete, skip the reduction.
       Just MutStub -> return ()
       _ -> reduce
+
+unifyLeftCnstredVal :: (TreeMonad s m) => (CnstredVal Tree, UTree) -> UTree -> m ()
+unifyLeftCnstredVal (c1, ut1) ut2@UTree{utVal = t2} = do
+  unifyUTrees ut1{utVal = cnsedVal c1} ut2
+
+  eM2 <- case treeNode t2 of
+    -- ut2 was CnstredVal, we need to merge original expressions.
+    TNCnstredVal c2 -> return $ cnsedOrigExpr c2
+    -- ut2 was not CnstredVal, we need to build the original expression.
+    _ -> Just <$> buildASTExpr False t2
+
+  e <- case catMaybes [cnsedOrigExpr c1, eM2] of
+    -- If only one side has an original expression, we can use it directly.
+    [e] -> return e
+    -- If both sides have original expressions, we need to unify them.
+    [e1, e2] -> return $ AST.binaryOpCons AST.Unify e1 e2
+    _ -> throwErrSt "both CnstredVals are empty"
+
+  -- Re-encapsulate the CnstredVal.
+  withTree $ \t -> case treeNode t of
+    TNCnstredVal c -> modifyTMTN (TNCnstredVal $ c{cnsedOrigExpr = Just e})
+    _ -> modifyTMTN (TNCnstredVal $ CnstredVal t (Just e))
 
 unifyLeftTop :: (TreeMonad s m) => UTree -> UTree -> m ()
 unifyLeftTop ut1 ut2 = do
@@ -1109,7 +1273,7 @@ unifyLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
     (_, TNBounds b) -> do
       logDebugStr $ printf "unifyLeftAtom, %s with Bounds: %s" (show v1) (show t2)
       putTMTree $ unifyAtomBounds (d1, amvAtom v1) (d2, bdsList b)
-    (_, TNConstraint c) ->
+    (_, TNAtomCnstr c) ->
       if v1 == cnsAtom c
         then putCnstr (cnsAtom c)
         else putTMTree . mkBottomTree $ printf "values mismatch: %s != %s" (show v1) (show $ cnsAtom c)
@@ -1406,7 +1570,7 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
-    (TNConstraint c1) -> do
+    (TNAtomCnstr c1) -> do
       r <- unifyUTrees (ut1{utVal = mkNewTree (TNAtom $ cnsAtom c1)}) ut2
       na <- getTMTree
       putTMTree $ case treeNode na of
@@ -1597,7 +1761,7 @@ unifyLeftDisj
       logDebugStr $ printf "unifyLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
     case treeNode t2 of
       TNMutable _ -> unifyLeftOther ut2 ut1
-      TNConstraint _ -> unifyLeftOther ut2 ut1
+      TNAtomCnstr _ -> unifyLeftOther ut2 ut1
       TNRefCycle _ -> unifyLeftOther ut2 ut1
       -- If the left disj is embedded in the right struct and there is no fields and no pending dynamic fields, we can
       -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently

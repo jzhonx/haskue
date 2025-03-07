@@ -4,7 +4,7 @@
 
 module Cursor where
 
-import Class
+import Class (TreeOp (setSubTree, subTree))
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -15,9 +15,9 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Env
-import Exception
-import Path
-import Util
+import Exception (throwErrSt)
+import Path (TASeg (RootTASeg), TreeAddr (TreeAddr))
+import Util (HasTrace (..), Trace, emptyTrace)
 
 class HasCtxVal s t a | s -> a, s -> t where
   getCtxVal :: s -> CtxVal t a

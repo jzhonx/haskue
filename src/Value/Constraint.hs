@@ -3,7 +3,7 @@ module Value.Constraint where
 import qualified AST
 import Value.Atom
 
-data Constraint t = Constraint
+data AtomCnstr t = AtomCnstr
   { cnsAtom :: AtomV
   -- ^ cnsAtom is the atom of the constraint. Any operation that changes the constraint should update this atom.
   , cnsOrigAtom :: AtomV
@@ -17,8 +17,16 @@ data Constraint t = Constraint
   -- the correct validator.
   }
 
-instance (Eq t) => Eq (Constraint t) where
-  (==) (Constraint a1 o1 v1) (Constraint a2 o2 v2) = a1 == a2 && v1 == v2 && o1 == o2
+instance (Eq t) => Eq (AtomCnstr t) where
+  (==) (AtomCnstr a1 o1 v1) (AtomCnstr a2 o2 v2) = a1 == a2 && v1 == v2 && o1 == o2
 
-updateCnstrAtom :: AtomV -> Constraint t -> Constraint t
+updateCnstrAtom :: AtomV -> AtomCnstr t -> AtomCnstr t
 updateCnstrAtom atom c = c{cnsAtom = atom}
+
+-- | CnstredVal is a value that is either a constraint's value or a unification that contains the constraint's value.
+data CnstredVal t = CnstredVal
+  { cnsedVal :: t
+  , cnsedOrigExpr :: Maybe AST.Expression
+  -- ^ cnsedOrigExpr is the original expression without constraints.
+  }
+  deriving (Eq, Show)

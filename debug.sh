@@ -14,12 +14,14 @@ if [[ "$1" == "conv" ]]; then
 fi
 
 if [[ "$1" == "ce" ]]; then
-  cue eval $2
+  input="${2:-_debug/_t.cue}"
+  cue eval $input
   exit 0
 fi
 
 if [[ "$1" == "cr" ]]; then
-  cabal run haskue -- -d $2
+  input="${2:-_debug/_t.cue}"
+  cabal run haskue -- -d $input
   exit 0
 fi
 

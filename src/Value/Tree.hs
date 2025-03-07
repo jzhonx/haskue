@@ -20,15 +20,32 @@ module Value.Tree (
 where
 
 import qualified AST
-import Class
+import Class (BuildASTExpr (..), TreeOp (..), TreeRepBuilder (..))
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
-import Exception
-import Path
+import Env ()
+import Exception (throwErrSt)
+import Path (
+  MutableTASeg (MutableArgTASeg, MutableValTASeg),
+  Reference (Reference),
+  Selector (..),
+  StructTASeg (PatternTASeg, PendingTASeg, StringTASeg),
+  TASeg (
+    DisjDefaultTASeg,
+    DisjDisjunctTASeg,
+    IndexTASeg,
+    MutableTASeg,
+    RootTASeg,
+    StructTASeg,
+    TempTASeg
+  ),
+  TreeAddr (TreeAddr),
+  addrToNormOrdList,
+ )
 import Text.Printf (printf)
 import Value.Atom
 import Value.Bottom
@@ -52,10 +69,7 @@ data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeExpr :: Maybe AST.Expression
   -- ^ treeExpr is the parsed expression.
-  , treeNonCnstrExpr :: Maybe AST.Expression
-  , -- If it is Nothing, then the tree has not been constrained.
-    -- If it is Just, then the expression is the non-constraint expression of one of the values in the unification tree.
-    treeTemp :: Maybe Tree
+  , treeTemp :: Maybe Tree
   -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
   , treeRecurClosed :: Bool
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
@@ -108,7 +122,7 @@ instance TreeOp Tree where
     _ -> False
   treeHasAtom t = case treeNode t of
     TNAtom _ -> True
-    TNConstraint _ -> True
+    TNAtomCnstr _ -> True
     TNDisj dj -> maybe False treeHasAtom (dsjDefault dj)
     _ -> False
 
@@ -202,7 +216,7 @@ buildRepTreeTN t tn opt = case tn of
     let dfField = maybe [] (\v -> [(show DisjDefaultTASeg, mempty, v)]) (dsjDefault d)
         djFields = zipWith (\j v -> (show $ DisjDisjunctTASeg j, mempty, v)) [0 ..] (dsjDisjuncts d)
      in consRep (symbol, mempty, consFields dfField ++ consFields djFields, [])
-  TNConstraint c ->
+  TNAtomCnstr c ->
     consRep
       ( symbol
       , mempty
@@ -257,6 +271,7 @@ buildRepTreeTN t tn opt = case tn of
        in
         consRep (symbol, "", consFields (args ++ val), [])
     MutStub -> consRep (symbol, mempty, [], [])
+  TNCnstredVal c -> consRep (symbol, "", consFields [("cv", "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
  where
@@ -289,12 +304,13 @@ instance BuildASTExpr Tree where
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
       Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
       MutStub -> throwErrSt "expression not found for stub mutable"
-    TNConstraint c -> maybe (return $ cnsValidator c) return (treeExpr t)
+    TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeExpr t)
       RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
     TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
+    TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -413,7 +429,7 @@ showTreeSymbol t = case treeNode t of
   TNStruct{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
-  TNConstraint{} -> "Cnstr"
+  TNAtomCnstr{} -> "Cnstr"
   TNRefCycle _ -> "RC"
   TNStructuralCycle _ -> "SC"
   TNMutable m -> case m of
@@ -421,6 +437,7 @@ showTreeSymbol t = case treeNode t of
     Ref _ -> "ref"
     Index _ -> "idx"
     MutStub -> "stub"
+  TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
@@ -479,7 +496,6 @@ emptyTree =
   Tree
     { treeNode = TNTop
     , treeExpr = Nothing
-    , treeNonCnstrExpr = Nothing
     , treeTemp = Nothing
     , treeRecurClosed = False
     }
@@ -493,7 +509,7 @@ setExpr t eM = t{treeExpr = eM}
 getAtomFromTree :: Tree -> Maybe Atom
 getAtomFromTree t = case treeNode t of
   TNAtom (AtomV a) -> Just a
-  TNConstraint c -> Just (amvAtom $ cnsAtom c)
+  TNAtomCnstr c -> Just (amvAtom $ cnsAtom c)
   TNDisj dj -> dsjDefault dj >>= getAtomFromTree
   _ -> Nothing
 
@@ -512,9 +528,9 @@ getBoundsFromTree t = case treeNode t of
   TNBounds b -> Just b
   _ -> Nothing
 
-getCnstrFromTree :: Tree -> Maybe (Constraint Tree)
+getCnstrFromTree :: Tree -> Maybe (AtomCnstr Tree)
 getCnstrFromTree t = case treeNode t of
-  TNConstraint c -> Just c
+  TNAtomCnstr c -> Just c
   _ -> Nothing
 
 getMutableFromTree :: Tree -> Maybe (Mutable Tree)
@@ -530,6 +546,11 @@ getRefCycleFromTree t = case treeNode t of
 getStructFromTree :: Tree -> Maybe (Struct Tree)
 getStructFromTree t = case treeNode t of
   TNStruct s -> Just s
+  _ -> Nothing
+
+getCnstredValFromTree :: Tree -> Maybe Tree
+getCnstredValFromTree t = case treeNode t of
+  TNCnstredVal c -> Just $ cnsedVal c
   _ -> Nothing
 
 getStringFromTree :: Tree -> Maybe String
@@ -565,7 +586,7 @@ mkBoundsTree :: [Bound] -> Tree
 mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
 mkCnstrTree :: AtomV -> AST.Expression -> Tree
-mkCnstrTree a e = mkNewTree . TNConstraint $ Constraint a a e
+mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a a e
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
@@ -578,6 +599,9 @@ mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
 mkStructTree :: Struct Tree -> Tree
 mkStructTree s = mkNewTree (TNStruct s)
+
+mkCnstredValTree :: Tree -> Maybe AST.Expression -> Tree
+mkCnstredValTree v m = mkNewTree (TNCnstredVal $ CnstredVal v m)
 
 mutValStubTree :: Tree
 mutValStubTree = mkMutableTree MutStub

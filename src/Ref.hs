@@ -11,28 +11,115 @@ module Ref (
   evalExprTM,
   notify,
   searchTMVarInPar,
+  traverseTC,
 )
 where
 
 import qualified AST
-import Class
-import Config
+import Class (BuildASTExpr (buildASTExpr), TreeOp (isTreeBottom))
+import Config (
+  Config (cfFunctions),
+  Functions (Functions, fnEvalExpr, fnReduce),
+ )
 import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put, runStateT)
 import Control.Monad.Trans (lift)
-import Cursor
+import Cursor (
+  Context (ctxNotifGraph, ctxReduceStack),
+  TreeCursor,
+  ValCursor (ValCursor, vcFocus),
+  addCtxNotifier,
+  isTCTop,
+  mkSubTC,
+  parentTC,
+  propUpTC,
+  tcTreeAddr,
+ )
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
-import Env
-import Exception
-import Mutate
-import Path
-import TMonad
+import Env (Env)
+import Exception (throwErrSt)
+import Mutate (delNotifRecvPrefix)
+import Path (
+  MutableTASeg (MutableArgTASeg),
+  Reference,
+  Selector (StringSel),
+  StructTASeg (LetTASeg, StringTASeg),
+  TASeg (MutableTASeg, RootTASeg, StructTASeg),
+  TreeAddr (TreeAddr),
+  addrToNormOrdList,
+  appendRefs,
+  appendTreeAddr,
+  canonicalizeAddr,
+  headSeg,
+  headSel,
+  isPrefix,
+  isRefEmpty,
+  refToAddr,
+  referableAddr,
+  tailRef,
+  tailTreeAddr,
+ )
+import TMonad (
+  TreeMonad,
+  descendTM,
+  getTMAbsAddr,
+  getTMContext,
+  getTMCrumbs,
+  getTMCursor,
+  getTMNotifEnabled,
+  getTMNotifQ,
+  getTMObjID,
+  getTMTree,
+  inTempSubTM,
+  popTMNotifQ,
+  propUpTM,
+  propUpTMUntilSeg,
+  putTMContext,
+  putTMCursor,
+  putTMTree,
+  setTMNotifEnabled,
+  setTMObjID,
+  withAddrAndFocus,
+  withTree,
+ )
 import Text.Printf (printf)
-import Util
-import Value.Tree
+import Util (debugSpan, logDebugStr)
+import Value.Tree (
+  AtomCnstr (cnsAtom, cnsOrigAtom),
+  Indexer (idxOrigAddrs, idxSels),
+  Mutable (Index, Ref),
+  RefCycle (RefCycleHori, RefCycleVertMerger),
+  Reference (refOrigAddrs, refPath),
+  Struct (stcClosed),
+  StructFieldType (SFTDefinition),
+  StructuralCycle (StructuralCycle),
+  Tree (treeExpr, treeNode, treeRecurClosed),
+  TreeNode (
+    TNAtom,
+    TNAtomCnstr,
+    TNBottom,
+    TNMutable,
+    TNRefCycle,
+    TNStruct,
+    TNStructuralCycle
+  ),
+  getFieldType,
+  getMutableFromTree,
+  getRefFromMutable,
+  getStructField,
+  getStructFromTree,
+  markLetBindReferred,
+  mkAtomVTree,
+  mkBottomTree,
+  mkMutableTree,
+  mkRefMutable,
+  setTN,
+  subNodes,
+  treesToRef,
+ )
 
 {- | Notify dependents of the change of the value.
 
@@ -396,7 +483,7 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
         | canDstAddr == referableAddr canSrcAddr && srcAddr /= dstAddr -> withTree $ \tar ->
             case treeNode tar of
               -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
-              TNConstraint c -> return (mkAtomVTree $ cnsOrigAtom c, False)
+              TNAtomCnstr c -> return (mkAtomVTree $ cnsOrigAtom c, False)
               _ -> do
                 logDebugStr $
                   printf
@@ -488,7 +575,7 @@ copyRefVal trail recurClose tar = do
     -- The atom value is final, so we can just return it.
     TNAtom _ -> return tar
     TNBottom _ -> return tar
-    TNConstraint c -> return (mkAtomVTree $ cnsAtom c)
+    TNAtomCnstr c -> return (mkAtomVTree $ cnsAtom c)
     _ -> do
       dstAddr <- getTMAbsAddr
       -- evaluate the original expression.
