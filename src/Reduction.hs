@@ -24,7 +24,7 @@ import Control.Monad.State.Strict (gets)
 import Cursor (
   Context (Context, ctxReduceStack),
   ValCursor (vcFocus),
-  goDownTCAddr,
+  goDownTCSeg,
  )
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
@@ -50,6 +50,7 @@ import Path (
   referableAddr,
   toBinOpTASeg,
   unaryOpTASeg,
+  selToTASeg,
  )
 import Ref (drainNotifQueue, evalExprTM, searchTMVarInPar)
 import TMonad (
@@ -155,6 +156,7 @@ import Value.Tree (
   treesToRef,
   updateCnstrAtom,
   updateStructSub,
+  treeToSel,
  )
 
 fullReduce :: (TreeMonad s m) => m ()
@@ -783,7 +785,23 @@ mkVarLinkTree var = do
   return $ mkMutableTree mut
 
 index :: (TreeMonad s m) => Tree -> Tree -> m ()
-index end sel = undefined
+index end sel = do
+  selT <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 1) sel
+  maybe
+    (return ())
+    (\selVal -> do
+      endRes <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 0) end
+      putTMTree endRes
+      logDebugStr $ printf "index: end is reduced to %s" (show endRes)
+      unlessFocusBottom () $ do
+        -- descendTM can not be used here because it would change the tree cursor.
+        tc <- getTMCursor
+        maybe
+          (throwErrSt $ printf "%s is not found" (show selVal))
+          (putTMTree . vcFocus)
+          (goDownTCSeg (selToTASeg selVal) tc)
+      )
+      (treeToSel selT)
 
 -- {- | Index the tree with the segments.
 

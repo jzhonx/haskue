@@ -598,24 +598,24 @@ mutValStubTree = mkMutableTree MutStub
 
 treesToRef :: [Tree] -> Maybe Path.Reference
 treesToRef ts = Path.Reference <$> mapM treeToSel ts
- where
-  treeToSel :: Tree -> Maybe Selector
-  treeToSel t = case treeNode t of
-    -- TODO: Think about changing mutval.
-    TNMutable mut
-      | Just v <- getMutVal mut -> concreteToSel v
-    _ -> concreteToSel t
 
-  concreteToSel :: Tree -> Maybe Selector
-  concreteToSel t = case treeNode t of
-    TNAtom a
-      | (String s) <- va -> Just (StringSel s)
-      | (Int j) <- va -> Just (IntSel $ fromIntegral j)
-     where
-      va = amvAtom a
-    -- If a disjunct has a default, then we should try to use the default.
-    TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
-    _ -> Nothing
+treeToSel :: Tree -> Maybe Selector
+treeToSel t = case treeNode t of
+  -- TODO: Think about changing mutval.
+  TNMutable mut
+    | Just v <- getMutVal mut -> concreteToSel v
+  _ -> concreteToSel t
+
+concreteToSel :: Tree -> Maybe Selector
+concreteToSel t = case treeNode t of
+  TNAtom a
+    | (String s) <- va -> Just (StringSel s)
+    | (Int j) <- va -> Just (IntSel $ fromIntegral j)
+    where
+    va = amvAtom a
+  -- If a disjunct has a default, then we should try to use the default.
+  TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
+  _ -> Nothing
 
 addrToTrees :: TreeAddr -> Maybe [Tree]
 addrToTrees p = mapM selToTree (addrToNormOrdList p)

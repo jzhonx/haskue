@@ -516,6 +516,10 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
             (show dstAddr)
             (show $ refPath rf)
       getDstVal (refPath rf) (refOrigAddrs rf) (Set.insert dstAddr trail)
+    Just (SFunc f)
+      | IndexMutable <- sfnType f -> do
+            nt <- indexerToRef tar
+
     -- TODO: follow ref in an index.
     -- Just (Index _) -> do
     --   nt <- indexerToRef tar

@@ -37,7 +37,7 @@ data Functions t = Functions
   , fnClose :: forall s m. (MM s m t) => [t] -> m ()
   , fnReduce :: forall s m. (MM s m t) => m ()
   , fnDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m (Maybe TreeAddr)
-  , fnIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
+  , fnIndex :: forall s m. (MM s m t) => t -> t -> m ()
   , fnPropUpStructPost :: forall s m. (MM s m t) => (StructTASeg, Struct t) -> m ()
   }
 
