@@ -89,8 +89,7 @@ import Text.Printf (printf)
 import Util (debugSpan, logDebugStr)
 import Value.Tree (
   AtomCnstr (cnsAtom, cnsOrigAtom),
-  Indexer (idxOrigAddrs, idxSels),
-  Mutable (Index, Ref),
+  Mutable (Ref),
   RefCycle (RefCycleHori, RefCycleVertMerger),
   Reference (refOrigAddrs, refPath),
   Struct (stcClosed),
@@ -517,48 +516,49 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
             (show dstAddr)
             (show $ refPath rf)
       getDstVal (refPath rf) (refOrigAddrs rf) (Set.insert dstAddr trail)
-    Just (Index _) -> do
-      nt <- indexerToRef tar
-      logDebugStr $ printf "deref_getDstVal: addr: %s, follow the index, index reduced to: %s" (show dstAddr) (show nt)
-      case getMutableFromTree nt of
-        Just (Ref _) -> tryFollow rE dstAddr nt
-        _ -> return rE
+    -- TODO: follow ref in an index.
+    -- Just (Index _) -> do
+    --   nt <- indexerToRef tar
+    --   logDebugStr $ printf "deref_getDstVal: addr: %s, follow the index, index reduced to: %s" (show dstAddr) (show nt)
+    --   case getMutableFromTree nt of
+    --     Just (Ref _) -> tryFollow rE dstAddr nt
+    --     _ -> return rE
     _ -> return rE
 
-{- | Convert the indexer to a ref. If the result is not a ref, then return the original tree.
+-- {- | Convert the indexer to a ref. If the result is not a ref, then return the original tree.
 
-When evaluating the index arguments, the index arguments are evaluated in the temp scope.
--}
-indexerToRef :: (TreeMonad s m) => Tree -> m Tree
-indexerToRef t = case getMutableFromTree t of
-  Just (Index idx) -> go (idxSels idx)
-  _ -> return t
- where
-  evalIndexArg :: (TreeMonad s m) => [Tree] -> Int -> m Tree
-  evalIndexArg ts i = inTempSubTM (ts !! i) $ do
-    Functions{fnReduce = reduce} <- asks cfFunctions
-    reduce >> getTMTree
+-- When evaluating the index arguments, the index arguments are evaluated in the temp scope.
+-- -}
+-- indexerToRef :: (TreeMonad s m) => Tree -> m Tree
+-- indexerToRef t = case getMutableFromTree t of
+--   Just (Index idx) -> go (idxSels idx)
+--   _ -> return t
+--  where
+--   evalIndexArg :: (TreeMonad s m) => [Tree] -> Int -> m Tree
+--   evalIndexArg ts i = inTempSubTM (ts !! i) $ do
+--     Functions{fnReduce = reduce} <- asks cfFunctions
+--     reduce >> getTMTree
 
-  go :: (TreeMonad s m) => [Tree] -> m Tree
-  go ts@(h : _)
-    | length ts > 1 = do
-        idxRefM <- treesToRef <$> mapM (evalIndexArg ts) [1 .. length ts - 1]
-        logDebugStr $ printf "indexerToRef: idxRefM is %s" (show idxRefM)
-        maybe
-          (return t)
-          ( \idxRef -> case treeNode h of
-              TNMutable mut
-                -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
-                -- the addr is c, then the new ref should be a.b.c.
-                | (Ref ref) <- mut -> do
-                    let
-                      newRef = appendRefs (refPath ref) idxRef
-                      refMutable = mkRefMutable newRef
-                    return (mkMutableTree refMutable)
-              _ -> return t
-          )
-          idxRefM
-  go _ = throwErrSt "invalid index arguments"
+--   go :: (TreeMonad s m) => [Tree] -> m Tree
+--   go ts@(h : _)
+--     | length ts > 1 = do
+--         idxRefM <- treesToRef <$> mapM (evalIndexArg ts) [1 .. length ts - 1]
+--         logDebugStr $ printf "indexerToRef: idxRefM is %s" (show idxRefM)
+--         maybe
+--           (return t)
+--           ( \idxRef -> case treeNode h of
+--               TNMutable mut
+--                 -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
+--                 -- the addr is c, then the new ref should be a.b.c.
+--                 | (Ref ref) <- mut -> do
+--                     let
+--                       newRef = appendRefs (refPath ref) idxRef
+--                       refMutable = mkRefMutable newRef
+--                     return (mkMutableTree refMutable)
+--               _ -> return t
+--           )
+--           idxRefM
+--   go _ = throwErrSt "invalid index arguments"
 
 {- | Copy the value of the reference from within the dst environment.
 
@@ -641,11 +641,11 @@ markOuterIdents val ptc = do
     let focus = vcFocus tc
     rM <- case getMutableFromTree focus of
       Just (Ref rf) -> return $ Just (rf, \as -> setTN focus $ TNMutable . Ref $ rf{refOrigAddrs = Just as})
-      Just (Index idx) -> do
-        let identT = idxSels idx !! 0
-        case getMutableFromTree identT of
-          Just (Ref rf) -> return $ Just (rf, \as -> setTN focus $ TNMutable . Index $ idx{idxOrigAddrs = Just as})
-          _ -> throwErrSt $ printf "invalid index argument: %s" (show identT)
+      -- Just (Index idx) -> do
+      --   let identT = idxSels idx !! 0
+      --   case getMutableFromTree identT of
+      --     Just (Ref rf) -> return $ Just (rf, \as -> setTN focus $ TNMutable . Index $ idx{idxOrigAddrs = Just as})
+      --     _ -> throwErrSt $ printf "invalid index argument: %s" (show identT)
       _ -> return Nothing
     maybe
       (return focus)

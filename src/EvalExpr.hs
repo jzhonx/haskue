@@ -270,8 +270,15 @@ If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is
 -}
 evalSelector ::
   (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
-evalSelector _ astSel oprnd =
-  mkIndexMutableTree oprnd (mkAtomTree (String sel))
+evalSelector e astSel oprnd =
+  return $
+    mkMutableTree $
+      mkIndexMutable
+        oprnd
+        (mkAtomTree (String sel))
+        SelectorMutable
+        (AST.ExprUnaryExpr $ AST.UnaryExprPrimaryExpr e)
+        index
  where
   sel = case astSel of
     IDSelector ident -> ident
@@ -279,17 +286,16 @@ evalSelector _ astSel oprnd =
 
 evalIndex ::
   (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
-evalIndex _ (AST.Index e) oprnd = do
-  sel <- evalExpr e
-  mkIndexMutableTree oprnd sel
-
--- | Create an index function node.
-mkIndexMutableTree :: (EvalEnv m) => Tree -> Tree -> m Tree
-mkIndexMutableTree oprnd selArg = case treeNode oprnd of
-  TNMutable m
-    | Just idx <- getIndexFromMutable m ->
-        return $ mkMutableTree $ VT.Index $ idx{idxSels = idxSels idx ++ [selArg]}
-  _ -> return $ mkMutableTree $ VT.Index $ emptyIndexer{idxSels = [oprnd, selArg]}
+evalIndex e (AST.Index ie) oprnd = do
+  sel <- evalExpr ie
+  return $
+    mkMutableTree $
+      mkIndexMutable
+        oprnd
+        sel
+        IndexMutable
+        (AST.ExprUnaryExpr $ AST.UnaryExprPrimaryExpr e)
+        index
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.

@@ -87,7 +87,6 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableTASeg (MutableArgTASeg i), SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
-    | (MutableTASeg (MutableArgTASeg i), Index idx) <- (seg, mut) -> idxSels idx `indexList` i
     | MutableTASeg MutableValTASeg <- seg -> getMutVal mut
     -- This has to be the last case because the explicit function segment has the highest priority.
     | otherwise -> getMutVal mut >>= subTree seg
@@ -120,12 +119,6 @@ setSubTreeTN seg subT parT = do
           let
             args = sfnArgs f
             l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
-          return l
-      | (MutableTASeg (MutableArgTASeg i)) <- seg
-      , Index idx <- mut -> do
-          let
-            sels = idxSels idx
-            l = TNMutable . Index $ idx{idxSels = take i sels ++ [subT] ++ drop (i + 1) sels}
           return l
       | MutableTASeg MutableValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
       -- If the segment is not a mutable segment, then the sub value must have been the sfnValue value.

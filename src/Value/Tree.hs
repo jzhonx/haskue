@@ -264,12 +264,6 @@ buildRepTreeTN t tn opt = case tn of
             consFields val
           , []
           )
-    Index idx ->
-      let
-        args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
-        val = maybe mempty (\s -> [(show MutableValTASeg, mempty, s)]) (idxValue idx)
-       in
-        consRep (symbol, "", consFields (args ++ val), [])
     MutStub -> consRep (symbol, mempty, [], [])
   TNCnstredVal c -> consRep (symbol, "", consFields [("cv", "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
@@ -302,7 +296,6 @@ instance BuildASTExpr Tree where
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
-      Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
       MutStub -> throwErrSt "expression not found for stub mutable"
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
@@ -435,7 +428,6 @@ showTreeSymbol t = case treeNode t of
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
-    Index _ -> "idx"
     MutStub -> "stub"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
@@ -469,7 +461,6 @@ subNodes t = case treeNode t of
       ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
-  TNMutable (Index idx) -> [(MutableTASeg $ MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (idxSels idx)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultTASeg, x)]) (dsjDefault d)
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
@@ -478,7 +469,6 @@ subNodes t = case treeNode t of
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = argsHaveRef (sfnArgs fn)
-mutHasRef (Index idxer) = argsHaveRef (idxSels idxer)
 mutHasRef MutStub = False
 
 argsHaveRef :: [Tree] -> Bool

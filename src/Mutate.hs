@@ -46,7 +46,6 @@ mutate = mustMutable $ \m -> withAddrAndFocus $ \addr _ -> do
   debugSpan (printf "mutate, addr: %s, mut: %s" (show addr) (show name)) $ case m of
     Ref ref -> mutateRef ref
     SFunc fn -> mutateFunc fn
-    Index idx -> mutateIndexer idx
     MutStub -> throwErrSt "mutate a stub"
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
@@ -126,22 +125,6 @@ mutateFunc fn = withTree $ \t -> do
         throwErrSt $
           printf "mutateFunc: mutable value of the StatefulFunc should not be a StatefulFunc, but got: %s" (show mvM)
       _ -> return ()
-
-mutateIndexer :: (TreeMonad s m) => Indexer Tree -> m ()
-mutateIndexer idxer = do
-  Functions{fnIndex = index, fnReduce = reduce} <- asks cfFunctions
-  mustMutable $ \_ -> runInMutValEnv $ index (idxOrigAddrs idxer) (idxSels idxer)
-  maybe
-    (return ())
-    ( \mv ->
-        case getMutableFromTree mv of
-          -- If the mutval is a ref, then we need to replace the mutable with the result and reduce it.
-          Just (Ref _) -> do
-            modifyTMTN (treeNode mv)
-            reduce
-          _ -> reduceToMutVal mv
-    )
-    =<< getTMMutVal
 
 -- | Replace the mutable tree node with the mutval.
 reduceToMutVal :: (TreeMonad s m) => Tree -> m ()

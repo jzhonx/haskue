@@ -31,7 +31,6 @@ type MutableEnv s m t =
 data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
-  | Index (Indexer t)
   | MutStub
 
 -- | StatefulFunc is a tree node whose value can be changed.
@@ -50,7 +49,7 @@ data StatefulFunc t = StatefulFunc
   -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
 
-data MutableType = RegularMutable | DisjMutable
+data MutableType = RegularMutable | DisjMutable | IndexMutable | SelectorMutable
   deriving (Eq, Show)
 
 data Reference t = Reference
@@ -67,24 +66,15 @@ data Reference t = Reference
   , refValue :: Maybe t
   }
 
-data Indexer t = Indexer
-  { idxSels :: [t]
-  , idxOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
-  -- ^ See refOrigAddrs.
-  , idxValue :: Maybe t
-  }
-
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
-  (==) (Index i1) (Index i2) = i1 == i2
   (==) MutStub MutStub = True
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
-  buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
   buildASTExpr _ MutStub = throwErrSt "AST should not be built from MutStub"
 
 instance (Eq t) => Eq (StatefulFunc t) where
@@ -96,11 +86,9 @@ instance (Eq t) => Eq (StatefulFunc t) where
 instance (Eq t) => Eq (Reference t) where
   (==) r1 r2 = refPath r1 == refPath r2
 
-instance (Eq t) => Eq (Indexer t) where
-  (==) i1 i2 = idxSels i1 == idxSels i2
-
 instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
+    -- TODO: too complicated
     if c || requireMutableConcrete mut
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       then sfnExpr mut
@@ -109,11 +97,6 @@ instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
 getRefFromMutable :: Mutable t -> Maybe (Reference t)
 getRefFromMutable mut = case mut of
   Ref ref -> Just ref
-  _ -> Nothing
-
-getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
-getIndexFromMutable mut = case mut of
-  Index idx -> Just idx
   _ -> Nothing
 
 getSFuncFromMutable :: Mutable t -> Maybe (StatefulFunc t)
@@ -129,19 +112,16 @@ requireMutableConcrete _ = False
 getMutName :: Mutable t -> String
 getMutName (SFunc mut) = sfnName mut
 getMutName (Ref ref) = "ref " ++ show (refPath ref)
-getMutName (Index _) = "index"
 getMutName MutStub = "mutStub"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
-getMutVal (Index idx) = idxValue idx
 getMutVal MutStub = Nothing
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
-setMutVal m (Index idx) = Index $ idx{idxValue = m}
 setMutVal _ MutStub = MutStub
 
 invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
@@ -252,5 +232,26 @@ mkRefMutable tp =
       , refValue = Nothing
       }
 
-emptyIndexer :: Indexer t
-emptyIndexer = Indexer{idxSels = [], idxValue = Nothing, idxOrigAddrs = Nothing}
+mkIndexMutable ::
+  forall t.
+  (BuildASTExpr t) =>
+  t ->
+  t ->
+  MutableType ->
+  AST.Expression ->
+  (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
+  Mutable t
+mkIndexMutable end sel mtype e f =
+  SFunc $
+    StatefulFunc
+      { sfnMethod = g
+      , sfnType = mtype
+      , sfnExpr = return e
+      , sfnName = "index"
+      , sfnArgs = [end, sel]
+      , sfnValue = Nothing
+      }
+ where
+  g :: (MutableEnv s m t) => [t] -> m ()
+  g [x, y] = f x y
+  g _ = throwErrSt "invalid number of arguments for binary function"

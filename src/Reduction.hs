@@ -31,7 +31,6 @@ import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
-import Env (Env)
 import Exception (throwErrSt)
 import Mutate (mutate)
 import Path (
@@ -129,7 +128,6 @@ import Value.Tree (
   emptySFunc,
   emptyStruct,
   getAtomFromTree,
-  getCnstredValFromTree,
   getFieldFromSV,
   getMutVal,
   getMutableFromTree,
@@ -154,7 +152,6 @@ import Value.Tree (
   mkStructTree,
   setMutVal,
   setTN,
-  subNodes,
   treesToRef,
   updateCnstrAtom,
   updateStructSub,
@@ -785,48 +782,51 @@ mkVarLinkTree var = do
   let mut = mkRefMutable (Path.Reference [StringSel var])
   return $ mkMutableTree mut
 
-{- | Index the tree with the segments.
+index :: (TreeMonad s m) => Tree -> Tree -> m ()
+index end sel = undefined
 
-The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
-arguments are the segments.
--}
-index :: (TreeMonad s m) => Maybe (TreeAddr, TreeAddr) -> [Tree] -> m ()
-index origAddrsM ts@(t : _)
-  | length ts > 1 = do
-      idxRefM <- treesToRef <$> mapM evalIndexArg [1 .. length ts - 1]
-      logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
-      whenJustE idxRefM $ \idxRef -> case treeNode t of
-        TNMutable mut
-          -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
-          -- the addr is c, then the new ref should be a.b.c.
-          | (Ref ref) <- mut -> do
-              let
-                newRef = appendRefs (refPath ref) idxRef
-                -- Use the index's original addrs since it is the referable node
-                refMutable = Ref $ ref{refPath = newRef, refOrigAddrs = origAddrsM}
-              putTMTree (mkMutableTree refMutable)
-        -- in-place expression, like ({}).a, or regular functions.
-        _ -> do
-          res <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 0) t
-          putTMTree res
-          logDebugStr $ printf "index: tree is reduced to %s" (show res)
+-- {- | Index the tree with the segments.
 
-          unlessFocusBottom () $ do
-            -- descendTM can not be used here because it would change the tree cursor.
-            tc <- getTMCursor
-            maybe
-              (throwErrSt $ printf "%s is not found" (show idxRef))
-              (putTMTree . vcFocus)
-              (goDownTCAddr (refToAddr idxRef) tc)
+-- The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
+-- arguments are the segments.
+-- -}
+-- index :: (TreeMonad s m) => Maybe (TreeAddr, TreeAddr) -> [Tree] -> m ()
+-- index origAddrsM ts@(t : _)
+--   | length ts > 1 = do
+--       idxRefM <- treesToRef <$> mapM evalIndexArg [1 .. length ts - 1]
+--       logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
+--       whenJustE idxRefM $ \idxRef -> case treeNode t of
+--         TNMutable mut
+--           -- If the function is a ref, then we should append the addr to the ref. For example, if the ref is a.b, and
+--           -- the addr is c, then the new ref should be a.b.c.
+--           | (Ref ref) <- mut -> do
+--               let
+--                 newRef = appendRefs (refPath ref) idxRef
+--                 -- Use the index's original addrs since it is the referable node
+--                 refMutable = Ref $ ref{refPath = newRef, refOrigAddrs = origAddrsM}
+--               putTMTree (mkMutableTree refMutable)
+--         -- in-place expression, like ({}).a, or regular functions.
+--         _ -> do
+--           res <- reduceMutableArg (MutableTASeg $ MutableArgTASeg 0) t
+--           putTMTree res
+--           logDebugStr $ printf "index: tree is reduced to %s" (show res)
 
-            withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
- where
-  evalIndexArg :: (TreeMonad s m) => Int -> m Tree
-  evalIndexArg i = mutValToArgsTM (MutableTASeg $ MutableArgTASeg i) (ts !! i) (reduce >> getTMTree)
+--           unlessFocusBottom () $ do
+--             -- descendTM can not be used here because it would change the tree cursor.
+--             tc <- getTMCursor
+--             maybe
+--               (throwErrSt $ printf "%s is not found" (show idxRef))
+--               (putTMTree . vcFocus)
+--               (goDownTCAddr (refToAddr idxRef) tc)
 
-  whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
-  whenJustE m f = maybe (return ()) f m
-index _ _ = throwErrSt "invalid index arguments"
+--             withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
+--  where
+--   evalIndexArg :: (TreeMonad s m) => Int -> m Tree
+--   evalIndexArg i = mutValToArgsTM (MutableTASeg $ MutableArgTASeg i) (ts !! i) (reduce >> getTMTree)
+
+--   whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
+--   whenJustE m f = maybe (return ()) f m
+-- index _ _ = throwErrSt "invalid index arguments"
 
 dispUnaryOp :: (TreeMonad s m) => AST.UnaryOp -> Tree -> m ()
 dispUnaryOp op _t = do
