@@ -1,7 +1,7 @@
 module Value.Bottom where
 
 import qualified AST
-import Class
+import Class (BuildASTExpr (..))
 
 newtype Bottom = Bottom {btmMsg :: String}
 

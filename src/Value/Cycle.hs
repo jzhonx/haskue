@@ -1,8 +1,8 @@
 module Value.Cycle where
 
-import Class
-import Exception
-import Path
+import Class (BuildASTExpr (..))
+import Exception (throwErrSt)
+import Path (TreeAddr (TreeAddr))
 
 {- | A reference cycle occurs if a field references itself, either directly or indirectly.
 

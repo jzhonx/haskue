@@ -59,7 +59,7 @@ import Path (
   tailRef,
   tailTreeAddr,
  )
-import TCursorOps
+import TCursorOps (propUpTC)
 import TMonad (
   TreeMonad,
   descendTM,
@@ -156,7 +156,6 @@ bfsLoopQ tid = do
       put state{bfsQueue = xs}
 
       origAddr <- lift getTMAbsAddr
-      -- logDebugStr $ printf "id=%s, bfsLoopQ: visiting addr: %s" (show tid) (show addr)
       -- First try to go to the addr.
       found <- lift $ goTMAbsAddr addr
       if found
@@ -180,8 +179,6 @@ bfsLoopQ tid = do
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
   addDepsUntilRoot :: (TreeMonad s m) => BFSMonad m ()
   addDepsUntilRoot = do
-    -- lift $ withAddrAndFocus $ \addr _ ->
-    --   logDebugStr $ printf "id=%s, notify_addDepsUntilRoot: addr: %s, starts" (show tid) (show addr)
     cs <- lift getTMCrumbs
     -- We should not use root value to notify.
     when (length cs > 1) $ do
@@ -192,12 +189,9 @@ bfsLoopQ tid = do
           -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
           -- finalized address can be notified.
           -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
-          -- always have address of /a/fv/y.
+          -- always have address of /a/sv/y.
           srcFinalizedAddr = referableAddr addr
         return $ fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
-
-      -- lift $ withAddrAndFocus $ \addr _ ->
-      --   logDebugStr $ printf "id=%s, notify_addDepsUntilRoot: addr: %s, recvs: %s" (show tid) (show addr) (show recvs)
 
       -- The current focus notifying its dependents means it is referred.
       unless (null recvs) $ lift markReferred
@@ -343,7 +337,7 @@ deref ::
   Maybe (TreeAddr, TreeAddr) ->
   m (Maybe TreeAddr)
 deref ref origAddrsM = withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "deref: addr: %s, origValAddr: %s, ref: %s" (show addr) (show origAddrsM) (show ref)) $ do
+  debugSpan (printf "deref: addr: %s, origAddrsM: %s, ref: %s" (show addr) (show origAddrsM) (show ref)) $ do
     -- Add the notifier anyway.
     addNotifier ref origAddrsM
 
@@ -365,7 +359,7 @@ addCtxNotifier.
 addNotifier :: (TreeMonad s m) => Path.Reference -> Maybe (TreeAddr, TreeAddr) -> m ()
 addNotifier ref origAddrsM = do
   srcAddrM <- refToPotentialAddr ref origAddrsM >>= \x -> return $ referableAddr <$> x
-  -- Since we are in the /fv environment, we need to get the referable addr.
+  -- Since we are in the /sv environment, we need to get the referable addr.
   recvAddr <- referableAddr <$> getTMAbsAddr
 
   maybe
@@ -485,7 +479,7 @@ getDstVal ref origAddrsM trail = withAddrAndFocus $ \srcAddr _ ->
         -- (!)
         --  | - unary_op
         -- ref_a
-        -- Notice that for self-cycle, the srcTreeAddr could be /addr/fv, and the dstTreeAddr could be /addr. They
+        -- Notice that for self-cycle, the srcTreeAddr could be /addr/sv, and the dstTreeAddr could be /addr. They
         -- are the same in the refNode form.
         | canDstAddr == referableAddr canSrcAddr && srcAddr /= dstAddr -> withTree $ \tar ->
             case treeNode tar of
@@ -750,7 +744,6 @@ locateRefAndRun ref f = do
   origAbsAddr <- getTMAbsAddr
   tarE <- goLAAddrTM ref
   res <- case tarE of
-    -- modify the tree focus if it is an error.
     Left err -> return $ Left err
     Right False -> return $ Right Nothing
     Right True -> f
@@ -819,9 +812,6 @@ searchTMVar :: (TreeMonad s m) => String -> m (Maybe (TreeAddr, Bool))
 searchTMVar name = do
   tc <- getTMCursor
   searchTCVar name tc
-
--- resM <- searchTCVar sel tc
--- return $ (\(rtc, isLB) -> Just (tcTreeAddr rtc, isLB)) =<< resM
 
 {- | Search in the parent scope for the first variable that can match the segment. Also return if the variable is a
  - let binding.

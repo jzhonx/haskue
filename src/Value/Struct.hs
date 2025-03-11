@@ -4,12 +4,12 @@
 module Value.Struct where
 
 import qualified AST
-import Class
+import Class (BuildASTExpr (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Set as Set
-import Exception
+import Exception (throwErrSt)
 import qualified Path
 
 data Struct t = Struct
@@ -17,7 +17,7 @@ data Struct t = Struct
   -- ^ The ID is used to identify the struct. It will not be used in the comparison of structs.
   , stcOrdLabels :: [Path.StructTASeg]
   -- ^ stcOrdLabels should only contain StringTASeg labels, meaning it contains all regular fields, hidden fields and
-  -- definitions. The length of this list should be equal to the size of the stcSubs map.
+  -- definitions. It should not contain let bindings.
   , stcSubs :: Map.Map Path.StructTASeg (StructVal t)
   -- ^ The raws map is used to store the raw values of the static fields, excluding the let bindings.
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
@@ -60,7 +60,7 @@ data Field t = Field
 data LetBinding t = LetBinding
   { lbReferred :: Bool
   , lbValue :: t
-  -- ^ The value is needed because if the value is a struct, then the fields of the struct could be referred.
+  -- ^ The value is only for the storage purpose.
   }
   deriving (Show, Eq, Functor)
 

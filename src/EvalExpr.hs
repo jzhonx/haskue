@@ -6,9 +6,31 @@
 
 module EvalExpr where
 
-import AST
-import Class
-import Config
+import AST (
+  BinaryOp (Disjunction, Unify),
+  Declaration (..),
+  ElementList (..),
+  EllipsisDecl (Ellipsis),
+  Expression (..),
+  FieldDecl (Field),
+  Index (..),
+  Label (..),
+  LabelConstraint (..),
+  LabelExpr (LabelName, LabelPattern),
+  LabelName (..),
+  LetClause (LetClause),
+  Literal (..),
+  Operand (OpExpression, OpLiteral, OperandName),
+  OperandName (Identifier),
+  PrimaryExpr (..),
+  Selector (..),
+  SourceFile (SourceFile),
+  StringLit (SimpleStringLit),
+  UnaryExpr (..),
+  UnaryOp (Star),
+ )
+import Class (TreeOp (isTreeValue))
+import Config (Config)
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (MonadReader)
@@ -16,14 +38,65 @@ import Control.Monad.State.Strict (MonadState, get, put)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Env
-import Exception
-import Path
-import Reduction
-import TMonad
+import Env (Env)
+import Exception (throwErrSt)
+import Path (
+  StructTASeg (LetTASeg, StringTASeg),
+  binOpLeftTASeg,
+  binOpRightTASeg,
+ )
+import Reduction (
+  DisjItem (DisjDefault, DisjRegular),
+  builtinMutableTable,
+  dispBinMutable,
+  dispUnaryOp,
+  mkVarLinkTree,
+  reduceDisjPair,
+  reduceMutableArg,
+  unify,
+  unifyREmbedded,
+ )
+import TMonad (TreeMonad, putTMTree)
 import Text.Printf (printf)
-import Util
-import Value.Tree as VT
+import Util (logDebugStr)
+import Value.Tree as VT (
+  Atom (Bool, Float, Int, Null, String),
+  BdType,
+  Bound (BdType),
+  DynamicField (DynamicField),
+  Field (Field, ssfAttr, ssfCnstrs, ssfNoStatic, ssfPends, ssfValue),
+  Indexer (idxSels),
+  LabelAttr (LabelAttr, lbAttrCnstr, lbAttrIsVar),
+  LetBinding (LetBinding),
+  Mutable (Index, SFunc),
+  StatefulFunc (sfnArgs),
+  Struct (stcCnstrs, stcID, stcOrdLabels, stcPendSubs, stcSubs),
+  StructCnstr (StructCnstr),
+  StructElemAdder (..),
+  StructFieldCnstr (..),
+  StructVal (SField, SLet),
+  Tree (treeNode),
+  TreeNode (TNBottom, TNMutable, TNStruct, TNTop),
+  emptyFieldMker,
+  emptyIndexer,
+  emptyStruct,
+  getIndexFromMutable,
+  getMutableFromTree,
+  lookupStructVal,
+  mergeAttrs,
+  mkAtomTree,
+  mkBinaryOp,
+  mkBottomTree,
+  mkBoundsTree,
+  mkListTree,
+  mkMutableTree,
+  mkNewTree,
+  mkStructFromAdders,
+  mkStructTree,
+  mkUnaryOp,
+  setExpr,
+  setTN,
+ )
 
 type EvalEnv m = (Env m, MonadReader (Config Tree) m, MonadState Int m)
 

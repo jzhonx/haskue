@@ -1,7 +1,7 @@
 module Value.Constraint where
 
 import qualified AST
-import Value.Atom
+import Value.Atom (AtomV)
 
 data AtomCnstr t = AtomCnstr
   { cnsAtom :: AtomV

@@ -14,29 +14,67 @@ module Eval (
 )
 where
 
-import AST
-import Class
-import Config
+import AST (
+  Expression (ExprUnaryExpr),
+  Literal (StructLit),
+  Operand (OpLiteral),
+  PrimaryExpr (PrimExprOperand),
+  SourceFile,
+  UnaryExpr (UnaryExprPrimaryExpr),
+  declsBld,
+ )
+import Class (BuildASTExpr (buildASTExpr))
+import Config (
+  Config (..),
+  Functions (
+    Functions,
+    fnClose,
+    fnDeref,
+    fnEvalExpr,
+    fnIndex,
+    fnPropUpStructPost,
+    fnReduce
+  ),
+  RuntimeParams (RuntimeParams, rpCreateCnstr),
+  Settings (Settings, stMermaid, stShowMutArgs),
+  emptyConfig,
+ )
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT)
-import Cursor
+import Cursor (
+  CtxVal (cvVal),
+  ValCursor (ValCursor),
+  cvFromCur,
+  getCVCursor,
+ )
 import Data.ByteString.Builder (
   Builder,
   string7,
  )
-import EvalExpr
-import Exception
+import EvalExpr (evalExpr, evalSourceFile)
+import Exception (throwErrSt)
 import Parser (parseSourceFile)
-import Path
-import PostReduce
-import Reduction
-import Ref
+import Path (TASeg (RootTASeg))
+import PostReduce (postValidation)
+import Reduction (
+  close,
+  fullReduce,
+  index,
+  propUpStructPost,
+  reduce,
+ )
+import Ref (deref)
 import Text.Printf (printf)
-import Util
-import Value.Tree
+import Util (logDebugStr)
+import Value.Tree (
+  Bottom (Bottom),
+  Tree (treeNode),
+  TreeNode (TNBottom, TNTop),
+  mkNewTree,
+ )
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool

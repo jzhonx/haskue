@@ -6,17 +6,17 @@
 
 module Config where
 
-import AST
-import Class
+import AST (Expression)
+import Class (TreeOp)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
-import Cursor
-import Env
-import Exception
-import Path
+import Cursor (HasCtxVal)
+import Env (Env)
+import Exception (throwErrSt)
+import Path (Reference, StructTASeg, TreeAddr)
 import Text.Printf (printf)
-import Util
-import Value.Struct
+import Util (HasTrace)
+import Value.Struct (Struct)
 
 type EM m t = (Env m, MonadReader (Config t) m, TreeOp t, MonadState Int m)
 type MM s m t = (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s)

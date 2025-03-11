@@ -40,10 +40,6 @@ goDownTCSeg seg tc = do
         _ -> Nothing
       goDownTCSeg seg $ mkSubTC nextSeg nextTree tc
 
--- maybe () return nextTreeM
-
--- return $ mkSubTC seg nextTree tc
-
 {- | Propagates the changes made to the focus to the parent nodes.
 
 It stops at the root.

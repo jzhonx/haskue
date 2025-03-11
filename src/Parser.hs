@@ -4,7 +4,32 @@
 
 module Parser where
 
-import AST
+import AST (
+  BinaryOp (..),
+  Declaration (..),
+  ElementList (EmbeddingList),
+  EllipsisDecl (..),
+  Embedding,
+  Expression (..),
+  FieldDecl (..),
+  Index (Index),
+  Label (..),
+  LabelConstraint (OptionalLabel, RegularLabel, RequiredLabel),
+  LabelExpr (..),
+  LabelName (..),
+  LetClause (..),
+  Literal (..),
+  Operand (..),
+  OperandName (Identifier),
+  PrimaryExpr (..),
+  RelOp (GE, GT, LE, LT, NE, ReMatch, ReNotMatch),
+  Selector (IDSelector, StringSelector),
+  SimpleStringLit,
+  SourceFile (SourceFile),
+  StringLit (SimpleStringLit),
+  UnaryExpr (..),
+  UnaryOp (..),
+ )
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Data.Maybe (fromJust, isJust)
@@ -21,7 +46,6 @@ import Text.Parsec (
   oneOf,
   option,
   optionMaybe,
-  -- parserTraced,
   runParser,
   satisfy,
   setInput,

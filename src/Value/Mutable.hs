@@ -54,9 +54,6 @@ data MutableType = RegularMutable | DisjMutable
 
 data Reference t = Reference
   { refPath :: Path.Reference
-  , refExpr :: Maybe AST.Expression
-  -- ^ refExpr is used to avoid the unnecessary reduction of the reference. If the referenced expression
-  -- is not changed, no need to reduce it again.
   , refOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
   -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
   -- expression.
@@ -241,7 +238,6 @@ mkRefMutable tp =
   Ref $
     Reference
       { refPath = tp
-      , refExpr = Nothing
       , refOrigAddrs = Nothing
       , refValue = Nothing
       }

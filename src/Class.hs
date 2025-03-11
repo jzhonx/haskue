@@ -3,8 +3,8 @@
 module Class where
 
 import qualified AST
-import Env
-import Path
+import Env (Env)
+import Path (TASeg)
 
 class BuildASTExpr a where
   -- The first argument is a flag to indicate whether the expression is required to be concrete.

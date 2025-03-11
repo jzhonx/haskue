@@ -6,21 +6,57 @@
 
 module TMonad where
 
-import Class
-import Config
+import Class (TreeOp (isTreeBottom))
+import Config (
+  Config (Config, cfFunctions, cfSettings),
+  Functions (Functions, fnPropUpStructPost),
+  Settings (Settings, stMermaid, stShowMutArgs),
+ )
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (MonadReader, ask, asks)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify)
-import Cursor
-import Env
-import Exception
+import Cursor (
+  Context (
+    ctxCrumbs,
+    ctxNotifEnabled,
+    ctxNotifGraph,
+    ctxNotifQueue,
+    ctxObjID
+  ),
+  CtxTree,
+  CtxVal (cvCtx, cvVal),
+  HasCtxVal (..),
+  TreeCrumb,
+  TreeCursor,
+  ValCursor (ValCursor, vcCrumbs, vcFocus),
+  cvTreeAddr,
+  focusTCSeg,
+  getCVCursor,
+  showNotifiers,
+  tcTreeAddr,
+ )
+import Env (Env)
+import Exception (throwErrSt)
 import GHC.Stack (HasCallStack)
-import Path
-import TCursorOps
+import Path (
+  TASeg (RootTASeg, StructTASeg, TempTASeg),
+  TreeAddr,
+  addrToNormOrdList,
+ )
+import TCursorOps (goDownTCSeg, propUpTC)
 import Text.Printf (printf)
-import Util
-import Value.Tree
+import Util (HasTrace, logDebugStr)
+import Value.Tree (
+  Mutable,
+  Tree (treeNode),
+  TreeNode (TNAtom, TNBottom, TNMutable, TNStruct, TNTop),
+  TreeRepBuildOption (TreeRepBuildOption, trboShowMutArgs),
+  getStructFromTree,
+  setTN,
+  subNodes,
+  treeToMermaid,
+ )
 
 -- TreeMonad stores the tree structure in its state.
 type TreeMonad s m =
