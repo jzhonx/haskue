@@ -3,9 +3,8 @@
 
 module TCursorOps where
 
-import Class (TreeOp (setSubTree, subTree))
+import Common (Env, TreeOp (setSubTree, subTree))
 import Cursor
-import Env
 import Exception (throwErrSt)
 import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr))
 import Value.Tree

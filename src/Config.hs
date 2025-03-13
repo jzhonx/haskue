@@ -2,24 +2,22 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 
--- {-# LANGUAGE QuantifiedConstraints #-}
-
 module Config where
 
 import AST (Expression)
-import Class (TreeOp)
+import Common (Env, TreeOp)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
 import Cursor (HasCtxVal)
-import Env (Env)
 import Exception (throwErrSt)
 import Path (Reference, StructTASeg, TreeAddr)
 import Text.Printf (printf)
 import Util (HasTrace)
+import Value.Reference (RefArg)
 import Value.Struct (Struct)
 
-type EM m t = (Env m, MonadReader (Config t) m, TreeOp t, MonadState Int m)
-type MM s m t = (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s)
+type EvalEnv m t = (Env m, MonadReader (Config t) m, TreeOp t, MonadState Int m)
+type MutableEnv s m t = (Env m, MonadState s m, MonadReader (Config t) m, TreeOp t, HasCtxVal s t t, HasTrace s)
 
 data Settings = Settings
   { stMermaid :: Bool
@@ -33,12 +31,12 @@ newtype RuntimeParams = RuntimeParams
   deriving (Show)
 
 data Functions t = Functions
-  { fnEvalExpr :: forall m. (EM m t) => AST.Expression -> m t
-  , fnClose :: forall s m. (MM s m t) => [t] -> m ()
-  , fnReduce :: forall s m. (MM s m t) => m ()
-  , fnDeref :: forall s m. (MM s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m (Maybe TreeAddr)
-  , fnIndex :: forall s m. (MM s m t) => Maybe (TreeAddr, TreeAddr) -> [t] -> m ()
-  , fnPropUpStructPost :: forall s m. (MM s m t) => (StructTASeg, Struct t) -> m ()
+  { fnEvalExpr :: forall m. (EvalEnv m t) => AST.Expression -> m t
+  , fnClose :: forall s m. (MutableEnv s m t) => [t] -> m ()
+  , fnReduce :: forall s m. (MutableEnv s m t) => m ()
+  , fnDeref :: forall s m. (MutableEnv s m t) => Reference -> Maybe (TreeAddr, TreeAddr) -> m (Maybe TreeAddr)
+  , fnIndex :: forall s m. (MutableEnv s m t) => Maybe (TreeAddr, TreeAddr) -> RefArg t -> m (Maybe TreeAddr)
+  , fnPropUpStructPost :: forall s m. (MutableEnv s m t) => (StructTASeg, Struct t) -> m ()
   }
 
 data Config t = Config

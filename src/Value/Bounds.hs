@@ -1,7 +1,7 @@
 module Value.Bounds where
 
 import qualified AST
-import Class (BuildASTExpr (..), TreeRepBuilder (..))
+import Common (BuildASTExpr (..), TreeRepBuilder (..))
 import Value.Atom (Atom, aToLiteral)
 
 newtype Bounds = Bounds {bdsList :: [Bound]}

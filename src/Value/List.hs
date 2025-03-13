@@ -1,7 +1,7 @@
 module Value.List where
 
 import qualified AST
-import Class (BuildASTExpr (..))
+import Common (BuildASTExpr (..))
 
 newtype List t = List {lstSubs :: [t]}
 

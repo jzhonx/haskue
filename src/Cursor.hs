@@ -13,7 +13,7 @@ import Data.ByteString.Builder (
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Env
+import Common
 import Exception (throwErrSt)
 import Path (TASeg, TreeAddr (TreeAddr))
 import Util (HasTrace (..), Trace, emptyTrace)
@@ -51,9 +51,9 @@ data Context t = Context
   { ctxCrumbs :: [TreeCrumb t]
   , ctxObjID :: Int
   , ctxReduceStack :: [TreeAddr]
-  , ctxNotifEnabled :: Bool
-  , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
-  , ctxNotifQueue :: [TreeAddr]
+  , ctxRefSysEnabled :: Bool
+  , ctxRefSysGraph :: Map.Map TreeAddr [TreeAddr]
+  , ctxRefSysQueue :: [TreeAddr]
   -- ^ The notif queue is a list of addresses that will trigger the notification.
   , ctxCnstrValidatorAddr :: Maybe TreeAddr
   , ctxTrace :: Trace
@@ -84,9 +84,9 @@ emptyContext =
     { ctxCrumbs = []
     , ctxObjID = 0
     , ctxReduceStack = []
-    , ctxNotifGraph = Map.empty
-    , ctxNotifQueue = []
-    , ctxNotifEnabled = True
+    , ctxRefSysGraph = Map.empty
+    , ctxRefSysQueue = []
+    , ctxRefSysEnabled = True
     , ctxCnstrValidatorAddr = Nothing
     , ctxTrace = emptyTrace
     }
@@ -95,10 +95,10 @@ emptyContext =
 The first element is the source addr, which is the addr that is being watched.
 The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
-addCtxNotifier :: Context t -> (TreeAddr, TreeAddr) -> Context t
-addCtxNotifier ctx (src, dep) = ctx{ctxNotifGraph = Map.insert src newDepList oldMap}
+addCtxRefSysier :: Context t -> (TreeAddr, TreeAddr) -> Context t
+addCtxRefSysier ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
  where
-  oldMap = ctxNotifGraph ctx
+  oldMap = ctxRefSysGraph ctx
   depList = fromMaybe [] $ Map.lookup src oldMap
   newDepList = if dep `elem` depList then depList else dep : depList
 
@@ -166,8 +166,8 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-showNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
-showNotifiers notifiers =
+showRefSysiers :: Map.Map TreeAddr [TreeAddr] -> String
+showRefSysiers notifiers =
   let s = Map.foldrWithKey go "" notifiers
    in if null s then "[]" else "[" ++ s ++ "\n]"
  where

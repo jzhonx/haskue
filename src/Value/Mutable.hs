@@ -6,32 +6,34 @@
 module Value.Mutable where
 
 import qualified AST
-import Class (BuildASTExpr (..), TreeOp)
-import Config (Config)
+import Common (Env, BuildASTExpr (..), TreeOp)
+import Config (Config, MutableEnv)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState)
 import Cursor (HasCtxVal)
-import Env (Env)
+import Data.List (intercalate)
 import Exception (throwErrSt)
 import GHC.Stack (HasCallStack)
 import qualified Path
 import Util (HasTrace)
+import Value.Reference
 
-type MutableEnv s m t =
-  ( TreeOp t
-  , Env m
-  , MonadState s m
-  , HasCtxVal s t t
-  , HasTrace s
-  , HasCallStack
-  , MonadReader (Config t) m
-  )
+-- type MutableEnv s m t =
+--   ( TreeOp t
+--   , Env m
+--   , MonadState s m
+--   , HasCtxVal s t t
+--   , HasTrace s
+--   , HasCallStack
+--   , MonadReader (Config t) m
+--   )
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
-  | Index (Indexer t)
+
+-- \| Index (Indexer t)
 
 -- | StatefulFunc is a tree node whose value can be changed.
 data StatefulFunc t = StatefulFunc
@@ -52,34 +54,24 @@ data StatefulFunc t = StatefulFunc
 data MutableType = RegularMutable | DisjMutable
   deriving (Eq, Show)
 
-data Reference t = Reference
-  { refPath :: Path.Reference
-  , refOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
-  -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
-  -- expression.
-  -- If it is, the address of the scope is stored here.
-  -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
-  -- The first is the subtree root address, the second is the abs address of the value in the subtree.
-  , refValue :: Maybe t
-  }
-
-data Indexer t = Indexer
-  { idxSels :: [t]
-  , idxOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
-  -- ^ See refOrigAddrs.
-  , idxValue :: Maybe t
-  }
+-- data Indexer t = Indexer
+--   { idxSels :: [t]
+--   , idxOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
+--   -- ^ See refOrigAddrs.
+--   , idxValue :: Maybe t
+--   }
 
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
-  (==) (Index i1) (Index i2) = i1 == i2
+  -- (==) (Index i1) (Index i2) = i1 == i2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
-  buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
+
+-- buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
@@ -87,11 +79,8 @@ instance (Eq t) => Eq (StatefulFunc t) where
       && sfnType f1 == sfnType f2
       && sfnArgs f1 == sfnArgs f2
 
-instance (Eq t) => Eq (Reference t) where
-  (==) r1 r2 = refPath r1 == refPath r2
-
-instance (Eq t) => Eq (Indexer t) where
-  (==) i1 i2 = idxSels i1 == idxSels i2
+-- instance (Eq t) => Eq (Indexer t) where
+--   (==) i1 i2 = idxSels i1 == idxSels i2
 
 instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
@@ -105,10 +94,10 @@ getRefFromMutable mut = case mut of
   Ref ref -> Just ref
   _ -> Nothing
 
-getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
-getIndexFromMutable mut = case mut of
-  Index idx -> Just idx
-  _ -> Nothing
+-- getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
+-- getIndexFromMutable mut = case mut of
+--   Index idx -> Just idx
+--   _ -> Nothing
 
 getSFuncFromMutable :: Mutable t -> Maybe (StatefulFunc t)
 getSFuncFromMutable mut = case mut of
@@ -120,20 +109,23 @@ requireMutableConcrete mut
   | RegularMutable <- sfnType mut = sfnName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
 requireMutableConcrete _ = False
 
-getMutName :: Mutable t -> String
-getMutName (SFunc mut) = sfnName mut
-getMutName (Ref ref) = "ref " ++ show (refPath ref)
-getMutName (Index _) = "index"
+getMutName :: Mutable t -> (t -> Maybe String) -> String
+getMutName (SFunc mut) _ = sfnName mut
+getMutName (Ref ref) f = showRefArg (refArg ref) f
+
+-- getMutName (Index _) = "index"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
-getMutVal (Index idx) = idxValue idx
+
+-- getMutVal (Index idx) = idxValue idx
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
-setMutVal m (Index idx) = Index $ idx{idxValue = m}
+
+-- setMutVal m (Index idx) = Index $ idx{idxValue = m}
 
 invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -233,14 +225,11 @@ mkBinaryOpDir rep op (d1, t1) (_, t2) =
     Path.L -> mkBinaryOp rep op t1 t2
     Path.R -> mkBinaryOp rep op t2 t1
 
-mkRefMutable :: Path.Reference -> Mutable t
-mkRefMutable tp =
+mkRefMutable :: String -> [t] -> Mutable t
+mkRefMutable var ts =
   Ref $
     Reference
-      { refPath = tp
+      { refArg = RefPath var ts
       , refOrigAddrs = Nothing
       , refValue = Nothing
       }
-
-emptyIndexer :: Indexer t
-emptyIndexer = Indexer{idxSels = [], idxValue = Nothing, idxOrigAddrs = Nothing}

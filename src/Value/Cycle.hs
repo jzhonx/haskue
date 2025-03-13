@@ -1,6 +1,6 @@
 module Value.Cycle where
 
-import Class (BuildASTExpr (..))
+import Common (BuildASTExpr (..))
 import Exception (throwErrSt)
 import Path (TreeAddr (TreeAddr))
 

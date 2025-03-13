@@ -4,7 +4,7 @@
 module Value.Disj where
 
 import qualified AST
-import Class (BuildASTExpr (..))
+import Common (BuildASTExpr (..))
 
 data Disj t = Disj
   { dsjDefault :: Maybe t

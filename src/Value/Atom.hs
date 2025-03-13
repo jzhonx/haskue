@@ -4,8 +4,7 @@
 module Value.Atom where
 
 import qualified AST
-import Class (BuildASTExpr (..))
-import Env (Env)
+import Common (Env, BuildASTExpr (..))
 
 data Atom
   = String String

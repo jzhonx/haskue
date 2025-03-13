@@ -4,7 +4,7 @@
 module Value.Struct where
 
 import qualified AST
-import Class (BuildASTExpr (..))
+import Common (BuildASTExpr (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe)

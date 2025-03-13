@@ -23,7 +23,7 @@ import AST (
   UnaryExpr (UnaryExprPrimaryExpr),
   declsBld,
  )
-import Class (BuildASTExpr (buildASTExpr))
+import Common (BuildASTExpr (buildASTExpr))
 import Config (
   Config (..),
   Functions (
@@ -58,15 +58,15 @@ import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
 import Parser (parseSourceFile)
 import Path (TASeg (RootTASeg))
-import PostReduce (postValidation)
-import Reduction (
+import Reduce (
   close,
   fullReduce,
   index,
   propUpStructPost,
   reduce,
  )
-import Ref (deref)
+import qualified Reduce.RefSys as RefSys
+import Reduce.PostReduce (postValidation)
 import Text.Printf (printf)
 import Util (logDebugStr)
 import Value.Tree (
@@ -138,7 +138,7 @@ defaultConfig =
           { fnEvalExpr = evalExpr
           , fnClose = close
           , fnReduce = reduce
-          , fnDeref = deref
+          , fnDeref = RefSys.deref
           , fnIndex = index
           , fnPropUpStructPost = propUpStructPost
           }

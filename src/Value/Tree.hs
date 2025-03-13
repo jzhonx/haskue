@@ -17,18 +17,18 @@ module Value.Tree (
   module Value.Tree,
   module Value.TreeNode,
   module Value.Mutable,
+  module Value.Reference,
 )
 where
 
 import qualified AST
-import Class (BuildASTExpr (..), TreeOp (..), TreeRepBuilder (..))
+import Common (Env, BuildASTExpr (..), TreeOp (..), TreeRepBuilder (..))
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
-import Env (Env)
 import Exception (throwErrSt)
 import Path (
   Reference (Reference),
@@ -56,6 +56,7 @@ import Value.Cycle
 import Value.Disj
 import Value.List
 import Value.Mutable
+import Value.Reference
 import Value.Struct
 import Value.TreeNode
 
@@ -253,7 +254,7 @@ buildRepTreeTN t tn opt = case tn of
        in
         consRep
           ( symbol
-          , show (refPath ref)
+          , showRefArg (refArg ref) getStringFromTree
               <> maybe
                 mempty
                 (\from -> ", from:" <> show from)
@@ -262,12 +263,12 @@ buildRepTreeTN t tn opt = case tn of
             consFields val
           , []
           )
-    Index idx ->
-      let
-        args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (idxValue idx)
-       in
-        consRep (symbol, "", consFields (args ++ val), [])
+  -- Index idx ->
+  --   let
+  --     args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
+  --     val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (idxValue idx)
+  --    in
+  --     consRep (symbol, "", consFields (args ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -300,7 +301,7 @@ instance BuildASTExpr Tree where
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
-      Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
+    -- Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -495,7 +496,7 @@ showTreeSymbol t = case treeNode t of
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
-    Index _ -> "idx"
+  -- Index _ -> "idx"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -529,7 +530,7 @@ subNodes t = case treeNode t of
       ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
-  TNMutable (Index idx) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (idxSels idx)]
+  TNMutable (Ref ref) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (subRefArgs $ refArg ref)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultTASeg, x)]) (dsjDefault d)
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
@@ -538,7 +539,8 @@ subNodes t = case treeNode t of
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = argsHaveRef (sfnArgs fn)
-mutHasRef (Index idxer) = argsHaveRef (idxSels idxer)
+
+-- mutHasRef (Index idxer) = argsHaveRef (idxSels idxer)
 
 argsHaveRef :: [Tree] -> Bool
 argsHaveRef =
@@ -565,6 +567,7 @@ setTN t n = t{treeNode = n}
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
 
+-- | TODO: make all get calling helper functions to deal with default, cnstred and mutable.
 getAtomFromTree :: Tree -> Maybe Atom
 getAtomFromTree t = case treeNode t of
   TNAtom (AtomV a) -> Just a
@@ -612,6 +615,7 @@ getCnstredValFromTree t = case treeNode t of
   TNCnstredVal c -> Just $ cnsedVal c
   _ -> Nothing
 
+-- | TODO: default and cnstred?
 getStringFromTree :: Tree -> Maybe String
 getStringFromTree t = case treeNode t of
   (TNMutable mut) -> getMutVal mut >>= getStringFromTree
@@ -667,24 +671,24 @@ stubTree = mkNewTree TNStub
 
 treesToRef :: [Tree] -> Maybe Path.Reference
 treesToRef ts = Path.Reference <$> mapM treeToSel ts
- where
-  treeToSel :: Tree -> Maybe Selector
-  treeToSel t = case treeNode t of
-    -- TODO: Think about changing mutval.
-    TNMutable mut
-      | Just v <- getMutVal mut -> concreteToSel v
-    _ -> concreteToSel t
 
-  concreteToSel :: Tree -> Maybe Selector
-  concreteToSel t = case treeNode t of
-    TNAtom a
-      | (String s) <- va -> Just (StringSel s)
-      | (Int j) <- va -> Just (IntSel $ fromIntegral j)
-     where
-      va = amvAtom a
-    -- If a disjunct has a default, then we should try to use the default.
-    TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
-    _ -> Nothing
+treeToSel :: Tree -> Maybe Selector
+treeToSel t = case treeNode t of
+  -- TODO: Think about changing mutval.
+  TNMutable mut
+    | Just v <- getMutVal mut -> concreteToSel v
+  _ -> concreteToSel t
+
+concreteToSel :: Tree -> Maybe Selector
+concreteToSel t = case treeNode t of
+  TNAtom a
+    | (String s) <- va -> Just (StringSel s)
+    | (Int j) <- va -> Just (IntSel $ fromIntegral j)
+   where
+    va = amvAtom a
+  -- If a disjunct has a default, then we should try to use the default.
+  TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
+  _ -> Nothing
 
 addrToTrees :: TreeAddr -> Maybe [Tree]
 addrToTrees p = mapM selToTree (addrToNormOrdList p)

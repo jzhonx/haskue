@@ -1,10 +1,15 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Class where
+module Common where
 
+import Control.Monad.Except (MonadError)
+import Control.Monad.Logger (MonadLogger)
+import GHC.Stack (HasCallStack)
 import qualified AST
-import Env (Env)
 import Path (TASeg)
+
+type Env m = (MonadError String m, MonadLogger m, HasCallStack)
 
 class BuildASTExpr a where
   -- The first argument is a flag to indicate whether the expression is required to be concrete.
@@ -36,3 +41,4 @@ class TreeOp a where
 
   -- TODO: rename
   treeHasAtom :: a -> Bool
+

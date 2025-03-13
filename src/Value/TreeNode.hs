@@ -4,11 +4,10 @@
 
 module Value.TreeNode where
 
-import Class (TreeOp)
+import Common (Env, TreeOp)
 import Control.Monad.Except (MonadError)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
-import Env (Env)
 import Exception (throwErrSt)
 import Path (
   StructTASeg (..),
@@ -33,12 +32,13 @@ import Value.Cycle (RefCycle, StructuralCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.List (List (lstSubs))
 import Value.Mutable (
-  Indexer (idxSels),
-  Mutable (Index, SFunc),
+  -- Indexer (idxSels),
+  Mutable (Ref, SFunc),
   StatefulFunc (sfnArgs),
   getMutVal,
   setMutVal,
  )
+import Value.Reference (Reference (refArg), setRefArgs, subRefArgs)
 import Value.Struct (
   DynamicField (dsfLabel),
   Field (ssfValue),
@@ -117,7 +117,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
-    | (MutableArgTASeg i, Index idx) <- (seg, mut) -> idxSels idx `indexList` i
+    | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | SubValTASeg <- seg -> getMutVal mut
   (_, TNDisj d)
     | DisjDefaultTASeg <- seg -> dsjDefault d
@@ -148,10 +148,10 @@ setSubTreeTN seg subT parT = do
             l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
       | MutableArgTASeg i <- seg
-      , Index idx <- mut -> do
+      , Ref ref <- mut -> do
           let
-            sels = idxSels idx
-            l = TNMutable . Index $ idx{idxSels = take i sels ++ [subT] ++ drop (i + 1) sels}
+            sels = subRefArgs (refArg ref)
+            l = TNMutable . Ref $ ref{refArg = setRefArgs (refArg ref) $ take i sels ++ [subT] ++ drop (i + 1) sels}
           return l
       | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
     (_, TNDisj d)

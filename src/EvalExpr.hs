@@ -29,7 +29,7 @@ import AST (
   UnaryExpr (..),
   UnaryOp (Star),
  )
-import Class (TreeOp (isTreeValue))
+import Common (Env, TreeOp (isTreeValue))
 import Config (Config)
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
@@ -38,37 +38,38 @@ import Control.Monad.State.Strict (MonadState, get, put)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Env (Env)
 import Exception (throwErrSt)
 import Path (
   StructTASeg (LetTASeg, StringTASeg),
   binOpLeftTASeg,
   binOpRightTASeg,
  )
-import Reduction (
+import Reduce (
   DisjItem (DisjDefault, DisjRegular),
   builtinMutableTable,
   dispBinMutable,
-  dispUnaryOp,
   mkVarLinkTree,
   reduceDisjPair,
   reduceMutableArg,
   unify,
   unifyREmbedded,
  )
-import TMonad (TreeMonad, putTMTree)
+import qualified Reduce.RMonad as RM
+import qualified Reduce.RegOps as RegOps
 import Text.Printf (printf)
 import Util (logDebugStr)
+import Value.Mutable (getRefFromMutable)
+import Value.Reference (Reference (refArg))
+import Value.Tree (appendRefArg)
 import Value.Tree as VT (
   Atom (Bool, Float, Int, Null, String),
   BdType,
   Bound (BdType),
   DynamicField (DynamicField),
   Field (Field, ssfAttr, ssfCnstrs, ssfNoStatic, ssfPends, ssfValue),
-  Indexer (idxSels),
   LabelAttr (LabelAttr, lbAttrCnstr, lbAttrIsVar),
   LetBinding (LetBinding),
-  Mutable (Index, SFunc),
+  Mutable (Ref, SFunc),
   StatefulFunc (sfnArgs),
   Struct (stcCnstrs, stcID, stcOrdLabels, stcPendSubs, stcSubs),
   StructCnstr (StructCnstr),
@@ -78,9 +79,7 @@ import Value.Tree as VT (
   Tree (treeNode),
   TreeNode (TNBottom, TNMutable, TNStruct, TNTop),
   emptyFieldMker,
-  emptyIndexer,
   emptyStruct,
-  getIndexFromMutable,
   getMutableFromTree,
   lookupStructVal,
   mergeAttrs,
@@ -88,6 +87,7 @@ import Value.Tree as VT (
   mkBinaryOp,
   mkBottomTree,
   mkBoundsTree,
+  mkIndexRef,
   mkListTree,
   mkMutableTree,
   mkNewTree,
@@ -360,9 +360,9 @@ evalIndex _ (AST.Index e) oprnd = do
 mkIndexMutableTree :: (EvalEnv m) => Tree -> Tree -> m Tree
 mkIndexMutableTree oprnd selArg = case treeNode oprnd of
   TNMutable m
-    | Just idx <- getIndexFromMutable m ->
-        return $ mkMutableTree $ VT.Index $ idx{idxSels = idxSels idx ++ [selArg]}
-  _ -> return $ mkMutableTree $ VT.Index $ emptyIndexer{idxSels = [oprnd, selArg]}
+    | Just ref <- getRefFromMutable m ->
+        return $ mkMutableTree $ VT.Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
+  _ -> return $ mkMutableTree $ VT.Ref $ mkIndexRef [oprnd, selArg]
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
@@ -370,7 +370,7 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> m Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  return $ mkNewTree (TNMutable $ mkUnaryOp op (dispUnaryOp op) t)
+  return $ mkNewTree (TNMutable $ mkUnaryOp op (RegOps.regUnaryOp op) t)
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
@@ -403,7 +403,7 @@ evalDisj e1 e2 = do
       return (l, r)
   return $ mkNewTree (TNMutable $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
-  reduceDisjAdapt :: (TreeMonad s m) => Tree -> Tree -> m ()
+  reduceDisjAdapt :: (RM.ReduceMonad s m) => Tree -> Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
     t1 <- reduceMutableArg binOpLeftTASeg unt1
     t2 <- reduceMutableArg binOpRightTASeg unt2
@@ -420,4 +420,4 @@ evalDisj e1 e2 = do
             reduceDisjPair (DisjRegular t1) (DisjDefault t2)
           (_, _) -> reduceDisjPair (DisjRegular t1) (DisjRegular t2)
         logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
-        putTMTree u
+        RM.putRMTree u
