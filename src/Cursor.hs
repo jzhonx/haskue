@@ -4,6 +4,7 @@
 
 module Cursor where
 
+import Common
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -13,7 +14,6 @@ import Data.ByteString.Builder (
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Common
 import Exception (throwErrSt)
 import Path (TASeg, TreeAddr (TreeAddr))
 import Util (HasTrace (..), Trace, emptyTrace)
@@ -137,7 +137,7 @@ parentTC (ValCursor _ []) = Nothing
 parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
 
 -- | Get the segment paired with the focus of the cursor.
-focusTCSeg :: (Env m) => TreeCursor t -> m TASeg
+focusTCSeg :: (Env r m) => TreeCursor t -> m TASeg
 focusTCSeg (ValCursor _ []) = throwErrSt "already at the top"
 focusTCSeg tc = return $ fst . head $ vcCrumbs tc
 

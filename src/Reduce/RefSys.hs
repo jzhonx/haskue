@@ -5,22 +5,10 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Reduce.RefSys (
-  deref,
-  drainRefSysQueue,
-  evalExprRM,
-  notify,
-  searchRMVarInPar,
-  traverseTC,
-)
-where
+module Reduce.RefSys where
 
 import qualified AST
 import Common (BuildASTExpr (buildASTExpr), Env, TreeOp (isTreeBottom))
-import Config (
-  Config (cfFunctions),
-  Functions (Functions, fnEvalExpr, fnReduce),
- )
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put, runStateT)
@@ -36,13 +24,14 @@ import Cursor (
   tcTreeAddr,
  )
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
+import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
 import qualified Reduce.RMonad as RM
-import TCursorOps (propUpTC)
+import qualified TCursorOps
 import Text.Printf (printf)
 import Util (debugSpan, getTraceID, logDebugStr)
 import qualified Value.Tree as VT
@@ -54,7 +43,7 @@ propagates to the dependents of the visiting node and the dependents of its ance
 
 The propagation starts from the current focus.
 -}
-notify :: (RM.ReduceMonad s m) => m ()
+notify :: (RM.ReduceMonad s r m) => m ()
 notify = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "notify: addr: %s" (show addr)) $ do
   origRefSysEnabled <- RM.getRMRefSysEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
@@ -75,7 +64,7 @@ data BFSState = BFSState
 
 type BFSMonad m a = StateT BFSState m a
 
-bfsLoopQ :: (RM.ReduceMonad s m) => Int -> BFSMonad m ()
+bfsLoopQ :: (RM.ReduceMonad s r m) => Int -> BFSMonad m ()
 bfsLoopQ tid = do
   state@(BFSState{bfsQueue = q}) <- get
   case q of
@@ -105,7 +94,7 @@ bfsLoopQ tid = do
  where
   -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-  addDepsUntilRoot :: (RM.ReduceMonad s m) => BFSMonad m ()
+  addDepsUntilRoot :: (RM.ReduceMonad s r m) => BFSMonad m ()
   addDepsUntilRoot = do
     cs <- lift RM.getRMCrumbs
     -- We should not use root value to notify.
@@ -121,8 +110,8 @@ bfsLoopQ tid = do
           srcFinalizedAddr = Path.referableAddr addr
         return $ fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
 
-      -- The current focus notifying its dependents means it is referred.
-      unless (null recvs) $ lift markReferred
+      -- -- The current focus notifying its dependents means it is referred.
+      -- unless (null recvs) $ lift markReferred
 
       -- Add the receivers to the visited list and the queue.
       modify $ \state ->
@@ -147,16 +136,16 @@ bfsLoopQ tid = do
         lift RM.propUpRM
         addDepsUntilRoot
 
-  markReferred :: (RM.ReduceMonad s m) => m ()
-  markReferred = do
-    tc <- RM.getRMCursor
-    RM.putRMCursor $ markTCFocusReferred tc
+  -- markReferred :: (RM.ReduceMonad s r m) => m ()
+  -- markReferred = do
+  --   tc <- RM.getRMCursor
+  --   RM.putRMCursor $ _markTCFocusReferred tc
 
   parentIsReducing parTreeAddr = do
     stack <- ctxReduceStack <$> RM.getRMContext
     return $ length stack > 1 && stack !! 1 == parTreeAddr
 
-drainRefSysQueue :: (RM.ReduceMonad s m) => m ()
+drainRefSysQueue :: (RM.ReduceMonad s r m) => m ()
 drainRefSysQueue = do
   q <- RM.getRMRefSysQ
   more <- RM.withAddrAndFocus $ \daddr _ ->
@@ -178,7 +167,7 @@ drainRefSysQueue = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrRM :: (RM.ReduceMonad s m) => Path.TreeAddr -> m a -> m (Maybe a)
+inAbsAddrRM :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m a -> m (Maybe a)
 inAbsAddrRM p f = do
   origAbsAddr <- RM.getRMAbsAddr
 
@@ -192,24 +181,24 @@ inAbsAddrRM p f = do
         (show p)
   return tarM
  where
-  whenM :: (RM.ReduceMonad s m) => m Bool -> m a -> m (Maybe a)
+  whenM :: (RM.ReduceMonad s r m) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
     if b then Just <$> g else return Nothing
 
-inAbsAddrRMMust :: (RM.ReduceMonad s m) => Path.TreeAddr -> m a -> m a
+inAbsAddrRMMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m a -> m a
 inAbsAddrRMMust p f = do
   r <- inAbsAddrRM p f
   maybe (throwErrSt $ printf "addr %s not found" (show p)) return r
 
 -- | Reduce the immediate parent mutable.
-reduceImParMut :: (RM.ReduceMonad s m) => m ()
+reduceImParMut :: (RM.ReduceMonad s r m) => m ()
 reduceImParMut = do
   -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
   -- Notice the tree focus now changes to the Im mutable.
   locateImMutable
   addr <- RM.getRMAbsAddr
-  Functions{fnReduce = reduce} <- asks cfFunctions
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   RM.withTree $ \t -> case VT.treeNode t of
     VT.TNMutable mut
       | Just _ <- VT.getRefFromMutable mut -> do
@@ -225,7 +214,7 @@ reduceImParMut = do
 
 -- Locate the immediate parent mutable.
 -- TODO: consider the mutable does not have arguments.
-locateImMutable :: (RM.ReduceMonad s m) => m ()
+locateImMutable :: (RM.ReduceMonad s r m) => m ()
 locateImMutable = do
   addr <- RM.getRMAbsAddr
   if hasEmptyTreeAddr addr || not (hasMutableArgSeg addr)
@@ -253,7 +242,7 @@ If the target is found, a copy of the target value is put to the tree.
 The target address is also returned.
 -}
 deref ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   -- | the reference addr
   Path.Reference ->
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
@@ -278,7 +267,7 @@ deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
 If the referenced value changes, then the reference should be updated. Duplicate cases are handled by the
 addCtxRefSysier.
 -}
-addRefSysier :: (RM.ReduceMonad s m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
+addRefSysier :: (RM.ReduceMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
 addRefSysier ref origAddrsM = do
   srcAddrM <- refToPotentialAddr ref origAddrsM >>= \x -> return $ Path.referableAddr <$> x
   -- Since we are in the /sv environment, we need to get the referable addr.
@@ -299,7 +288,7 @@ If the reference addr is self or visited, then return the tuple of the absolute 
 the cycle tail relative addr.
 -}
 getDstVal ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   Path.Reference ->
   -- | The original addresses of the reference.
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
@@ -453,7 +442,7 @@ The value of a reference is a copy of the expression associated with the field t
 any references within that expression bound to the respective copies of the fields they were originally
 bound to.
 -}
-copyRefVal :: (RM.ReduceMonad s m) => Set.Set Path.TreeAddr -> Bool -> VT.Tree -> m VT.Tree
+copyRefVal :: (RM.ReduceMonad s r m) => Set.Set Path.TreeAddr -> Bool -> VT.Tree -> m VT.Tree
 copyRefVal trail recurClose tar = do
   case VT.treeNode tar of
     VT.TNAtom _ -> return tar
@@ -505,7 +494,7 @@ copyRefVal trail recurClose tar = do
 The outer references are the nodes inside a container pointing to the ancestors.
 -}
 markOuterIdents ::
-  (Env m) =>
+  (Env r m) =>
   -- | The new evaluated value.
   VT.Tree ->
   -- | The current tree cursor.
@@ -513,13 +502,13 @@ markOuterIdents ::
   m VT.Tree
 markOuterIdents val ptc = do
   let subtAddr = tcTreeAddr ptc
-  utc <- traverseTC (mark subtAddr) (val <$ ptc)
+  utc <- TCursorOps.traverseTCSimple VT.subNodes (mark subtAddr) (val <$ ptc)
   logDebugStr $
     printf "markOuterRefs: scope: %s, val: %s, result: %s" (show subtAddr) (show val) (show $ vcFocus utc)
   return $ vcFocus utc
  where
   -- Mark the outer references with the original value address.
-  mark :: (Env m) => Path.TreeAddr -> TreeCursor VT.Tree -> m VT.Tree
+  mark :: (Env r m) => Path.TreeAddr -> TreeCursor VT.Tree -> m VT.Tree
   mark subtAddr tc = do
     let focus = vcFocus tc
     rM <- case VT.getMutableFromTree focus of
@@ -539,7 +528,7 @@ markOuterIdents val ptc = do
 
   -- Check if the reference is an outer reference.
   isOuterScope ::
-    (Env m) =>
+    (Env r m) =>
     -- The sub-tree address. It is the container node address.
     Path.TreeAddr ->
     TreeCursor VT.Tree ->
@@ -566,19 +555,19 @@ markOuterIdents val ptc = do
     return isOuter
 
   -- Search the first identifier of the reference and convert it to absolute tree addr if it exists.
-  searchIdent :: (Env m) => Path.Reference -> TreeCursor VT.Tree -> m (Maybe Path.TreeAddr)
+  searchIdent :: (Env r m) => Path.Reference -> TreeCursor VT.Tree -> m (Maybe Path.TreeAddr)
   searchIdent ref tc = do
     let fstSel = fromJust $ Path.headSel ref
     var <- selToVar fstSel
     resM <- searchTCVar var tc
     return $ fst <$> resM
 
-markRecurClosed :: (Env m) => VT.Tree -> TreeCursor VT.Tree -> m VT.Tree
+markRecurClosed :: (Env r m) => VT.Tree -> TreeCursor VT.Tree -> m VT.Tree
 markRecurClosed val ptc = do
-  utc <- traverseTC mark (val <$ ptc)
+  utc <- TCursorOps.traverseTCSimple VT.subNodes mark (val <$ ptc)
   return $ vcFocus utc
  where
-  mark :: (Env m) => TreeCursor VT.Tree -> m VT.Tree
+  mark :: (Env r m) => TreeCursor VT.Tree -> m VT.Tree
   mark tc = do
     let focus = vcFocus tc
     return $
@@ -589,29 +578,12 @@ markRecurClosed val ptc = do
             _ -> VT.treeNode focus
         }
 
-{- | Visit every node in the tree in pre-order and apply the function.
-
-It does not constrain struct fields.
--}
-traverseTC :: (Env m) => (TreeCursor VT.Tree -> m VT.Tree) -> TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
-traverseTC f tc = do
-  newFocus <- f tc
-  let
-    subs = VT.subNodes newFocus
-    utc = newFocus <$ tc
-  foldM
-    ( \acc (seg, sub) ->
-        traverseTC f (mkSubTC seg sub acc) >>= propUpTC
-    )
-    utc
-    subs
-
 {- | Convert the first identifier of the reference to absolute tree addr.
 
 It does not follow the reference.
 -}
 refToPotentialAddr ::
-  (RM.ReduceMonad s m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m (Maybe Path.TreeAddr)
+  (RM.ReduceMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m (Maybe Path.TreeAddr)
 refToPotentialAddr ref origAddrsM = do
   let fstSel = fromJust $ Path.headSel ref
   var <- selToVar fstSel
@@ -622,7 +594,7 @@ refToPotentialAddr ref origAddrsM = do
 
 -- | Locate the reference and if the reference is found, run the action.
 locateRefAndRun ::
-  (RM.ReduceMonad s m) => Path.Reference -> m (Either VT.Tree (Maybe a)) -> m (Either VT.Tree (Maybe a))
+  (RM.ReduceMonad s r m) => Path.Reference -> m (Either VT.Tree (Maybe a)) -> m (Either VT.Tree (Maybe a))
 locateRefAndRun ref f = do
   origAbsAddr <- RM.getRMAbsAddr
   tarE <- goLAAddrRM ref
@@ -635,11 +607,8 @@ locateRefAndRun ref f = do
   unless ok $ throwErrSt $ printf "failed to go back to the original addr %s" (show origAbsAddr)
   return res
 
-{- | Locate the node in the lowest ancestor tree by specified addr. The addr must start with a locatable var.
-
-TODO: move the mark refered logic to RM.descendRM
--}
-goLAAddrRM :: (RM.ReduceMonad s m) => Path.Reference -> m (Either VT.Tree Bool)
+-- | Locate the node in the lowest ancestor tree by given reference path. The path must start with a locatable var.
+goLAAddrRM :: (RM.ReduceMonad s r m) => Path.Reference -> m (Either VT.Tree Bool)
 goLAAddrRM ref = do
   when (Path.isRefEmpty ref) $ throwErrSt "empty reference"
   let fstSel = fromJust $ Path.headSel ref
@@ -650,14 +619,27 @@ goLAAddrRM ref = do
     Just (varAddr, _) -> do
       ok <- goRMAbsAddr varAddr
       unless ok $ throwErrSt $ printf "failed to go to the var addr %s" (show varAddr)
-      varTC <- RM.getRMCursor
-      -- var must be found. Mark the var as referred if it is a let binding.
-      RM.putRMCursor $ markTCFocusReferred varTC
+      -- varTC <- RM.getRMCursor
+      -- -- var must be found. Mark the var as referred if it is a let binding.
+      -- RM.putRMCursor $ _markTCFocusReferred varTC
 
       -- The ref is non-empty, so the rest must be a valid addr.
       let rest = fromJust $ Path.tailRef ref
       r <- RM.descendRM (Path.refToAddr rest)
       return $ Right r
+
+searchRMLetBindValue :: (RM.ReduceMonad s r m) => String -> m (Maybe VT.Tree)
+searchRMLetBindValue var = do
+  m <- searchRMVar var
+  case m of
+    Just (addr, True) -> do
+      r <- inAbsAddrRMMust addr $ do
+        varTC <- RM.getRMCursor
+        -- var must be found. Mark the var as referred if it is a let binding.
+        RM.putRMCursor $ _markTCFocusReferred varTC
+        RM.getRMTree
+      return $ Just r
+    _ -> return Nothing
 
 addrHasDef :: Path.TreeAddr -> Bool
 addrHasDef p =
@@ -671,8 +653,8 @@ addrHasDef p =
     $ Path.addrToNormOrdList p
 
 -- | Mark the let binding specified by the its name selector as referred if the focus of the cursor is a let binding.
-markTCFocusReferred :: TreeCursor VT.Tree -> TreeCursor VT.Tree
-markTCFocusReferred tc@(ValCursor sub ((seg@(Path.StructTASeg (Path.LetTASeg name)), par) : cs)) =
+_markTCFocusReferred :: TreeCursor VT.Tree -> TreeCursor VT.Tree
+_markTCFocusReferred tc@(ValCursor sub ((seg@(Path.StructTASeg (Path.LetTASeg name)), par) : cs)) =
   maybe
     tc
     ( \struct ->
@@ -681,25 +663,25 @@ markTCFocusReferred tc@(ValCursor sub ((seg@(Path.StructTASeg (Path.LetTASeg nam
             ValCursor sub ((seg, newPar) : cs)
     )
     (VT.getStructFromTree par)
-markTCFocusReferred tc = tc
+_markTCFocusReferred tc = tc
 
-selToVar :: (Env m) => Path.Selector -> m String
+selToVar :: (Env r m) => Path.Selector -> m String
 selToVar (Path.StringSel s) = return s
 selToVar _ = throwErrSt "invalid selector"
 
 {- | Search in the tree for the first variable that can match the name.
 
-Return if the variable is a let binding.
+Return if the variable address and whether it is a let binding.
 -}
-searchRMVar :: (RM.ReduceMonad s m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMVar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMVar name = do
   tc <- RM.getRMCursor
   searchTCVar name tc
 
 {- | Search in the parent scope for the first variable that can match the segment. Also return if the variable is a
- - let binding.
+ let binding.
 -}
-searchRMVarInPar :: (RM.ReduceMonad s m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMVarInPar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMVarInPar name = do
   ptc <- do
     tc <- RM.getRMCursor
@@ -717,29 +699,54 @@ already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCVar :: (Env m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
+searchTCVar :: (Env r m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
 searchTCVar name tc = do
-  maybe
-    (goUp tc)
-    ( \(field, isLB) ->
-        let
-          -- The var address is the address of the field, with the updated segment paired with the it.
-          newTC = mkSubTC (mkSeg isLB) field tc
-         in
-          return $ Just (tcTreeAddr newTC, isLB)
-    )
-    (VT.getStructField name $ vcFocus tc)
+  subM <- getStructSub name $ vcFocus tc
+  r <-
+    maybe
+      (goUp tc)
+      ( \(sub, isLB) ->
+          let
+            -- The var address is the address of the value, with the updated segment paired with the it.
+            newTC = mkSubTC (mkSeg isLB) sub tc
+           in
+            return $ Just (tcTreeAddr newTC, isLB)
+      )
+      subM
+
+  -- logDebugStr $ printf "searchTCVar: name: %s, result: %s, focus:\n%s" name (show r) (show $ vcFocus tc)
+  return r
  where
   mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
 
-  goUp :: (Env m) => TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
+  goUp :: (Env r m) => TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
   goUp (ValCursor _ [(Path.RootTASeg, _)]) = return Nothing -- stop at the root.
   goUp utc = do
     ptc <- maybe (throwErrSt "already on the top") return $ parentTC utc
     searchTCVar name ptc
 
+  getStructSub :: (Env r m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
+  getStructSub var VT.Tree{VT.treeNode = VT.TNStruct struct} =
+    do
+      let m =
+            catMaybes
+              [ do
+                  sf <- VT.lookupStructField var struct
+                  if VT.lbAttrIsVar (VT.ssfAttr sf)
+                    then Just (VT.ssfValue sf, False)
+                    else Nothing
+              , do
+                  lb <- VT.lookupStructLet var struct
+                  return (VT.lbValue lb, True)
+              ]
+      case m of
+        [] -> return Nothing
+        [x] -> return $ Just x
+        _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" var, False)
+  getStructSub _ _ = return Nothing
+
 -- | Go to the absolute addr in the tree.
-goRMAbsAddr :: (RM.ReduceMonad s m) => Path.TreeAddr -> m Bool
+goRMAbsAddr :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m Bool
 goRMAbsAddr dst = do
   when (Path.headSeg dst /= Just Path.RootTASeg) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))
@@ -747,16 +754,16 @@ goRMAbsAddr dst = do
   let dstNoRoot = fromJust $ Path.tailTreeAddr dst
   RM.descendRM dstNoRoot
 
-goRMAbsAddrMust :: (RM.ReduceMonad s m) => Path.TreeAddr -> m ()
+goRMAbsAddrMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
 goRMAbsAddrMust addr = do
   backOk <- goRMAbsAddr addr
   unless backOk $
     throwErrSt $
       printf "failed to to the addr %s" (show addr)
 
-evalExprRM :: (RM.ReduceMonad s m) => AST.Expression -> m VT.Tree
+evalExprRM :: (RM.ReduceMonad s r m) => AST.Expression -> m VT.Tree
 evalExprRM e = do
-  Functions{fnEvalExpr = evalExpr} <- asks cfFunctions
+  MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
   curSID <- RM.getRMObjID
   (rawT, newOID) <- runStateT (evalExpr e) curSID
   RM.setRMObjID newOID

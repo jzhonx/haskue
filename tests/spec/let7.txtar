@@ -1,0 +1,9 @@
+-- let7 --
+// checks that referencing an unbound let
+let a = {
+	let ib = 1
+}
+
+x: a.ib
+-- exp --
+x: a.ib

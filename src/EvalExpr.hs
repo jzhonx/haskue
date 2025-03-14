@@ -29,8 +29,7 @@ import AST (
   UnaryExpr (..),
   UnaryOp (Star),
  )
-import Common (Env, TreeOp (isTreeValue))
-import Config (Config)
+import Common (Config, Env, TreeOp (isTreeValue))
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Reader (MonadReader)
@@ -60,7 +59,7 @@ import Text.Printf (printf)
 import Util (logDebugStr)
 import Value.Mutable (getRefFromMutable)
 import Value.Reference (Reference (refArg))
-import Value.Tree (appendRefArg)
+import Value.Tree (appendRefArg, stcLets)
 import Value.Tree as VT (
   Atom (Bool, Float, Int, Null, String),
   BdType,
@@ -71,13 +70,14 @@ import Value.Tree as VT (
   LetBinding (LetBinding),
   Mutable (Ref, SFunc),
   StatefulFunc (sfnArgs),
-  Struct (stcCnstrs, stcID, stcOrdLabels, stcPendSubs, stcSubs),
+  Struct (stcCnstrs, stcFields, stcID, stcOrdLabels, stcPendSubs),
   StructCnstr (StructCnstr),
   StructElemAdder (..),
   StructFieldCnstr (..),
   StructVal (SField, SLet),
   Tree (treeNode),
   TreeNode (TNBottom, TNMutable, TNStruct, TNTop),
+  appendSelToRefTree,
   emptyFieldMker,
   emptyStruct,
   getMutableFromTree,
@@ -98,9 +98,9 @@ import Value.Tree as VT (
   setTN,
  )
 
-type EvalEnv m = (Env m, MonadReader (Config Tree) m, MonadState Int m)
+type EvalEnv r m = (Env r m, MonadState Int m)
 
-evalSourceFile :: (EvalEnv m) => SourceFile -> m Tree
+evalSourceFile :: (EvalEnv r m) => SourceFile -> m Tree
 evalSourceFile (SourceFile decls) = do
   logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
   evalDecls decls
@@ -112,14 +112,14 @@ Every eval* function should return a tree cursor that is at the same level as th
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: (EvalEnv m) => Expression -> m Tree
+evalExpr :: (EvalEnv r m) => Expression -> m Tree
 evalExpr e = do
   t <- case e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
   return $ setExpr t (Just e)
 
-evalLiteral :: (EvalEnv m) => Literal -> m Tree
+evalLiteral :: (EvalEnv r m) => Literal -> m Tree
 evalLiteral (StructLit s) = evalDecls s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
@@ -133,7 +133,7 @@ evalLiteral lit = return v
     TopLit -> mkNewTree TNTop
     BottomLit -> mkBottomTree ""
 
-evalDecls :: (EvalEnv m) => [Declaration] -> m Tree
+evalDecls :: (EvalEnv r m) => [Declaration] -> m Tree
 evalDecls decls = do
   sid <- allocOID
   (t, embeds) <- foldM evalDecl (mkStructTree (emptyStruct{stcID = sid}), []) decls
@@ -146,7 +146,7 @@ evalDecls decls = do
           t
           embeds
 
-allocOID :: (EvalEnv m) => m Int
+allocOID :: (EvalEnv r m) => m Int
 allocOID = do
   i <- get
   let j = i + 1
@@ -154,7 +154,7 @@ allocOID = do
   return j
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree and the list of embeddings to be unified.
-evalDecl :: (EvalEnv m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
+evalDecl :: (EvalEnv r m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
 evalDecl (x, embeds) decl = case treeNode x of
   TNBottom _ -> return (x, embeds)
   TNStruct struct -> case decl of
@@ -169,16 +169,18 @@ evalDecl (x, embeds) decl = case treeNode x of
     FieldDecl (AST.Field ls e) -> do
       sfa <- evalFdLabels ls e
       let t = addNewStructElem sfa struct
+      logDebugStr $ printf "evalDecl: sfa: %s, t: %s" (show sfa) (show t)
       return (t, embeds)
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
       let
         adder = LetSAdder ident val
         t = addNewStructElem adder struct
+      logDebugStr $ printf "evalDecl: adder: %s, t: %s" (show adder) (show t)
       return (t, embeds)
   _ -> throwErrSt "invalid struct"
 
-evalFdLabels :: (EvalEnv m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
+evalFdLabels :: (EvalEnv r m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
 evalFdLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
@@ -199,7 +201,7 @@ evalFdLabels lbls e =
         logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
         return adder
  where
-  mkAdder :: (EvalEnv m) => Label -> Tree -> m (StructElemAdder Tree)
+  mkAdder :: (EvalEnv r m) => Label -> Tree -> m (StructElemAdder Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
@@ -240,33 +242,30 @@ evalFdLabels lbls e =
 addNewStructElem :: StructElemAdder Tree -> Struct Tree -> Tree
 addNewStructElem adder struct = case adder of
   (StaticSAdder name sf) ->
-    let seg = Path.StringTASeg name
-     in fromMaybe
-          ( case lookupStructVal name struct of
-              Just (SField extSF) ->
-                let
-                  unifySFOp =
-                    SField $
-                      VT.Field
-                        { ssfValue = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfValue extSF) (ssfValue sf))
-                        , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
-                        , ssfCnstrs = []
-                        , ssfPends = []
-                        , ssfNoStatic = False
-                        }
-                 in
-                  mkStructTree $ struct{stcSubs = Map.insert seg unifySFOp (stcSubs struct)}
-              Just (SLet _) ->
-                mkBottomTree $
-                  printf "can not have both alias and field with name %s in the same scope" name
-              Nothing ->
-                mkStructTree $
-                  struct
-                    { stcOrdLabels = stcOrdLabels struct ++ [seg]
-                    , stcSubs = Map.insert seg (SField sf) (stcSubs struct)
-                    }
-          )
-          (declCheck name False)
+    fromMaybe
+      ( case lookupStructVal name struct of
+          [SField extSF] ->
+            let
+              unifySFOp =
+                VT.Field
+                  { ssfValue = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfValue extSF) (ssfValue sf))
+                  , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
+                  , ssfCnstrs = []
+                  , ssfPends = []
+                  , ssfNoStatic = False
+                  }
+             in
+              mkStructTree $ struct{stcFields = Map.insert name unifySFOp (stcFields struct)}
+          [SLet _] -> aliasErr name
+          [] ->
+            mkStructTree $
+              struct
+                { stcOrdLabels = stcOrdLabels struct ++ [name]
+                , stcFields = Map.insert name sf (stcFields struct)
+                }
+          _ -> aliasErr name
+      )
+      (existCheck name False)
   (DynamicSAdder i dsf) ->
     mkStructTree $ struct{stcPendSubs = IntMap.insert i dsf (stcPendSubs struct)}
   (CnstrSAdder i pattern val) ->
@@ -274,30 +273,30 @@ addNewStructElem adder struct = case adder of
   (LetSAdder name val) ->
     fromMaybe
       ( mkStructTree $
-          struct
-            { stcSubs =
-                Map.insert (Path.LetTASeg name) (SLet $ LetBinding False val) (stcSubs struct)
-            }
+          struct{stcLets = Map.insert name (LetBinding False val) (stcLets struct)}
       )
-      (declCheck name True)
+      (existCheck name True)
  where
   aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
 
-  declCheck :: String -> Bool -> Maybe Tree
-  declCheck name isLocal =
-    case (lookupStructVal name struct, isLocal) of
-      (Just (SField _), True) -> Just $ aliasErr name
-      (Just (SLet _), True) -> Just $ lbRedeclErr name
-      (Just (SLet _), False) -> Just $ aliasErr name
+  -- Checks if name is already in the struct. If it is, then return an error message.
+  existCheck :: String -> Bool -> Maybe Tree
+  existCheck name isNameLet =
+    case (lookupStructVal name struct, isNameLet) of
+      ([SField f], True)
+        | lbAttrIsVar (ssfAttr f) -> Just $ aliasErr name
+      ([SLet _], True) -> Just $ lbRedeclErr name
+      ([SLet _], False) -> Just $ aliasErr name
+      ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: (EvalEnv m) => AST.ElementList -> m Tree
+evalListLit :: (EvalEnv r m) => AST.ElementList -> m Tree
 evalListLit (AST.EmbeddingList es) = do
   xs <- mapM evalExpr es
   return $ mkListTree xs
 
-evalUnaryExpr :: (EvalEnv m) => UnaryExpr -> m Tree
+evalUnaryExpr :: (EvalEnv r m) => UnaryExpr -> m Tree
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
@@ -309,7 +308,7 @@ builtinOpNameTable =
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable
 
-evalPrimExpr :: (EvalEnv m) => PrimaryExpr -> m Tree
+evalPrimExpr :: (EvalEnv r m) => PrimaryExpr -> m Tree
 evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
@@ -342,39 +341,31 @@ For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
 -}
 evalSelector ::
-  (EvalEnv m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
+  (EvalEnv r m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
 evalSelector _ astSel oprnd =
-  mkIndexMutableTree oprnd (mkAtomTree (String sel))
+  return $ appendSelToRefTree oprnd (mkAtomTree (String sel))
  where
   sel = case astSel of
     IDSelector ident -> ident
     AST.StringSelector str -> str
 
 evalIndex ::
-  (EvalEnv m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
+  (EvalEnv r m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
 evalIndex _ (AST.Index e) oprnd = do
   sel <- evalExpr e
-  mkIndexMutableTree oprnd sel
-
--- | Create an index function node.
-mkIndexMutableTree :: (EvalEnv m) => Tree -> Tree -> m Tree
-mkIndexMutableTree oprnd selArg = case treeNode oprnd of
-  TNMutable m
-    | Just ref <- getRefFromMutable m ->
-        return $ mkMutableTree $ VT.Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
-  _ -> return $ mkMutableTree $ VT.Ref $ mkIndexRef [oprnd, selArg]
+  return $ appendSelToRefTree oprnd sel
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: (EvalEnv m) => UnaryOp -> UnaryExpr -> m Tree
+evalUnaryOp :: (EvalEnv r m) => UnaryOp -> UnaryExpr -> m Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
   return $ mkNewTree (TNMutable $ mkUnaryOp op (RegOps.regUnaryOp op) t)
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
-evalBinary :: (EvalEnv m) => BinaryOp -> Expression -> Expression -> m Tree
+evalBinary :: (EvalEnv r m) => BinaryOp -> Expression -> Expression -> m Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
@@ -382,7 +373,7 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   return $ mkNewTree (TNMutable $ mkBinaryOp op (dispBinMutable op) lt rt)
 
-evalDisj :: (EvalEnv m) => Expression -> Expression -> m Tree
+evalDisj :: (EvalEnv r m) => Expression -> Expression -> m Tree
 evalDisj e1 e2 = do
   (lt, rt) <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
@@ -403,7 +394,7 @@ evalDisj e1 e2 = do
       return (l, r)
   return $ mkNewTree (TNMutable $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
-  reduceDisjAdapt :: (RM.ReduceMonad s m) => Tree -> Tree -> m ()
+  reduceDisjAdapt :: (RM.ReduceMonad s r m) => Tree -> Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
     t1 <- reduceMutableArg binOpLeftTASeg unt1
     t2 <- reduceMutableArg binOpRightTASeg unt2

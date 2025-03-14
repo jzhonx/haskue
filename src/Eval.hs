@@ -23,20 +23,12 @@ import AST (
   UnaryExpr (UnaryExprPrimaryExpr),
   declsBld,
  )
-import Common (BuildASTExpr (buildASTExpr))
-import Config (
+import Common (
   Config (..),
-  Functions (
-    Functions,
-    fnClose,
-    fnDeref,
-    fnEvalExpr,
-    fnIndex,
-    fnPropUpStructPost,
-    fnReduce
-  ),
+  HasConfig (..),
   RuntimeParams (RuntimeParams, rpCreateCnstr),
   Settings (Settings, stMermaid, stShowMutArgs),
+  buildASTExpr,
   emptyConfig,
  )
 import Control.Monad.Except (MonadError)
@@ -56,6 +48,7 @@ import Data.ByteString.Builder (
  )
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
+import qualified MutEnv
 import Parser (parseSourceFile)
 import Path (TASeg (RootTASeg))
 import Reduce (
@@ -65,7 +58,6 @@ import Reduce (
   propUpStructPost,
   reduce,
  )
-import qualified Reduce.RefSys as RefSys
 import Reduce.PostReduce (postValidation)
 import Text.Printf (printf)
 import Util (logDebugStr)
@@ -91,6 +83,39 @@ emptyEvalConfig =
     , ecShowMutArgs = False
     , ecFileTreeAddr = ""
     }
+
+data Runner = Runner
+  { rcConfig :: Config
+  , rcFuncs :: MutEnv.Functions Tree
+  }
+
+instance Show Runner where
+  show r = printf "{rcConfig = %s}" (show $ rcConfig r)
+
+emptyRunner :: Runner
+emptyRunner =
+  Runner
+    { rcConfig = emptyConfig
+    , rcFuncs =
+        MutEnv.Functions
+          { MutEnv.fnEvalExpr = evalExpr
+          , MutEnv.fnClose = close
+          , MutEnv.fnReduce = reduce
+          , MutEnv.fnIndex = index
+          , MutEnv.fnPropUpStructPost = propUpStructPost
+          }
+    }
+
+updateConfig :: Runner -> Config -> Runner
+updateConfig r c = r{rcConfig = c}
+
+instance MutEnv.HasFuncs Runner Tree where
+  getFuncs = rcFuncs
+  setFuncs r f = r{rcFuncs = f}
+
+instance HasConfig Runner where
+  getConfig = rcConfig
+  setConfig r c = r{rcConfig = c}
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
 runIO s conf =
@@ -119,45 +144,29 @@ runStr s conf = do
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> runReaderT (buildASTExpr False t) emptyConfig
+    _ -> Right <$> runReaderT (buildASTExpr False t) emptyRunner
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
-defaultConfig :: Config Tree
-defaultConfig =
-  Config
-    { cfSettings =
-        Settings
-          { stMermaid = False
-          , stShowMutArgs = False
-          }
-    , cfRuntimeParams = RuntimeParams{rpCreateCnstr = False}
-    , cfFunctions =
-        Functions
-          { fnEvalExpr = evalExpr
-          , fnClose = close
-          , fnReduce = reduce
-          , fnDeref = RefSys.deref
-          , fnIndex = index
-          , fnPropUpStructPost = propUpStructPost
-          }
-    }
-
 evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m Tree
 evalFile sf conf = do
-  let evalConf =
-        defaultConfig
-          { cfSettings =
-              (cfSettings defaultConfig)
-                { stMermaid = ecMermaidGraph conf
-                , stShowMutArgs = ecShowMutArgs conf
-                }
-          , cfRuntimeParams =
-              (cfRuntimeParams defaultConfig)
-                { rpCreateCnstr = True
-                }
-          }
+  let runner =
+        updateConfig
+          emptyRunner
+          ( Config
+              { cfSettings =
+                  (cfSettings . rcConfig $ emptyRunner)
+                    { stMermaid = ecMermaidGraph conf
+                    , stShowMutArgs = ecShowMutArgs conf
+                    }
+              , cfRuntimeParams =
+                  (cfRuntimeParams . rcConfig $ emptyRunner)
+                    { rpCreateCnstr = True
+                    }
+              }
+          )
+  logDebugStr $ printf "runner: %s" (show runner)
   rootTC <-
     runReaderT
       ( do
@@ -171,11 +180,16 @@ evalFile sf conf = do
           logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
           return res
       )
-      evalConf
+      runner
 
   finalized <-
     runReaderT
       (execStateT postValidation rootTC)
-      evalConf{cfRuntimeParams = (cfRuntimeParams evalConf){rpCreateCnstr = False}}
+      ( updateConfig
+          runner
+          ( let c = rcConfig runner
+             in c{cfRuntimeParams = (cfRuntimeParams c){rpCreateCnstr = False}}
+          )
+      )
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
   return $ cvVal finalized

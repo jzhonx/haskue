@@ -4,7 +4,7 @@
 module Value.Atom where
 
 import qualified AST
-import Common (Env, BuildASTExpr (..))
+import Common (BuildASTExpr (..), Env)
 
 data Atom
   = String String
@@ -33,7 +33,7 @@ instance Eq Atom where
   (==) _ _ = False
 
 instance BuildASTExpr Atom where
-  buildASTExpr :: (Env m) => Bool -> Atom -> m AST.Expression
+  buildASTExpr :: (Env r m) => Bool -> Atom -> m AST.Expression
   buildASTExpr _ a = return $ (AST.litCons . aToLiteral) a
 
 aToLiteral :: Atom -> AST.Literal

@@ -7,19 +7,20 @@ import qualified AST
 import Common (BuildASTExpr (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
-import qualified Path
 
 data Struct t = Struct
   { stcID :: Int
   -- ^ The ID is used to identify the struct. It will not be used in the comparison of structs.
-  , stcOrdLabels :: [Path.StructTASeg]
-  -- ^ stcOrdLabels should only contain StringTASeg labels, meaning it contains all regular fields, hidden fields and
+  , stcOrdLabels :: [String]
+  -- ^ stcOrdLabels should only contain string labels, meaning it contains all regular fields, hidden fields and
   -- definitions. It should not contain let bindings.
-  , stcSubs :: Map.Map Path.StructTASeg (StructVal t)
-  -- ^ The raws map is used to store the raw values of the static fields, excluding the let bindings.
+  , stcFields :: Map.Map String (Field t)
+  -- ^ It is the fields, excluding the let bindings.
+  , stcLets :: Map.Map String (LetBinding t)
+  -- ^ Let bindings are read-only. They are not reduced.
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
   , stcPendSubs :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
@@ -43,7 +44,7 @@ data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
 data StructVal t
   = SField (Field t)
   | SLet (LetBinding t)
-  deriving (Show, Eq, Functor)
+  deriving (Show, Eq)
 
 data Field t = Field
   { ssfValue :: t
@@ -99,9 +100,9 @@ data StructElemAdder t
 
 data PermItem = PermItem
   { piCnstrs :: Set.Set Int
-  , piLabels :: Set.Set Path.StructTASeg
+  , piLabels :: Set.Set String
   , piDyns :: Set.Set Int
-  , piOpLabels :: Set.Set Path.StructTASeg
+  , piOpLabels :: Set.Set String
   , piOpDyns :: Set.Set Int
   }
   deriving (Show)
@@ -109,7 +110,7 @@ data PermItem = PermItem
 instance (Eq t) => Eq (Struct t) where
   (==) s1 s2 =
     stcOrdLabels s1 == stcOrdLabels s2
-      && stcSubs s1 == stcSubs s2
+      && stcFields s1 == stcFields s2
       && stcCnstrs s1 == stcCnstrs s2
       && stcPendSubs s1 == stcPendSubs s2
       && stcClosed s1 == stcClosed s2
@@ -130,12 +131,9 @@ instance (Eq t) => Eq (DynamicField t) where
 instance (Eq t) => Eq (Field t) where
   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
 
--- | Returns both static fields and let bindings.
-structStrLabels :: Struct t -> [Path.StructTASeg]
-structStrLabels struct = stcOrdLabels struct ++ Map.keys (Map.filter isLet (stcSubs struct))
- where
-  isLet (SLet _) = True
-  isLet _ = False
+-- | Returns keys of both static fields and let bindings.
+structFieldsAndLets :: Struct t -> [String]
+structFieldsAndLets struct = stcOrdLabels struct ++ Map.keys (stcLets struct)
 
 defaultLabelAttr :: LabelAttr
 defaultLabelAttr = LabelAttr SFCRegular True
@@ -152,15 +150,15 @@ mkStructFromAdders sid as =
   emptyStruct
     { stcID = sid
     , stcOrdLabels = ordLabels
-    , stcSubs = Map.fromList vals
+    , stcFields = Map.fromList vals
+    , stcLets = Map.fromList lets
     , stcPendSubs = pendings
     , stcCnstrs = cnstrs
     }
  where
-  ordLabels = [Path.StringTASeg l | StaticSAdder l _ <- as]
-  vals =
-    [(Path.StringTASeg s, SField sf) | StaticSAdder s sf <- as]
-      ++ [(Path.StringTASeg s, SLet $ LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
+  ordLabels = [l | StaticSAdder l _ <- as]
+  vals = [(s, sf) | StaticSAdder s sf <- as]
+  lets = [(s, LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
   pendings =
     IntMap.fromList $
       foldr
@@ -187,7 +185,8 @@ emptyStruct =
   Struct
     { stcID = 0
     , stcOrdLabels = []
-    , stcSubs = Map.empty
+    , stcFields = Map.empty
+    , stcLets = Map.empty
     , stcPendSubs = IntMap.empty
     , stcCnstrs = IntMap.empty
     , stcClosed = False
@@ -212,27 +211,27 @@ convertPendDyn ::
   Struct t -> String -> Field t -> Struct t
 convertPendDyn struct s sf =
   struct
-    { stcSubs = Map.insert (Path.StringTASeg s) (SField sf) (stcSubs struct)
+    { stcFields = Map.insert s sf (stcFields struct)
     , stcOrdLabels =
         stcOrdLabels struct
           -- TODO: use Map to lookup
-          ++ ( if Path.StringTASeg s `elem` stcOrdLabels struct
+          ++ ( if s `elem` stcOrdLabels struct
                 then []
-                else [Path.StringTASeg s]
+                else [s]
              )
              -- , stcPendSubs = IntMap.insert dynIdx Nothing (stcPendSubs struct)
     }
 
 dynToField ::
   DynamicField t ->
-  Maybe (StructVal t) ->
+  Maybe (Field t) ->
   (t -> t -> t) ->
   Field t
 dynToField df sfM unifier = case sfM of
   -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
   -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
   -- in a scope can be ignored.
-  Just (SField sf) ->
+  Just sf ->
     -- If the dynamic field is already applied to the field, then we do not apply it again.
     if dsfID df `elem` ssfPends sf
       then sf
@@ -245,6 +244,7 @@ dynToField df sfM unifier = case sfM of
           , ssfPends = ssfPends sf ++ [dsfID df]
           , ssfNoStatic = False
           }
+  -- No existing field, so we just turn the dynamic field into a field.
   _ ->
     Field
       { ssfValue = dsfValue df
@@ -258,27 +258,27 @@ dynToField df sfM unifier = case sfM of
 addStructLetBind :: Struct t -> String -> t -> Struct t
 addStructLetBind struct s t =
   struct
-    { stcSubs =
+    { stcLets =
         Map.insert
-          (Path.StringTASeg s)
-          (SLet $ LetBinding{lbValue = t, lbReferred = False})
-          (stcSubs struct)
+          s
+          (LetBinding{lbValue = t, lbReferred = False})
+          (stcLets struct)
     }
 
 markLetBindReferred :: String -> Struct t -> Struct t
 markLetBindReferred name struct =
-  case lookupStructVal name struct of
-    Just (SLet lb) ->
+  case Map.lookup name lets of
+    Just lb ->
       struct
-        { stcSubs = Map.insert seg (SLet lb{lbReferred = True}) (stcSubs struct)
+        { stcLets = Map.insert name (lb{lbReferred = True}) lets
         }
     _ -> struct
  where
-  seg = Path.LetTASeg name
+  lets = stcLets struct
 
 -- | Determines whether the struct has empty fields, including both static and dynamic fields.
 hasEmptyFields :: Struct t -> Bool
-hasEmptyFields s = Map.null (stcSubs s) && null (stcPendSubs s)
+hasEmptyFields s = Map.null (stcFields s) && null (stcPendSubs s)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -287,15 +287,22 @@ getFieldType ident
   | head ident == '_' = Just SFTHidden
   | otherwise = Just SFTRegular
 
-lookupStructVal :: String -> Struct t -> Maybe (StructVal t)
+{- | Look up the struct value in the struct.
+
+The name could be in both the fields and let bindings, or either.
+-}
+lookupStructVal :: String -> Struct t -> [StructVal t]
 lookupStructVal name struct =
-  listToMaybe $
-    catMaybes
-      [ Map.lookup (Path.StringTASeg name) (stcSubs struct)
-      , -- The original seg could be either StringTASeg or LetTASeg. Since StringTASeg can be used to query both types,
-        -- we need to explicitly check for LetTASeg.
-        Map.lookup (Path.LetTASeg name) (stcSubs struct)
-      ]
+  catMaybes
+    [ SField <$> Map.lookup name (stcFields struct)
+    , SLet <$> Map.lookup name (stcLets struct)
+    ]
+
+lookupStructField :: String -> Struct t -> Maybe (Field t)
+lookupStructField name struct = Map.lookup name (stcFields struct)
+
+lookupStructLet :: String -> Struct t -> Maybe (LetBinding t)
+lookupStructLet name struct = Map.lookup name (stcLets struct)
 
 -- | Returns the field value and whether the field is a let binding.
 getSubFromSV :: StructVal t -> Maybe (t, Bool)
@@ -307,14 +314,20 @@ getFieldFromSV sv = case sv of
   SField f -> Just f
   _ -> Nothing
 
-{- | Update the struct with the given segment and value.
+{- | Update the struct with the given label name and field.
 
 The segment should already exist in the struct.
 -}
-updateStructSub :: Path.StructTASeg -> StructVal t -> Struct t -> Struct t
-updateStructSub seg sub struct =
+updateStructField :: String -> Field t -> Struct t -> Struct t
+updateStructField name sub struct =
   struct
-    { stcSubs = Map.insert seg sub (stcSubs struct)
+    { stcFields = Map.insert name sub (stcFields struct)
+    }
+
+updateStructLet :: String -> LetBinding t -> Struct t -> Struct t
+updateStructLet name sub struct =
+  struct
+    { stcLets = Map.insert name sub (stcLets struct)
     }
 
 {- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic

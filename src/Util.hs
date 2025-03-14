@@ -21,7 +21,7 @@ data Trace = Trace
 instance Show Trace where
   show t = printf "id=%s, stack=%s" (show $ traceID t) (show $ traceStack t)
 
-debugSpan :: (MonadState s m, MonadLogger m, HasTrace s, Show a) => String -> m a -> m a
+debugSpan :: (MonadState s m, MonadLogger m, HasTrace s) => String -> m a -> m a
 debugSpan msg f = do
   tr <- gets getTrace
   let ntr = tr{traceID = traceID tr + 1}
@@ -30,7 +30,7 @@ debugSpan msg f = do
 
   res <- f
 
-  logDebugStr $ printf "%s, _ends, %s, result: %s" (show ntr) msg (show res)
+  logDebugStr $ printf "%s, _ends, %s" (show ntr) msg
   closeTR <- gets getTrace
   modify $ \s -> setTrace s (closeTR{traceStack = tail $ traceStack closeTR})
   return res

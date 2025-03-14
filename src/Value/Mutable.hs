@@ -6,34 +6,16 @@
 module Value.Mutable where
 
 import qualified AST
-import Common (Env, BuildASTExpr (..), TreeOp)
-import Config (Config, MutableEnv)
-import Control.Monad.Reader (MonadReader)
-import Control.Monad.State.Strict (MonadState)
-import Cursor (HasCtxVal)
-import Data.List (intercalate)
+import Common (BuildASTExpr (..), Env)
 import Exception (throwErrSt)
-import GHC.Stack (HasCallStack)
+import MutEnv (MutableEnv)
 import qualified Path
-import Util (HasTrace)
 import Value.Reference
-
--- type MutableEnv s m t =
---   ( TreeOp t
---   , Env m
---   , MonadState s m
---   , HasCtxVal s t t
---   , HasTrace s
---   , HasCallStack
---   , MonadReader (Config t) m
---   )
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
-
--- \| Index (Indexer t)
 
 -- | StatefulFunc is a tree node whose value can be changed.
 data StatefulFunc t = StatefulFunc
@@ -41,12 +23,12 @@ data StatefulFunc t = StatefulFunc
   , sfnType :: MutableType
   , sfnArgs :: [t]
   -- ^ Args stores the arguments that may or may not need to be evaluated.
-  , sfnExpr :: forall m. (Env m) => m AST.Expression
+  , sfnExpr :: forall r m. (Env r m) => m AST.Expression
   -- ^ sfnExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
   -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
   -- available.
   -- The return value of the method should be stored in the tree.
-  , sfnMethod :: forall s m. (MutableEnv s m t) => [t] -> m ()
+  , sfnMethod :: forall s r m. (MutableEnv s r t m) => [t] -> m ()
   , sfnValue :: Maybe t
   -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
@@ -54,33 +36,20 @@ data StatefulFunc t = StatefulFunc
 data MutableType = RegularMutable | DisjMutable
   deriving (Eq, Show)
 
--- data Indexer t = Indexer
---   { idxSels :: [t]
---   , idxOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
---   -- ^ See refOrigAddrs.
---   , idxValue :: Maybe t
---   }
-
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
-  -- (==) (Index i1) (Index i2) = i1 == i2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
 
--- buildASTExpr _ (Index _) = throwErrSt "AST should not be built from Index"
-
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
     sfnName f1 == sfnName f2
       && sfnType f1 == sfnType f2
       && sfnArgs f1 == sfnArgs f2
-
--- instance (Eq t) => Eq (Indexer t) where
---   (==) i1 i2 = idxSels i1 == idxSels i2
 
 instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
@@ -93,11 +62,6 @@ getRefFromMutable :: Mutable t -> Maybe (Reference t)
 getRefFromMutable mut = case mut of
   Ref ref -> Just ref
   _ -> Nothing
-
--- getIndexFromMutable :: Mutable t -> Maybe (Indexer t)
--- getIndexFromMutable mut = case mut of
---   Index idx -> Just idx
---   _ -> Nothing
 
 getSFuncFromMutable :: Mutable t -> Maybe (StatefulFunc t)
 getSFuncFromMutable mut = case mut of
@@ -113,21 +77,15 @@ getMutName :: Mutable t -> (t -> Maybe String) -> String
 getMutName (SFunc mut) _ = sfnName mut
 getMutName (Ref ref) f = showRefArg (refArg ref) f
 
--- getMutName (Index _) = "index"
-
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
-
--- getMutVal (Index idx) = idxValue idx
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 
--- setMutVal m (Index idx) = Index $ idx{idxValue = m}
-
-invokeMutMethod :: (MutableEnv s m t) => StatefulFunc t -> m ()
+invokeMutMethod :: (MutableEnv s r t m) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
 
 modifyRegMut :: (StatefulFunc t -> StatefulFunc t) -> Mutable t -> Mutable t
@@ -149,7 +107,7 @@ mkUnaryOp ::
   forall t.
   (BuildASTExpr t) =>
   AST.UnaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> m ()) ->
+  (forall s r m. (MutableEnv s r t m) => t -> m ()) ->
   t ->
   Mutable t
 mkUnaryOp op f n =
@@ -163,11 +121,11 @@ mkUnaryOp op f n =
       , sfnValue = Nothing
       }
  where
-  g :: (MutableEnv s m t) => [t] -> m ()
+  g :: (MutableEnv s r t m) => [t] -> m ()
   g [x] = f x
   g _ = throwErrSt "invalid number of arguments for unary function"
 
-buildUnaryExpr :: (Env m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expression
+buildUnaryExpr :: (Env r m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expression
 buildUnaryExpr op t = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   te <- buildASTExpr c t
@@ -184,7 +142,7 @@ mkBinaryOp ::
   forall t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
+  (forall s r m. (MutableEnv s r t m) => t -> t -> m ()) ->
   t ->
   t ->
   Mutable t
@@ -201,11 +159,11 @@ mkBinaryOp op f l r =
       , sfnValue = Nothing
       }
  where
-  g :: (MutableEnv s m t) => [t] -> m ()
+  g :: (MutableEnv s r t m) => [t] -> m ()
   g [x, y] = f x y
   g _ = throwErrSt "invalid number of arguments for binary function"
 
-buildBinaryExpr :: (Env e, BuildASTExpr t) => AST.BinaryOp -> t -> t -> e AST.Expression
+buildBinaryExpr :: (Env r e, BuildASTExpr t) => AST.BinaryOp -> t -> t -> e AST.Expression
 buildBinaryExpr op l r = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   xe <- buildASTExpr c l
@@ -216,7 +174,7 @@ mkBinaryOpDir ::
   forall t.
   (BuildASTExpr t) =>
   AST.BinaryOp ->
-  (forall s m. (MutableEnv s m t) => t -> t -> m ()) ->
+  (forall s r m. (MutableEnv s r t m) => t -> t -> m ()) ->
   (Path.BinOpDirect, t) ->
   (Path.BinOpDirect, t) ->
   Mutable t

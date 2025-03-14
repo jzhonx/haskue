@@ -8,23 +8,23 @@
 module Reduce.RegOps where
 
 import qualified AST
-import Config (
-  Config (cfFunctions, cfRuntimeParams),
-  Functions (Functions, fnReduce),
+import Common (
+  Config (cfRuntimeParams),
   RuntimeParams (RuntimeParams, rpCreateCnstr),
  )
-import Control.Monad.Reader (asks, local)
-import qualified Data.IntMap.Strict as IntMap
-import Data.List (sort)
-import qualified Data.Map.Strict as Map
+import Control.Monad.Reader (asks)
+import Cursor (
+  Context (Context, ctxReduceStack),
+  ValCursor (vcFocus),
+ )
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
-import qualified Data.Set as Set
 import Exception (throwErrSt)
+import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
-import TCursorOps
+import qualified TCursorOps
 import Text.Printf (printf)
 import Util (
   HasTrace (getTrace),
@@ -34,14 +34,14 @@ import Util (
  )
 import qualified Value.Tree as VT
 
-reduceAtomOpArg :: (RM.ReduceMonad s m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
+reduceAtomOpArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
 reduceAtomOpArg seg sub = RM.withAddrAndFocus $ \addr _ ->
   debugSpan (printf "reduceAtomOpArg, addr: %s, seg: %s" (show addr) (show seg)) $
-    RM.mutValToArgsRM
+    Mutate.mutValToArgsRM
       seg
       sub
       ( do
-          Functions{fnReduce = reduce} <- asks cfFunctions
+          MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
           reduce
           RM.withTree $ \x -> return $ case VT.treeNode x of
             VT.TNMutable mut -> do
@@ -54,7 +54,7 @@ reduceAtomOpArg seg sub = RM.withAddrAndFocus $ \addr _ ->
 
 -- * Regular Unary Ops
 
-regUnaryOp :: (RM.ReduceMonad s m) => AST.UnaryOp -> VT.Tree -> m ()
+regUnaryOp :: (RM.ReduceMonad s r m) => AST.UnaryOp -> VT.Tree -> m ()
 regUnaryOp op _t = do
   tM <- reduceAtomOpArg Path.unaryOpTASeg _t
   case tM of
@@ -86,30 +86,31 @@ regUnaryOp op _t = do
   conflict :: VT.Tree
   conflict = VT.mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
 
-  putConflict :: (RM.ReduceMonad s m) => m ()
+  putConflict :: (RM.ReduceMonad s r m) => m ()
   putConflict = RM.putRMTree conflict
 
-  ia :: (RM.ReduceMonad s m) => Integer -> (Integer -> Integer) -> m ()
+  ia :: (RM.ReduceMonad s r m) => Integer -> (Integer -> Integer) -> m ()
   ia a f = RM.putRMTree (VT.mkAtomTree (VT.Int $ f a))
 
-  fa :: (RM.ReduceMonad s m) => Double -> (Double -> Double) -> m ()
+  fa :: (RM.ReduceMonad s r m) => Double -> (Double -> Double) -> m ()
   fa a f = RM.putRMTree (VT.mkAtomTree (VT.Float $ f a))
 
-  mkb :: (RM.ReduceMonad s m) => VT.Bound -> m ()
+  mkb :: (RM.ReduceMonad s r m) => VT.Bound -> m ()
   mkb b = RM.putRMTree (VT.mkBoundsTree [b])
 
-  mkib :: (RM.ReduceMonad s m) => VT.BdNumCmpOp -> Integer -> m ()
+  mkib :: (RM.ReduceMonad s r m) => VT.BdNumCmpOp -> Integer -> m ()
   mkib uop i = RM.putRMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumInt i)])
 
-  mkfb :: (RM.ReduceMonad s m) => VT.BdNumCmpOp -> Double -> m ()
+  mkfb :: (RM.ReduceMonad s r m) => VT.BdNumCmpOp -> Double -> m ()
   mkfb uop f = RM.putRMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumFloat f)])
 
 -- * Regular Binary Ops
 
-regBin :: (RM.ReduceMonad s m) => AST.BinaryOp -> VT.Tree -> VT.Tree -> m ()
+regBin :: (RM.ReduceMonad s r m) => AST.BinaryOp -> VT.Tree -> VT.Tree -> m ()
 regBin op t1 t2 = regBinDir op (Path.L, t1) (Path.R, t2)
 
-regBinDir :: (RM.ReduceMonad s m) => AST.BinaryOp -> (Path.BinOpDirect, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
+regBinDir ::
+  (RM.ReduceMonad s r m) => AST.BinaryOp -> (Path.BinOpDirect, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
 regBinDir op (d1, _t1) (d2, _t2) = do
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $
@@ -144,7 +145,7 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     _ -> return ()
 
 regBinLeftAtom ::
-  (RM.ReduceMonad s m) => AST.BinaryOp -> (Path.BinOpDirect, VT.AtomV, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
+  (RM.ReduceMonad s r m) => AST.BinaryOp -> (Path.BinOpDirect, VT.AtomV, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
 regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
   if
@@ -239,7 +240,7 @@ mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> VT.Tree
 mismatch op x y = VT.mkBottomTree $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
 regBinLeftStruct ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   AST.BinaryOp ->
   (Path.BinOpDirect, VT.Struct VT.Tree, VT.Tree) ->
   (Path.BinOpDirect, VT.Tree) ->
@@ -249,7 +250,7 @@ regBinLeftStruct op (d1, _, t1) (d2, t2) = case VT.treeNode t2 of
   _ -> RM.putRMTree (mismatch op t1 t2)
 
 regBinLeftDisj ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   AST.BinaryOp ->
   (Path.BinOpDirect, VT.Disj VT.Tree, VT.Tree) ->
   (Path.BinOpDirect, VT.Tree) ->
@@ -261,7 +262,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
     _ -> RM.putRMTree (mismatch op t1 t2)
 
 regBinLeftOther ::
-  (RM.ReduceMonad s m) => AST.BinaryOp -> (Path.BinOpDirect, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
+  (RM.ReduceMonad s r m) => AST.BinaryOp -> (Path.BinOpDirect, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
 regBinLeftOther op (d1, t1) (d2, t2) = do
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $ printf "regBinLeftOther: addr: %s, %s: %s, %s: %s" (show addr) (show d1) (show t1) (show d2) (show t2)
@@ -276,3 +277,88 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
  where
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
+
+{- | Index the tree with the segments.
+
+The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
+arguments are the segments.
+-}
+index ::
+  (RM.ReduceMonad s r m) =>
+  Maybe (Path.TreeAddr, Path.TreeAddr) ->
+  VT.RefArg VT.Tree ->
+  m (Either VT.Tree (Maybe Path.TreeAddr))
+index origAddrsM (VT.RefPath var sels) = do
+  refSels <- mapM (\(i, t) -> reduceAtomOpArg (Path.MutableArgTASeg i) t) (zip [0 ..] sels)
+  let refRestPathM = VT.treesToRef . catMaybes $ refSels
+  logDebugStr $ printf "index: refRestPathM is reduced to %s" (show refRestPathM)
+  maybe
+    (return $ Right Nothing)
+    ( \refRestPath -> do
+        lbM <- RefSys.searchRMLetBindValue var
+        case lbM of
+          Just lb -> do
+            logDebugStr $ printf "index: let %s bind value is %s" var (show lb)
+            case sels of
+              -- If there are no selectors, it is a simple reference to the let value. We treat it like pending value.
+              [] -> return $ Left lb
+              _ -> do
+                let newRef = case VT.treeNode lb of
+                      -- If the let value is a reference, we append the selectors to the reference.
+                      VT.TNMutable m
+                        | Just ref <- VT.getRefFromMutable m ->
+                            VT.mkMutableTree $
+                              VT.Ref $
+                                ref
+                                  { VT.refArg = VT.appendRefArgs sels (VT.refArg ref)
+                                  , VT.refOrigAddrs = origAddrsM
+                                  }
+                      _ -> VT.mkMutableTree $ VT.Ref $ (VT.mkIndexRef (lb : sels)){VT.refOrigAddrs = origAddrsM}
+                return $ Left newRef
+          _ -> do
+            let newRef = Path.appendRefs (Path.Reference [Path.StringSel var]) refRestPath
+            -- Use the index's original addrs since it is the referable node
+            r <- RefSys.deref newRef origAddrsM
+            return $ Right r
+    )
+    refRestPathM
+-- in-place expression, like ({}).a, or regular functions.
+index _ (VT.RefIndex (end : rest)) = do
+  idxSels <- mapM (\(i, x) -> reduceAtomOpArg (Path.MutableArgTASeg i) x) (zip [1 ..] rest)
+  let idxRefM = VT.treesToRef . catMaybes $ idxSels
+  logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
+  maybe
+    (return $ Right Nothing)
+    ( \idxRef -> do
+        _indexExpr idxRef end
+        return $ Right Nothing
+    )
+    idxRefM
+index _ _ = throwErrSt "invalid index"
+
+_indexExpr :: (RM.ReduceMonad s r m) => Path.Reference -> VT.Tree -> m ()
+_indexExpr idxRef end = do
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  orig <- RM.getRMTree -- save stub
+  RM.putRMTree end
+  reduce
+  RM.unlessFocusBottom () $ do
+    -- descendRM can not be used here because it would change the tree cursor.
+    tc <- RM.getRMCursor
+    maybe
+      -- If the index is not found, the original tree (stub) is restored.
+      (RM.putRMTree orig)
+      (RM.putRMTree . vcFocus)
+      (TCursorOps.goDownTCAddr (Path.refToAddr idxRef) tc)
+
+    RM.withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
+
+evalIndexArg :: (RM.ReduceMonad s r m) => Int -> VT.Tree -> m VT.Tree
+evalIndexArg i t =
+  Mutate.mutValToArgsRM
+    (Path.MutableArgTASeg i)
+    t
+    ( do
+        MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+        reduce >> RM.getRMTree
+    )

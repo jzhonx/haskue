@@ -11,7 +11,6 @@ import Common (TreeOp (isTreeAtom, isTreeBottom, isTreeMutable))
 import Cursor (Context (ctxCnstrValidatorAddr, ctxRefSysGraph))
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
-import qualified Reduce.RefSys as RefSys
 import Reduce.RMonad (
   ReduceMonad,
   getRMAbsAddr,
@@ -25,6 +24,7 @@ import Reduce.RMonad (
   withTN,
   withTree,
  )
+import qualified Reduce.RefSys as RefSys
 import Reduce.Root (fullReduce)
 import Text.Printf (printf)
 import Util (logDebugStr)
@@ -32,7 +32,7 @@ import Value.Tree (
   AtomCnstr (cnsAtom, cnsValidator),
   CnstredVal (cnsedVal),
   LetBinding (LetBinding, lbReferred),
-  Struct (stcSubs),
+  Struct (stcFields),
   StructVal (SLet),
   Tree,
   TreeNode (TNAtomCnstr, TNCnstredVal, TNMutable, TNStruct),
@@ -40,9 +40,10 @@ import Value.Tree (
   getMutableFromTree,
   mkAtomVTree,
   mkBottomTree,
+  stcLets,
  )
 
-postValidation :: (ReduceMonad s m) => m ()
+postValidation :: (ReduceMonad s r m) => m ()
 postValidation = do
   logDebugStr "postValidation: start"
 
@@ -67,7 +68,7 @@ postValidation = do
 original mutator node is kept.
 2. replace the CnstredVal node with its value.
 -}
-snapshotRM :: (ReduceMonad s m) => m ()
+snapshotRM :: (ReduceMonad s r m) => m ()
 snapshotRM =
   traverseRM $ withTN $ \case
     TNMutable m -> maybe (return ()) putRMTree (getMutVal m)
@@ -76,7 +77,7 @@ snapshotRM =
 
 -- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
 -- will be assigned to the constraint in the propValUp.
-validateCnstr :: (ReduceMonad s m) => AtomCnstr Tree -> m ()
+validateCnstr :: (ReduceMonad s r m) => AtomCnstr Tree -> m ()
 validateCnstr c = do
   addr <- getRMAbsAddr
   logDebugStr $
@@ -109,19 +110,15 @@ validateCnstr c = do
       | otherwise -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
 -- | Validate if a struct has any unreferenced let clauses.
-validateStruct :: (ReduceMonad s m) => Struct Tree -> m ()
+validateStruct :: (ReduceMonad s r m) => Struct Tree -> m ()
 validateStruct s =
   let errM =
         Map.foldrWithKey
-          ( \seg sv acc ->
-              if isNothing acc && checkSV sv
-                then Just $ mkBottomTree $ printf "unreferenced let clause %s" (show seg)
+          ( \label lb acc ->
+              if isNothing acc && not (lbReferred lb)
+                then Just $ mkBottomTree $ printf "unreferenced let clause let %s" label
                 else acc
           )
           Nothing
-          (stcSubs s)
+          (stcLets s)
    in maybe (return ()) putRMTree errM
- where
-  checkSV :: StructVal Tree -> Bool
-  checkSV (SLet (LetBinding{lbReferred = False})) = True
-  checkSV _ = False

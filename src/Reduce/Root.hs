@@ -3,30 +3,24 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Reduce.Root where
 
 import qualified AST
 import Common (
   BuildASTExpr (buildASTExpr),
+  Config (cfRuntimeParams),
+  RuntimeParams (RuntimeParams, rpCreateCnstr),
   TreeOp (isTreeBottom),
  )
-import Config (
-  Config (cfFunctions, cfRuntimeParams),
-  Functions (Functions, fnReduce),
-  RuntimeParams (RuntimeParams, rpCreateCnstr),
- )
-import Control.Monad (foldM, forM, unless, when)
+import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (MonadError)
-import Control.Monad.Reader (asks, local)
 import Control.Monad.State.Strict (gets)
 import Cursor (
   Context (Context, ctxReduceStack),
   ValCursor (vcFocus),
  )
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
 import qualified Data.Set as Set
@@ -36,9 +30,7 @@ import qualified Reduce.Mutate as Mutate
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import qualified Reduce.RegOps as RegOps
-import qualified Reduce.UnifyOp
 import qualified Reduce.UnifyOp as UnifyOp
-import TCursorOps
 import Text.Printf (printf)
 import Util (
   HasTrace (getTrace),
@@ -48,13 +40,13 @@ import Util (
  )
 import qualified Value.Tree as VT
 
-fullReduce :: (RM.ReduceMonad s m) => m ()
+fullReduce :: (RM.ReduceMonad s r m) => m ()
 fullReduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "fullReduce, addr: %s" (show addr)) $ do
   reduce
   RefSys.drainRefSysQueue
 
 -- | Reduce the tree to the lowest form.
-reduce :: (RM.ReduceMonad s m) => m ()
+reduce :: (RM.ReduceMonad s r m) => m ()
 reduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (show addr)) $ do
   RM.treeDepthCheck
   push addr
@@ -95,57 +87,7 @@ reduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (
 -- Reduce tree nodes
 -- ###
 
--- reduceAtomOpArg :: (RM.ReduceMonad s m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
--- reduceAtomOpArg seg sub =
---   reduceMutableArgMaybe
---     seg
---     sub
---     ( \rM -> do
---         r <- rM
---         _ <- VT.getAtomFromTree r
---         rM
---     )
-
--- {- | Reduce the argument of the mutable.
---
--- If nothing concrete can be returned, then the original argument is returned.
--- -}
--- reduceMutableArg :: (RM.ReduceMonad s m) => Path.TASeg -> VT.Tree -> m VT.Tree
--- reduceMutableArg seg sub = do
---   ret <- reduceMutableArgMaybe seg sub (Just . fromMaybe sub)
---   return $ fromJust ret
-
--- {- | Evaluate the argument of the given mutable.
---
--- Returns concrete value. If no concrete value exists, returns Nothing.
---
--- This will go to the parent node because we are in the mutval env and evaluate the mutable's argument.
---
--- Notice that if the argument is a mutable and the mutval, such as struct or disjunction, which is not
--- reducible, the value is still returned because the parent mutable needs the value.
--- -}
--- reduceMutableArgMaybe ::
---   (RM.ReduceMonad s m) =>
---   Path.TASeg ->
---   VT.Tree ->
---   -- | The handler to handle the case when the result is a mutable. The handler will be called with the mutval.
---   (Maybe VT.Tree -> Maybe VT.Tree) ->
---   m (Maybe VT.Tree)
--- reduceMutableArgMaybe seg sub mvHandler = RM.withAddrAndFocus $ \addr _ ->
---   debugSpan (printf "reduceMutableArgMaybe, addr: %s, seg: %s" (show addr) (show seg)) $
---     -- We are currently in the Mutable's val field. We need to go up to the VT.Mutable.
---     RM.mutValToArgsRM
---       seg
---       sub
---       ( do
---           Functions{fnReduce = _reduce} <- asks cfFunctions
---           _reduce
---           RM.withTree $ \x -> return $ case VT.treeNode x of
---             VT.TNMutable mut -> mvHandler (VT.getMutVal mut)
---             _ -> Just x
---       )
-
-reduceStruct :: forall s m. (RM.ReduceMonad s m) => m ()
+reduceStruct :: forall s r m. (RM.ReduceMonad s r m) => m ()
 reduceStruct = do
   -- Close the struct if the tree is closed.
   RM.mustStruct $ \s -> do
@@ -154,12 +96,14 @@ reduceStruct = do
       -- Use RM.modifyRMTN instead of VT.mkNewTree because tree attributes need to be preserved, such as VT.treeRecurClosed.
       RM.modifyRMTN (VT.TNStruct $ s{VT.stcClosed = True})
 
+  whenStruct () $ \s -> mapM_ validateLetName (Map.keys $ VT.stcLets s)
+
   -- reduce the dynamic fields first. If the dynfields become actual fields, later they will be reduced.
   whenStruct () $ \s ->
     foldM
       ( \_ (i, pend) ->
           -- Inserting reduced pending element into the struct is handled by propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.PendingTASeg i)) (VT.dsfLabel pend) reduce
+          RM.inSubRM (Path.StructTASeg (Path.PendingTASeg i 0)) (VT.dsfLabel pend) reduce
       )
       ()
       (IntMap.toList $ VT.stcPendSubs s)
@@ -171,18 +115,18 @@ reduceStruct = do
           -- resolved in the unification node of the static field.
           -- See unify for more details.
           -- reduced constraint will constrain fields, which is done in the propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.PatternTASeg i)) (VT.scsPattern cnstr) reduce
+          RM.inSubRM (Path.StructTASeg (Path.PatternTASeg i 0)) (VT.scsPattern cnstr) reduce
       )
       ()
       (IntMap.toList $ VT.stcCnstrs s)
 
-  -- Reduce all subs
+  -- Reduce all fields
   whenStruct () $ \s -> do
-    mapM_ (reduceStructVal . fst) (Map.toList . VT.stcSubs $ s)
+    mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
     RM.withAddrAndFocus $ \addr t ->
       logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
 
-whenStruct :: (RM.ReduceMonad s m) => a -> (VT.Struct VT.Tree -> m a) -> m a
+whenStruct :: (RM.ReduceMonad s r m) => a -> (VT.Struct VT.Tree -> m a) -> m a
 whenStruct a f = do
   t <- RM.getRMTree
   case VT.treeNode t of
@@ -192,48 +136,56 @@ whenStruct a f = do
       RM.putRMTree . VT.mkBottomTree $ printf "%s is not a struct" (show t)
       return a
 
-reduceStructVal :: (RM.ReduceMonad s m) => Path.StructTASeg -> m ()
-reduceStructVal seg@(Path.getStrFromSeg -> Just name) = whenStruct () $ \struct -> do
-  (sub, foundLet) <-
-    maybe
-      (throwErrSt $ printf "%s is not found" (show seg))
-      return
-      (VT.lookupStructVal name struct >>= VT.getSubFromSV)
-
+validateLetName :: (RM.ReduceMonad s r m) => String -> m ()
+validateLetName name = whenStruct () $ \_ -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
   parResM <- RefSys.searchRMVarInPar name
-  structAddr <- RM.getRMAbsAddr
-  let letAddr = Path.appendSeg (Path.StructTASeg seg) structAddr
-  logDebugStr $
-    printf
-      "reduceStructVal: addr: %s, lbaddr: %s, var %s in parent: %s"
-      (show structAddr)
-      (show letAddr)
-      name
-      (show parResM)
+  RM.withAddrAndFocus $ \addr _ ->
+    logDebugStr $
+      printf "validateLetName: addr: %s, var %s in parent: %s" (show addr) name (show parResM)
+
   case parResM of
     -- If the let binding with the name is found in the scope.
-    Just (targetAddr, True)
-      -- The case of the same let bindings or same let binding and field identifier has already checked in the evalExpr
-      -- phase. If both addrs are equal, it just means it is the current let binding.
-      | letAddr /= targetAddr -> RM.putRMTree $ if foundLet then lbRedeclErr else aliasErr
-    -- If the field with the name is found in the scope.
-    Just (_, False)
-      | foundLet -> RM.putRMTree aliasErr
-    -- If there is no conflict, then reduce the sub.
-    _ -> whenStruct () $ \_ -> RM.inSubRM (Path.StructTASeg seg) sub reduce
- where
-  aliasErr = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
-  lbRedeclErr = VT.mkBottomTree $ printf "%s redeclared in same scope" name
-reduceStructVal seg = throwErrSt $ printf "invalid segment %s" (show seg)
+    Just (_, True) -> RM.putRMTree $ lbRedeclErr name
+    -- If the field with the same name is found in the scope.
+    Just (_, False) -> RM.putRMTree $ aliasErr name
+    _ -> return ()
+
+aliasErr :: String -> VT.Tree
+aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+
+lbRedeclErr :: String -> VT.Tree
+lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
+
+reduceStructField :: (RM.ReduceMonad s r m) => String -> m ()
+reduceStructField name = whenStruct () $ \struct -> do
+  -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
+  -- in the parent scope that there is no field with the same name.
+  parResM <- RefSys.searchRMVarInPar name
+  RM.withAddrAndFocus $ \addr _ ->
+    logDebugStr $
+      printf "reduceStructField: addr: %s, var %s in parent: %s" (show addr) name (show parResM)
+
+  case parResM of
+    -- If the let binding with the name is found in the scope.
+    Just (_, True) -> RM.putRMTree $ aliasErr name
+    _ -> return ()
+
+  whenStruct () $ \_ -> do
+    sub <-
+      maybe
+        (throwErrSt $ printf "%s is not found" (show name))
+        return
+        (VT.lookupStructField name struct)
+    RM.inSubRM (Path.StructTASeg $ Path.StringTASeg name) (VT.ssfValue sub) reduce
 
 {- | Handle the post process of propagating value into struct.
 
 The focus of the tree must be a struct.
 -}
-propUpStructPost :: (RM.ReduceMonad s m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
-propUpStructPost (Path.PendingTASeg i, _struct) = RM.withAddrAndFocus $ \p _ ->
+propUpStructPost :: (RM.ReduceMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
+propUpStructPost (Path.PendingTASeg i _, _struct) = RM.withAddrAndFocus $ \p _ ->
   debugSpan (printf "propUpStructPost_dynamic, addr: %s" (show p)) $ do
     let dsf = VT.stcPendSubs _struct IntMap.! i
     either
@@ -249,7 +201,7 @@ propUpStructPost (Path.PendingTASeg i, _struct) = RM.withAddrAndFocus $ \p _ ->
                     (newSub, matchedCnstrs) <- constrainField name (VT.ssfValue field) allCnstrsWithIdx
                     return
                       ( [(name, newSub, matchedCnstrs)]
-                      , if not (null matchedCnstrs) then [Path.StringTASeg name] else []
+                      , if not (null matchedCnstrs) then [name] else []
                       )
                   return (updateFieldsWithAppliedCnstrs struct items, matchedSegs)
               )
@@ -264,13 +216,13 @@ propUpStructPost (Path.PendingTASeg i, _struct) = RM.withAddrAndFocus $ \p _ ->
           RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
 
           -- Check the permission of the label of newly created field.
-          whenStruct () $ \s -> checkNewLabelPerm s (Path.PendingTASeg i)
+          whenStruct () $ \s -> checkNewLabelPerm s (Path.PendingTASeg i 0)
 
           -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
-          whenStruct () $ \_ -> mapM_ reduceStructVal matchedSegs
+          whenStruct () $ \_ -> mapM_ reduceStructField matchedSegs
       )
       (updateStructPend _struct dsf)
-propUpStructPost (Path.PatternTASeg i, struct) = RM.withAddrAndFocus $ \p _ ->
+propUpStructPost (Path.PatternTASeg i _, struct) = RM.withAddrAndFocus $ \p _ ->
   debugSpan (printf "propUpStructPost_constraint, addr: %s, idx: %s" (show p) (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
     let
@@ -304,9 +256,9 @@ propUpStructPost (Path.PatternTASeg i, struct) = RM.withAddrAndFocus $ \p _ ->
     let newStruct = updateFieldsWithAppliedCnstrs struct (removedItems ++ addedItems)
     RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
 
-    let affectedSegs = map Path.StringTASeg $ Set.toList removedNames ++ Set.toList addedNames
+    let affectedLabels = Set.toList removedNames ++ Set.toList addedNames
 
-    unless (null affectedSegs) $
+    unless (null affectedLabels) $
       RM.withAddrAndFocus $ \addr _ ->
         logDebugStr $
           printf
@@ -320,10 +272,10 @@ propUpStructPost (Path.PatternTASeg i, struct) = RM.withAddrAndFocus $ \p _ ->
             (show addedItems)
             (show $ VT.mkStructTree newStruct)
 
-    whenStruct () $ \s -> checkNewPatternPerm s (Path.PatternTASeg i)
+    whenStruct () $ \s -> checkNewPatternPerm s (Path.PatternTASeg i 0)
 
     -- Reduce the updated struct values.
-    whenStruct () $ \_ -> mapM_ reduceStructVal affectedSegs
+    whenStruct () $ \_ -> mapM_ reduceStructField affectedLabels
 
     RM.withTree $ \t ->
       logDebugStr $ printf "propUpPendStructPost_constraint: new value: %s" (show t)
@@ -334,18 +286,7 @@ propUpStructPost (Path.PatternTASeg i, struct) = RM.withAddrAndFocus $ \p _ ->
 propUpStructPost (_, _) = return ()
 
 getSFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]
-getSFieldPairs struct =
-  foldr
-    ( \(k, sv) acc -> case ( do
-                              name <- Path.getStrFromSeg k
-                              f <- VT.getFieldFromSV sv
-                              return (name, f)
-                           ) of
-        Just p -> p : acc
-        _ -> acc
-    )
-    []
-    (Map.toList $ VT.stcSubs struct)
+getSFieldPairs struct = Map.toList $ VT.stcFields struct
 
 {- | Update the struct with the reduced pending element.
 
@@ -370,7 +311,7 @@ updateStructPend struct df = case VT.treeNode label of
   updateLabel s =
     let
       unifier l r = VT.mkMutableTree $ mkUnifyNode l r
-      newSF = VT.dynToField df (VT.lookupStructVal s struct) unifier
+      newSF = VT.dynToField df (VT.lookupStructField s struct) unifier
      in
       return (VT.convertPendDyn struct s newSF, Just (s, newSF))
 
@@ -378,7 +319,7 @@ updateStructPend struct df = case VT.treeNode label of
 
 Returns the new field and the indexes of the constraints that are matched with the field.
 -}
-constrainField :: (RM.ReduceMonad s m) => String -> VT.Tree -> [(Int, VT.StructCnstr VT.Tree)] -> m (VT.Tree, [Int])
+constrainField :: (RM.ReduceMonad s r m) => String -> VT.Tree -> [(Int, VT.StructCnstr VT.Tree)] -> m (VT.Tree, [Int])
 constrainField name field =
   foldM
     ( \(accField, accMatchedIdxes) (i, cnstr) -> do
@@ -394,7 +335,7 @@ field. The boolean indicates if the field is matched with the pattern.
 
 It can run in any kind of node.
 -}
-bindFieldWithCnstr :: (RM.ReduceMonad s m) => String -> VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Tree, Bool)
+bindFieldWithCnstr :: (RM.ReduceMonad s r m) => String -> VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Tree, Bool)
 bindFieldWithCnstr name fval psf = do
   let selPattern = VT.scsPattern psf
 
@@ -422,14 +363,14 @@ updateFieldsWithAppliedCnstrs struct =
     ( \(name, val, matchedCnstrs) acc ->
         maybe
           acc
-          ( \field -> VT.updateStructSub (Path.StringTASeg name) (VT.SField field{VT.ssfValue = val, VT.ssfCnstrs = matchedCnstrs}) acc
+          ( \field -> VT.updateStructField name (field{VT.ssfValue = val, VT.ssfCnstrs = matchedCnstrs}) acc
           )
-          (VT.lookupStructVal name struct >>= VT.getFieldFromSV)
+          (VT.lookupStructField name struct)
     )
     struct
 
 -- | Filter the names that are matched with the constraint's pattern.
-filterMatchedNames :: (RM.ReduceMonad s m) => VT.StructCnstr VT.Tree -> [String] -> m [String]
+filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [String] -> m [String]
 filterMatchedNames cnstr =
   foldM
     ( \acc name -> do
@@ -445,7 +386,7 @@ The constraint must have been applied to the fields.
 This is done by re-applying existing constraints except the one that is removed.
 -}
 removeAppliedCnstr ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   Int ->
   [(Int, VT.StructCnstr VT.Tree)] ->
   [(String, VT.Field VT.Tree)] ->
@@ -469,7 +410,7 @@ removeAppliedCnstr delIdx allCnstrs subs = do
 
 -- | Apply the additional constraint to the fields.
 applyMoreCnstr ::
-  (RM.ReduceMonad s m) =>
+  (RM.ReduceMonad s r m) =>
   (Int, VT.StructCnstr VT.Tree) ->
   [(String, VT.Field VT.Tree)] ->
   m [(String, VT.Tree, [Int])]
@@ -480,19 +421,19 @@ applyMoreCnstr (i, cnstr) =
         return (name, nv, VT.ssfCnstrs field ++ [i])
     )
 
-checkNewLabelPerm :: (RM.ReduceMonad s m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkNewLabelPerm struct (Path.PendingTASeg i) =
+checkNewLabelPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+checkNewLabelPerm struct (Path.PendingTASeg i 0) =
   let perms = VT.getPermInfoForDyn struct i
    in mapM_ (validatePermItem struct) perms
 checkNewLabelPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
-checkNewPatternPerm :: (RM.ReduceMonad s m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkNewPatternPerm struct (Path.PatternTASeg i) =
+checkNewPatternPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+checkNewPatternPerm struct (Path.PatternTASeg i 0) =
   let perms = VT.getPermInfoForPattern struct i
    in mapM_ (validatePermItem struct) perms
 checkNewPatternPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
-validatePermItem :: (RM.ReduceMonad s m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
+validatePermItem :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
 validatePermItem struct p =
   let
     labels = VT.piLabels p `Set.union` dynIdxesToLabels (VT.piDyns p)
@@ -501,18 +442,18 @@ validatePermItem struct p =
    in
     UnifyOp.checkLabelsPerm labels cnstrs True False opLabels
  where
-  dynIdxesToLabels :: Set.Set Int -> Set.Set Path.StructTASeg
+  dynIdxesToLabels :: Set.Set Int -> Set.Set String
   dynIdxesToLabels idxes =
     Set.fromList
       ( catMaybes $
           map
             ( \i ->
-                Path.StringTASeg <$> VT.getStringFromTree (VT.dsfLabel $ VT.stcPendSubs struct IntMap.! i)
+                VT.getStringFromTree (VT.dsfLabel $ VT.stcPendSubs struct IntMap.! i)
             )
             (Set.toList idxes)
       )
 
-reduceCnstredVal :: (RM.ReduceMonad s m) => VT.CnstredVal VT.Tree -> m ()
+reduceCnstredVal :: (RM.ReduceMonad s r m) => VT.CnstredVal VT.Tree -> m ()
 reduceCnstredVal cv = RM.inSubRM Path.SubValTASeg (VT.cnsedVal cv) reduce
 
 -- | Create a new identifier reference.
@@ -521,55 +462,7 @@ mkVarLinkTree var = do
   let mut = VT.mkRefMutable var []
   return $ VT.mkMutableTree mut
 
-{- | Index the tree with the segments.
-
-The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
-arguments are the segments.
--}
-index :: (RM.ReduceMonad s m) => Maybe (Path.TreeAddr, Path.TreeAddr) -> VT.RefArg VT.Tree -> m (Maybe Path.TreeAddr)
-index origAddrsM (VT.RefPath var sels) = do
-  idxRefM <- VT.treesToRef <$> mapM (\(i, t) -> evalIndexArg i t) (zip [0 ..] sels)
-  logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
-  maybe
-    (return Nothing)
-    ( \idxRef -> do
-        let newRef = Path.appendRefs (Path.Reference [Path.StringSel var]) idxRef
-        -- Use the index's original addrs since it is the referable node
-        RefSys.deref newRef origAddrsM
-    )
-    idxRefM
--- in-place expression, like ({}).a, or regular functions.
-index _ (VT.RefIndex (end : rest)) = do
-  idxRefM <- VT.treesToRef <$> mapM (\(i, x) -> evalIndexArg i x) (zip [1 ..] rest)
-  logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
-  maybe
-    (return Nothing)
-    ( \idxRef -> do
-        res <- UnifyOp.reduceMutableArg (Path.MutableArgTASeg 0) end
-        RM.putRMTree res
-        logDebugStr $ printf "index: tree is reduced to %s" (show res)
-
-        RM.unlessFocusBottom () $ do
-          -- descendRM can not be used here because it would change the tree cursor.
-          tc <- RM.getRMCursor
-          maybe
-            (throwErrSt $ printf "%s is not found" (show idxRef))
-            (RM.putRMTree . vcFocus)
-            (goDownTCAddr (Path.refToAddr idxRef) tc)
-
-          RM.withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
-        return Nothing
-    )
-    idxRefM
-index _ _ = throwErrSt "invalid index"
-
-evalIndexArg :: (RM.ReduceMonad s m) => Int -> VT.Tree -> m VT.Tree
-evalIndexArg i t = RM.mutValToArgsRM (Path.MutableArgTASeg i) t (reduce >> RM.getRMTree)
-
--- whenJustE :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
--- whenJustE m f = maybe (return ()) f m
-
-dispBinMutable :: (RM.ReduceMonad s m) => AST.BinaryOp -> VT.Tree -> VT.Tree -> m ()
+dispBinMutable :: (RM.ReduceMonad s r m) => AST.BinaryOp -> VT.Tree -> VT.Tree -> m ()
 dispBinMutable op = case op of
   AST.Unify -> UnifyOp.unify
   _ -> RegOps.regBin op
@@ -581,7 +474,7 @@ instance Show DisjItem where
   show (DisjRegular t) = show t
 
 -- reduceDisjPair is used to evaluate a disjunction whose both sides are evaluated.
-reduceDisjPair :: (RM.ReduceMonad s m) => DisjItem -> DisjItem -> m VT.Tree
+reduceDisjPair :: (RM.ReduceMonad s r m) => DisjItem -> DisjItem -> m VT.Tree
 reduceDisjPair i1 i2 = case (i1, i2) of
   (DisjDefault v1, _) -> do
     logDebugStr $ printf "reduceDisjPair: *: %s, r: %s" (show v1) (show i2)
@@ -618,7 +511,7 @@ reduceLeftDefault disjCons v1 (DisjDefault v2) =
 
 -- evalFullDisj is used to evaluate a disjunction whose both sides are regular.
 -- Rule: D1, D2
-reduceRegularDisj :: (RM.ReduceMonad s m) => VT.Tree -> VT.Tree -> m VT.Tree
+reduceRegularDisj :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m VT.Tree
 reduceRegularDisj (VT.Tree{VT.treeNode = VT.TNDisj dj1}) (VT.Tree{VT.treeNode = VT.TNDisj dj2}) =
   newDisj (VT.dsjDefault dj1) (VT.dsjDisjuncts dj1) (VT.dsjDefault dj2) (VT.dsjDisjuncts dj2)
 reduceRegularDisj (VT.Tree{VT.treeNode = VT.TNDisj dj}) y = newDisj (VT.dsjDefault dj) (VT.dsjDisjuncts dj) Nothing [y]
@@ -626,7 +519,7 @@ reduceRegularDisj x (VT.Tree{VT.treeNode = VT.TNDisj dj}) = newDisj Nothing [x] 
 -- Rule D0
 reduceRegularDisj x y = newDisj Nothing [x] Nothing [y]
 
-newDisj :: (RM.ReduceMonad s m) => Maybe VT.Tree -> [VT.Tree] -> Maybe VT.Tree -> [VT.Tree] -> m VT.Tree
+newDisj :: (RM.ReduceMonad s r m) => Maybe VT.Tree -> [VT.Tree] -> Maybe VT.Tree -> [VT.Tree] -> m VT.Tree
 newDisj df1 ds1 df2 ds2 =
   if
     | null allTerms -> throwErrSt "both sides of disjunction are empty"
@@ -682,12 +575,12 @@ builtinMutableTable =
   ]
 
 -- | Closes a struct when the tree has struct.
-close :: (RM.ReduceMonad s m) => [VT.Tree] -> m ()
+close :: (RM.ReduceMonad s r m) => [VT.Tree] -> m ()
 close args
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
       let a = head args
-      r <- UnifyOp.reduceMutableArg Path.unaryOpTASeg a
+      r <- Mutate.reduceMutableArg Path.unaryOpTASeg a
       case VT.treeNode r of
         -- If the argument is pending, wait for the result.
         VT.TNMutable _ -> return ()

@@ -40,14 +40,18 @@ import Value.Mutable (
  )
 import Value.Reference (Reference (refArg), setRefArgs, subRefArgs)
 import Value.Struct (
-  DynamicField (dsfLabel),
+  DynamicField (..),
   Field (ssfValue),
   LetBinding (lbValue),
   Struct (stcCnstrs, stcPendSubs),
-  StructCnstr (scsPattern),
+  StructCnstr (..),
   StructVal (SField, SLet),
+  getFieldFromSV,
+  lookupStructField,
+  lookupStructLet,
   lookupStructVal,
-  updateStructSub,
+  updateStructField,
+  updateStructLet,
  )
 
 class HasTreeNode t where
@@ -101,19 +105,15 @@ subTreeTN :: (TreeOp t, HasTreeNode t, Show t) => TASeg -> t -> Maybe t
 subTreeTN seg t = case (seg, getTreeNode t) of
   (RootTASeg, _) -> Just t
   (StructTASeg s, TNStruct struct) -> case s of
-    StringTASeg name ->
-      lookupStructVal name struct
-        >>= \case
-          SField sf -> Just $ ssfValue sf
-          _ -> Nothing
-    PatternTASeg i -> scsPattern <$> stcCnstrs struct IntMap.!? i
-    PendingTASeg i ->
+    StringTASeg name
+      | Just sf <- lookupStructField name struct -> Just $ ssfValue sf
+    PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
+    PendingTASeg i j ->
       -- pending elements can be resolved, so the index might not be valid.
-      dsfLabel <$> stcPendSubs struct IntMap.!? i
-    LetTASeg name ->
-      lookupStructVal name struct >>= \case
-        SLet lb -> Just (lbValue lb)
-        _ -> Nothing
+      (if j == 0 then dsfLabel else dsfValue) <$> stcPendSubs struct IntMap.!? i
+    LetTASeg name
+      | Just lb <- lookupStructLet name struct -> Just (lbValue lb)
+    _ -> Nothing
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
@@ -132,7 +132,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
 
 -- | Set the sub tree with the given segment and new tree.
 setSubTreeTN ::
-  forall m t. (Env m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
+  forall t r m. (Env r m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
 setSubTreeTN seg subT parT = do
   n <- case (seg, getTreeNode parT) of
     (StructTASeg s, TNStruct struct) -> updateParStruct struct s
@@ -169,25 +169,32 @@ setSubTreeTN seg subT parT = do
   updateParStruct parStruct labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
-    | Just name <- getStrFromSeg labelSeg
-    , Just sv <- lookupStructVal name parStruct =
+    | StringTASeg name <- labelSeg
+    , Just field <- lookupStructField name parStruct =
         let
-          newSV = subT <$ sv
-          newStruct = updateStructSub labelSeg newSV parStruct
+          newField = subT <$ field
+          newStruct = updateStructField name newField parStruct
          in
           return (TNStruct newStruct)
-    | PatternTASeg i <- labelSeg =
+    | LetTASeg name <- labelSeg
+    , Just oldLet <- lookupStructLet name parStruct =
+        let
+          newLet = subT <$ oldLet
+          newStruct = updateStructLet name newLet parStruct
+         in
+          return (TNStruct newStruct)
+    | PatternTASeg i j <- labelSeg =
         let
           psf = stcCnstrs parStruct IntMap.! i
-          newPSF = psf{scsPattern = subT}
+          newPSF = if j == 0 then psf{scsPattern = subT} else psf{scsValue = subT}
           newStruct = parStruct{stcCnstrs = IntMap.insert i newPSF (stcCnstrs parStruct)}
          in
           return (TNStruct newStruct)
-    | PendingTASeg i <- labelSeg =
+    | PendingTASeg i j <- labelSeg =
         let
           pends = stcPendSubs parStruct
           psf = pends IntMap.! i
-          newPSF = psf{dsfLabel = subT}
+          newPSF = if j == 0 then psf{dsfLabel = subT} else psf{dsfValue = subT}
           newStruct = parStruct{stcPendSubs = IntMap.insert i newPSF pends}
          in
           return (TNStruct newStruct)

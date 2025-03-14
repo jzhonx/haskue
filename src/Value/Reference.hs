@@ -15,6 +15,11 @@ data Reference t = Reference
   -- The first is the subtree root address, the second is the abs address of the value in the subtree.
   , refValue :: Maybe t
   }
+  deriving (Show)
+
+instance Show (RefArg t) where
+  show (RefPath s _) = "ref_v_" ++ s
+  show (RefIndex _) = "index"
 
 instance (Eq t) => Eq (RefArg t) where
   (==) (RefPath s1 xs1) (RefPath s2 xs2) = s1 == s2 && xs1 == xs2
@@ -26,7 +31,7 @@ instance (Eq t) => Eq (Reference t) where
 
 showRefArg :: RefArg t -> (t -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (s : map (\x -> maybe "_" id (f x)) xs)
-showRefArg (RefIndex _) _ = "index"
+showRefArg (RefIndex xs) f = "index_" ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)
 
 isRefRef :: Reference t -> Bool
 isRefRef r = case refArg r of
@@ -42,8 +47,11 @@ refFromRefArg treeToSel arg = case arg of
   RefIndex _ -> Nothing
 
 appendRefArg :: t -> RefArg t -> RefArg t
-appendRefArg x (RefPath s xs) = RefPath s (xs ++ [x])
-appendRefArg x (RefIndex xs) = RefIndex (xs ++ [x])
+appendRefArg y = appendRefArgs [y]
+
+appendRefArgs :: [t] -> RefArg t -> RefArg t
+appendRefArgs ys (RefPath s xs) = RefPath s (xs ++ ys)
+appendRefArgs ys (RefIndex xs) = RefIndex (xs ++ ys)
 
 subRefArgs :: RefArg t -> [t]
 subRefArgs (RefPath _ xs) = xs

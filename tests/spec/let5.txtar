@@ -1,0 +1,21 @@
+-- let5 --
+x: {
+  let z = 42
+  a: z
+}
+y: {
+  let z = "s"
+  b: z
+}
+out: x & y
+-- exp --
+x: {
+    a: 42
+}
+y: {
+    b: "s"
+}
+out: {
+    a: 42
+    b: "s"
+}

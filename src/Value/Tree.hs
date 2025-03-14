@@ -22,7 +22,7 @@ module Value.Tree (
 where
 
 import qualified AST
-import Common (Env, BuildASTExpr (..), TreeOp (..), TreeRepBuilder (..))
+import Common (BuildASTExpr (..), Env, TreeOp (..), TreeRepBuilder (..))
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState)
 import qualified Data.IntMap.Strict as IntMap
@@ -33,7 +33,7 @@ import Exception (throwErrSt)
 import Path (
   Reference (Reference),
   Selector (..),
-  StructTASeg (PatternTASeg, PendingTASeg, StringTASeg),
+  StructTASeg (LetTASeg, PatternTASeg, PendingTASeg, StringTASeg),
   TASeg (
     DisjDefaultTASeg,
     DisjDisjunctTASeg,
@@ -182,20 +182,20 @@ buildRepTreeTN t tn opt = case tn of
         fields :: [(String, String, Tree)]
         fields =
           map
-            ( \k ->
-                let sv = stcSubs s Map.! k
-                 in case sv of
-                      SField sf -> (show k, slabelAttr sf, ssfValue sf)
-                      SLet lb -> (show k, printf ",let,r:%s" (show $ lbReferred lb), lbValue lb)
-            )
-            (structStrLabels s)
+            (\k -> let sf = stcFields s Map.! k in (k, slabelAttr sf, ssfValue sf))
+            (stcOrdLabels s)
             ++ map
-              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j), ",v:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
+              ( \(k, lb) ->
+                  (show (StructTASeg $ LetTASeg k), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
+              )
+              (Map.toList (stcLets s))
+            ++ map
+              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j 0), ",cns_val:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
               )
               (IntMap.toList $ stcCnstrs s)
             ++ foldr
               ( \(j, dsf) acc ->
-                  (show (StructTASeg $ PendingTASeg j), dlabelAttr dsf, dsfLabel dsf) : acc
+                  (show (StructTASeg $ PendingTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
               )
               []
               (IntMap.toList $ stcPendSubs s)
@@ -263,12 +263,6 @@ buildRepTreeTN t tn opt = case tn of
             consFields val
           , []
           )
-  -- Index idx ->
-  --   let
-  --     args = zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (idxSels idx)
-  --     val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (idxValue idx)
-  --    in
-  --     consRep (symbol, "", consFields (args ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -301,7 +295,6 @@ instance BuildASTExpr Tree where
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
-    -- Index _ -> maybe (throwErrSt "expression not found for indexer") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -312,11 +305,11 @@ instance BuildASTExpr Tree where
     TNStub -> throwErrSt "no expression for stub"
 
 -- | Patterns are not included in the AST.
-buildStructASTExpr :: (Env m) => Bool -> Struct Tree -> m AST.Expression
+buildStructASTExpr :: (Env r m) => Bool -> Struct Tree -> m AST.Expression
 buildStructASTExpr concrete s =
   let
-    processSVal :: (Env m, BuildASTExpr t) => (Path.StructTASeg, StructVal t) -> m AST.Declaration
-    processSVal (Path.StringTASeg sel, SField sf) = do
+    processSField :: (Env r m, BuildASTExpr t) => (String, Field t) -> m AST.Declaration
+    processSField (sel, sf) = do
       e <- buildASTExpr concrete (ssfValue sf)
       return $
         AST.FieldDecl $
@@ -327,9 +320,8 @@ buildStructASTExpr concrete s =
                   else AST.LabelString sel
             ]
             e
-    processSVal _ = throwErrSt "invalid struct segment or struct value"
 
-    processDynField :: (Env m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
+    processDynField :: (Env r m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
     processDynField sf = do
       e <- buildASTExpr concrete (dsfValue sf)
       return $
@@ -351,7 +343,7 @@ buildStructASTExpr concrete s =
           )
    in
     do
-      stcs <- mapM processSVal [(l, stcSubs s Map.! l) | l <- stcOrdLabels s]
+      stcs <- mapM processSField [(l, stcFields s Map.! l) | l <- stcOrdLabels s]
       dyns <-
         foldM
           ( \acc dsf ->
@@ -496,7 +488,6 @@ showTreeSymbol t = case treeNode t of
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
-  -- Index _ -> "idx"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -516,18 +507,17 @@ escapedSimpleTreeStr t = case treeNode t of
   TNAtom _ -> "a"
   _ -> escapedTreeSymbol t
 
+-- | Generate a list of sub-trees.
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct ->
-    [ ( StructTASeg s
-      , case sv of
-          SField sf -> ssfValue sf
-          SLet lb -> lbValue lb
+    [ ( StructTASeg $ StringTASeg s
+      , ssfValue field
       )
-    | (s, sv) <- Map.toList (stcSubs struct)
+    | (s, field) <- Map.toList (stcFields struct)
     ]
-      ++ [(StructTASeg $ PatternTASeg i, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
-      ++ [(StructTASeg $ PendingTASeg i, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
+      ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
+      ++ [(StructTASeg $ PendingTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNMutable (Ref ref) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (subRefArgs $ refArg ref)]
@@ -539,8 +529,6 @@ subNodes t = case treeNode t of
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = argsHaveRef (sfnArgs fn)
-
--- mutHasRef (Index idxer) = argsHaveRef (idxSels idxer)
 
 argsHaveRef :: [Tree] -> Bool
 argsHaveRef =
@@ -666,6 +654,14 @@ mkStructTree s = mkNewTree (TNStruct s)
 mkCnstredValTree :: Tree -> Maybe AST.Expression -> Tree
 mkCnstredValTree v m = mkNewTree (TNCnstredVal $ CnstredVal v m)
 
+-- | Create an index function node.
+appendSelToRefTree :: Tree -> Tree -> Tree
+appendSelToRefTree oprnd selArg = case treeNode oprnd of
+  TNMutable m
+    | Just ref <- getRefFromMutable m ->
+        mkMutableTree $ Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
+  _ -> mkMutableTree $ Ref $ mkIndexRef [oprnd, selArg]
+
 stubTree :: Tree
 stubTree = mkNewTree TNStub
 
@@ -698,14 +694,3 @@ addrToTrees p = mapM selToTree (addrToNormOrdList p)
     StructTASeg (StringTASeg s) -> Just $ mkAtomTree (String s)
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
-
-getStructField :: String -> Tree -> Maybe (Tree, Bool)
-getStructField name Tree{treeNode = TNStruct struct} = do
-  sv <- lookupStructVal name struct
-  case sv of
-    SField sf ->
-      if lbAttrIsVar (ssfAttr sf)
-        then Just (ssfValue sf, False)
-        else Nothing
-    SLet lb -> Just (lbValue lb, True)
-getStructField _ _ = Nothing

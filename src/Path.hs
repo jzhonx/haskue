@@ -84,10 +84,12 @@ data StructTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
     -- let binding.
     StringTASeg String
-  | PatternTASeg Int
+  | -- | The first is the OID, the second indicates the i-th value in the constraint.
+    PatternTASeg Int Int
   | -- | PendingTASeg is used to represent a pending field. It is indexed by the index of the pending field.
     -- It is paired with either dsfLabel or scsPattern.
-    PendingTASeg Int
+    -- The first is the OID, the second indicates the i-th in the pending value.
+    PendingTASeg Int Int
   | -- | A let binding is always indexed by the LetTASeg.
     LetTASeg
       -- | Identifier
@@ -97,8 +99,8 @@ data StructTASeg
 instance Show StructTASeg where
   show (StringTASeg s) = s
   -- c stands for constraint.
-  show (PatternTASeg i) = "cns_" ++ show i
-  show (PendingTASeg i) = "dyn_" ++ show i
+  show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
+  show (PendingTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
   show (LetTASeg s) = "let_" ++ s
 
 getStrFromSeg :: StructTASeg -> Maybe String
