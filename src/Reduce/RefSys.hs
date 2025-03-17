@@ -9,7 +9,7 @@ module Reduce.RefSys where
 
 import qualified AST
 import Common (BuildASTExpr (buildASTExpr), Env, TreeOp (isTreeBottom))
-import Control.Monad (foldM, unless, when)
+import Control.Monad (unless, when)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put, runStateT)
 import Control.Monad.Trans (lift)
@@ -110,9 +110,6 @@ bfsLoopQ tid = do
           srcFinalizedAddr = Path.referableAddr addr
         return $ fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
 
-      -- -- The current focus notifying its dependents means it is referred.
-      -- unless (null recvs) $ lift markReferred
-
       -- Add the receivers to the visited list and the queue.
       modify $ \state ->
         foldr
@@ -135,11 +132,6 @@ bfsLoopQ tid = do
       unless inReducing $ do
         lift RM.propUpRM
         addDepsUntilRoot
-
-  -- markReferred :: (RM.ReduceMonad s r m) => m ()
-  -- markReferred = do
-  --   tc <- RM.getRMCursor
-  --   RM.putRMCursor $ _markTCFocusReferred tc
 
   parentIsReducing parTreeAddr = do
     stack <- ctxReduceStack <$> RM.getRMContext

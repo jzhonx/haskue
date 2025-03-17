@@ -9,8 +9,6 @@ module Reduce.Root where
 import qualified AST
 import Common (
   BuildASTExpr (buildASTExpr),
-  Config (cfRuntimeParams),
-  RuntimeParams (RuntimeParams, rpCreateCnstr),
   TreeOp (isTreeBottom),
  )
 import Control.Monad (foldM, unless, when)
@@ -18,11 +16,10 @@ import Control.Monad.Except (MonadError)
 import Control.Monad.State.Strict (gets)
 import Cursor (
   Context (Context, ctxReduceStack),
-  ValCursor (vcFocus),
  )
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
+import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified Path

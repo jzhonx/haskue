@@ -15,14 +15,14 @@ import Common (
   RuntimeParams (RuntimeParams, rpCreateCnstr),
   TreeOp (isTreeBottom),
  )
-import Control.Monad (foldM, forM, unless, void, when)
+import Control.Monad (foldM, forM)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (asks, local)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified MutEnv

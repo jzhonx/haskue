@@ -11,6 +11,7 @@ import AST (
   Declaration (..),
   ElementList (..),
   EllipsisDecl (Ellipsis),
+  Embedding (..),
   Expression (..),
   FieldDecl (Field),
   Index (..),
@@ -158,8 +159,8 @@ evalDecl :: (EvalEnv r m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
 evalDecl (x, embeds) decl = case treeNode x of
   TNBottom _ -> return (x, embeds)
   TNStruct struct -> case decl of
-    Embedding e -> do
-      v <- evalExpr e
+    Embedding ed -> do
+      v <- evalEmbedding ed
       return (mkStructTree struct, v : embeds)
     EllipsisDecl (Ellipsis cM) ->
       maybe
@@ -179,6 +180,10 @@ evalDecl (x, embeds) decl = case treeNode x of
       logDebugStr $ printf "evalDecl: adder: %s, t: %s" (show adder) (show t)
       return (t, embeds)
   _ -> throwErrSt "invalid struct"
+
+evalEmbedding :: (EvalEnv r m) => Embedding -> m Tree
+evalEmbedding (Comprehension _) = throwErrSt "comprehension is not implemented yet"
+evalEmbedding (AliasExpr e) = evalExpr e
 
 evalFdLabels :: (EvalEnv r m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
 evalFdLabels lbls e =
@@ -293,7 +298,7 @@ addNewStructElem adder struct = case adder of
 
 evalListLit :: (EvalEnv r m) => AST.ElementList -> m Tree
 evalListLit (AST.EmbeddingList es) = do
-  xs <- mapM evalExpr es
+  xs <- mapM evalEmbedding es
   return $ mkListTree xs
 
 evalUnaryExpr :: (EvalEnv r m) => UnaryExpr -> m Tree

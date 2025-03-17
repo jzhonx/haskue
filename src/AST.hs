@@ -108,7 +108,11 @@ data RelOp
   | ReNotMatch
   deriving (Eq, Ord)
 
-type Embedding = Expression
+data Embedding = Comprehension Comprehension | AliasExpr Expression
+  deriving (Eq, Show)
+
+data Comprehension = ComprehensionCons
+  deriving (Eq, Show)
 
 data LetClause = LetClause Identifer Expression
   deriving (Eq, Show)
@@ -267,7 +271,7 @@ declBld :: Int -> Declaration -> Builder
 declBld i e = case e of
   FieldDecl f -> fieldDeclBld i f
   EllipsisDecl (Ellipsis _) -> string7 "..."
-  Embedding eb -> exprBldIdent i eb
+  Embedding eb -> embeddingBld i eb
   DeclLet (LetClause ident binde) -> string7 "let" <> string7 ident <> string7 " = " <> exprBldIdent 0 binde
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
@@ -276,13 +280,18 @@ fieldDeclBld ident e = case e of
     foldr (\l acc -> labelBld l <> string7 ": " <> acc) mempty ls
       <> exprBldIdent ident fe
 
+embeddingBld :: Int -> Embedding -> Builder
+embeddingBld ident e = case e of
+  Comprehension c -> undefined
+  AliasExpr ex -> exprBldIdent ident ex
+
 listBld :: ElementList -> Builder
 listBld (EmbeddingList l) = string7 "[" <> goList l
  where
   goList :: [Embedding] -> Builder
   goList [] = string7 "]"
-  goList [x] = exprBldIdent 0 x <> string7 "]"
-  goList (x : xs) = exprBldIdent 0 x <> string7 ", " <> goList xs
+  goList [x] = embeddingBld 0 x <> string7 "]"
+  goList (x : xs) = embeddingBld 0 x <> string7 ", " <> goList xs
 
 labelBld :: Label -> Builder
 labelBld (Label e) = labelExprBld e

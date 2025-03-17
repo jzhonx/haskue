@@ -9,7 +9,7 @@ import AST (
   Declaration (..),
   ElementList (EmbeddingList),
   EllipsisDecl (..),
-  Embedding,
+  Embedding (..),
   Expression (..),
   FieldDecl (..),
   Index (Index),
@@ -332,7 +332,7 @@ list :: Parser (Lexeme Literal)
 list = do
   _ <- lsquare
   elements <- many $ do
-    eLex <- expr
+    eLex <- embedding
     rsquareMaybe <- lookAhead $ optionMaybe rsquare
     case rsquareMaybe of
       Just _ -> return eLex
@@ -363,7 +363,7 @@ decl =
     -- let would not consume EllipsisDecl. But it could consume Embedding. So it needs "try".
     <|> try (fmap DeclLet <$> letClause)
     <|> (fmap EllipsisDecl <$> ellipsisDecl)
-    <|> (fmap Embedding <$> expr)
+    <|> (fmap Embedding <$> embedding)
 
 field :: Parser (Lexeme FieldDecl)
 field = do
@@ -419,6 +419,11 @@ ellipsisDecl = do
     (return $ Ellipsis Nothing <$ lLex)
     (\eLex -> return $ Ellipsis (Just $ lex eLex) <$ eLex)
     eLexM
+
+embedding :: Parser (Lexeme Embedding)
+embedding = do
+  eLex <- expr
+  return $ AliasExpr (lex eLex) <$ eLex
 
 letClause :: Parser (Lexeme LetClause)
 letClause = do

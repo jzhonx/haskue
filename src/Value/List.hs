@@ -10,4 +10,10 @@ instance (Eq t) => Eq (List t) where
 
 instance (BuildASTExpr t) => BuildASTExpr (List t) where
   buildASTExpr c l =
-    AST.litCons . AST.ListLit . AST.EmbeddingList <$> mapM (buildASTExpr c) (lstSubs l)
+    AST.litCons . AST.ListLit . AST.EmbeddingList
+      <$> mapM
+        ( \x -> do
+            e <- buildASTExpr c x
+            return $ AST.AliasExpr e
+        )
+        (lstSubs l)

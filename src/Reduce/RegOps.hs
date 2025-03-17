@@ -3,21 +3,15 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Reduce.RegOps where
 
 import qualified AST
-import Common (
-  Config (cfRuntimeParams),
-  RuntimeParams (RuntimeParams, rpCreateCnstr),
- )
 import Control.Monad.Reader (asks)
 import Cursor (
-  Context (Context, ctxReduceStack),
   ValCursor (vcFocus),
  )
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromJust, isJust)
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -27,8 +21,6 @@ import qualified Reduce.RefSys as RefSys
 import qualified TCursorOps
 import Text.Printf (printf)
 import Util (
-  HasTrace (getTrace),
-  Trace (traceID),
   debugSpan,
   logDebugStr,
  )
@@ -150,12 +142,12 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
   logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
   if
     -- comparison operators
-    | isJust (lookup op cmpOps) -> case VT.treeNode t2 of
+    | Data.Maybe.isJust (lookup op cmpOps) -> case VT.treeNode t2 of
         VT.TNAtom ta2 ->
           let
             a2 = VT.amvAtom ta2
             f :: (VT.Atom -> VT.Atom -> Bool)
-            f = fromJust (lookup op cmpOps)
+            f = Data.Maybe.fromJust (lookup op cmpOps)
             rb = Right . VT.Bool
             r = case (a1, a2) of
               (VT.String _, VT.String _) -> rb $ dirApply f (d1, a1) a2
@@ -290,7 +282,7 @@ index ::
   m (Either VT.Tree (Maybe Path.TreeAddr))
 index origAddrsM (VT.RefPath var sels) = do
   refSels <- mapM (\(i, t) -> reduceAtomOpArg (Path.MutableArgTASeg i) t) (zip [0 ..] sels)
-  let refRestPathM = VT.treesToRef . catMaybes $ refSels
+  let refRestPathM = VT.treesToRef . Data.Maybe.catMaybes $ refSels
   logDebugStr $ printf "index: refRestPathM is reduced to %s" (show refRestPathM)
   maybe
     (return $ Right Nothing)
@@ -325,7 +317,7 @@ index origAddrsM (VT.RefPath var sels) = do
 -- in-place expression, like ({}).a, or regular functions.
 index _ (VT.RefIndex (end : rest)) = do
   idxSels <- mapM (\(i, x) -> reduceAtomOpArg (Path.MutableArgTASeg i) x) (zip [1 ..] rest)
-  let idxRefM = VT.treesToRef . catMaybes $ idxSels
+  let idxRefM = VT.treesToRef . Data.Maybe.catMaybes $ idxSels
   logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
   maybe
     (return $ Right Nothing)
