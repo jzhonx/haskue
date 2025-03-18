@@ -693,7 +693,7 @@ The tree cursor must at least have the root segment.
 -}
 searchTCVar :: (Env r m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
 searchTCVar name tc = do
-  subM <- getStructSub name $ vcFocus tc
+  subM <- findSub name $ vcFocus tc
   r <-
     maybe
       (goUp tc)
@@ -706,7 +706,7 @@ searchTCVar name tc = do
       )
       subM
 
-  -- logDebugStr $ printf "searchTCVar: name: %s, result: %s, focus:\n%s" name (show r) (show $ vcFocus tc)
+  logDebugStr $ printf "searchTCVar: name: %s, cur_path: %s, result: %s" name (show $ tcTreeAddr tc) (show r)
   return r
  where
   mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
@@ -717,9 +717,10 @@ searchTCVar name tc = do
     ptc <- maybe (throwErrSt "already on the top") return $ parentTC utc
     searchTCVar name ptc
 
-  getStructSub :: (Env r m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
-  getStructSub var VT.Tree{VT.treeNode = VT.TNStruct struct} =
-    do
+  -- TODO: findSub for default disjunct
+  findSub :: (Env r m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
+  findSub var t = case VT.treeNode t of
+    VT.TNStruct struct -> do
       let m =
             catMaybes
               [ do
@@ -735,7 +736,8 @@ searchTCVar name tc = do
         [] -> return Nothing
         [x] -> return $ Just x
         _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" var, False)
-  getStructSub _ _ = return Nothing
+    VT.TNMutable (VT.Compreh c) -> return Nothing
+    _ -> return Nothing
 
 -- | Go to the absolute addr in the tree.
 goRMAbsAddr :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m Bool

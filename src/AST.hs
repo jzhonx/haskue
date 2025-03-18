@@ -52,9 +52,11 @@ data Literal
   | TopLit
   | BottomLit
   | NullLit
-  | StructLit [Declaration]
+  | LitStructLit StructLit
   | ListLit ElementList
   deriving (Eq, Show)
+
+newtype StructLit = StructLit [Declaration] deriving (Eq, Show)
 
 data Declaration
   = FieldDecl FieldDecl
@@ -108,10 +110,22 @@ data RelOp
   | ReNotMatch
   deriving (Eq, Ord)
 
-data Embedding = Comprehension Comprehension | AliasExpr Expression
+data Embedding = EmbedComprehension Comprehension | AliasExpr Expression
   deriving (Eq, Show)
 
-data Comprehension = ComprehensionCons
+data Comprehension = Comprehension Clauses StructLit
+  deriving (Eq, Show)
+
+data Clauses = Clauses StartClause [Clause] deriving (Eq, Show)
+
+data StartClause
+  = -- | GuardClause is an "if" expression
+    GuardClause Expression
+  deriving (Eq, Show)
+
+data Clause
+  = ClauseStartClause StartClause
+  | ClauseLetClause LetClause
   deriving (Eq, Show)
 
 data LetClause = LetClause Identifer Expression
@@ -240,19 +254,19 @@ litBld ident e = case e of
   TopLit -> string7 "_"
   BottomLit -> string7 "_|_"
   NullLit -> string7 "null"
-  StructLit l -> structBld ident l
+  LitStructLit l -> structLitBld ident l
   ListLit l -> listBld l
 
 strLitBld :: StringLit -> Builder
 strLitBld (SimpleStringLit s) = string7 s
 
-structBld :: Int -> [Declaration] -> Builder
-structBld ident lit =
-  if null lit
+structLitBld :: Int -> StructLit -> Builder
+structLitBld ident (StructLit decls) =
+  if null decls
     then string7 "{}"
     else
       string7 "{\n"
-        <> declsBld (ident + 1) lit
+        <> declsBld (ident + 1) decls
         <> string7 (replicate (ident * 2) ' ')
         <> char7 '}'
 
@@ -282,7 +296,7 @@ fieldDeclBld ident e = case e of
 
 embeddingBld :: Int -> Embedding -> Builder
 embeddingBld ident e = case e of
-  Comprehension c -> undefined
+  EmbedComprehension c -> undefined
   AliasExpr ex -> exprBldIdent ident ex
 
 listBld :: ElementList -> Builder

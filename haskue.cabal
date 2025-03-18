@@ -37,6 +37,7 @@ library
         Value.Atom,
         Value.Bottom,
         Value.Bounds,
+        Value.Comprehension,
         Value.Constraint,
         Value.Cycle,
         Value.Disj,

@@ -8,6 +8,9 @@ module EvalExpr where
 
 import AST (
   BinaryOp (Disjunction, Unify),
+  Clause (..),
+  Clauses (..),
+  Comprehension (..),
   Declaration (..),
   ElementList (..),
   EllipsisDecl (Ellipsis),
@@ -26,14 +29,15 @@ import AST (
   PrimaryExpr (..),
   Selector (..),
   SourceFile (SourceFile),
+  StartClause (..),
   StringLit (SimpleStringLit),
+  StructLit (..),
   UnaryExpr (..),
   UnaryOp (Star),
  )
-import Common (Config, Env, TreeOp (isTreeValue))
+import Common (Env, TreeOp (isTreeValue))
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.Reader (MonadReader)
 import Control.Monad.State.Strict (MonadState, get, put)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -58,53 +62,14 @@ import qualified Reduce.RMonad as RM
 import qualified Reduce.RegOps as RegOps
 import Text.Printf (printf)
 import Util (logDebugStr)
-import Value.Mutable (getRefFromMutable)
-import Value.Reference (Reference (refArg))
-import Value.Tree (appendRefArg, stcLets)
-import Value.Tree as VT (
-  Atom (Bool, Float, Int, Null, String),
-  BdType,
-  Bound (BdType),
-  DynamicField (DynamicField),
-  Field (Field, ssfAttr, ssfCnstrs, ssfNoStatic, ssfPends, ssfValue),
-  LabelAttr (LabelAttr, lbAttrCnstr, lbAttrIsVar),
-  LetBinding (LetBinding),
-  Mutable (Ref, SFunc),
-  StatefulFunc (sfnArgs),
-  Struct (stcCnstrs, stcFields, stcID, stcOrdLabels, stcPendSubs),
-  StructCnstr (StructCnstr),
-  StructElemAdder (..),
-  StructFieldCnstr (..),
-  StructVal (SField, SLet),
-  Tree (treeNode),
-  TreeNode (TNBottom, TNMutable, TNStruct, TNTop),
-  appendSelToRefTree,
-  emptyFieldMker,
-  emptyStruct,
-  getMutableFromTree,
-  lookupStructVal,
-  mergeAttrs,
-  mkAtomTree,
-  mkBinaryOp,
-  mkBottomTree,
-  mkBoundsTree,
-  mkIndexRef,
-  mkListTree,
-  mkMutableTree,
-  mkNewTree,
-  mkStructFromAdders,
-  mkStructTree,
-  mkUnaryOp,
-  setExpr,
-  setTN,
- )
+import qualified Value.Tree as VT
 
 type EvalEnv r m = (Env r m, MonadState Int m)
 
-evalSourceFile :: (EvalEnv r m) => SourceFile -> m Tree
+evalSourceFile :: (EvalEnv r m) => SourceFile -> m VT.Tree
 evalSourceFile (SourceFile decls) = do
   logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
-  evalDecls decls
+  evalDecls (StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -113,37 +78,37 @@ Every eval* function should return a tree cursor that is at the same level as th
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: (EvalEnv r m) => Expression -> m Tree
+evalExpr :: (EvalEnv r m) => Expression -> m VT.Tree
 evalExpr e = do
   t <- case e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
-  return $ setExpr t (Just e)
+  return $ VT.setExpr t (Just e)
 
-evalLiteral :: (EvalEnv r m) => Literal -> m Tree
-evalLiteral (StructLit s) = evalDecls s
+evalLiteral :: (EvalEnv r m) => Literal -> m VT.Tree
+evalLiteral (LitStructLit s) = evalDecls s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
   v = case lit of
-    StringLit (SimpleStringLit s) -> mkAtomTree $ String s
-    IntLit i -> mkAtomTree $ Int i
-    FloatLit a -> mkAtomTree $ Float a
-    BoolLit b -> mkAtomTree $ Bool b
-    NullLit -> mkAtomTree Null
-    TopLit -> mkNewTree TNTop
-    BottomLit -> mkBottomTree ""
+    StringLit (SimpleStringLit s) -> VT.mkAtomTree $ VT.String s
+    IntLit i -> VT.mkAtomTree $ VT.Int i
+    FloatLit a -> VT.mkAtomTree $ VT.Float a
+    BoolLit b -> VT.mkAtomTree $ VT.Bool b
+    NullLit -> VT.mkAtomTree VT.Null
+    TopLit -> VT.mkNewTree VT.TNTop
+    BottomLit -> VT.mkBottomTree ""
 
-evalDecls :: (EvalEnv r m) => [Declaration] -> m Tree
-evalDecls decls = do
+evalDecls :: (EvalEnv r m) => StructLit -> m VT.Tree
+evalDecls (StructLit decls) = do
   sid <- allocOID
-  (t, embeds) <- foldM evalDecl (mkStructTree (emptyStruct{stcID = sid}), []) decls
+  (t, embeds) <- foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid}), []) decls
   return $
     if null embeds
       then t
       else
         foldl
-          (\acc embed -> mkMutableTree $ mkBinaryOp AST.Unify unifyREmbedded acc embed)
+          (\acc embed -> VT.mkMutableTree $ VT.mkBinaryOp AST.Unify unifyREmbedded acc embed)
           t
           embeds
 
@@ -155,16 +120,16 @@ allocOID = do
   return j
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree and the list of embeddings to be unified.
-evalDecl :: (EvalEnv r m) => (Tree, [Tree]) -> Declaration -> m (Tree, [Tree])
-evalDecl (x, embeds) decl = case treeNode x of
-  TNBottom _ -> return (x, embeds)
-  TNStruct struct -> case decl of
+evalDecl :: (EvalEnv r m) => (VT.Tree, [VT.Tree]) -> Declaration -> m (VT.Tree, [VT.Tree])
+evalDecl (x, embeds) decl = case VT.treeNode x of
+  VT.TNBottom _ -> return (x, embeds)
+  VT.TNStruct struct -> case decl of
     Embedding ed -> do
       v <- evalEmbedding ed
-      return (mkStructTree struct, v : embeds)
+      return (VT.mkStructTree struct, v : embeds)
     EllipsisDecl (Ellipsis cM) ->
       maybe
-        (return (mkStructTree struct, embeds))
+        (return (VT.mkStructTree struct, embeds))
         (\_ -> throwError "default constraints are not implemented yet")
         cM
     FieldDecl (AST.Field ls e) -> do
@@ -175,17 +140,32 @@ evalDecl (x, embeds) decl = case treeNode x of
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
       let
-        adder = LetSAdder ident val
+        adder = VT.LetSAdder ident val
         t = addNewStructElem adder struct
       logDebugStr $ printf "evalDecl: adder: %s, t: %s" (show adder) (show t)
       return (t, embeds)
   _ -> throwErrSt "invalid struct"
 
-evalEmbedding :: (EvalEnv r m) => Embedding -> m Tree
-evalEmbedding (Comprehension _) = throwErrSt "comprehension is not implemented yet"
+evalEmbedding :: (EvalEnv r m) => Embedding -> m VT.Tree
 evalEmbedding (AliasExpr e) = evalExpr e
+evalEmbedding (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
+  gev <- evalExpr ge
+  clsv <- mapM evalClause cls
+  sv <- evalDecls lit
+  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension gev clsv sv
 
-evalFdLabels :: (EvalEnv r m) => [AST.Label] -> AST.Expression -> m (StructElemAdder Tree)
+evalClause :: (EvalEnv r m) => Clause -> m (VT.IterClause VT.Tree)
+evalClause (ClauseStartClause (GuardClause e)) = do
+  t <- evalExpr e
+  return $ VT.IterClauseIf t
+evalClause (ClauseLetClause (LetClause ident le)) = do
+  lt <- evalExpr le
+  return $ VT.IterClauseLet ident lt
+
+-- evalStartClause :: (EvalEnv r m) => StartClause -> m VT.Tree
+-- evalStartClause (GuardClause e) = evalExpr e
+
+evalFdLabels :: (EvalEnv r m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
 evalFdLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
@@ -201,26 +181,26 @@ evalFdLabels lbls e =
         logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
         sf2 <- evalFdLabels (l2 : rs) e
         sid <- allocOID
-        let val = mkNewTree . TNStruct $ mkStructFromAdders sid [sf2]
+        let val = VT.mkNewTree . VT.TNStruct $ VT.mkStructFromAdders sid [sf2]
         adder <- mkAdder l1 val
         logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
         return adder
  where
-  mkAdder :: (EvalEnv r m) => Label -> Tree -> m (StructElemAdder Tree)
+  mkAdder :: (EvalEnv r m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
-      let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsVar = isVar ln}
+      let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsVar = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> return $ StaticSAdder key (VT.emptyFieldMker val attr)
+            (sselFrom -> Just key) -> return $ VT.StaticSAdder key (VT.emptyFieldMker val attr)
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
               oid <- allocOID
-              return $ DynamicSAdder oid (DynamicField oid attr selTree se val)
+              return $ VT.DynamicSAdder oid (VT.DynamicField oid attr selTree se val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
       oid <- allocOID
-      return (CnstrSAdder oid pat val)
+      return (VT.CnstrSAdder oid pat val)
 
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe String
@@ -232,11 +212,11 @@ evalFdLabels lbls e =
   dselFrom (LabelNameExpr lne) = Just lne
   dselFrom _ = Nothing
 
-  cnstrFrom :: AST.LabelConstraint -> StructFieldCnstr
+  cnstrFrom :: AST.LabelConstraint -> VT.StructFieldCnstr
   cnstrFrom c = case c of
-    RegularLabel -> SFCRegular
-    OptionalLabel -> SFCOptional
-    RequiredLabel -> SFCRequired
+    RegularLabel -> VT.SFCRegular
+    OptionalLabel -> VT.SFCOptional
+    RequiredLabel -> VT.SFCRequired
 
   isVar :: LabelName -> Bool
   isVar (LabelID _) = True
@@ -244,76 +224,78 @@ evalFdLabels lbls e =
   isVar _ = False
 
 -- Insert a new element into the struct. If the field is already in the struct, then unify the field with the new field.
-addNewStructElem :: StructElemAdder Tree -> Struct Tree -> Tree
+addNewStructElem :: VT.StructElemAdder VT.Tree -> VT.Struct VT.Tree -> VT.Tree
 addNewStructElem adder struct = case adder of
-  (StaticSAdder name sf) ->
+  (VT.StaticSAdder name sf) ->
     fromMaybe
-      ( case lookupStructVal name struct of
-          [SField extSF] ->
+      ( case VT.lookupStructVal name struct of
+          [VT.SField extSF] ->
             let
               unifySFOp =
                 VT.Field
-                  { ssfValue = mkNewTree (TNMutable $ mkBinaryOp AST.Unify unify (ssfValue extSF) (ssfValue sf))
-                  , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
-                  , ssfCnstrs = []
-                  , ssfPends = []
-                  , ssfNoStatic = False
+                  { VT.ssfValue =
+                      VT.mkNewTree
+                        (VT.TNMutable $ VT.mkBinaryOp AST.Unify unify (VT.ssfValue extSF) (VT.ssfValue sf))
+                  , VT.ssfAttr = VT.mergeAttrs (VT.ssfAttr extSF) (VT.ssfAttr sf)
+                  , VT.ssfCnstrs = []
+                  , VT.ssfPends = []
+                  , VT.ssfNoStatic = False
                   }
              in
-              mkStructTree $ struct{stcFields = Map.insert name unifySFOp (stcFields struct)}
-          [SLet _] -> aliasErr name
+              VT.mkStructTree $ struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}
+          [VT.SLet _] -> aliasErr name
           [] ->
-            mkStructTree $
+            VT.mkStructTree $
               struct
-                { stcOrdLabels = stcOrdLabels struct ++ [name]
-                , stcFields = Map.insert name sf (stcFields struct)
+                { VT.stcOrdLabels = VT.stcOrdLabels struct ++ [name]
+                , VT.stcFields = Map.insert name sf (VT.stcFields struct)
                 }
           _ -> aliasErr name
       )
       (existCheck name False)
-  (DynamicSAdder i dsf) ->
-    mkStructTree $ struct{stcPendSubs = IntMap.insert i dsf (stcPendSubs struct)}
-  (CnstrSAdder i pattern val) ->
-    mkStructTree $ struct{stcCnstrs = IntMap.insert i (StructCnstr i pattern val) (stcCnstrs struct)}
-  (LetSAdder name val) ->
+  (VT.DynamicSAdder i dsf) ->
+    VT.mkStructTree $ struct{VT.stcPendSubs = IntMap.insert i dsf (VT.stcPendSubs struct)}
+  (VT.CnstrSAdder i pattern val) ->
+    VT.mkStructTree $ struct{VT.stcCnstrs = IntMap.insert i (VT.StructCnstr i pattern val) (VT.stcCnstrs struct)}
+  (VT.LetSAdder name val) ->
     fromMaybe
-      ( mkStructTree $
-          struct{stcLets = Map.insert name (LetBinding False val) (stcLets struct)}
+      ( VT.mkStructTree $
+          struct{VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)}
       )
       (existCheck name True)
  where
-  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
-  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
+  aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+  lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
 
   -- Checks if name is already in the struct. If it is, then return an error message.
-  existCheck :: String -> Bool -> Maybe Tree
+  existCheck :: String -> Bool -> Maybe VT.Tree
   existCheck name isNameLet =
-    case (lookupStructVal name struct, isNameLet) of
-      ([SField f], True)
-        | lbAttrIsVar (ssfAttr f) -> Just $ aliasErr name
-      ([SLet _], True) -> Just $ lbRedeclErr name
-      ([SLet _], False) -> Just $ aliasErr name
+    case (VT.lookupStructVal name struct, isNameLet) of
+      ([VT.SField f], True)
+        | VT.lbAttrIsVar (VT.ssfAttr f) -> Just $ aliasErr name
+      ([VT.SLet _], True) -> Just $ lbRedeclErr name
+      ([VT.SLet _], False) -> Just $ aliasErr name
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: (EvalEnv r m) => AST.ElementList -> m Tree
+evalListLit :: (EvalEnv r m) => AST.ElementList -> m VT.Tree
 evalListLit (AST.EmbeddingList es) = do
   xs <- mapM evalEmbedding es
-  return $ mkListTree xs
+  return $ VT.mkListTree xs
 
-evalUnaryExpr :: (EvalEnv r m) => UnaryExpr -> m Tree
+evalUnaryExpr :: (EvalEnv r m) => UnaryExpr -> m VT.Tree
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
-builtinOpNameTable :: [(String, Tree)]
+builtinOpNameTable :: [(String, VT.Tree)]
 builtinOpNameTable =
   -- bounds
-  map (\b -> (show b, mkBoundsTree [BdType b])) [minBound :: BdType .. maxBound :: BdType]
+  map (\b -> (show b, VT.mkBoundsTree [VT.BdType b])) [minBound :: VT.BdType .. maxBound :: VT.BdType]
     -- built-in function names
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable
 
-evalPrimExpr :: (EvalEnv r m) => PrimaryExpr -> m Tree
+evalPrimExpr :: (EvalEnv r m) => PrimaryExpr -> m VT.Tree
 evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
@@ -332,9 +314,9 @@ evalPrimExpr (PrimExprArguments primExpr aes) = do
   replaceFuncArgs p args
 
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
-replaceFuncArgs :: (MonadError String m) => Tree -> [Tree] -> m Tree
-replaceFuncArgs t args = case getMutableFromTree t of
-  Just (SFunc fn) -> return . setTN t $ TNMutable . SFunc $ fn{sfnArgs = args}
+replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
+replaceFuncArgs t args = case VT.getMutableFromTree t of
+  Just (VT.SFunc fn) -> return . VT.setTN t $ VT.TNMutable . VT.SFunc $ fn{VT.sfnArgs = args}
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
@@ -346,39 +328,39 @@ For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
 -}
 evalSelector ::
-  (EvalEnv r m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
+  (EvalEnv r m) => PrimaryExpr -> AST.Selector -> VT.Tree -> m VT.Tree
 evalSelector _ astSel oprnd =
-  return $ appendSelToRefTree oprnd (mkAtomTree (String sel))
+  return $ VT.appendSelToRefTree oprnd (VT.mkAtomTree (VT.String sel))
  where
   sel = case astSel of
     IDSelector ident -> ident
     AST.StringSelector str -> str
 
 evalIndex ::
-  (EvalEnv r m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
+  (EvalEnv r m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree
 evalIndex _ (AST.Index e) oprnd = do
   sel <- evalExpr e
-  return $ appendSelToRefTree oprnd sel
+  return $ VT.appendSelToRefTree oprnd sel
 
 {- | Evaluates the unary operator.
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: (EvalEnv r m) => UnaryOp -> UnaryExpr -> m Tree
+evalUnaryOp :: (EvalEnv r m) => UnaryOp -> UnaryExpr -> m VT.Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  return $ mkNewTree (TNMutable $ mkUnaryOp op (RegOps.regUnaryOp op) t)
+  return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op (RegOps.regUnaryOp op) t)
 
 -- order of arguments is important for disjunctions.
 -- left is always before right.
-evalBinary :: (EvalEnv r m) => BinaryOp -> Expression -> Expression -> m Tree
+evalBinary :: (EvalEnv r m) => BinaryOp -> Expression -> Expression -> m VT.Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
-  return $ mkNewTree (TNMutable $ mkBinaryOp op (dispBinMutable op) lt rt)
+  return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op (dispBinMutable op) lt rt)
 
-evalDisj :: (EvalEnv r m) => Expression -> Expression -> m Tree
+evalDisj :: (EvalEnv r m) => Expression -> Expression -> m VT.Tree
 evalDisj e1 e2 = do
   (lt, rt) <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
@@ -397,9 +379,9 @@ evalDisj e1 e2 = do
       l <- evalExpr e1
       r <- evalExpr e2
       return (l, r)
-  return $ mkNewTree (TNMutable $ mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
+  return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
  where
-  reduceDisjAdapt :: (RM.ReduceMonad s r m) => Tree -> Tree -> m ()
+  reduceDisjAdapt :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
     t1 <- reduceMutableArg binOpLeftTASeg unt1
     t2 <- reduceMutableArg binOpRightTASeg unt2

@@ -9,13 +9,14 @@ import qualified AST
 import Common (BuildASTExpr (..), Env)
 import Exception (throwErrSt)
 import MutEnv (MutableEnv)
-import qualified Path
+import Value.Comprehension
 import Value.Reference
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
+  | Compreh (Comprehension t)
 
 -- | StatefulFunc is a tree node whose value can be changed.
 data StatefulFunc t = StatefulFunc
@@ -39,11 +40,13 @@ data MutableType = RegularMutable | DisjMutable
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
+  (==) (Compreh c1) (Compreh c2) = c1 == c2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
+  buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
@@ -76,14 +79,17 @@ requireMutableConcrete _ = False
 getMutName :: Mutable t -> (t -> Maybe String) -> String
 getMutName (SFunc mut) _ = sfnName mut
 getMutName (Ref ref) f = showRefArg (refArg ref) f
+getMutName (Compreh _) _ = "comprehend"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
+getMutVal (Compreh c) = cphValue c
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
+setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
 
 invokeMutMethod :: (MutableEnv s r t m) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -169,19 +175,6 @@ buildBinaryExpr op l r = do
   xe <- buildASTExpr c l
   ye <- buildASTExpr c r
   return $ AST.ExprBinaryOp op xe ye
-
-mkBinaryOpDir ::
-  forall t.
-  (BuildASTExpr t) =>
-  AST.BinaryOp ->
-  (forall s r m. (MutableEnv s r t m) => t -> t -> m ()) ->
-  (Path.BinOpDirect, t) ->
-  (Path.BinOpDirect, t) ->
-  Mutable t
-mkBinaryOpDir rep op (d1, t1) (_, t2) =
-  case d1 of
-    Path.L -> mkBinaryOp rep op t1 t2
-    Path.R -> mkBinaryOp rep op t2 t1
 
 mkRefMutable :: String -> [t] -> Mutable t
 mkRefMutable var ts =

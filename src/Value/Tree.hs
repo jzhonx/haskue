@@ -18,6 +18,7 @@ module Value.Tree (
   module Value.TreeNode,
   module Value.Mutable,
   module Value.Reference,
+  module Value.Comprehension,
 )
 where
 
@@ -51,6 +52,7 @@ import Text.Printf (printf)
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
+import Value.Comprehension
 import Value.Constraint
 import Value.Cycle
 import Value.Disj
@@ -263,6 +265,7 @@ buildRepTreeTN t tn opt = case tn of
             consFields val
           , []
           )
+    Compreh _ -> consRep (symbol, "", [], [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -295,6 +298,7 @@ instance BuildASTExpr Tree where
     TNMutable mut -> case mut of
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
+      Compreh _ -> maybe (throwErrSt "expression not found for comprehension") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -359,7 +363,7 @@ buildStructASTExpr concrete s =
           )
           []
           (IntMap.elems $ stcPendSubs s)
-      return $ AST.litCons $ AST.StructLit (stcs ++ dyns)
+      return $ AST.litCons $ AST.LitStructLit $ AST.StructLit (stcs ++ dyns)
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -488,6 +492,7 @@ showTreeSymbol t = case treeNode t of
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
+    Compreh _ -> "compreh"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -528,15 +533,13 @@ subNodes t = case treeNode t of
 
 mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
-mutHasRef (SFunc fn) = argsHaveRef (sfnArgs fn)
+mutHasRef (SFunc fn) = any treeHasRef (sfnArgs fn)
+mutHasRef (Compreh c) = any treeHasRef (cphStart c : cphStruct c : [getValFromIterClause x | x <- cphIterClauses c])
 
-argsHaveRef :: [Tree] -> Bool
-argsHaveRef =
-  any
-    ( \x -> case treeNode x of
-        TNMutable subFn -> mutHasRef subFn
-        _ -> False
-    )
+-- _treeHasRef :: Tree -> Bool
+-- _treeHasRef t = case treeNode t of
+--   TNMutable subFn -> mutHasRef subFn
+--   _ -> False
 
 -- Helpers
 

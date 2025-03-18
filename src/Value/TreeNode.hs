@@ -10,8 +10,10 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
 import Exception (throwErrSt)
 import Path (
+  ComprehTASeg (..),
   StructTASeg (..),
   TASeg (
+    ComprehTASeg,
     DisjDefaultTASeg,
     DisjDisjunctTASeg,
     IndexTASeg,
@@ -21,19 +23,21 @@ import Path (
     StructTASeg,
     SubValTASeg
   ),
-  getStrFromSeg,
  )
 import Text.Printf (printf)
 import Value.Atom (AtomV)
 import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
+
+-- Indexer (idxSels),
+
+import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Cycle (RefCycle, StructuralCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.List (List (lstSubs))
 import Value.Mutable (
-  -- Indexer (idxSels),
-  Mutable (Ref, SFunc),
+  Mutable (..),
   StatefulFunc (sfnArgs),
   getMutVal,
   setMutVal,
@@ -45,11 +49,8 @@ import Value.Struct (
   LetBinding (lbValue),
   Struct (stcCnstrs, stcPendSubs),
   StructCnstr (..),
-  StructVal (SField, SLet),
-  getFieldFromSV,
   lookupStructField,
   lookupStructLet,
-  lookupStructVal,
   updateStructField,
   updateStructLet,
  )
@@ -61,7 +62,7 @@ class HasTreeNode t where
 -- | TreeNode represents a tree structure that contains values.
 data TreeNode t
   = -- | TNStruct is a struct that contains a value and a map of segments to Tree.
-    TNStruct (Struct t)
+    TNStruct (Value.Struct.Struct t)
   | TNList (List t)
   | TNDisj (Disj t)
   | -- | TNAtom contains an atom value.
@@ -106,18 +107,22 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (RootTASeg, _) -> Just t
   (StructTASeg s, TNStruct struct) -> case s of
     StringTASeg name
-      | Just sf <- lookupStructField name struct -> Just $ ssfValue sf
+      | Just sf <- Value.Struct.lookupStructField name struct -> Just $ ssfValue sf
     PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
     PendingTASeg i j ->
       -- pending elements can be resolved, so the index might not be valid.
       (if j == 0 then dsfLabel else dsfValue) <$> stcPendSubs struct IntMap.!? i
     LetTASeg name
-      | Just lb <- lookupStructLet name struct -> Just (lbValue lb)
+      | Just lb <- Value.Struct.lookupStructLet name struct -> Just (lbValue lb)
     _ -> Nothing
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
+    | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
+    | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
+        getValFromIterClause <$> (cphIterClauses c `indexList` i)
+    | (ComprehTASeg ComprehStructTASeg, Compreh c) <- (seg, mut) -> return $ cphStruct c
     | SubValTASeg <- seg -> getMutVal mut
   (_, TNDisj d)
     | DisjDefaultTASeg <- seg -> dsjDefault d
@@ -126,9 +131,6 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (_, TNCnstredVal cv)
     | SubValTASeg <- seg -> Just (cnsedVal cv)
   _ -> Nothing
- where
-  indexList :: [a] -> Int -> Maybe a
-  indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
 -- | Set the sub tree with the given segment and new tree.
 setSubTreeTN ::
@@ -153,6 +155,17 @@ setSubTreeTN seg subT parT = do
             sels = subRefArgs (refArg ref)
             l = TNMutable . Ref $ ref{refArg = setRefArgs (refArg ref) $ take i sels ++ [subT] ++ drop (i + 1) sels}
           return l
+      | ComprehTASeg ComprehStartTASeg <- seg
+      , Compreh c <- mut ->
+          return $ TNMutable $ Compreh c{cphStart = subT}
+      | ComprehTASeg (ComprehIterClauseTASeg i) <- seg
+      , Compreh c <- mut -> do
+          let clauses = cphIterClauses c
+              clause = subT <$ (clauses !! i)
+          return $ TNMutable $ Compreh c{cphIterClauses = take i clauses ++ [clause] ++ drop (i + 1) clauses}
+      | ComprehTASeg ComprehStructTASeg <- seg
+      , Compreh c <- mut ->
+          return $ TNMutable $ Compreh c{cphStruct = subT}
       | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
     (_, TNDisj d)
       | DisjDefaultTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
@@ -165,22 +178,22 @@ setSubTreeTN seg subT parT = do
     _ -> throwErrSt insertErrMsg
   return $ setTreeNode parT n
  where
-  updateParStruct :: (MonadError String m) => Struct t -> StructTASeg -> m (TreeNode t)
+  updateParStruct :: (MonadError String m) => Value.Struct.Struct t -> StructTASeg -> m (TreeNode t)
   updateParStruct parStruct labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
-    , Just field <- lookupStructField name parStruct =
+    , Just field <- Value.Struct.lookupStructField name parStruct =
         let
           newField = subT <$ field
-          newStruct = updateStructField name newField parStruct
+          newStruct = Value.Struct.updateStructField name newField parStruct
          in
           return (TNStruct newStruct)
     | LetTASeg name <- labelSeg
-    , Just oldLet <- lookupStructLet name parStruct =
+    , Just oldLet <- Value.Struct.lookupStructLet name parStruct =
         let
           newLet = subT <$ oldLet
-          newStruct = updateStructLet name newLet parStruct
+          newStruct = Value.Struct.updateStructLet name newLet parStruct
          in
           return (TNStruct newStruct)
     | PatternTASeg i j <- labelSeg =
@@ -207,3 +220,6 @@ setSubTreeTN seg subT parT = do
       (show seg)
       (show subT)
       (show parT)
+
+indexList :: [a] -> Int -> Maybe a
+indexList xs i = if i < length xs then Just (xs !! i) else Nothing

@@ -6,6 +6,9 @@ module Parser where
 
 import AST (
   BinaryOp (..),
+  Clause (..),
+  Clauses (..),
+  Comprehension (..),
   Declaration (..),
   ElementList (EmbeddingList),
   EllipsisDecl (..),
@@ -26,7 +29,9 @@ import AST (
   Selector (IDSelector, StringSelector),
   SimpleStringLit,
   SourceFile (SourceFile),
+  StartClause (..),
   StringLit (SimpleStringLit),
+  StructLit (..),
   UnaryExpr (..),
   UnaryOp (..),
  )
@@ -46,6 +51,7 @@ import Text.Parsec (
   oneOf,
   option,
   optionMaybe,
+  parserTrace,
   runParser,
   satisfy,
   setInput,
@@ -182,7 +188,9 @@ expr = prec1
 
   precedence :: Parser String -> Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression)
   precedence op = do
+    parserTrace "before precedence"
     opLex <- lexeme (binOpAdapt op)
+    parserTrace "after op"
     let _op = fromJust $ lookup (lex opLex) binopTable
     -- return the rightmost token type and newline status.
     return $ \l r -> r{lex = ExprBinaryOp _op (lex l) (lex r)}
@@ -191,7 +199,9 @@ expr = prec1
   binOpAdapt op = (,TokenBinOp) <$> op
 
   prec7 :: Parser (Lexeme Expression)
-  prec7 = binOp (fmap ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
+  prec7 = do
+    parserTrace "before prec7"
+    binOp (fmap ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
 
   prec6 :: Parser (Lexeme Expression)
   prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
@@ -203,7 +213,9 @@ expr = prec1
   prec2 = binOp prec5 (precedence (string "&"))
 
   prec1 :: Parser (Lexeme Expression)
-  prec1 = binOp prec2 (precedence (string "|"))
+  prec1 = do
+    parserTrace "before prec1"
+    binOp prec2 (precedence (string "|"))
 
 unaryExpr :: Parser (Lexeme UnaryExpr)
 unaryExpr = do
@@ -295,7 +307,7 @@ literal =
     <|> try (litLexeme TokenBottom bottom)
     <|> try (litLexeme TokenTop top)
     <|> try (litLexeme TokenNull null)
-    <|> struct
+    <|> (fmap LitStructLit <$> structLit)
     <|> list
 
 identifier :: Parser (Lexeme String)
@@ -308,8 +320,8 @@ identifier = lexeme $ do
 letter :: Parser Char
 letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
 
-struct :: Parser (Lexeme Literal)
-struct = do
+structLit :: Parser (Lexeme StructLit)
+structLit = do
   _ <- lexeme $ (,TokenLBrace) <$> char '{'
   decls <- many $ do
     dLex <- decl
@@ -421,9 +433,37 @@ ellipsisDecl = do
     eLexM
 
 embedding :: Parser (Lexeme Embedding)
-embedding = do
+embedding = try (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
+ where
+  aliasExpr = do
+    eLex <- expr
+    return $ AliasExpr (lex eLex) <$ eLex
+
+comprehension :: Parser (Lexeme Comprehension)
+comprehension = do
+  parserTrace "before comprehension"
+  stLex <- startClause
+  parserTrace "after start"
+  -- clsLex <- many $ do
+  --   _ <- try $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
+  --   clause
+  structLex <- structLit
+  let
+    -- cls = Clauses (lex stLex) (map lex clsLex)
+    cls = Clauses (lex stLex) []
+    c = Comprehension cls (lex structLex)
+  return $ c <$ structLex
+
+startClause :: Parser (Lexeme StartClause)
+startClause = do
+  _ <- lexeme $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
+  parserTrace "before start expr"
   eLex <- expr
-  return $ AliasExpr (lex eLex) <$ eLex
+  parserTrace "after start expr"
+  return $ GuardClause (lex eLex) <$ eLex
+
+clause :: Parser (Lexeme Clause)
+clause = try (fmap ClauseStartClause <$> startClause) <|> (fmap ClauseLetClause <$> letClause)
 
 letClause :: Parser (Lexeme LetClause)
 letClause = do

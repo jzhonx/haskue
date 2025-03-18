@@ -65,6 +65,7 @@ data TASeg
     SubValTASeg
   | -- | MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
     MutableArgTASeg Int
+  | ComprehTASeg ComprehTASeg
   | ParentTASeg
   | TempTASeg
   deriving (Eq, Ord)
@@ -79,6 +80,7 @@ instance Show TASeg where
   show SubValTASeg = "sv"
   show ParentTASeg = ".."
   show TempTASeg = "tmp"
+  show (ComprehTASeg s) = show s
 
 data StructTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
@@ -102,6 +104,17 @@ instance Show StructTASeg where
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
   show (PendingTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
   show (LetTASeg s) = "let_" ++ s
+
+data ComprehTASeg
+  = ComprehStartTASeg
+  | ComprehIterClauseTASeg Int
+  | ComprehStructTASeg
+  deriving (Eq, Ord)
+
+instance Show ComprehTASeg where
+  show ComprehStartTASeg = "cph_start"
+  show (ComprehIterClauseTASeg i) = "cph_iter" ++ show i
+  show ComprehStructTASeg = "cph_val"
 
 getStrFromSeg :: StructTASeg -> Maybe String
 getStrFromSeg (StringTASeg s) = Just s

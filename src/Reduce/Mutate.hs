@@ -39,6 +39,7 @@ mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
   rM <- debugSpan (printf "mutate, addr: %s, mut: %s" (show addr) (show name)) $ case m of
     VT.Ref ref -> mutateRef ref
     VT.SFunc fn -> mutateFunc fn >> return Nothing
+    VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.
@@ -140,6 +141,29 @@ mutateFunc fn = RM.withTree $ \t -> do
     Just (VT.SFunc _) ->
       throwErrSt $
         printf "mutateFunc: mutable value of the VT.StatefulFunc should not be a VT.StatefulFunc, but got: %s" (show mv)
+    _ -> return ()
+
+  -- Check whether the mutator is reducible.
+  -- The first argument is a mutable node, and the second argument is the mutval.
+  isMutableTreeReducible :: VT.Tree -> VT.Tree -> Bool
+  isMutableTreeReducible mut mv =
+    isTreeBottom mv
+      || VT.isTreeRefCycleTail mv
+      || VT.isTreeStructuralCycle mv
+      -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
+      || not (treeHasRef mut)
+
+mutateCompreh :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> m ()
+mutateCompreh compreh = RM.withTree $ \t -> do
+  MutEnv.Functions{MutEnv.fnComprehend = comprehend} <- asks MutEnv.getFuncs
+  RM.mustMutable $ \_ -> _runInMutValEnv $ comprehend compreh
+  assertMVNotFunc
+  _runWithExtMutVal $ \mv -> when (isMutableTreeReducible t mv) $ reduceToMutVal mv
+ where
+  assertMVNotFunc = _runWithExtMutVal $ \mv -> case VT.getMutableFromTree mv of
+    Just (VT.SFunc _) ->
+      throwErrSt $
+        printf "mutateCompreh: mutable value of the VT.StatefulFunc should not be a VT.StatefulFunc, but got: %s" (show mv)
     _ -> return ()
 
   -- Check whether the mutator is reducible.

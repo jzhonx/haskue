@@ -16,21 +16,15 @@ where
 
 import AST (
   Expression (ExprUnaryExpr),
-  Literal (StructLit),
+  Literal (LitStructLit),
   Operand (OpLiteral),
   PrimaryExpr (PrimExprOperand),
   SourceFile,
+  StructLit (StructLit),
   UnaryExpr (UnaryExprPrimaryExpr),
   declsBld,
  )
-import Common (
-  Config (..),
-  HasConfig (..),
-  RuntimeParams (RuntimeParams, rpCreateCnstr),
-  Settings (Settings, stMermaid, stShowMutArgs),
-  buildASTExpr,
-  emptyConfig,
- )
+import qualified Common
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
@@ -53,6 +47,7 @@ import Parser (parseSourceFile)
 import Path (TASeg (RootTASeg))
 import Reduce (
   close,
+  comprehend,
   fullReduce,
   index,
   propUpStructPost,
@@ -85,7 +80,7 @@ emptyEvalConfig =
     }
 
 data Runner = Runner
-  { rcConfig :: Config
+  { rcConfig :: Common.Config
   , rcFuncs :: MutEnv.Functions Tree
   }
 
@@ -95,7 +90,7 @@ instance Show Runner where
 emptyRunner :: Runner
 emptyRunner =
   Runner
-    { rcConfig = emptyConfig
+    { rcConfig = Common.emptyConfig
     , rcFuncs =
         MutEnv.Functions
           { MutEnv.fnEvalExpr = evalExpr
@@ -103,17 +98,18 @@ emptyRunner =
           , MutEnv.fnReduce = reduce
           , MutEnv.fnIndex = index
           , MutEnv.fnPropUpStructPost = propUpStructPost
+          , MutEnv.fnComprehend = comprehend
           }
     }
 
-updateConfig :: Runner -> Config -> Runner
+updateConfig :: Runner -> Common.Config -> Runner
 updateConfig r c = r{rcConfig = c}
 
 instance MutEnv.HasFuncs Runner Tree where
   getFuncs = rcFuncs
   setFuncs r f = r{rcFuncs = f}
 
-instance HasConfig Runner where
+instance Common.HasConfig Runner where
   getConfig = rcConfig
   setConfig r c = r{rcConfig = c}
 
@@ -130,7 +126,7 @@ runIO s conf =
       Left err -> return $ string7 err
       Right
         ( AST.ExprUnaryExpr
-            (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.StructLit decls))))
+            (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.LitStructLit (AST.StructLit decls)))))
           ) ->
           return (declsBld 0 decls)
       _ -> throwErrSt "Expected a struct literal"
@@ -144,7 +140,7 @@ runStr s conf = do
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> runReaderT (buildASTExpr False t) emptyRunner
+    _ -> Right <$> runReaderT (Common.buildASTExpr False t) emptyRunner
 
 runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
@@ -154,15 +150,15 @@ evalFile sf conf = do
   let runner =
         updateConfig
           emptyRunner
-          ( Config
-              { cfSettings =
-                  (cfSettings . rcConfig $ emptyRunner)
-                    { stMermaid = ecMermaidGraph conf
-                    , stShowMutArgs = ecShowMutArgs conf
+          ( Common.Config
+              { Common.cfSettings =
+                  (Common.cfSettings . rcConfig $ emptyRunner)
+                    { Common.stMermaid = ecMermaidGraph conf
+                    , Common.stShowMutArgs = ecShowMutArgs conf
                     }
-              , cfRuntimeParams =
-                  (cfRuntimeParams . rcConfig $ emptyRunner)
-                    { rpCreateCnstr = True
+              , Common.cfRuntimeParams =
+                  (Common.cfRuntimeParams . rcConfig $ emptyRunner)
+                    { Common.rpCreateCnstr = True
                     }
               }
           )
@@ -188,7 +184,7 @@ evalFile sf conf = do
       ( updateConfig
           runner
           ( let c = rcConfig runner
-             in c{cfRuntimeParams = (cfRuntimeParams c){rpCreateCnstr = False}}
+             in c{Common.cfRuntimeParams = (Common.cfRuntimeParams c){Common.rpCreateCnstr = False}}
           )
       )
   logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)

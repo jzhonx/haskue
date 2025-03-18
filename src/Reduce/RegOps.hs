@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -354,3 +355,21 @@ evalIndexArg i t =
         MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
         reduce >> RM.getRMTree
     )
+
+comprehend :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> m ()
+comprehend c = do
+  rM <- reduceAtomOpArg (Path.ComprehTASeg Path.ComprehStartTASeg) (VT.cphStart c)
+  maybe
+    (return ())
+    ( \t -> case VT.treeNode t of
+        VT.TNBottom _ -> RM.putRMTree t
+        VT.TNAtom (VT.AtomV (VT.Bool b)) ->
+          if b
+            then do
+              RM.putRMTree (VT.cphStruct c)
+              MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+              reduce
+            else RM.putRMTree $ VT.mkStructTree VT.emptyStruct
+        _ -> RM.putRMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (show t)
+    )
+    rM

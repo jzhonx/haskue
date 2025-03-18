@@ -12,7 +12,8 @@ import Cursor (HasCtxVal)
 import Exception (throwErrSt)
 import qualified Path
 import Util (HasTrace)
-import Value.Reference (RefArg, Reference)
+import Value.Comprehension (Comprehension)
+import Value.Reference (RefArg)
 import Value.Struct (Struct)
 
 -- This file is used to break the circular dependency on Mutable.
@@ -48,6 +49,7 @@ data Functions t = Functions
       RefArg t ->
       m (Either t (Maybe Path.TreeAddr))
   , fnPropUpStructPost :: forall s r m. (MutableEnv s r t m) => (Path.StructTASeg, Struct t) -> m ()
+  , fnComprehend :: forall s r m. (MutableEnv s r t m) => Comprehension t -> m ()
   }
 
 emptyFunctions :: Functions t
@@ -58,4 +60,5 @@ emptyFunctions =
     , fnReduce = throwErrSt "fnReduce not set"
     , fnIndex = \_ _ -> throwErrSt "fnIndex not set"
     , fnPropUpStructPost = \_ -> throwErrSt "fnPropUpStructPost not set"
+    , fnComprehend = \_ -> throwErrSt "fnComprehend not set"
     }
