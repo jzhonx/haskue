@@ -17,14 +17,14 @@ import Cursor (
   Context (ctxReduceStack, ctxRefSysGraph),
   TreeCursor,
   ValCursor (ValCursor, vcFocus),
-  addCtxRefSysier,
+  addCtxNotifiers,
   isTCTop,
   mkSubTC,
   parentTC,
   tcTreeAddr,
  )
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified MutEnv
@@ -102,13 +102,17 @@ bfsLoopQ tid = do
       recvs <- lift $ do
         notifyG <- ctxRefSysGraph <$> RM.getRMContext
         addr <- RM.getRMAbsAddr
-        let
-          -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
-          -- finalized address can be notified.
-          -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
-          -- always have address of /a/sv/y.
-          srcFinalizedAddr = Path.referableAddr addr
-        return $ fromMaybe [] (Map.lookup srcFinalizedAddr notifyG)
+        -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
+        -- finalized address can be notified.
+        -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
+        -- always have address of /a/sv/y.
+        return $
+          fromMaybe
+            []
+            ( do
+                srcFinalizedAddr <- Path.referableAddr addr
+                Map.lookup srcFinalizedAddr notifyG
+            )
 
       -- Add the receivers to the visited list and the queue.
       modify $ \state ->
@@ -242,10 +246,10 @@ deref ::
 deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
   debugSpan (printf "deref: addr: %s, origAddrsM: %s, ref: %s" (show addr) (show origAddrsM) (show ref)) $ do
     -- Add the notifier anyway.
-    addRefSysier ref origAddrsM
+    addNotifiers ref origAddrsM
 
-    let refAddr = Path.referableAddr addr
-    rE <- getDstVal ref origAddrsM (Set.fromList [refAddr])
+    let selfAddr = Path.noSubValAddr addr
+    rE <- getDstVal ref origAddrsM (Set.fromList [selfAddr])
     case rE of
       Left err -> RM.putRMTree err >> return Nothing
       Right Nothing -> return Nothing
@@ -257,20 +261,23 @@ deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
 {- | Add a notifier to the context.
 
 If the referenced value changes, then the reference should be updated. Duplicate cases are handled by the
-addCtxRefSysier.
+addCtxNotifiers.
 -}
-addRefSysier :: (RM.ReduceMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
-addRefSysier ref origAddrsM = do
-  srcAddrM <- refToPotentialAddr ref origAddrsM >>= \x -> return $ Path.referableAddr <$> x
+addNotifiers :: (RM.ReduceMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
+addNotifiers ref origAddrsM = do
+  srcAddrM <-
+    refToPotentialAddr ref origAddrsM >>= \xM -> return $ do
+      x <- xM
+      Path.referableAddr x
   -- Since we are in the /sv environment, we need to get the referable addr.
-  recvAddr <- Path.referableAddr <$> RM.getRMAbsAddr
+  recvAddr <- Path.noSubValAddr <$> RM.getRMAbsAddr
 
   maybe
-    (logDebugStr $ printf "addRefSysier: ref %s is not found" (show ref))
+    (logDebugStr $ printf "addNotifiers: ref %s is not found" (show ref))
     ( \srcAddr -> do
         ctx <- RM.getRMContext
-        RM.putRMContext $ addCtxRefSysier ctx (srcAddr, recvAddr)
-        logDebugStr $ printf "addRefSysier: (%s -> %s)" (show srcAddr) (show recvAddr)
+        RM.putRMContext $ addCtxNotifiers ctx (srcAddr, recvAddr)
+        logDebugStr $ printf "addNotifiers: (%s -> %s)" (show srcAddr) (show recvAddr)
     )
     srcAddrM
 
@@ -384,7 +391,7 @@ getDstVal ref origAddrsM trail = RM.withAddrAndFocus $ \srcAddr _ ->
         -- ref_a
         -- Notice that for self-cycle, the srcTreeAddr could be /addr/sv, and the dstTreeAddr could be /addr. They
         -- are the same in the refNode form.
-        | canDstAddr == Path.referableAddr canSrcAddr && srcAddr /= dstAddr -> RM.withTree $ \tar ->
+        | Just canDstAddr == Path.referableAddr canSrcAddr && srcAddr /= dstAddr -> RM.withTree $ \tar ->
             case VT.treeNode tar of
               -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
               VT.TNAtomCnstr c -> return (VT.mkAtomVTree $ VT.cnsOrigAtom c, False)
@@ -707,6 +714,7 @@ searchTCVar name tc = do
       subM
 
   logDebugStr $ printf "searchTCVar: name: %s, cur_path: %s, result: %s" name (show $ tcTreeAddr tc) (show r)
+  -- logDebugStr $ printf "searchTCVar: name: %s, cur_path: %s, tc:\n%s" name (show $ tcTreeAddr tc) (show tc)
   return r
  where
   mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
@@ -762,3 +770,9 @@ evalExprRM e = do
   (rawT, newOID) <- runStateT (evalExpr e) curSID
   RM.setRMObjID newOID
   return rawT
+
+mustReferableAddr :: (Env r m) => Path.TreeAddr -> m Path.TreeAddr
+mustReferableAddr addr = do
+  let r = Path.referableAddr addr
+  when (isNothing r) $ throwErrSt $ printf "the addr %s is not referable" (show addr)
+  return $ fromJust r

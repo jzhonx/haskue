@@ -95,8 +95,8 @@ emptyContext =
 The first element is the source addr, which is the addr that is being watched.
 The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
-addCtxRefSysier :: Context t -> (TreeAddr, TreeAddr) -> Context t
-addCtxRefSysier ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
+addCtxNotifiers :: Context t -> (TreeAddr, TreeAddr) -> Context t
+addCtxNotifiers ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
  where
   oldMap = ctxRefSysGraph ctx
   depList = fromMaybe [] $ Map.lookup src oldMap

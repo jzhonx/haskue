@@ -54,6 +54,7 @@ import Reduce (
   reduce,
  )
 import Reduce.PostReduce (postValidation)
+import Reduce.UnifyOp (unifyEmbeds)
 import Text.Printf (printf)
 import Util (logDebugStr)
 import Value.Tree (
@@ -99,6 +100,7 @@ emptyRunner =
           , MutEnv.fnIndex = index
           , MutEnv.fnPropUpStructPost = propUpStructPost
           , MutEnv.fnComprehend = comprehend
+          , MutEnv.fnUnifyEmbeds = unifyEmbeds
           }
     }
 

@@ -1,0 +1,7 @@
+-- cp_if_incpl1 --
+p: {}
+if p.z {
+	x: 1
+}
+-- exp --
+p: {}

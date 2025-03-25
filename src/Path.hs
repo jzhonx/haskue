@@ -3,6 +3,7 @@ module Path where
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust, isNothing)
 import qualified Data.Set as Set
 
 data Selector = StringSel String | IntSel Int
@@ -96,6 +97,7 @@ data StructTASeg
     LetTASeg
       -- | Identifier
       String
+  | EmbedTASeg Int
   deriving (Eq, Ord)
 
 instance Show StructTASeg where
@@ -104,6 +106,7 @@ instance Show StructTASeg where
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
   show (PendingTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
   show (LetTASeg s) = "let_" ++ s
+  show (EmbedTASeg i) = "emb_" ++ show i
 
 data ComprehTASeg
   = ComprehStartTASeg
@@ -204,14 +207,13 @@ initTreeAddr :: TreeAddr -> Maybe TreeAddr
 initTreeAddr (TreeAddr []) = Nothing
 initTreeAddr (TreeAddr xs) = Just $ TreeAddr (drop 1 xs)
 
--- | Canonicalize a addr by removing operator segments.
+-- | Canonicalize address by removing helper segments, such as Mutable argument or subval segments.
 canonicalizeAddr :: TreeAddr -> TreeAddr
 canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter (not . isIgnored) xs
  where
   isIgnored :: TASeg -> Bool
   isIgnored (MutableArgTASeg _) = True
   isIgnored SubValTASeg = True
-  -- TODO: remove temp
   isIgnored TempTASeg = True
   isIgnored _ = False
 
@@ -317,20 +319,39 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
   isCycle (CyclicSCC _) = True
   isCycle _ = False
 
-hasTemp :: TreeAddr -> Bool
-hasTemp (TreeAddr xs) = TempTASeg `elem` xs
-
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
 
 {- | Convert the address to referable address.
 
-Referable address is the address in which all the mutval segments are removed.
+Referable address is the address that a value can be referred to in the CUE code.
+
+SubValSeg will be removed as once the value it points to become concrete, the path to the value will no longer have the
+sub value segment. The referable address must be valid for both cases.
+
+If the address contains any mutable arg segment, then the address is not referable.
 -}
-referableAddr :: TreeAddr -> TreeAddr
-referableAddr p = TreeAddr $ filter (not . isSubValSeg) $ getTreeSegs p
+referableAddr :: TreeAddr -> Maybe TreeAddr
+referableAddr p =
+  let
+    ysM =
+      foldr
+        ( \seg acc ->
+            if isSegArg seg || isNothing acc
+              then Nothing
+              else Just $ seg : fromJust acc
+        )
+        (Just [])
+        (getTreeSegs $ noSubValAddr p)
+   in
+    TreeAddr <$> ysM
  where
-  isSubValSeg :: TASeg -> Bool
-  isSubValSeg SubValTASeg = True
-  isSubValSeg _ = False
+  isSegArg (MutableArgTASeg _) = True
+  isSegArg _ = False
+
+noSubValAddr :: TreeAddr -> TreeAddr
+noSubValAddr (TreeAddr segs) = TreeAddr $ filter (not . isSegSV) segs
+ where
+  isSegSV SubValTASeg = True
+  isSegSV _ = False

@@ -49,38 +49,39 @@ reduceAtomOpArg seg sub = RM.withAddrAndFocus $ \addr _ ->
 
 regUnaryOp :: (RM.ReduceMonad s r m) => AST.UnaryOp -> VT.Tree -> m ()
 regUnaryOp op _t = do
-  tM <- reduceAtomOpArg Path.unaryOpTASeg _t
-  case tM of
-    Just t -> case VT.treeNode t of
-      VT.TNAtom ta -> case (op, VT.amvAtom ta) of
-        (AST.Plus, VT.Int i) -> ia i id
-        (AST.Plus, VT.Float i) -> fa i id
-        (AST.Minus, VT.Int i) -> ia i negate
-        (AST.Minus, VT.Float i) -> fa i negate
-        (AST.Not, VT.Bool b) -> RM.putRMTree (VT.mkAtomTree (VT.Bool (not b)))
-        (AST.UnaRelOp uop, _) -> case (uop, VT.amvAtom ta) of
-          (AST.NE, a) -> mkb (VT.BdNE a)
-          (AST.LT, VT.Int i) -> mkib VT.BdLT i
-          (AST.LT, VT.Float f) -> mkfb VT.BdLT f
-          (AST.LE, VT.Int i) -> mkib VT.BdLE i
-          (AST.LE, VT.Float f) -> mkfb VT.BdLE f
-          (AST.GT, VT.Int i) -> mkib VT.BdGT i
-          (AST.GT, VT.Float f) -> mkfb VT.BdGT f
-          (AST.GE, VT.Int i) -> mkib VT.BdGE i
-          (AST.GE, VT.Float f) -> mkfb VT.BdGE f
-          (AST.ReMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReMatch p])
-          (AST.ReNotMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReNotMatch p])
+  t <- Mutate.reduceMutableArg Path.unaryOpTASeg _t
+  case VT.treeNode t of
+    VT.TNBottom _ -> RM.putRMTree t
+    VT.TNMutable _ -> return ()
+    VT.TNRefCycle (VT.RefCycleVertMerger _) -> RM.putRMTree t
+    _
+      | Just ta <- VT.getAtomFromTree t -> case (op, ta) of
+          (AST.Plus, VT.Int i) -> ia i id
+          (AST.Plus, VT.Float i) -> fa i id
+          (AST.Minus, VT.Int i) -> ia i negate
+          (AST.Minus, VT.Float i) -> fa i negate
+          (AST.Not, VT.Bool b) -> RM.putRMTree (VT.mkAtomTree (VT.Bool (not b)))
+          (AST.UnaRelOp uop, _) -> case (uop, ta) of
+            (AST.NE, a) -> mkb (VT.BdNE a)
+            (AST.LT, VT.Int i) -> mkib VT.BdLT i
+            (AST.LT, VT.Float f) -> mkfb VT.BdLT f
+            (AST.LE, VT.Int i) -> mkib VT.BdLE i
+            (AST.LE, VT.Float f) -> mkfb VT.BdLE f
+            (AST.GT, VT.Int i) -> mkib VT.BdGT i
+            (AST.GT, VT.Float f) -> mkfb VT.BdGT f
+            (AST.GE, VT.Int i) -> mkib VT.BdGE i
+            (AST.GE, VT.Float f) -> mkfb VT.BdGE f
+            (AST.ReMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReMatch p])
+            (AST.ReNotMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReNotMatch p])
+            _ -> putConflict
           _ -> putConflict
-        _ -> putConflict
-      VT.TNRefCycle (VT.RefCycleVertMerger _) -> RM.putRMTree t
-      _ -> putConflict
-    Nothing -> return ()
+    _ -> putConflict
  where
-  conflict :: VT.Tree
-  conflict = VT.mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
+  conflictErr :: VT.Tree
+  conflictErr = VT.mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
 
   putConflict :: (RM.ReduceMonad s r m) => m ()
-  putConflict = RM.putRMTree conflict
+  putConflict = RM.putRMTree conflictErr
 
   ia :: (RM.ReduceMonad s r m) => Integer -> (Integer -> Integer) -> m ()
   ia a f = RM.putRMTree (VT.mkAtomTree (VT.Int $ f a))
@@ -358,18 +359,18 @@ evalIndexArg i t =
 
 comprehend :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> m ()
 comprehend c = do
-  rM <- reduceAtomOpArg (Path.ComprehTASeg Path.ComprehStartTASeg) (VT.cphStart c)
-  maybe
-    (return ())
-    ( \t -> case VT.treeNode t of
-        VT.TNBottom _ -> RM.putRMTree t
-        VT.TNAtom (VT.AtomV (VT.Bool b)) ->
+  t <- Mutate.reduceMutableArg (Path.ComprehTASeg Path.ComprehStartTASeg) (VT.cphStart c)
+  RM.withAddrAndFocus $ \addr _ ->
+    logDebugStr $ printf "comprehend: addr: %s start reduced to: %s" (show addr) (show t)
+  case VT.treeNode t of
+    VT.TNBottom _ -> RM.putRMTree t
+    VT.TNMutable _ -> return ()
+    _
+      | Just (VT.Bool b) <- VT.getAtomFromTree t ->
           if b
             then do
               RM.putRMTree (VT.cphStruct c)
               MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
               reduce
             else RM.putRMTree $ VT.mkStructTree VT.emptyStruct
-        _ -> RM.putRMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (show t)
-    )
-    rM
+    _ -> RM.putRMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)

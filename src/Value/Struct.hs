@@ -24,6 +24,8 @@ data Struct t = Struct
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
   , stcPendSubs :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
+  , stcEmbeds :: IntMap.IntMap t
+  -- ^ The embedded structs are not reduced.
   , stcClosed :: Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
   , stcPerms :: [PermItem]
@@ -96,6 +98,7 @@ data StructElemAdder t
   | DynamicSAdder Int (DynamicField t)
   | CnstrSAdder Int t t
   | LetSAdder String t
+  | EmbedSAdder Int t
   deriving (Show)
 
 data PermItem = PermItem
@@ -189,6 +192,7 @@ emptyStruct =
     , stcLets = Map.empty
     , stcPendSubs = IntMap.empty
     , stcCnstrs = IntMap.empty
+    , stcEmbeds = IntMap.empty
     , stcClosed = False
     , stcPerms = []
     }

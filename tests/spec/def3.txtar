@@ -10,11 +10,11 @@
 D1: #D & {a: 12, c: 22} // { a: 12, c: 22 }
 -- exp --
 #D: {
+    c: int
     a: int
-    c: int
 } | {
-    b: int
     c: int
+    b: int
 }
 #OneOf: {
     a: int

@@ -40,6 +40,11 @@ mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
     VT.Ref ref -> mutateRef ref
     VT.SFunc fn -> mutateFunc fn >> return Nothing
     VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
+    VT.UEmbeds ue -> do
+      RM.mustMutable $ \_ -> _runInMutValEnv $ do
+        MutEnv.Functions{MutEnv.fnUnifyEmbeds = unifyEmbeds} <- asks MutEnv.getFuncs
+        unifyEmbeds (VT.ueStruct ue)
+      return Nothing
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.
@@ -253,17 +258,11 @@ delMutValRecvs mutAddr = do
       ( filter
           ( \recv ->
               let
-                isAddrSub = Path.isPrefix mutAddr recv && recv /= mutAddr
-                rest = Path.trimPrefixTreeAddr recv mutAddr
-                isAddrMutArg = isAddrSub && isSegMutArg (fromJust (Path.headSeg rest))
+                mutValAddr = Path.appendSeg Path.SubValTASeg mutAddr
                in
-                not isAddrSub || isAddrMutArg
+                not $ Path.isPrefix mutValAddr recv
           )
       )
-
-  isSegMutArg :: Path.TASeg -> Bool
-  isSegMutArg (Path.MutableArgTASeg _) = True
-  isSegMutArg _ = False
 
 {- | Reduce the argument of the mutable.
 

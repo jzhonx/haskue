@@ -51,7 +51,7 @@ import Text.Parsec (
   oneOf,
   option,
   optionMaybe,
-  parserTrace,
+  -- parserTrace,
   runParser,
   satisfy,
   setInput,
@@ -188,9 +188,9 @@ expr = prec1
 
   precedence :: Parser String -> Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression)
   precedence op = do
-    parserTrace "before precedence"
+    -- parserTrace "before precedence"
     opLex <- lexeme (binOpAdapt op)
-    parserTrace "after op"
+    -- parserTrace "after op"
     let _op = fromJust $ lookup (lex opLex) binopTable
     -- return the rightmost token type and newline status.
     return $ \l r -> r{lex = ExprBinaryOp _op (lex l) (lex r)}
@@ -200,7 +200,7 @@ expr = prec1
 
   prec7 :: Parser (Lexeme Expression)
   prec7 = do
-    parserTrace "before prec7"
+    -- parserTrace "before prec7"
     binOp (fmap ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
 
   prec6 :: Parser (Lexeme Expression)
@@ -214,7 +214,7 @@ expr = prec1
 
   prec1 :: Parser (Lexeme Expression)
   prec1 = do
-    parserTrace "before prec1"
+    -- parserTrace "before prec1"
     binOp prec2 (precedence (string "|"))
 
 unaryExpr :: Parser (Lexeme UnaryExpr)
@@ -441,9 +441,9 @@ embedding = try (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
 
 comprehension :: Parser (Lexeme Comprehension)
 comprehension = do
-  parserTrace "before comprehension"
+  -- parserTrace "before comprehension"
   stLex <- startClause
-  parserTrace "after start"
+  -- parserTrace "after start"
   -- clsLex <- many $ do
   --   _ <- try $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
   --   clause
@@ -457,9 +457,9 @@ comprehension = do
 startClause :: Parser (Lexeme StartClause)
 startClause = do
   _ <- lexeme $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
-  parserTrace "before start expr"
+  -- parserTrace "before start expr"
   eLex <- expr
-  parserTrace "after start expr"
+  -- parserTrace "after start expr"
   return $ GuardClause (lex eLex) <$ eLex
 
 clause :: Parser (Lexeme Clause)

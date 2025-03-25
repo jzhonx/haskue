@@ -15,7 +15,7 @@ import Common (
   RuntimeParams (RuntimeParams, rpCreateCnstr),
   TreeOp (isTreeBottom),
  )
-import Control.Monad (foldM, forM)
+import Control.Monad (foldM, forM, unless)
 import Control.Monad.Except (MonadError)
 import Control.Monad.Reader (asks, local)
 import qualified Cursor
@@ -89,17 +89,20 @@ data UTree = UTree
   , utDir :: Path.BinOpDirect
   , utEmbedded :: Bool
   -- ^ Whether the tree is embedded in a struct.
+  , utAddr :: Path.TreeAddr
   }
 
 instance Show UTree where
-  show (UTree t d e) = printf "(%s,embed:%s,\n%s)" (show d) (show e) (show t)
+  show (UTree t d e a) = printf "(%s,addr:%s,embed:%s,\n%s)" (show d) (show a) (show e) (show t)
 
 unify :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
-unify t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R False)
-
--- | Unify the right embedded tree with the left tree.
-unifyREmbedded :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
-unifyREmbedded t1 t2 = unifyUTrees (UTree t1 Path.L False) (UTree t2 Path.R True)
+unify t1 t2 = do
+  addr <- RM.getRMAbsAddr
+  let
+    funcAddr = fromJust $ Path.initTreeAddr addr
+    lAddr = Path.appendSeg Path.binOpLeftTASeg funcAddr
+    rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
+  unifyUTrees (UTree t1 Path.L False lAddr) (UTree t2 Path.R False rAddr)
 
 {- | Unify UTrees.
 
@@ -559,9 +562,9 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     f x y = RM.putRMTree $ VT.mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
 
 unifyLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> m ()
-unifyLeftStruct (s1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) = case VT.treeNode t2 of
+unifyLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) = case VT.treeNode t2 of
   -- If either of the structs is embedded, closed struct restrictions are ignored.
-  VT.TNStruct s2 -> unifyStructs (d1, utEmbedded ut1, s1) (d2, utEmbedded ut2, s2)
+  VT.TNStruct s2 -> unifyStructs (s1, ut1) (s2, ut2)
   _ -> unifyLeftOther ut2 ut1
 
 {- | unify two structs.
@@ -573,21 +576,21 @@ recursively, the only way is to reference the struct via a #ident.
 -}
 unifyStructs ::
   (RM.ReduceMonad s r m) =>
-  (Path.BinOpDirect, Bool, VT.Struct VT.Tree) ->
-  (Path.BinOpDirect, Bool, VT.Struct VT.Tree) ->
+  (VT.Struct VT.Tree, UTree) ->
+  (VT.Struct VT.Tree, UTree) ->
   m ()
-unifyStructs (Path.L, isEmbed1, s1) (_, isEmbed2, s2) = do
+unifyStructs (s1, ut1@UTree{utDir = Path.L}) (s2, ut2) = do
   checkRes <- do
-    rE1 <- _preprocessScopeVars s1
-    rE2 <- _preprocessScopeVars s2
+    rE1 <- _preprocessBlock (utAddr ut1) s1
+    rE2 <- _preprocessBlock (utAddr ut2) s2
     return $ do
       r1 <- rE1
       r2 <- rE2
       return (r1, r2)
   case checkRes of
     Left err -> RM.putRMTree err
-    Right (r1, r2) -> unifyStructsInner (isEmbed1, r1) (isEmbed2, r2)
-unifyStructs dt1@(Path.R, _, _) dt2 = unifyStructs dt2 dt1
+    Right (r1, r2) -> unifyStructsInner (utEmbedded ut1, r1) (utEmbedded ut2, r2)
+unifyStructs dt1@(_, UTree{utDir = Path.R}) dt2 = unifyStructs dt2 dt1
 
 unifyStructsInner ::
   (RM.ReduceMonad s r m) =>
@@ -706,44 +709,50 @@ unifyStructsInner (isEmbed1, s1) (isEmbed2, s2) = do
         , VT.piOpDyns = Set.fromList $ IntMap.keys $ VT.stcPendSubs opStruct
         }
 
--- | Preprocess the scope variables.
-_preprocessScopeVars :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> m (Either VT.Tree (VT.Struct VT.Tree))
-_preprocessScopeVars _struct = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "_preprocessScopeVars, add: %s" (show addr)) $ do
-    tc <- RM.getRMCursor
-    let
-      ptc = fromJust $ Cursor.parentTC tc
-      scopeAddr = Cursor.tcTreeAddr ptc
-    preprocess scopeAddr (VT.mkStructTree _struct <$ ptc)
+{- | Preprocess the block.
+
+Block variables are the variables defined in the current block.
+-}
+_preprocessBlock ::
+  (RM.ReduceMonad s r m) =>
+  Path.TreeAddr ->
+  VT.Struct VT.Tree ->
+  m (Either VT.Tree (VT.Struct VT.Tree))
+_preprocessBlock blockAddr block = RM.withAddrAndFocus $ \addr _ ->
+  debugSpan (printf "_preprocessBlock, add: %s, blockAddr: %s" (show addr) (show blockAddr)) $ do
+    -- Use the block address to get the tree cursor and replace the tree focus with the block.
+    -- This simplifies processing for cases that the focus is reference.
+    ptc <- RefSys.inAbsAddrRMMust blockAddr RM.getRMCursor
+    preprocess (VT.mkStructTree block <$ ptc)
  where
-  preprocess scopeAddr tc = do
-    rM <- _findInvalidScopeVars tc
-    logDebugStr $ printf "_preprocessScopeVars: rM: %s" (show rM)
+  preprocess tc = do
+    rM <- _findInvalidBlockVars tc
+    logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
     maybe
       ( do
-          let sid = VT.stcID _struct
-          -- Rewrite the scope variables.
-          structT <- _rewriteScopeVars scopeAddr sid tc
+          let sid = VT.stcID block
+          -- Rewrite the block variables.
+          structT <- _rewriteBlockVars blockAddr sid tc
           -- rewrite all var keys of the let bindings map with the sid.
           case VT.treeNode structT of
             VT.TNStruct struct -> do
               let
                 m = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
                 newStruct = struct{VT.stcLets = m}
-              logDebugStr $ printf "_preprocessScopeVars: newStruct: %s" (show $ VT.mkStructTree newStruct)
+              logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
               return $ Right newStruct
             _ -> throwErrSt $ printf "tree must be struct, but got %s" (show structT)
       )
       (return . Left)
       rM
 
-{- | Validate the vars in the scope because after merging two structs, the vars which were invalid could become valid.
+{- | Validate the vars in the block because after merging two structs, the vars which were invalid could become valid.
 
-We need to check all vars. If there is a ref in the deeper scope referencing a non-existed field in the current
-scope, we should return an error because in the new scope the field may exist.
+We need to check all vars. If there is a ref in the deeper block referencing a non-existed field in the current
+block, we should return an error because in the new block the field may exist.
 -}
-_findInvalidScopeVars :: (Env r m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
-_findInvalidScopeVars _tc =
+_findInvalidBlockVars :: (Env r m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
+_findInvalidBlockVars _tc =
   snd
     <$> TCursorOps.traverseTC
       _allSubNodes
@@ -754,15 +763,15 @@ _findInvalidScopeVars _tc =
     case VT.treeNode (Cursor.vcFocus tc) of
       VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath var _})) -> do
         m <- RefSys.searchTCVar var tc
-        logDebugStr $ printf "_findInvalidScopeVars: var: %s, m: %s" var (show m)
+        logDebugStr $ printf "_findInvalidBlockVars: var: %s, m: %s" var (show m)
         maybe
           (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" var))
           (const $ return (tc, acc))
           m
       _ -> return (tc, acc)
 
-_rewriteScopeVars :: (Env r m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
-_rewriteScopeVars scopeAddr sid _tc =
+_rewriteBlockVars :: (Env r m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
+_rewriteBlockVars scopeAddr sid _tc =
   Cursor.vcFocus
     <$> TCursorOps.traverseTCSimple
       _allSubNodes
@@ -774,12 +783,12 @@ _rewriteScopeVars scopeAddr sid _tc =
      in case VT.treeNode focus of
           VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath var _})) -> do
             m <- RefSys.searchTCVar var tc
-            logDebugStr $ printf "_rewriteScopeVars: var: %s, m: %s" var (show m)
+            logDebugStr $ printf "_rewriteBlockVars: var: %s, m: %s" var (show m)
 
             maybe
               (return focus)
               ( \(addr, isLB) -> do
-                  logDebugStr $ printf "_rewriteScopeVars: rewrite %s, scopeAddr: %s, addr: %s" var (show scopeAddr) (show addr)
+                  logDebugStr $ printf "_rewriteBlockVars: rewrite %s, scopeAddr: %s, addr: %s" var (show scopeAddr) (show addr)
                   if isLB && (Just scopeAddr == Path.initTreeAddr addr)
                     then do
                       let newFocus = VT.setTN focus (VT.TNMutable $ VT.Ref $ _rewriteLBWithSID sid ref)
@@ -812,95 +821,88 @@ mkNodeWithDir (UTree{utVal = t1, utDir = d1}) (UTree{utVal = t2}) f = case d1 of
   Path.R -> f t2 t1
 
 unifyLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> m ()
-unifyLeftDisj
-  (dj1, ut1@(UTree{utDir = d1, utEmbedded = isEmbedded1}))
-  ut2@( UTree
-          { utVal = t2
-          , utDir = d2
-          , utEmbedded = isEmbedded2
-          }
-        ) = do
-    RM.withAddrAndFocus $ \addr _ ->
-      logDebugStr $ printf "unifyLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
-    case VT.treeNode t2 of
-      VT.TNMutable _ -> unifyLeftOther ut2 ut1
-      VT.TNAtomCnstr _ -> unifyLeftOther ut2 ut1
-      VT.TNRefCycle _ -> unifyLeftOther ut2 ut1
-      -- If the left disj is embedded in the right struct and there is no fields and no pending dynamic fields, we can
-      -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently
-      -- does.
-      VT.TNStruct s2
-        | utEmbedded ut1 && VT.hasEmptyFields s2 -> RM.putRMTree (utVal ut1)
-      VT.TNDisj dj2 -> case (dj1, dj2) of
-        -- this is U0 rule, <v1> & <v2> => <v1&v2>
-        (VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
-          logDebugStr $ printf "unifyLeftDisj: U0, ds1: %s, ds2: %s" (show ds1) (show ds2)
-          ds <- mapM (`oneToMany` (d2, isEmbedded2, ds2)) (map (\x -> (d1, isEmbedded1, x)) ds1)
-          treeFromNodes Nothing ds >>= RM.putRMTree
-        -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
-        (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
-          logDebugStr $ printf "unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s" (show df1) (show ds1) (show ds2)
-          dfs <- oneToMany (d1, isEmbedded1, df1) (d2, isEmbedded2, ds2)
-          df <- treeFromNodes Nothing [dfs]
-          dss <- manyToMany (d1, isEmbedded1, ds1) (d2, isEmbedded2, ds2)
-          treeFromNodes (Just df) dss >>= RM.putRMTree
-        -- this is also the U1 rule.
-        (VT.Disj{VT.dsjDefault = Nothing}, VT.Disj{}) -> unifyLeftDisj (dj2, ut2) ut1
-        -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
-        (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Just df2, VT.dsjDisjuncts = ds2}) -> do
-          RM.withAddrAndFocus $ \addr _ ->
-            logDebugStr $
-              printf
-                "unifyLeftDisj: addr: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
-                (show addr)
-                (show d1)
-                (show df1)
-                (show ds1)
-                (show df2)
-                (show ds2)
-          df <- unifyUTreesInTemp (ut1{utVal = df1}) (ut2{utVal = df2})
-          dss <- manyToMany (d1, isEmbedded1, ds1) (d2, isEmbedded2, ds2)
-          RM.withAddrAndFocus $ \addr _ ->
-            logDebugStr $ printf "unifyLeftDisj: addr: %s, U2, df: %s, dss: %s" (show addr) (show df) (show dss)
-          treeFromNodes (Just df) dss >>= RM.putRMTree
-      -- this is the case for a disjunction unified with a value.
-      _ -> case dj1 of
-        VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1} -> do
+unifyLeftDisj (dj1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2}) = do
+  RM.withAddrAndFocus $ \addr _ ->
+    logDebugStr $ printf "unifyLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
+  case VT.treeNode t2 of
+    VT.TNMutable _ -> unifyLeftOther ut2 ut1
+    VT.TNAtomCnstr _ -> unifyLeftOther ut2 ut1
+    VT.TNRefCycle _ -> unifyLeftOther ut2 ut1
+    -- If the left disj is embedded in the right struct and there is no fields and no pending dynamic fields, we can
+    -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently
+    -- does.
+    VT.TNStruct s2
+      | utEmbedded ut1 && VT.hasEmptyFields s2 -> RM.putRMTree (utVal ut1)
+    VT.TNDisj dj2 -> case (dj1, dj2) of
+      -- this is U0 rule, <v1> & <v2> => <v1&v2>
+      (VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
+        logDebugStr $ printf "unifyLeftDisj: U0, ds1: %s, ds2: %s" (show ds1) (show ds2)
+        ds <- mapM (`oneToManyDisj` (utsFromDisjs ds2 ut2)) (utsFromDisjs ds1 ut1)
+        treeFromNodes Nothing ds >>= RM.putRMTree
+      -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
+      (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
+        logDebugStr $ printf "unifyLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s" (show df1) (show ds1) (show ds2)
+        dfs <- oneToManyDisj (utFromDefault df1 ut1) (utsFromDisjs ds2 ut2)
+        df <- treeFromNodes Nothing [dfs]
+        dss <- manyToManyDisj (utsFromDisjs ds1 ut1) (utsFromDisjs ds2 ut2)
+        treeFromNodes (Just df) dss >>= RM.putRMTree
+      -- this is also the U1 rule.
+      (VT.Disj{VT.dsjDefault = Nothing}, VT.Disj{}) -> unifyLeftDisj (dj2, ut2) ut1
+      -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
+      (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Just df2, VT.dsjDisjuncts = ds2}) -> do
+        RM.withAddrAndFocus $ \addr _ ->
           logDebugStr $
-            printf "unifyLeftDisj: unify with %s, disj: (ds: %s)" (show t2) (show ds1)
-          ds2 <- oneToMany (d2, isEmbedded2, t2) (d1, isEmbedded1, ds1)
-          treeFromNodes Nothing [ds2] >>= RM.putRMTree
-        VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1} -> do
-          logDebugStr $
-            printf "unifyLeftDisj: U1, unify with %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
-          df2 <- unifyUTreesInTemp (ut1{utVal = df1}) ut2
-          ds2 <- oneToMany (d2, isEmbedded2, t2) (d1, isEmbedded1, ds1)
-          logDebugStr $ printf "unifyLeftDisj: U1, df2: %s, ds2: %s" (show df2) (show ds2)
-          r <- treeFromNodes (Just df2) [ds2]
-          logDebugStr $ printf "unifyLeftDisj: U1, result: %s" (show r)
-          RM.putRMTree r
-   where
-    -- Note: isEmbedded is still required. Think about the following values,
-    -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
-    -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
-    oneToMany ::
-      (RM.ReduceMonad s r m) => (Path.BinOpDirect, Bool, VT.Tree) -> (Path.BinOpDirect, Bool, [VT.Tree]) -> m [VT.Tree]
-    oneToMany (ld1, em1, node) (ld2, em2, ts) =
-      let f x y = unifyUTreesInTemp (UTree x ld1 em1) (UTree y ld2 em2)
-       in mapM (`f` node) ts
+            printf
+              "unifyLeftDisj: addr: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
+              (show addr)
+              (show d1)
+              (show df1)
+              (show ds1)
+              (show df2)
+              (show ds2)
+        df <- unifyUTreesInTemp (ut1{utVal = df1}) (ut2{utVal = df2})
+        dss <- manyToManyDisj (utsFromDisjs ds1 ut1) (utsFromDisjs ds2 ut2)
+        RM.withAddrAndFocus $ \addr _ ->
+          logDebugStr $ printf "unifyLeftDisj: addr: %s, U2, df: %s, dss: %s" (show addr) (show df) (show dss)
+        treeFromNodes (Just df) dss >>= RM.putRMTree
+    -- this is the case for a disjunction unified with a value.
+    _ -> case dj1 of
+      VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1} -> do
+        logDebugStr $
+          printf "unifyLeftDisj: unify with %s, disj: (ds: %s)" (show t2) (show ds1)
+        ds2 <- oneToManyDisj ut2 (utsFromDisjs ds1 ut1)
+        treeFromNodes Nothing [ds2] >>= RM.putRMTree
+      VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1} -> do
+        logDebugStr $
+          printf "unifyLeftDisj: U1, unify with %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
+        df2 <- unifyUTreesInTemp (ut1{utVal = df1}) ut2
+        ds2 <- oneToManyDisj ut2 (utsFromDisjs ds1 ut1)
+        logDebugStr $ printf "unifyLeftDisj: U1, df2: %s, ds2: %s" (show df2) (show ds2)
+        r <- treeFromNodes (Just df2) [ds2]
+        logDebugStr $ printf "unifyLeftDisj: U1, result: %s" (show r)
+        RM.putRMTree r
+ where
+  utFromDefault :: VT.Tree -> UTree -> UTree
+  utFromDefault df ut@(UTree{utAddr = addr}) = ut{utVal = df, utAddr = Path.appendSeg Path.DisjDefaultTASeg addr}
 
-    manyToMany ::
-      (RM.ReduceMonad s r m) =>
-      (Path.BinOpDirect, Bool, [VT.Tree]) ->
-      (Path.BinOpDirect, Bool, [VT.Tree]) ->
-      m [[VT.Tree]]
-    manyToMany (ld1, em1, ts1) (ld2, em2, ts2) =
-      if ld1 == Path.R
-        then mapM (\y -> oneToMany (ld2, em2, y) (ld1, em1, ts1)) ts2
-        else mapM (\x -> oneToMany (ld1, em1, x) (ld2, em2, ts2)) ts1
+  utsFromDisjs :: [VT.Tree] -> UTree -> [UTree]
+  utsFromDisjs ds ut@(UTree{utAddr = addr}) =
+    map (\(i, x) -> ut{utVal = x, utAddr = Path.appendSeg (Path.DisjDisjunctTASeg i) addr}) (zip [0 ..] ds)
+
+-- Note: isEmbedded is still required. Think about the following values,
+-- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
+-- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
+-- In current CUE's implementation, CUE puts the fields of the single value first.
+oneToManyDisj ::
+  (RM.ReduceMonad s r m) => UTree -> [UTree] -> m [VT.Tree]
+oneToManyDisj ut1 = mapM (\ut2 -> unifyUTreesInTemp ut1{utDir = Path.L} ut2{utDir = Path.R})
+
+manyToManyDisj :: (RM.ReduceMonad s r m) => [UTree] -> [UTree] -> m [[VT.Tree]]
+manyToManyDisj uts1 = mapM (`oneToManyDisj` uts1)
 
 unifyUTreesInTemp :: (RM.ReduceMonad s r m) => UTree -> UTree -> m VT.Tree
 unifyUTreesInTemp ut1 ut2 = do
+  -- TODO: just unifyUTrees?
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   RM.inTempSubRM
     (VT.mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
@@ -1061,3 +1063,63 @@ patMatchLabel pat name = case VT.treeNode pat of
     case VT.getAtomFromTree r of
       Just (VT.String _) -> return True
       _ -> return False
+
+unifyEmbeds :: (RM.ReduceMonad s r m) => VT.Tree -> m ()
+unifyEmbeds t@(VT.Tree{VT.treeNode = VT.TNStruct struct}) = RM.withAddrAndFocus $ \addr _ ->
+  debugSpan (printf "unifyEmbeds, addr: %s" (show addr)) $ do
+    -- first to go to the arg node
+    seg <- do
+      seg <- RM.getRMTASeg
+      RM.propUpRM
+      let argSeg = Path.MutableArgTASeg 0
+      ok <- RM.descendRMSeg argSeg
+      unless ok $ throwErrSt $ printf "unifyEmbeds: cannot descend to the arg node, %s" (show argSeg)
+      return seg
+
+    res <-
+      mapM
+        ( \(i, embed) -> RM.inSubRM (Path.StructTASeg $ Path.EmbedTASeg i) embed $ do
+            shallowReduce
+            RM.withTree $ \x -> return $ case VT.treeNode x of
+              VT.TNMutable mut -> VT.getMutVal mut >>= \v -> return (i, v)
+              _ -> Just (i, x)
+        )
+        (IntMap.toList $ VT.stcEmbeds struct)
+
+    -- go back to the mutval
+    do
+      RM.propUpRM
+      ok <- RM.descendRMSeg seg
+      unless ok $ throwErrSt "unifyEmbeds: cannot descend to the mutval node"
+
+    case sequence res of
+      Nothing -> do
+        RM.withAddrAndFocus $ \a _ ->
+          logDebugStr $ printf "unifyEmbeds: addr: %s, not all embeds are ready" (show a)
+        RM.putRMTree t
+      Just embeds -> do
+        unless (null embeds) $
+          RM.withAddrAndFocus $ \a _ ->
+            logDebugStr $ printf "unifyEmbeds: addr: %s, all embeds are ready" (show a)
+
+        r <-
+          foldM
+            ( \acc embed -> do
+                unifyRightEmbedded acc embed
+                RM.getRMTree
+            )
+            t
+            embeds
+
+        RM.putRMTree r
+unifyEmbeds _ = throwErrSt "unifyEmbeds: not a struct"
+
+-- | Unify the right embedded tree with the left tree.
+unifyRightEmbedded :: (RM.ReduceMonad s r m) => VT.Tree -> (Int, VT.Tree) -> m ()
+unifyRightEmbedded t1 (i, t2) = do
+  addr <- RM.getRMAbsAddr
+  let
+    funcAddr = fromJust $ Path.initTreeAddr addr
+    lAddr = Path.appendSeg (Path.MutableArgTASeg 0) funcAddr
+    rAddr = Path.appendSeg (Path.StructTASeg $ Path.EmbedTASeg i) lAddr
+  unifyUTrees (UTree t1 Path.L False lAddr) (UTree t2 Path.R True rAddr)

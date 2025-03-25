@@ -34,6 +34,7 @@ import AST (
   StructLit (..),
   UnaryExpr (..),
   UnaryOp (Star),
+  litCons,
  )
 import Common (Env, TreeOp (isTreeValue))
 import Control.Monad (foldM)
@@ -56,7 +57,6 @@ import Reduce (
   reduceDisjPair,
   reduceMutableArg,
   unify,
-  unifyREmbedded,
  )
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RegOps as RegOps
@@ -69,7 +69,7 @@ type EvalEnv r m = (Env r m, MonadState Int m)
 evalSourceFile :: (EvalEnv r m) => SourceFile -> m VT.Tree
 evalSourceFile (SourceFile decls) = do
   logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
-  evalDecls (StructLit decls)
+  evalStructLit (StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -86,7 +86,7 @@ evalExpr e = do
   return $ VT.setExpr t (Just e)
 
 evalLiteral :: (EvalEnv r m) => Literal -> m VT.Tree
-evalLiteral (LitStructLit s) = evalDecls s
+evalLiteral (LitStructLit s) = evalStructLit s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
@@ -99,51 +99,45 @@ evalLiteral lit = return v
     TopLit -> VT.mkNewTree VT.TNTop
     BottomLit -> VT.mkBottomTree ""
 
-evalDecls :: (EvalEnv r m) => StructLit -> m VT.Tree
-evalDecls (StructLit decls) = do
+evalStructLit :: (EvalEnv r m) => StructLit -> m VT.Tree
+evalStructLit e@(StructLit decls) = do
   sid <- allocOID
-  (t, embeds) <- foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid}), []) decls
-  return $
-    if null embeds
-      then t
-      else
-        foldl
-          (\acc embed -> VT.mkMutableTree $ VT.mkBinaryOp AST.Unify unifyREmbedded acc embed)
-          t
-          embeds
+  t <- foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
+  case VT.treeNode t of
+    VT.TNStruct s ->
+      -- If there are no embeddings, then return the struct as is.
+      if null (VT.stcEmbeds s)
+        then return t
+        else return $ VT.mkMutableTree $ VT.mkUnaryEmbeds t
+    _ -> return t
 
-allocOID :: (EvalEnv r m) => m Int
-allocOID = do
-  i <- get
-  let j = i + 1
-  put j
-  return j
-
--- | Evaluates a declaration in a struct. It returns the updated struct tree and the list of embeddings to be unified.
-evalDecl :: (EvalEnv r m) => (VT.Tree, [VT.Tree]) -> Declaration -> m (VT.Tree, [VT.Tree])
-evalDecl (x, embeds) decl = case VT.treeNode x of
-  VT.TNBottom _ -> return (x, embeds)
+-- | Evaluates a declaration in a struct. It returns the updated struct tree.
+evalDecl :: (EvalEnv r m) => VT.Tree -> Declaration -> m VT.Tree
+evalDecl x decl = case VT.treeNode x of
+  VT.TNBottom _ -> return x
   VT.TNStruct struct -> case decl of
     Embedding ed -> do
       v <- evalEmbedding ed
-      return (VT.mkStructTree struct, v : embeds)
+      oid <- allocOID
+      let
+        adder = VT.EmbedSAdder oid v
+        t = addNewStructElem adder struct
+      return t
     EllipsisDecl (Ellipsis cM) ->
       maybe
-        (return (VT.mkStructTree struct, embeds))
+        (return (VT.mkStructTree struct))
         (\_ -> throwError "default constraints are not implemented yet")
         cM
     FieldDecl (AST.Field ls e) -> do
       sfa <- evalFdLabels ls e
       let t = addNewStructElem sfa struct
-      logDebugStr $ printf "evalDecl: sfa: %s, t: %s" (show sfa) (show t)
-      return (t, embeds)
+      return t
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
       let
         adder = VT.LetSAdder ident val
         t = addNewStructElem adder struct
-      logDebugStr $ printf "evalDecl: adder: %s, t: %s" (show adder) (show t)
-      return (t, embeds)
+      return t
   _ -> throwErrSt "invalid struct"
 
 evalEmbedding :: (EvalEnv r m) => Embedding -> m VT.Tree
@@ -151,7 +145,7 @@ evalEmbedding (AliasExpr e) = evalExpr e
 evalEmbedding (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
   gev <- evalExpr ge
   clsv <- mapM evalClause cls
-  sv <- evalDecls lit
+  sv <- evalStructLit lit
   return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension gev clsv sv
 
 evalClause :: (EvalEnv r m) => Clause -> m (VT.IterClause VT.Tree)
@@ -263,6 +257,7 @@ addNewStructElem adder struct = case adder of
           struct{VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)}
       )
       (existCheck name True)
+  (VT.EmbedSAdder i embed) -> VT.mkStructTree $ struct{VT.stcEmbeds = IntMap.insert i embed (VT.stcEmbeds struct)}
  where
   aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
@@ -383,8 +378,8 @@ evalDisj e1 e2 = do
  where
   reduceDisjAdapt :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
   reduceDisjAdapt unt1 unt2 = do
-    t1 <- reduceMutableArg binOpLeftTASeg unt1
-    t2 <- reduceMutableArg binOpRightTASeg unt2
+    t1 <- reduceMutableArg Path.binOpLeftTASeg unt1
+    t2 <- reduceMutableArg Path.binOpRightTASeg unt2
     if not (isTreeValue t1) || not (isTreeValue t2)
       then
         logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
@@ -399,3 +394,10 @@ evalDisj e1 e2 = do
           (_, _) -> reduceDisjPair (DisjRegular t1) (DisjRegular t2)
         logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
         RM.putRMTree u
+
+allocOID :: (EvalEnv r m) => m Int
+allocOID = do
+  i <- get
+  let j = i + 1
+  put j
+  return j

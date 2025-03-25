@@ -28,9 +28,6 @@ import Text.Printf (printf)
 import Value.Atom (AtomV)
 import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
-
--- Indexer (idxSels),
-
 import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Cycle (RefCycle, StructuralCycle)
@@ -39,6 +36,7 @@ import Value.List (List (lstSubs))
 import Value.Mutable (
   Mutable (..),
   StatefulFunc (sfnArgs),
+  UnifyEmbeds (ueStruct),
   getMutVal,
   setMutVal,
  )
@@ -47,7 +45,7 @@ import Value.Struct (
   DynamicField (..),
   Field (ssfValue),
   LetBinding (lbValue),
-  Struct (stcCnstrs, stcPendSubs),
+  Struct (stcCnstrs, stcEmbeds, stcPendSubs),
   StructCnstr (..),
   lookupStructField,
   lookupStructLet,
@@ -114,11 +112,13 @@ subTreeTN seg t = case (seg, getTreeNode t) of
       (if j == 0 then dsfLabel else dsfValue) <$> stcPendSubs struct IntMap.!? i
     LetTASeg name
       | Just lb <- Value.Struct.lookupStructLet name struct -> Just (lbValue lb)
+    EmbedTASeg i -> stcEmbeds struct IntMap.!? i
     _ -> Nothing
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
+    | (MutableArgTASeg 0, UEmbeds u) <- (seg, mut) -> Just $ ueStruct u
     | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
     | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
@@ -155,6 +155,9 @@ setSubTreeTN seg subT parT = do
             sels = subRefArgs (refArg ref)
             l = TNMutable . Ref $ ref{refArg = setRefArgs (refArg ref) $ take i sels ++ [subT] ++ drop (i + 1) sels}
           return l
+      | MutableArgTASeg 0 <- seg
+      , UEmbeds u <- mut -> do
+          return $ TNMutable $ UEmbeds u{ueStruct = subT}
       | ComprehTASeg ComprehStartTASeg <- seg
       , Compreh c <- mut ->
           return $ TNMutable $ Compreh c{cphStart = subT}
@@ -211,6 +214,8 @@ setSubTreeTN seg subT parT = do
           newStruct = parStruct{stcPendSubs = IntMap.insert i newPSF pends}
          in
           return (TNStruct newStruct)
+    | EmbedTASeg i <- labelSeg =
+        return $ TNStruct parStruct{stcEmbeds = IntMap.insert i subT (stcEmbeds parStruct)}
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String

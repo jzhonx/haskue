@@ -19,7 +19,7 @@ import Cursor (
  )
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromJust, isJust)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified Path
@@ -69,8 +69,9 @@ reduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (
 
   notifyEnabled <- RM.getRMRefSysEnabled
   -- Only notify dependents when we are not in a temporary node.
-  if (Path.isTreeAddrAccessible addr && notifyEnabled)
-    then (RM.addToRMRefSysQ $ Path.referableAddr addr)
+  let refAddrM = Path.referableAddr addr
+  if (Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM)
+    then (RM.addToRMRefSysQ $ fromJust refAddrM)
     else logDebugStr $ printf "reduce, addr: %s, not accessible or not enabled" (show addr)
 
   pop

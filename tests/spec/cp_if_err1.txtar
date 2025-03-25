@@ -1,0 +1,7 @@
+-- cp_if_err1 --
+p: {}
+if p {
+	x: 1
+}
+-- exp --
+error: {} is not a boolean

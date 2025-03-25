@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -35,12 +34,5 @@ func main() {
 	url := fmt.Sprintf("http://localhost:%d/%s", *port, fileName)
 	fmt.Printf("Serving %s at %s\n", absPath, url)
 
-	// Open the URL in the default browser
-	cmd := exec.Command("open", url) // macOS
-	if err := cmd.Start(); err != nil {
-		log.Printf("Failed to open browser: %v", err)
-	}
-
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
-

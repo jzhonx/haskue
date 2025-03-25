@@ -34,7 +34,7 @@ import Exception (throwErrSt)
 import Path (
   Reference (Reference),
   Selector (..),
-  StructTASeg (LetTASeg, PatternTASeg, PendingTASeg, StringTASeg),
+  StructTASeg (..),
   TASeg (
     DisjDefaultTASeg,
     DisjDisjunctTASeg,
@@ -201,6 +201,10 @@ buildRepTreeTN t tn opt = case tn of
               )
               []
               (IntMap.toList $ stcPendSubs s)
+            ++ map
+              ( \(j, v) -> (show (StructTASeg $ EmbedTASeg j), mempty, v)
+              )
+              (IntMap.toList $ stcEmbeds s)
 
         metas :: [(String, String)]
         metas = []
@@ -266,6 +270,15 @@ buildRepTreeTN t tn opt = case tn of
           , []
           )
     Compreh _ -> consRep (symbol, "", [], [])
+    UEmbeds ue ->
+      let
+        arg =
+          if trboShowMutArgs opt
+            then [(show (MutableArgTASeg 0), mempty, ueStruct ue)]
+            else []
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ueValue ue)
+       in
+        consRep (symbol, "", consFields (val ++ arg), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -299,6 +312,7 @@ instance BuildASTExpr Tree where
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
       Compreh _ -> maybe (throwErrSt "expression not found for comprehension") return (treeExpr t)
+      UEmbeds _ -> maybe (throwErrSt "expression not found for unify embeds") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -493,6 +507,7 @@ showTreeSymbol t = case treeNode t of
     SFunc _ -> "fn"
     Ref _ -> "ref"
     Compreh _ -> "compreh"
+    UEmbeds _ -> "uembeds"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -535,11 +550,7 @@ mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = any treeHasRef (sfnArgs fn)
 mutHasRef (Compreh c) = any treeHasRef (cphStart c : cphStruct c : [getValFromIterClause x | x <- cphIterClauses c])
-
--- _treeHasRef :: Tree -> Bool
--- _treeHasRef t = case treeNode t of
---   TNMutable subFn -> mutHasRef subFn
---   _ -> False
+mutHasRef (UEmbeds u) = treeHasRef (ueStruct u)
 
 -- Helpers
 

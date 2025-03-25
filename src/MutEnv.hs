@@ -50,6 +50,7 @@ data Functions t = Functions
       m (Either t (Maybe Path.TreeAddr))
   , fnPropUpStructPost :: forall s r m. (MutableEnv s r t m) => (Path.StructTASeg, Struct t) -> m ()
   , fnComprehend :: forall s r m. (MutableEnv s r t m) => Comprehension t -> m ()
+  , fnUnifyEmbeds :: forall s r m. (MutableEnv s r t m) => t -> m ()
   }
 
 emptyFunctions :: Functions t
@@ -61,4 +62,5 @@ emptyFunctions =
     , fnIndex = \_ _ -> throwErrSt "fnIndex not set"
     , fnPropUpStructPost = \_ -> throwErrSt "fnPropUpStructPost not set"
     , fnComprehend = \_ -> throwErrSt "fnComprehend not set"
+    , fnUnifyEmbeds = \_ -> throwErrSt "fnUnifyEmbeds not set"
     }
