@@ -28,8 +28,8 @@ import Util (
 import qualified Value.Tree as VT
 
 reduceAtomOpArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
-reduceAtomOpArg seg sub = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "reduceAtomOpArg, addr: %s, seg: %s" (show addr) (show seg)) $
+reduceAtomOpArg seg sub =
+  RM.debugSpanArgsRM "reduceAtomOpArg" (printf "seg: %s" (show seg)) $
     Mutate.mutValToArgsRM
       seg
       sub

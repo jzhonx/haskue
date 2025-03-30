@@ -48,7 +48,7 @@ import Path (
  )
 import TCursorOps (goDownTCSeg, propUpTC)
 import Text.Printf (printf)
-import Util (HasTrace, logDebugStr)
+import Util (HasTrace, debugSpan, logDebugStr)
 import qualified Value.Tree as VT
 
 -- ReduceMonad stores the tree structure in its state.
@@ -390,3 +390,11 @@ traverseRM f = f >> traverseSub (traverseRM f)
 
 logDebugStrRM :: (ReduceMonad s r m) => String -> String -> m ()
 logDebugStrRM hdr msg = withAddrAndFocus $ \addr _ -> logDebugStr $ printf "%s: addr: %s, %s" hdr (show addr) msg
+
+debugSpanRM :: (ReduceMonad s r m) => String -> m a -> m a
+debugSpanRM name f =
+  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) Nothing f
+
+debugSpanArgsRM :: (ReduceMonad s r m) => String -> String -> m a -> m a
+debugSpanArgsRM name args f =
+  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) (Just args) f

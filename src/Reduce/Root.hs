@@ -30,27 +30,25 @@ import qualified Reduce.RegOps as RegOps
 import qualified Reduce.UnifyOp as UnifyOp
 import Text.Printf (printf)
 import Util (
-  HasTrace (getTrace),
-  Trace (traceID),
-  debugSpan,
+  Trace (traceStamp),
+  getTraceID,
   logDebugStr,
  )
 import qualified Value.Tree as VT
 
 fullReduce :: (RM.ReduceMonad s r m) => m ()
-fullReduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "fullReduce, addr: %s" (show addr)) $ do
+fullReduce = RM.debugSpanRM "fullReduce" $ do
   reduce
   RefSys.drainRefSysQueue
 
 -- | Reduce the tree to the lowest form.
 reduce :: (RM.ReduceMonad s r m) => m ()
-reduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (show addr)) $ do
+reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   RM.treeDepthCheck
   push addr
 
-  tr <- gets getTrace
-  let trID = traceID tr
-  RM.dumpEntireTree $ printf "reduce id=%s start" (show trID)
+  tid <- getTraceID
+  RM.dumpEntireTree $ printf "reduce id=%s start" (show tid)
 
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
@@ -75,7 +73,7 @@ reduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "reduce, addr: %s" (
     else logDebugStr $ printf "reduce, addr: %s, not accessible or not enabled" (show addr)
 
   pop
-  RM.dumpEntireTree $ printf "reduce id=%s done" (show trID)
+  RM.dumpEntireTree $ printf "reduce id=%s done" (show tid)
  where
   push addr = RM.modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
 
@@ -183,45 +181,44 @@ reduceStructField name = whenStruct () $ \struct -> do
 The focus of the tree must be a struct.
 -}
 propUpStructPost :: (RM.ReduceMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
-propUpStructPost (Path.PendingTASeg i _, _struct) = RM.withAddrAndFocus $ \p _ ->
-  debugSpan (printf "propUpStructPost_dynamic, addr: %s" (show p)) $ do
-    let dsf = VT.stcPendSubs _struct IntMap.! i
-    either
-      RM.modifyRMNodeWithTree
-      ( \(struct, fieldM) -> do
-          -- Constrain the new field with all existing constraints.
-          (newStruct, matchedSegs) <-
-            maybe
-              (return (struct, []))
-              ( \(name, field) -> do
-                  (items, matchedSegs) <- do
-                    let allCnstrsWithIdx = IntMap.toList $ VT.stcCnstrs struct
-                    (newSub, matchedCnstrs) <- constrainField name (VT.ssfValue field) allCnstrsWithIdx
-                    return
-                      ( [(name, newSub, matchedCnstrs)]
-                      , if not (null matchedCnstrs) then [name] else []
-                      )
-                  return (updateFieldsWithAppliedCnstrs struct items, matchedSegs)
-              )
-              fieldM
-          RM.withAddrAndFocus $ \addr _ ->
-            logDebugStr $
-              printf
-                "propUpStructPost_dynamic: addr: %s, new struct: %s, matchedSegs: %s"
-                (show addr)
-                (show $ VT.mkStructTree newStruct)
-                (show matchedSegs)
-          RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
+propUpStructPost (Path.PendingTASeg i _, _struct) = RM.debugSpanRM "propUpStructPost_dynamic" $ do
+  let dsf = VT.stcPendSubs _struct IntMap.! i
+  either
+    RM.modifyRMNodeWithTree
+    ( \(struct, fieldM) -> do
+        -- Constrain the new field with all existing constraints.
+        (newStruct, matchedSegs) <-
+          maybe
+            (return (struct, []))
+            ( \(name, field) -> do
+                (items, matchedSegs) <- do
+                  let allCnstrsWithIdx = IntMap.toList $ VT.stcCnstrs struct
+                  (newSub, matchedCnstrs) <- constrainField name (VT.ssfValue field) allCnstrsWithIdx
+                  return
+                    ( [(name, newSub, matchedCnstrs)]
+                    , if not (null matchedCnstrs) then [name] else []
+                    )
+                return (updateFieldsWithAppliedCnstrs struct items, matchedSegs)
+            )
+            fieldM
+        RM.withAddrAndFocus $ \addr _ ->
+          logDebugStr $
+            printf
+              "propUpStructPost_dynamic: addr: %s, new struct: %s, matchedSegs: %s"
+              (show addr)
+              (show $ VT.mkStructTree newStruct)
+              (show matchedSegs)
+        RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
 
-          -- Check the permission of the label of newly created field.
-          whenStruct () $ \s -> checkNewLabelPerm s (Path.PendingTASeg i 0)
+        -- Check the permission of the label of newly created field.
+        whenStruct () $ \s -> checkNewLabelPerm s (Path.PendingTASeg i 0)
 
-          -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
-          whenStruct () $ \_ -> mapM_ reduceStructField matchedSegs
-      )
-      (updateStructPend _struct dsf)
-propUpStructPost (Path.PatternTASeg i _, struct) = RM.withAddrAndFocus $ \p _ ->
-  debugSpan (printf "propUpStructPost_constraint, addr: %s, idx: %s" (show p) (show i)) $ do
+        -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
+        whenStruct () $ \_ -> mapM_ reduceStructField matchedSegs
+    )
+    (updateStructPend _struct dsf)
+propUpStructPost (Path.PatternTASeg i _, struct) =
+  RM.debugSpanRM (printf "propUpStructPost_constraint, idx: %s" (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
     let
       prevMatchedNames = matchedByCnstr i (getSFieldPairs struct)

@@ -41,7 +41,7 @@ If the tree is a struct or a list, no sub nodes need to be reduced as these node
 scope.
 -}
 shallowReduce :: (RM.ReduceMonad s r m) => m ()
-shallowReduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "shallowReduce, addr: %s" (show addr)) $ do
+shallowReduce = RM.debugSpanRM "shallowReduce" $ do
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
   RM.withTree $ \t -> case VT.treeNode t of
@@ -63,19 +63,18 @@ shallowReduce = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "shallowReduc
 If nothing concrete can be returned, then the original argument is returned.
 -}
 reduceUnifyArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceUnifyArg seg sub = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "reduceMutableArg, addr: %s, seg: %s" (show addr) (show seg)) $ do
-    m <-
-      Mutate.mutValToArgsRM
-        seg
-        sub
-        ( do
-            shallowReduce
-            RM.withTree $ \x -> return $ case VT.treeNode x of
-              VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
-              _ -> Just x
-        )
-    return $ fromJust m
+reduceUnifyArg seg sub = RM.debugSpanArgsRM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
+  m <-
+    Mutate.mutValToArgsRM
+      seg
+      sub
+      ( do
+          shallowReduce
+          RM.withTree $ \x -> return $ case VT.treeNode x of
+            VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
+            _ -> Just x
+      )
+  return $ fromJust m
 
 -- | Create a unify node from two UTrees.
 mkUnifyUTreesNode :: UTree -> UTree -> VT.Mutable VT.Tree
@@ -140,8 +139,10 @@ For operands that are references, we do not need reduce them. We only evaluate t
 dereferenced. If the reference is evaluated to a struct, the struct will be a raw struct.
 -}
 unifyUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
-unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf ("unifying, addr: %s:, %s" ++ "\n" ++ "with %s") (show addr) (show ut1) (show ut2)) $ do
+unifyUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = RM.debugSpanArgsRM
+  "unifyUTrees"
+  (printf ("unifying %s" ++ "\n" ++ "with %s") (show ut1) (show ut2))
+  $ do
     -- Each case should handle embedded case when the left value is embedded.
     case (VT.treeNode t1, VT.treeNode t2) of
       -- VT.CnstredVal has the highest priority, because the real operand is the value of the VT.CnstredVal.
@@ -718,12 +719,11 @@ _preprocessBlock ::
   Path.TreeAddr ->
   VT.Struct VT.Tree ->
   m (Either VT.Tree (VT.Struct VT.Tree))
-_preprocessBlock blockAddr block = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "_preprocessBlock, add: %s, blockAddr: %s" (show addr) (show blockAddr)) $ do
-    -- Use the block address to get the tree cursor and replace the tree focus with the block.
-    -- This simplifies processing for cases that the focus is reference.
-    ptc <- RefSys.inAbsAddrRMMust blockAddr RM.getRMCursor
-    preprocess (VT.mkStructTree block <$ ptc)
+_preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf "blockAddr: %s" (show blockAddr)) $ do
+  -- Use the block address to get the tree cursor and replace the tree focus with the block.
+  -- This simplifies processing for cases that the focus is reference.
+  ptc <- RefSys.inAbsAddrRMMust blockAddr RM.getRMCursor
+  preprocess (VT.mkStructTree block <$ ptc)
  where
   preprocess tc = do
     rM <- _findInvalidBlockVars tc
@@ -1065,53 +1065,52 @@ patMatchLabel pat name = case VT.treeNode pat of
       _ -> return False
 
 unifyEmbeds :: (RM.ReduceMonad s r m) => VT.Tree -> m ()
-unifyEmbeds t@(VT.Tree{VT.treeNode = VT.TNStruct struct}) = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "unifyEmbeds, addr: %s" (show addr)) $ do
-    -- first to go to the arg node
-    seg <- do
-      seg <- RM.getRMTASeg
-      RM.propUpRM
-      let argSeg = Path.MutableArgTASeg 0
-      ok <- RM.descendRMSeg argSeg
-      unless ok $ throwErrSt $ printf "unifyEmbeds: cannot descend to the arg node, %s" (show argSeg)
-      return seg
+unifyEmbeds t@(VT.Tree{VT.treeNode = VT.TNStruct struct}) = RM.debugSpanRM "unifyEmbeds" $ do
+  -- first to go to the arg node
+  seg <- do
+    seg <- RM.getRMTASeg
+    RM.propUpRM
+    let argSeg = Path.MutableArgTASeg 0
+    ok <- RM.descendRMSeg argSeg
+    unless ok $ throwErrSt $ printf "unifyEmbeds: cannot descend to the arg node, %s" (show argSeg)
+    return seg
 
-    res <-
-      mapM
-        ( \(i, embed) -> RM.inSubRM (Path.StructTASeg $ Path.EmbedTASeg i) embed $ do
-            shallowReduce
-            RM.withTree $ \x -> return $ case VT.treeNode x of
-              VT.TNMutable mut -> VT.getMutVal mut >>= \v -> return (i, v)
-              _ -> Just (i, x)
-        )
-        (IntMap.toList $ VT.stcEmbeds struct)
+  res <-
+    mapM
+      ( \(i, embed) -> RM.inSubRM (Path.StructTASeg $ Path.EmbedTASeg i) embed $ do
+          shallowReduce
+          RM.withTree $ \x -> return $ case VT.treeNode x of
+            VT.TNMutable mut -> VT.getMutVal mut >>= \v -> return (i, v)
+            _ -> Just (i, x)
+      )
+      (IntMap.toList $ VT.stcEmbeds struct)
 
-    -- go back to the mutval
-    do
-      RM.propUpRM
-      ok <- RM.descendRMSeg seg
-      unless ok $ throwErrSt "unifyEmbeds: cannot descend to the mutval node"
+  -- go back to the mutval
+  do
+    RM.propUpRM
+    ok <- RM.descendRMSeg seg
+    unless ok $ throwErrSt "unifyEmbeds: cannot descend to the mutval node"
 
-    case sequence res of
-      Nothing -> do
+  case sequence res of
+    Nothing -> do
+      RM.withAddrAndFocus $ \a _ ->
+        logDebugStr $ printf "unifyEmbeds: addr: %s, not all embeds are ready" (show a)
+      RM.putRMTree t
+    Just embeds -> do
+      unless (null embeds) $
         RM.withAddrAndFocus $ \a _ ->
-          logDebugStr $ printf "unifyEmbeds: addr: %s, not all embeds are ready" (show a)
-        RM.putRMTree t
-      Just embeds -> do
-        unless (null embeds) $
-          RM.withAddrAndFocus $ \a _ ->
-            logDebugStr $ printf "unifyEmbeds: addr: %s, all embeds are ready" (show a)
+          logDebugStr $ printf "unifyEmbeds: addr: %s, all embeds are ready" (show a)
 
-        r <-
-          foldM
-            ( \acc embed -> do
-                unifyRightEmbedded acc embed
-                RM.getRMTree
-            )
-            t
-            embeds
+      r <-
+        foldM
+          ( \acc embed -> do
+              unifyRightEmbedded acc embed
+              RM.getRMTree
+          )
+          t
+          embeds
 
-        RM.putRMTree r
+      RM.putRMTree r
 unifyEmbeds _ = throwErrSt "unifyEmbeds: not a struct"
 
 -- | Unify the right embedded tree with the left tree.

@@ -5,6 +5,7 @@ import Control.Monad.Logger (
   logDebugN,
  )
 import Control.Monad.State (MonadState, gets, modify)
+import Data.Maybe (fromJust, isNothing)
 import Data.Text (pack)
 import Text.Printf (printf)
 
@@ -12,34 +13,61 @@ class HasTrace a where
   getTrace :: a -> Trace
   setTrace :: a -> Trace -> a
 
-data Trace = Trace
-  { traceID :: Int
-  , traceStack :: [Int]
+newtype Trace = Trace
+  { traceStamp :: Int
   }
   deriving (Eq)
 
 instance Show Trace where
-  show t = printf "id=%s, stack=%s" (show $ traceID t) (show $ traceStack t)
+  show t = printf "id=%s" (show $ traceStamp t)
 
-debugSpan :: (MonadState s m, MonadLogger m, HasTrace s) => String -> m a -> m a
-debugSpan msg f = do
-  tr <- gets getTrace
-  let ntr = tr{traceID = traceID tr + 1}
-  logDebugStr $ printf "%s, begin, %s" (show ntr) msg
-  modify $ \s -> setTrace s (ntr{traceStack = traceID ntr : traceStack ntr})
+data ChromeTrace = ChromeTrace
+  { ctrName :: String
+  , ctrStart :: Int
+  , ctrEnd :: Int
+  , ctrArgs :: Maybe String
+  }
+  deriving (Eq)
 
+instance Show ChromeTrace where
+  show ct =
+    printf
+      "ChromeTrace{%s: %s, %s: %s, %s: %s, \"ph\": \"X\", \"pid\": 0, \"tid\": 0"
+      (show "name")
+      (show $ ctrName ct)
+      (show "ts")
+      (show $ ctrStart ct)
+      (show "dur")
+      (show $ ctrEnd ct - ctrStart ct)
+      ++ ( if isNothing (ctrArgs ct)
+            then ""
+            else printf ", \"args\": {\"data\": %s}" (show (fromJust $ ctrArgs ct))
+         )
+      ++ "}"
+
+debugSpan :: (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> m a -> m a
+debugSpan name addr args f = do
+  start <- newTraceStamp
   res <- f
-
-  logDebugStr $ printf "%s, _ends, %s" (show ntr) msg
-  closeTR <- gets getTrace
-  modify $ \s -> setTrace s (closeTR{traceStack = tail $ traceStack closeTR})
+  end <- newTraceStamp
+  let msg = printf "%s, at:%s" name addr
+  logDebugStr $ show $ ChromeTrace msg start end args
   return res
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
-getTraceID = gets $ traceID . getTrace
+getTraceID = gets $ traceStamp . getTrace
+
+newTraceStamp :: (MonadState s m, HasTrace s) => m Int
+newTraceStamp = do
+  tr <- gets getTrace
+  let
+    newStamp = traceStamp tr + 1
+    ntr = tr{traceStamp = newStamp}
+  modify $ \s -> setTrace s ntr
+  return newStamp
 
 emptyTrace :: Trace
-emptyTrace = Trace 0 []
+emptyTrace = Trace 0
 
 logDebugStr :: (MonadLogger m) => String -> m ()
 logDebugStr = logDebugN . pack

@@ -90,7 +90,7 @@ requireMutableConcrete _ = False
 
 getMutName :: Mutable t -> (t -> Maybe String) -> String
 getMutName (SFunc mut) _ = sfnName mut
-getMutName (Ref ref) f = showRefArg (refArg ref) f
+getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
 getMutName (Compreh _) _ = "comprehend"
 getMutName (UEmbeds _) _ = "embeds_unifier"
 

@@ -20,7 +20,7 @@ import qualified MutEnv
 import qualified Path
 import qualified Reduce.RMonad as RM
 import Text.Printf (printf)
-import Util (debugSpan, logDebugStr)
+import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 {- | Mutate the Mutable.
@@ -36,7 +36,7 @@ mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
   -- Set the mutval to the stub since mutable should not depend on the previous mutable value.
   _mustSetMutVal (Just VT.stubTree)
   let name = VT.getMutName m VT.getStringFromTree
-  rM <- debugSpan (printf "mutate, addr: %s, mut: %s" (show addr) (show name)) $ case m of
+  rM <- RM.debugSpanRM (printf "mutate %s" (show name)) $ case m of
     VT.Ref ref -> mutateRef ref
     VT.SFunc fn -> mutateFunc fn >> return Nothing
     VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
@@ -269,20 +269,19 @@ delMutValRecvs mutAddr = do
 If nothing concrete can be returned, then the original argument is returned.
 -}
 reduceMutableArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceMutableArg seg sub = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "reduceMutableArg, addr: %s, seg: %s" (show addr) (show seg)) $ do
-    m <-
-      mutValToArgsRM
-        seg
-        sub
-        ( do
-            MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-            reduce
-            RM.withTree $ \x -> return $ case VT.treeNode x of
-              VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
-              _ -> Just x
-        )
-    return $ fromJust m
+reduceMutableArg seg sub = RM.debugSpanArgsRM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
+  m <-
+    mutValToArgsRM
+      seg
+      sub
+      ( do
+          MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+          reduce
+          RM.withTree $ \x -> return $ case VT.treeNode x of
+            VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
+            _ -> Just x
+      )
+  return $ fromJust m
 
 -- * VT.Mutable Environment
 

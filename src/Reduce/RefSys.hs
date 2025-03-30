@@ -44,7 +44,7 @@ propagates to the dependents of the visiting node and the dependents of its ance
 The propagation starts from the current focus.
 -}
 notify :: (RM.ReduceMonad s r m) => m ()
-notify = RM.withAddrAndFocus $ \addr _ -> debugSpan (printf "notify: addr: %s" (show addr)) $ do
+notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "notify" $ do
   origRefSysEnabled <- RM.getRMRefSysEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
   RM.setRMRefSysEnabled False
@@ -144,18 +144,17 @@ bfsLoopQ tid = do
 drainRefSysQueue :: (RM.ReduceMonad s r m) => m ()
 drainRefSysQueue = do
   q <- RM.getRMRefSysQ
-  more <- RM.withAddrAndFocus $ \daddr _ ->
-    debugSpan (printf "drainRefSysQueue: addr: %s, q: %s" (show daddr) (show q)) $ do
-      headM <- RM.popRMRefSysQ
-      case headM of
-        Nothing -> return False
-        Just addr -> do
-          logDebugStr $ printf "drainRefSysQueue: addr: %s" (show addr)
-          maybe
-            (logDebugStr $ printf "drainRefSysQueue: addr: %s, not found" (show addr))
-            (const $ return ())
-            =<< inAbsAddrRM addr notify
-          return True
+  more <- RM.debugSpanArgsRM "drainRefSysQueue" (printf "q: %s" (show q)) $ do
+    headM <- RM.popRMRefSysQ
+    case headM of
+      Nothing -> return False
+      Just addr -> do
+        logDebugStr $ printf "drainRefSysQueue: addr: %s" (show addr)
+        maybe
+          (logDebugStr $ printf "drainRefSysQueue: addr: %s, not found" (show addr))
+          (const $ return ())
+          =<< inAbsAddrRM addr notify
+        return True
 
   when more drainRefSysQueue
 
@@ -244,7 +243,7 @@ deref ::
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
   m (Maybe Path.TreeAddr)
 deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
-  debugSpan (printf "deref: addr: %s, origAddrsM: %s, ref: %s" (show addr) (show origAddrsM) (show ref)) $ do
+  RM.debugSpanRM (printf "deref: origAddrsM: %s, ref: %s" (show origAddrsM) (show ref)) $ do
     -- Add the notifier anyway.
     addNotifiers ref origAddrsM
 
@@ -295,14 +294,13 @@ getDstVal ::
   Set.Set Path.TreeAddr ->
   m (Either VT.Tree (Maybe (Path.TreeAddr, VT.Tree)))
 getDstVal ref origAddrsM trail = RM.withAddrAndFocus $ \srcAddr _ ->
-  debugSpan
+  RM.debugSpanArgsRM
     ( printf
-        "deref_getDstVal: addr: %s, ref: %s, origSubTAddr: %s, trail: %s"
-        (show srcAddr)
+        "deref_getDstVal: ref: %s, origSubTAddr: %s"
         (show ref)
         (show origAddrsM)
-        (show $ Set.toList trail)
     )
+    (printf "trail: %s" (show $ Set.toList trail))
     $ do
       recurClose <- VT.treeRecurClosed <$> RM.getRMTree
       let f = locateRefAndRun ref (fetch srcAddr recurClose)
