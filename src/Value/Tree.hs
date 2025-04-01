@@ -30,6 +30,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
+import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Path (
   Reference (Reference),
@@ -131,7 +132,7 @@ instance TreeOp Tree where
     _ -> False
 
 instance TreeRepBuilder Tree where
-  repTree = treeToSimpleStr
+  repTree i = treeToSubStr i True
 
 instance TreeRepBuilderIter Tree where
   iterRepTree t opt =
@@ -158,7 +159,6 @@ buildRepTreeTN t tn opt = case tn of
       , show b
       , []
       , []
-      -- , consMetas $ zipWith (\j v -> (show (j :: Int), repTree 0 v)) [0 ..] (bdsList b)
       )
   TNStruct s ->
     let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
@@ -174,8 +174,15 @@ buildRepTreeTN t tn opt = case tn of
             then ",v"
             else mempty
 
-        slabelAttr :: Field Tree -> String
-        slabelAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
+        staticlFieldAttr :: Field Tree -> String
+        staticlFieldAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
+
+        staticFieldMeta :: Field Tree -> String
+        staticFieldMeta sf =
+          staticlFieldAttr sf
+            <> maybe mempty (\raw -> ",raw:" ++ showTreeSymbol raw) (ssfBaseRaw sf)
+            <> ",objs:"
+            <> show (Set.toList $ ssfObjects sf)
 
         dlabelAttr :: DynamicField Tree -> String
         dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
@@ -184,7 +191,12 @@ buildRepTreeTN t tn opt = case tn of
         fields :: [(String, String, Tree)]
         fields =
           map
-            (\k -> let sf = stcFields s Map.! k in (k, slabelAttr sf, ssfValue sf))
+            ( \k ->
+                maybe
+                  (k, "", mkBottomTree "not found")
+                  (\sf -> (k, staticFieldMeta sf, ssfValue sf))
+                  (lookupStructField k s)
+            )
             (stcOrdLabels s)
             ++ map
               ( \(k, lb) ->
@@ -197,10 +209,10 @@ buildRepTreeTN t tn opt = case tn of
               (IntMap.toList $ stcCnstrs s)
             ++ foldr
               ( \(j, dsf) acc ->
-                  (show (StructTASeg $ PendingTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
+                  (show (StructTASeg $ DynFieldTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
               )
               []
-              (IntMap.toList $ stcPendSubs s)
+              (IntMap.toList $ stcDynFields s)
             ++ map
               ( \(j, v) -> (show (StructTASeg $ EmbedTASeg j), mempty, v)
               )
@@ -297,7 +309,7 @@ buildRepTreeTN t tn opt = case tn of
   consMetas = map (\(l, a) -> TreeRepMeta l a)
 
 instance Show Tree where
-  show = treeToSimpleStr 0
+  show = treeToSubStr 0 True
 
 instance BuildASTExpr Tree where
   buildASTExpr cr t = case treeNode t of
@@ -361,7 +373,17 @@ buildStructASTExpr concrete s =
           )
    in
     do
-      stcs <- mapM processSField [(l, stcFields s Map.! l) | l <- stcOrdLabels s]
+      stcs <-
+        mapM
+          ( \l -> do
+              pair <-
+                maybe
+                  (throwErrSt $ "struct field not found: " ++ l)
+                  (\f -> return (l, f))
+                  (lookupStructField l s)
+              processSField pair
+          )
+          (stcOrdLabels s)
       dyns <-
         foldM
           ( \acc dsf ->
@@ -376,7 +398,7 @@ buildStructASTExpr concrete s =
                 (getAtomFromTree $ dsfLabel dsf)
           )
           []
-          (IntMap.elems $ stcPendSubs s)
+          (IntMap.elems $ stcDynFields s)
       return $ AST.litCons $ AST.LitStructLit $ AST.StructLit (stcs ++ dyns)
 
 instance Eq Tree where
@@ -385,8 +407,8 @@ instance Eq Tree where
 defaultTreeRepBuildOption :: TreeRepBuildOption
 defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True}
 
-treeToSimpleStr :: Int -> Tree -> String
-treeToSimpleStr toff t =
+treeFullStr :: Int -> Tree -> String
+treeFullStr toff t =
   let TreeRep symbol meta fields listedMetas = iterRepTree t defaultTreeRepBuildOption
    in "("
         <> ( if
@@ -404,7 +426,7 @@ treeToSimpleStr toff t =
                         let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
                          in acc
                               <> pre
-                              <> treeToSimpleStr (length pre) sub
+                              <> treeFullStr (length pre) sub
                               <> ")"
                               <> "\n"
                     )
@@ -495,7 +517,7 @@ escape = concatMap $ \case
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
-  TNAtom _ -> ""
+  TNAtom _ -> "a"
   TNBounds _ -> "bds"
   TNStruct{} -> "{}"
   TNList{} -> "[]"
@@ -527,17 +549,71 @@ escapedSimpleTreeStr t = case treeNode t of
   TNAtom _ -> "a"
   _ -> escapedTreeSymbol t
 
+treeToSubStr :: Int -> Bool -> Tree -> String
+treeToSubStr toff moreSub t =
+  let TreeRep symbol meta fields listedMetas = iterRepTree t defaultTreeRepBuildOption
+   in "("
+        <> ( if
+              | null symbol -> meta
+              | null meta -> symbol
+              | otherwise -> symbol <> " " <> meta
+           )
+        <> ( if null fields
+              then mempty
+              else
+                -- we need to add a newline for the fields block.
+                "\n"
+                  <> foldl
+                    ( \acc (TreeRepField label attr sub) ->
+                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
+                         in acc
+                              <> pre
+                              <> ( if moreSub
+                                    then
+                                      treeToSubStr
+                                        (length pre)
+                                        ( case treeNode sub of
+                                            -- CnstredVal can have one more level of sub-tree.
+                                            TNCnstredVal _ -> True
+                                            _ -> False
+                                        )
+                                        sub
+                                    else showTreeSymbol sub
+                                 )
+                              <> ")"
+                              <> "\n"
+                    )
+                    mempty
+                    fields
+                  -- reserve spaces for the closing parenthesis.
+                  <> replicate toff ' '
+           )
+        <> ( if null listedMetas
+              then mempty
+              else
+                "\n"
+                  <> foldl
+                    ( \acc (TreeRepMeta label lmeta) ->
+                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
+                         in acc
+                              <> pre
+                              <> lmeta
+                              <> ")"
+                              <> "\n"
+                    )
+                    mempty
+                    listedMetas
+                  <> replicate toff ' '
+           )
+        <> ")"
+
 -- | Generate a list of sub-trees.
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
   TNStruct struct ->
-    [ ( StructTASeg $ StringTASeg s
-      , ssfValue field
-      )
-    | (s, field) <- Map.toList (stcFields struct)
-    ]
+    [(StructTASeg $ StringTASeg s, ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
       ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
-      ++ [(StructTASeg $ PendingTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcPendSubs struct]
+      ++ [(StructTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable (SFunc mut) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (sfnArgs mut)]
   TNMutable (Ref ref) -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (subRefArgs $ refArg ref)]

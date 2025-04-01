@@ -89,10 +89,9 @@ data StructTASeg
     StringTASeg String
   | -- | The first is the OID, the second indicates the i-th value in the constraint.
     PatternTASeg Int Int
-  | -- | PendingTASeg is used to represent a pending field. It is indexed by the index of the pending field.
-    -- It is paired with either dsfLabel or scsPattern.
-    -- The first is the OID, the second indicates the i-th in the pending value.
-    PendingTASeg Int Int
+  | -- | DynFieldTASeg is used to represent a dynamic field.
+    -- The first is the OID, the second indicates the i-th in the dynamic field.
+    DynFieldTASeg Int Int
   | -- | A let binding is always indexed by the LetTASeg.
     LetTASeg
       -- | Identifier
@@ -104,7 +103,7 @@ instance Show StructTASeg where
   show (StringTASeg s) = s
   -- c stands for constraint.
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
-  show (PendingTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
+  show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
   show (LetTASeg s) = "let_" ++ s
   show (EmbedTASeg i) = "emb_" ++ show i
 

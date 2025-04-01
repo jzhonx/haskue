@@ -9,6 +9,7 @@ import Control.Monad.Except (MonadError)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
 import Exception (throwErrSt)
+import GHC.Stack (HasCallStack)
 import Path (
   ComprehTASeg (..),
   StructTASeg (..),
@@ -45,10 +46,11 @@ import Value.Struct (
   DynamicField (..),
   Field (ssfValue),
   LetBinding (lbValue),
-  Struct (stcCnstrs, stcEmbeds, stcPendSubs),
+  Struct (stcCnstrs, stcDynFields, stcEmbeds),
   StructCnstr (..),
   lookupStructField,
   lookupStructLet,
+  updateFieldValue,
   updateStructField,
   updateStructLet,
  )
@@ -100,16 +102,15 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
 
 This should only be used by TreeCursor.
 -}
-subTreeTN :: (TreeOp t, HasTreeNode t, Show t) => TASeg -> t -> Maybe t
+subTreeTN :: (TreeOp t, HasTreeNode t, Show t, HasCallStack) => TASeg -> t -> Maybe t
 subTreeTN seg t = case (seg, getTreeNode t) of
   (RootTASeg, _) -> Just t
   (StructTASeg s, TNStruct struct) -> case s of
     StringTASeg name
       | Just sf <- Value.Struct.lookupStructField name struct -> Just $ ssfValue sf
     PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
-    PendingTASeg i j ->
-      -- pending elements can be resolved, so the index might not be valid.
-      (if j == 0 then dsfLabel else dsfValue) <$> stcPendSubs struct IntMap.!? i
+    DynFieldTASeg i j ->
+      (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
     LetTASeg name
       | Just lb <- Value.Struct.lookupStructLet name struct -> Just (lbValue lb)
     EmbedTASeg i -> stcEmbeds struct IntMap.!? i
@@ -181,14 +182,14 @@ setSubTreeTN seg subT parT = do
     _ -> throwErrSt insertErrMsg
   return $ setTreeNode parT n
  where
-  updateParStruct :: (MonadError String m) => Value.Struct.Struct t -> StructTASeg -> m (TreeNode t)
+  updateParStruct :: (MonadError String m, HasCallStack) => Value.Struct.Struct t -> StructTASeg -> m (TreeNode t)
   updateParStruct parStruct labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
     , Just field <- Value.Struct.lookupStructField name parStruct =
         let
-          newField = subT <$ field
+          newField = subT `Value.Struct.updateFieldValue` field
           newStruct = Value.Struct.updateStructField name newField parStruct
          in
           return (TNStruct newStruct)
@@ -206,12 +207,12 @@ setSubTreeTN seg subT parT = do
           newStruct = parStruct{stcCnstrs = IntMap.insert i newPSF (stcCnstrs parStruct)}
          in
           return (TNStruct newStruct)
-    | PendingTASeg i j <- labelSeg =
+    | DynFieldTASeg i j <- labelSeg =
         let
-          pends = stcPendSubs parStruct
+          pends = stcDynFields parStruct
           psf = pends IntMap.! i
           newPSF = if j == 0 then psf{dsfLabel = subT} else psf{dsfValue = subT}
-          newStruct = parStruct{stcPendSubs = IntMap.insert i newPSF pends}
+          newStruct = parStruct{stcDynFields = IntMap.insert i newPSF pends}
          in
           return (TNStruct newStruct)
     | EmbedTASeg i <- labelSeg =

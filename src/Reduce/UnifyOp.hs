@@ -32,7 +32,7 @@ import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import qualified TCursorOps
 import Text.Printf (printf)
-import Util (debugSpan, logDebugStr)
+import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 {- | Reduce the tree that is a mutable to the form that can be used in the unify operation.
@@ -179,9 +179,9 @@ unifyLeftCnstredVal (c1, ut1) ut2@UTree{utVal = t2} = do
   unifyUTrees ut1{utVal = VT.cnsedVal c1} ut2
 
   eM2 <- case VT.treeNode t2 of
-    -- ut2 was VT.CnstredVal, we need to merge original expressions.
+    -- ut2 is VT.CnstredVal, we need to merge original expressions.
     VT.TNCnstredVal c2 -> return $ VT.cnsedOrigExpr c2
-    -- ut2 was not VT.CnstredVal, we need to build the original expression.
+    -- ut2 is not VT.CnstredVal, we need to build the original expression.
     _ -> Just <$> buildASTExpr False t2
 
   e <- case catMaybes [VT.cnsedOrigExpr c1, eM2] of
@@ -625,14 +625,17 @@ unifyStructsInner (isEmbed1, s1) (isEmbed2, s2) = do
   mkUnifiedField sf1 sf2 =
     let
       -- No original node exists yet
-      f = VT.mkBinaryOp AST.Unify unify (VT.ssfValue sf1) (VT.ssfValue sf2)
+      unifyValOp = VT.mkBinaryOp AST.Unify unify (VT.ssfValue sf1) (VT.ssfValue sf2)
+      unifiedBaseRaw = case catMaybes [VT.ssfBaseRaw sf1, VT.ssfBaseRaw sf2] of
+        [br1, br2] -> Just $ VT.mkMutableTree $ VT.mkBinaryOp AST.Unify unify br1 br2
+        [br] -> Just br
+        _ -> Nothing
      in
       VT.Field
-        { VT.ssfValue = VT.mkMutableTree f
+        { VT.ssfValue = VT.mkMutableTree unifyValOp
+        , VT.ssfBaseRaw = unifiedBaseRaw
         , VT.ssfAttr = VT.mergeAttrs (VT.ssfAttr sf1) (VT.ssfAttr sf2)
-        , VT.ssfCnstrs = VT.ssfCnstrs sf1 ++ VT.ssfCnstrs sf2
-        , VT.ssfPends = VT.ssfPends sf1 ++ VT.ssfPends sf2
-        , VT.ssfNoStatic = VT.ssfNoStatic sf1 && VT.ssfNoStatic sf2
+        , VT.ssfObjects = VT.ssfObjects sf1 `Set.union` VT.ssfObjects sf2
         }
 
   -- merge two fields.
@@ -675,7 +678,7 @@ unifyStructsInner (isEmbed1, s1) (isEmbed2, s2) = do
         , VT.stcOrdLabels = map fst nodes
         , VT.stcFields = Map.fromList nodes
         , VT.stcLets = VT.stcLets st1 `Map.union` VT.stcLets st2
-        , VT.stcPendSubs = combinedPendSubs
+        , VT.stcDynFields = combinedPendSubs
         , VT.stcCnstrs = combinedPatterns
         , VT.stcClosed = VT.stcClosed st1 || VT.stcClosed st2
         , VT.stcPerms =
@@ -694,7 +697,7 @@ unifyStructsInner (isEmbed1, s1) (isEmbed2, s2) = do
                  )
         }
    where
-    combinedPendSubs = IntMap.union (VT.stcPendSubs st1) (VT.stcPendSubs st2)
+    combinedPendSubs = IntMap.union (VT.stcDynFields st1) (VT.stcDynFields st2)
     -- The combined patterns are the patterns of the first struct and the patterns of the second struct.
     combinedPatterns = IntMap.union (VT.stcCnstrs st1) (VT.stcCnstrs st2)
 
@@ -704,10 +707,10 @@ unifyStructsInner (isEmbed1, s1) (isEmbed2, s2) = do
         { VT.piCnstrs = Set.fromList $ IntMap.keys $ VT.stcCnstrs struct
         , -- TODO: exclude let bindings
           VT.piLabels = Set.fromList $ VT.stcOrdLabels struct
-        , VT.piDyns = Set.fromList $ IntMap.keys $ VT.stcPendSubs struct
+        , VT.piDyns = Set.fromList $ IntMap.keys $ VT.stcDynFields struct
         , -- TODO: exclude let bindings
           VT.piOpLabels = Set.fromList $ VT.stcOrdLabels opStruct
-        , VT.piOpDyns = Set.fromList $ IntMap.keys $ VT.stcPendSubs opStruct
+        , VT.piOpDyns = Set.fromList $ IntMap.keys $ VT.stcDynFields opStruct
         }
 
 {- | Preprocess the block.
@@ -810,7 +813,7 @@ _allSubNodes x = VT.subNodes x ++ rawNodes x
   rawNodes t = case VT.treeNode t of
     VT.TNStruct struct ->
       [(Path.StructTASeg $ Path.PatternTASeg i 1, VT.scsValue c) | (i, c) <- IntMap.toList $ VT.stcCnstrs struct]
-        ++ [(Path.StructTASeg $ Path.PendingTASeg i 1, VT.dsfValue dsf) | (i, dsf) <- IntMap.toList $ VT.stcPendSubs struct]
+        ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, VT.dsfValue dsf) | (i, dsf) <- IntMap.toList $ VT.stcDynFields struct]
         ++ [(Path.StructTASeg $ Path.LetTASeg s, VT.lbValue lb) | (s, lb) <- Map.toList $ VT.stcLets struct]
     _ -> []
 
@@ -964,7 +967,7 @@ checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded =
                       (throwErrSt "struct-value is not found")
                       return
                       (VT.lookupStructField opLabel struct)
-                  RM.modifyRMTN $ VT.TNStruct $ VT.updateStructField opLabel (btm <$ field) struct
+                  RM.modifyRMTN $ VT.TNStruct $ VT.updateStructField opLabel (btm `VT.updateFieldValue` field) struct
             )
     )
 

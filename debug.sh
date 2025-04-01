@@ -39,7 +39,7 @@ fi
 
 # If the first argument is "show", run the file server and exit
 if [[ "$1" == "show" ]]; then
-  go run tools/fileserv/main.go --file=_debug/output.md
+  tools/open_trace_in_ui -n --trace _debug/trace.json
   exit 0
 fi
 
@@ -52,12 +52,12 @@ if [[ "$1" == "run" ]]; then
   echo ""
   # Run the program with the input file and redirect the output to a log file.
   if [[ -z "$timeout" ]]; then
-    cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
+    cabal run haskue -- -d --show-mutable-args $input 2> _debug/t.log
   else
-    gtimeout $timeout cabal run haskue -- -d -m --show-mutable-args $input 2> _debug/t.log
+    gtimeout $timeout cabal run haskue -- -d --show-mutable-args $input 2> _debug/t.log
   fi
 
-  go run tools/logp/main.go -input=_debug/t.log -output=_debug/output.md
+  go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
 
   # show the size of the output.md
   ls -lh _debug/output.md

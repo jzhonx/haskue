@@ -13,7 +13,6 @@ import Common (
  )
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (MonadError)
-import Control.Monad.State.Strict (gets)
 import Cursor (
   Context (Context, ctxReduceStack),
  )
@@ -30,7 +29,6 @@ import qualified Reduce.RegOps as RegOps
 import qualified Reduce.UnifyOp as UnifyOp
 import Text.Printf (printf)
 import Util (
-  Trace (traceStamp),
   getTraceID,
   logDebugStr,
  )
@@ -83,8 +81,12 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
 -- Reduce tree nodes
 -- ###
 
+{- | Reduce the struct.
+
+Most of the heavy work is done in the propUpStructPost function.
+-}
 reduceStruct :: forall s r m. (RM.ReduceMonad s r m) => m ()
-reduceStruct = do
+reduceStruct = RM.debugSpanRM "reduceStruct" $ do
   -- Close the struct if the tree is closed.
   RM.mustStruct $ \s -> do
     closed <- VT.treeRecurClosed <$> RM.getRMTree
@@ -94,15 +96,15 @@ reduceStruct = do
 
   whenStruct () $ \s -> mapM_ validateLetName (Map.keys $ VT.stcLets s)
 
-  -- reduce the dynamic fields first. If the dynfields become actual fields, later they will be reduced.
+  -- reduce the labels of the dynamic fields first. If the dynfields become actual fields, later they will be reduced.
   whenStruct () $ \s ->
     foldM
-      ( \_ (i, pend) ->
-          -- Inserting reduced pending element into the struct is handled by propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.PendingTASeg i 0)) (VT.dsfLabel pend) reduce
+      ( \_ (i, df) ->
+          -- Inserting reduced dynamic field element into the struct is handled by propUpStructPost.
+          RM.inSubRM (Path.StructTASeg (Path.DynFieldTASeg i 0)) (VT.dsfLabel df) reduce
       )
       ()
-      (IntMap.toList $ VT.stcPendSubs s)
+      (IntMap.toList $ VT.stcDynFields s)
 
   whenStruct () $ \s ->
     foldM
@@ -117,10 +119,7 @@ reduceStruct = do
       (IntMap.toList $ VT.stcCnstrs s)
 
   -- Reduce all fields
-  whenStruct () $ \s -> do
-    mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
-    RM.withAddrAndFocus $ \addr t ->
-      logDebugStr $ printf "reduceStruct: addr: %s, new struct: %s" (show addr) (show t)
+  whenStruct () $ \s -> mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
 
 whenStruct :: (RM.ReduceMonad s r m) => a -> (VT.Struct VT.Tree -> m a) -> m a
 whenStruct a f = do
@@ -181,50 +180,49 @@ reduceStructField name = whenStruct () $ \struct -> do
 The focus of the tree must be a struct.
 -}
 propUpStructPost :: (RM.ReduceMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
-propUpStructPost (Path.PendingTASeg i _, _struct) = RM.debugSpanRM "propUpStructPost_dynamic" $ do
-  let dsf = VT.stcPendSubs _struct IntMap.! i
+propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM "propUpStructPost_dynamic" $ do
+  let dsf = VT.stcDynFields _struct IntMap.! i
+  -- First we need to remove the dynamic field with the old label from the struct.
+  (remAffStruct, _) <- removeAppliedObject i _struct
+  let
+    rE = dynFieldToStatic remAffStruct dsf
+    allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
+
   either
     RM.modifyRMNodeWithTree
-    ( \(struct, fieldM) -> do
-        -- Constrain the new field with all existing constraints.
-        (newStruct, matchedSegs) <-
+    ( \labelFieldM -> do
+        -- Constrain the dynamic field with all existing constraints.
+        (addAffFields, addAffLabels) <-
           maybe
-            (return (struct, []))
+            (return ([], []))
             ( \(name, field) -> do
-                (items, matchedSegs) <- do
-                  let allCnstrsWithIdx = IntMap.toList $ VT.stcCnstrs struct
-                  (newSub, matchedCnstrs) <- constrainField name (VT.ssfValue field) allCnstrsWithIdx
-                  return
-                    ( [(name, newSub, matchedCnstrs)]
-                    , if not (null matchedCnstrs) then [name] else []
-                    )
-                return (updateFieldsWithAppliedCnstrs struct items, matchedSegs)
+                newField <- constrainFieldWithCnstrs name field allCnstrs
+                return
+                  ( [(name, newField)]
+                  , if not (null $ VT.ssfObjects newField) then [name] else []
+                  )
             )
-            fieldM
+            labelFieldM
         RM.withAddrAndFocus $ \addr _ ->
           logDebugStr $
             printf
-              "propUpStructPost_dynamic: addr: %s, new struct: %s, matchedSegs: %s"
+              "propUpStructPost_dynamic: addr: %s, addAffFields: %s"
               (show addr)
-              (show $ VT.mkStructTree newStruct)
-              (show matchedSegs)
-        RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
+              (show addAffFields)
+        RM.modifyRMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
 
         -- Check the permission of the label of newly created field.
-        whenStruct () $ \s -> checkNewLabelPerm s (Path.PendingTASeg i 0)
+        whenStruct () $ \s -> checkPermForNewPend s (Path.DynFieldTASeg i 0)
 
         -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
-        whenStruct () $ \_ -> mapM_ reduceStructField matchedSegs
+        whenStruct () $ \_ -> mapM_ reduceStructField addAffLabels
     )
-    (updateStructPend _struct dsf)
+    rE
 propUpStructPost (Path.PatternTASeg i _, struct) =
   RM.debugSpanRM (printf "propUpStructPost_constraint, idx: %s" (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
-    let
-      prevMatchedNames = matchedByCnstr i (getSFieldPairs struct)
-      cnstr = VT.stcCnstrs struct IntMap.! i
-    newMatchedNames <- filterMatchedNames cnstr (map fst $ getSFieldPairs struct)
-    -- New constraint might have the following effect:
+    let cnstr = VT.stcCnstrs struct IntMap.! i
+    -- New constraint might have the following effects:
     -- A. It matches fewer fields than the previous constraint with narrower constraints.
     -- -----
     -- abcde
@@ -233,136 +231,135 @@ propUpStructPost (Path.PatternTASeg i _, struct) =
     -- 1. Remove the constraint for a,b
     -- 2. Do nothing for c,d,e
     --
-    -- B. It could also match more fields when the constraint just got reduced to a pattern.
-    let
-      removedNames = Set.fromList prevMatchedNames `Set.difference` Set.fromList newMatchedNames
-      addedNames = Set.fromList newMatchedNames `Set.difference` Set.fromList prevMatchedNames
+    -- B. It could also match more fields when the constraint just got reduced to a concrete pattern.
 
-    removedItems <-
-      removeAppliedCnstr
-        i
-        (IntMap.toList $ VT.stcCnstrs struct)
-        (filter (\(seg, _) -> seg `Set.member` removedNames) (getSFieldPairs struct))
-
-    addedItems <-
-      applyMoreCnstr
-        (i, cnstr)
-        (filter (\(seg, _) -> seg `Set.member` addedNames) (getSFieldPairs struct))
-    let newStruct = updateFieldsWithAppliedCnstrs struct (removedItems ++ addedItems)
+    (remAffStruct, remAffLabels) <- removeAppliedObject i struct
+    RM.withAddrAndFocus $ \addr _ ->
+      logDebugStr $
+        printf
+          "propUpStructPost_constraint: addr: %s, remAffLabels: %s, remAffStruct: %s"
+          (show addr)
+          (show remAffLabels)
+          (show $ VT.mkStructTree remAffStruct)
+    (newStruct, addAffLabels) <- applyMoreCnstr cnstr remAffStruct
     RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
 
-    let affectedLabels = Set.toList removedNames ++ Set.toList addedNames
-
+    let affectedLabels = remAffLabels ++ addAffLabels
     unless (null affectedLabels) $
-      RM.withAddrAndFocus $ \addr _ ->
-        logDebugStr $
-          printf
-            ( "propUpPendStructPost_constraint: addr: %s, diff_items, -ns: %s, +ns: %s, "
-                ++ "-items: %s, +items: %s, new struct: %s"
-            )
-            (show addr)
-            (show $ Set.toList removedNames)
-            (show $ Set.toList addedNames)
-            (show removedItems)
-            (show addedItems)
+      RM.debugSpanArgsRM
+        "propUpStructPost_constraint_after1"
+        ( printf
+            "-ns: %s, +ns: %s, new struct: %s"
+            (show remAffLabels)
+            (show addAffLabels)
             (show $ VT.mkStructTree newStruct)
+        )
+        (return ())
 
-    whenStruct () $ \s -> checkNewPatternPerm s (Path.PatternTASeg i 0)
+    whenStruct () $ \s -> checkPermForNewPattern s (Path.PatternTASeg i 0)
+
+    RM.debugSpanRM "propUpStructPost_constraint_after2" (return ())
 
     -- Reduce the updated struct values.
     whenStruct () $ \_ -> mapM_ reduceStructField affectedLabels
-
-    RM.withTree $ \t ->
-      logDebugStr $ printf "propUpPendStructPost_constraint: new value: %s" (show t)
- where
-  --
-  matchedByCnstr :: Int -> [(String, VT.Field VT.Tree)] -> [String]
-  matchedByCnstr j = foldr (\(k, field) acc -> if j `elem` VT.ssfCnstrs field then k : acc else acc) []
 propUpStructPost (_, _) = return ()
 
-getSFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]
-getSFieldPairs struct = Map.toList $ VT.stcFields struct
+getLabelFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]
+getLabelFieldPairs struct = Map.toList $ VT.stcFields struct
 
-{- | Update the struct with the reduced pending element.
+{- | Convert a dynamic field to a static field.
 
-It returns the new struct and a pair, containing reduced string and the newly created/updated field.
+It returns a pair which contains reduced string and the newly created/updated field.
 -}
-updateStructPend ::
+dynFieldToStatic ::
   VT.Struct VT.Tree ->
   VT.DynamicField VT.Tree ->
-  Either VT.Tree (VT.Struct VT.Tree, Maybe (String, VT.Field VT.Tree))
-updateStructPend struct df = case VT.treeNode label of
+  Either VT.Tree (Maybe (String, VT.Field VT.Tree))
+dynFieldToStatic struct df = case VT.treeNode label of
   VT.TNBottom _ -> Left label
   VT.TNMutable mut
     -- TODO: atom can become bottom or not found.
-    | Just (VT.TNAtom (VT.AtomV (VT.String s))) <- VT.treeNode <$> VT.getMutVal mut -> updateLabel s
+    | Just (VT.TNAtom (VT.AtomV (VT.String s))) <- VT.treeNode <$> VT.getMutVal mut -> mkField s
     -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
     -- have been reduced to a string.
-    | otherwise -> return (struct, Nothing)
-  VT.TNAtom (VT.AtomV (VT.String s)) -> updateLabel s
+    | otherwise -> return Nothing
+  VT.TNAtom (VT.AtomV (VT.String s)) -> mkField s
   _ -> Left (VT.mkBottomTree "label can only be a string")
  where
   label = VT.dsfLabel df
-  updateLabel s =
+  mkField s =
     let
       unifier l r = VT.mkMutableTree $ mkUnifyNode l r
       newSF = VT.dynToField df (VT.lookupStructField s struct) unifier
      in
-      return (VT.convertPendDyn struct s newSF, Just (s, newSF))
+      return (Just (s, newSF))
 
 {- | Apply pattern constraints ([pattern]: constraint) to the static field.
 
-Returns the new field and the indexes of the constraints that are matched with the field.
+Returns the new field. If the field is not matched with the pattern, it returns the original field.
 -}
-constrainField :: (RM.ReduceMonad s r m) => String -> VT.Tree -> [(Int, VT.StructCnstr VT.Tree)] -> m (VT.Tree, [Int])
-constrainField name field =
+constrainFieldWithCnstrs ::
+  (RM.ReduceMonad s r m) => String -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> m (VT.Field VT.Tree)
+constrainFieldWithCnstrs name =
   foldM
-    ( \(accField, accMatchedIdxes) (i, cnstr) -> do
-        (newField, isMatched) <- bindFieldWithCnstr name accField cnstr
-        return (newField, if isMatched then i : accMatchedIdxes else accMatchedIdxes)
+    ( \accField cnstr -> do
+        (newField, _) <- bindFieldWithCnstr name accField cnstr
+        return newField
     )
-    (field, [])
 
 {- | Bind the pattern constraint ([pattern]: constraint) to the static field if the field name matches the pattern.
 
-Return the new unify node, which is constraint & field, if the field name matches the pattern. Otherwise, return the
-field. The boolean indicates if the field is matched with the pattern.
+If the field name matches the pattern, it returns the new unify function node, which is constraint & field.
+Otherwise, return the original field.
+
+The field should not have been applied with the constraint before.
 
 It can run in any kind of node.
 -}
-bindFieldWithCnstr :: (RM.ReduceMonad s r m) => String -> VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Tree, Bool)
-bindFieldWithCnstr name fval psf = do
-  let selPattern = VT.scsPattern psf
+bindFieldWithCnstr ::
+  (RM.ReduceMonad s r m) => String -> VT.Field VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Field VT.Tree, Bool)
+bindFieldWithCnstr name field cnstr = do
+  let selPattern = VT.scsPattern cnstr
 
   matched <- UnifyOp.patMatchLabel selPattern name
   logDebugStr $ printf "bindFieldWithCnstr: %s with %s, matched: %s" name (show selPattern) (show matched)
 
-  let op = VT.mkMutableTree $ mkUnifyNode fval (VT.mkCnstredValTree (VT.scsValue psf) Nothing)
-  return
-    ( if matched
-        then op
-        else fval
-    , matched
-    )
+  let
+    fval = VT.ssfValue field
+    -- TODO: comment on why mkCnstredValTree is used.
+    op = VT.mkMutableTree $ mkUnifyNode fval (VT.mkCnstredValTree (VT.scsValue cnstr) Nothing)
+    newField =
+      if matched
+        then field{VT.ssfValue = op, VT.ssfObjects = Set.insert (VT.scsID cnstr) (VT.ssfObjects field)}
+        else field
+
+  logDebugStr $
+    printf "bindFieldWithCnstr: %s with %s, matched: %s, newField: %s" name (show selPattern) (show matched) (show newField)
+
+  return (newField, matched)
 
 mkUnifyNode :: VT.Tree -> VT.Tree -> VT.Mutable VT.Tree
 mkUnifyNode = VT.mkBinaryOp AST.Unify UnifyOp.unify
 
-{- | Update the struct field with the cnstr items.
+{- | Update the struct with the constrained result.
 
-If the cnstr items introduce new fields that are not in the struct, then they are ignored.
+If the constrained result introduce new fields that are not in the struct, then they are ignored.
 -}
-updateFieldsWithAppliedCnstrs :: VT.Struct VT.Tree -> [(String, VT.Tree, [Int])] -> VT.Struct VT.Tree
-updateFieldsWithAppliedCnstrs struct =
+updateStructWithCnstredRes ::
+  -- | The constrained result is a list of tuples that contains the name of the field, the field.
+  [(String, VT.Field VT.Tree)] ->
+  VT.Struct VT.Tree ->
+  VT.Struct VT.Tree
+updateStructWithCnstredRes res struct =
   foldr
-    ( \(name, val, matchedCnstrs) acc ->
+    ( \(name, newField) acc ->
         maybe
           acc
-          ( \field -> VT.updateStructField name (field{VT.ssfValue = val, VT.ssfCnstrs = matchedCnstrs}) acc
-          )
+          (\_ -> VT.updateStructField name newField acc)
           (VT.lookupStructField name struct)
     )
     struct
+    res
 
 -- | Filter the names that are matched with the constraint's pattern.
 filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [String] -> m [String]
@@ -374,60 +371,126 @@ filterMatchedNames cnstr =
     )
     []
 
-{- | Remove the applied constraint from the fields.
+{- | Remove the applied object from the fields.
 
-The constraint must have been applied to the fields.
+Returns the updated struct and the list of labels whose fields are affected.
 
-This is done by re-applying existing constraints except the one that is removed.
+This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 -}
-removeAppliedCnstr ::
+removeAppliedObject ::
   (RM.ReduceMonad s r m) =>
   Int ->
-  [(Int, VT.StructCnstr VT.Tree)] ->
-  [(String, VT.Field VT.Tree)] ->
-  m [(String, VT.Tree, [Int])]
-removeAppliedCnstr delIdx allCnstrs subs = do
-  foldM
-    ( \accSubs (name, field) -> do
-        let
-          updatedIdxes = filter (/= delIdx) (VT.ssfCnstrs field)
-          updatedCnstrs = filter (\(i, _) -> i `elem` updatedIdxes) allCnstrs
-          fval = VT.ssfValue field
-        raw <-
-          maybe (buildASTExpr False fval) return (VT.treeExpr fval)
-            >>= RefSys.evalExprRM
-        logDebugStr $ printf "removeAppliedCnstr: %s, updatedIdxes: %s, raw: %s" name (show updatedIdxes) (show raw)
-        (newSub, matchedCnstrs) <- constrainField name raw updatedCnstrs
-        return $ (name, newSub, matchedCnstrs) : accSubs
-    )
-    []
-    subs
+  VT.Struct VT.Tree ->
+  m (VT.Struct VT.Tree, [String])
+removeAppliedObject delIdx struct = RM.debugSpanRM "removeAppliedObject" $ do
+  logDebugStr $
+    printf
+      "removeAppliedObject: delIdx: %s, struct: %s"
+      (show delIdx)
+      (show $ VT.mkStructTree struct)
+
+  (remAffFields, removedLabels) <-
+    foldM
+      ( \(accUpdated, accRemoved) (name, field) -> do
+          let
+            newObjectIDs = Set.delete delIdx (VT.ssfObjects field)
+            newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
+            newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
+            baseRawM = VT.ssfBaseRaw field
+          logDebugStr $
+            printf
+              "removeAppliedObject: %s, delIdx: %s, newObjectIDs: %s, raw: %s"
+              name
+              (show delIdx)
+              (show newObjectIDs)
+              (show baseRawM)
+          case baseRawM of
+            Just raw -> do
+              let
+                rawField = field{VT.ssfValue = raw}
+                fieldWithDyns =
+                  foldr
+                    (\dyn acc -> VT.dynToField dyn (Just acc) unifier)
+                    rawField
+                    (IntMap.elems newDyns)
+              newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs)
+              return ((name, newField) : accUpdated, accRemoved)
+            -- The field is created by a dynamic field, so it does not have a base raw.
+            _ ->
+              if null newDyns
+                -- If there are no new dynamic fields, then the dynamic field is the field to be removed.
+                then return (accUpdated, name : accRemoved)
+                else do
+                  let
+                    dyns = IntMap.elems newDyns
+                    startField = field{VT.ssfValue = VT.dsfValue $ head dyns}
+                    fieldWithDyns =
+                      foldr
+                        (\dyn acc -> VT.dynToField dyn (Just acc) unifier)
+                        startField
+                        (tail dyns)
+                  newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs)
+                  return ((name, newField) : accUpdated, accRemoved)
+      )
+      ([], [])
+      (fieldsUnifiedWithObject delIdx $ Map.toList $ VT.stcFields struct)
+  let res = VT.removeStructFields removedLabels $ VT.updateStructWithFields remAffFields struct
+  return (res, map fst remAffFields)
+ where
+  allCnstrs = VT.stcCnstrs struct
+  allDyns = VT.stcDynFields struct
+  unifier l r = VT.mkMutableTree $ mkUnifyNode l r
+
+  -- Find the fields that are unified with the object
+  fieldsUnifiedWithObject :: Int -> [(String, VT.Field VT.Tree)] -> [(String, VT.Field VT.Tree)]
+  fieldsUnifiedWithObject j =
+    foldr (\(k, field) acc -> if j `elem` VT.ssfObjects field then (k, field) : acc else acc) []
 
 -- | Apply the additional constraint to the fields.
 applyMoreCnstr ::
   (RM.ReduceMonad s r m) =>
-  (Int, VT.StructCnstr VT.Tree) ->
-  [(String, VT.Field VT.Tree)] ->
-  m [(String, VT.Tree, [Int])]
-applyMoreCnstr (i, cnstr) =
-  mapM
-    ( \(name, field) -> do
-        (nv, _) <- bindFieldWithCnstr name (VT.ssfValue field) cnstr
-        return (name, nv, VT.ssfCnstrs field ++ [i])
-    )
+  VT.StructCnstr VT.Tree ->
+  VT.Struct VT.Tree ->
+  m (VT.Struct VT.Tree, [String])
+applyMoreCnstr cnstr struct = RM.debugSpanRM "applyMoreCnstr" $ do
+  (addAffFields, addAffLabels) <-
+    foldM
+      ( \(accFields, accLabels) (name, field) -> do
+          (nf, isMatched) <- bindFieldWithCnstr name field cnstr
+          if isMatched
+            then return ((name, nf) : accFields, name : accLabels)
+            else return (accFields, accLabels)
+      )
+      ([], [])
+      (getLabelFieldPairs struct)
+  let newStruct = VT.updateStructWithFields addAffFields struct
+  logDebugStr $
+    printf
+      "applyMoreCnstr: addAffFields: %s, addAffLabels: %s, struct: %s, newStruct: %s"
+      (show addAffFields)
+      (show addAffLabels)
+      (show $ VT.mkStructTree struct)
+      (show $ VT.mkStructTree newStruct)
+  return (newStruct, addAffLabels)
 
-checkNewLabelPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkNewLabelPerm struct (Path.PendingTASeg i 0) =
+checkPermForNewPend :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+checkPermForNewPend struct (Path.DynFieldTASeg i 0) =
   let perms = VT.getPermInfoForDyn struct i
    in mapM_ (validatePermItem struct) perms
-checkNewLabelPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+checkPermForNewPend _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
-checkNewPatternPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkNewPatternPerm struct (Path.PatternTASeg i 0) =
+checkPermForNewPattern :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+checkPermForNewPattern struct (Path.PatternTASeg i 0) =
   let perms = VT.getPermInfoForPattern struct i
    in mapM_ (validatePermItem struct) perms
-checkNewPatternPerm _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+checkPermForNewPattern _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
+{- | Validate the permission item.
+
+A struct must be provided so that dynamic fields and constraints can be found.
+
+It constructs the allowing labels and constraints and checks if the joining labels are allowed.
+-}
 validatePermItem :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
 validatePermItem struct p =
   let
@@ -443,7 +506,7 @@ validatePermItem struct p =
       ( catMaybes $
           map
             ( \i ->
-                VT.getStringFromTree (VT.dsfLabel $ VT.stcPendSubs struct IntMap.! i)
+                VT.getStringFromTree (VT.dsfLabel $ VT.stcDynFields struct IntMap.! i)
             )
             (Set.toList idxes)
       )

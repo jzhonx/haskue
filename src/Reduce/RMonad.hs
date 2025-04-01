@@ -16,7 +16,7 @@ import Common (
  )
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
-import Control.Monad.Reader (MonadReader, ask, asks)
+import Control.Monad.Reader (MonadReader, asks)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify)
 import Cursor (
   Context (
@@ -48,7 +48,7 @@ import Path (
  )
 import TCursorOps (goDownTCSeg, propUpTC)
 import Text.Printf (printf)
-import Util (HasTrace, debugSpan, logDebugStr)
+import Util (HasTrace, debugInstant, debugSpan, logDebugStr)
 import qualified Value.Tree as VT
 
 -- ReduceMonad stores the tree structure in its state.
@@ -391,10 +391,29 @@ traverseRM f = f >> traverseSub (traverseRM f)
 logDebugStrRM :: (ReduceMonad s r m) => String -> String -> m ()
 logDebugStrRM hdr msg = withAddrAndFocus $ \addr _ -> logDebugStr $ printf "%s: addr: %s, %s" hdr (show addr) msg
 
-debugSpanRM :: (ReduceMonad s r m) => String -> m a -> m a
-debugSpanRM name f =
-  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) Nothing f
+data ShowTree = ShowFullTree VT.Tree | ShowTree VT.Tree
 
-debugSpanArgsRM :: (ReduceMonad s r m) => String -> String -> m a -> m a
+instance Show ShowTree where
+  show (ShowFullTree t) = VT.treeFullStr 0 t
+  show (ShowTree t) = VT.treeToSubStr 0 True t
+
+debugSpanRM :: (ReduceMonad s r m, Show a) => String -> m a -> m a
+debugSpanRM name f =
+  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) Nothing $ _traceActionRM f
+
+debugSpanArgsRM :: (ReduceMonad s r m, Show a) => String -> String -> m a -> m a
 debugSpanArgsRM name args f =
-  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) (Just args) f
+  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) (Just args) $ _traceActionRM f
+
+_traceActionRM :: (ReduceMonad s r m, Show a) => m a -> m (a, ShowTree, ShowTree)
+_traceActionRM f = do
+  seg <- getRMTASeg
+  bfocus <- getRMTree
+  res <- f
+  focus <- getRMTree
+  if seg == RootTASeg
+    then return (res, ShowFullTree bfocus, ShowFullTree focus)
+    else return (res, ShowTree bfocus, ShowTree focus)
+
+debugInstantRM :: (ReduceMonad s r m) => String -> String -> m ()
+debugInstantRM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)

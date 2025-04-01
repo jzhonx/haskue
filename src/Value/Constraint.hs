@@ -23,10 +23,15 @@ instance (Eq t) => Eq (AtomCnstr t) where
 updateCnstrAtom :: AtomV -> AtomCnstr t -> AtomCnstr t
 updateCnstrAtom atom c = c{cnsAtom = atom}
 
--- | CnstredVal is a value that is either a constraint's value or a unification that contains the constraint's value.
+{- | CnstredVal is a value that is either a constraint's value or a unification that contains the constraint's value.
+
+It is a wrapper so that when a value is unified with a temporary constraint's value and the result is a bottom, the
+whole value will not be a permanent bottom.
+-}
 data CnstredVal t = CnstredVal
   { cnsedVal :: t
   , cnsedOrigExpr :: Maybe AST.Expression
-  -- ^ cnsedOrigExpr is the original expression without constraints.
+  -- ^ cnsedOrigExpr is the original expression without constraints. It is used for showing the original expression
+  -- without constraints applied.
   }
   deriving (Eq, Show)

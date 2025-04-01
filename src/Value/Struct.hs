@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Value.Struct where
 
@@ -22,7 +23,7 @@ data Struct t = Struct
   , stcLets :: Map.Map String (LetBinding t)
   -- ^ Let bindings are read-only. They are not reduced.
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
-  , stcPendSubs :: IntMap.IntMap (DynamicField t)
+  , stcDynFields :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
   , stcEmbeds :: IntMap.IntMap t
   -- ^ The embedded structs are not reduced.
@@ -50,15 +51,14 @@ data StructVal t
 
 data Field t = Field
   { ssfValue :: t
+  , ssfBaseRaw :: Maybe t
+  -- ^ It is the raw parsed value of the field before any dynamic fields or constraints are applied.
+  -- It can be None if the field is created from a dynamic field.
   , ssfAttr :: LabelAttr
-  , ssfCnstrs :: [Int]
-  -- ^ Which constraints are applied to the field.
-  , ssfPends :: [Int]
-  -- ^ Which dynamic fields are applied to the field.
-  , ssfNoStatic :: Bool
-  -- ^ Whether the field is created only by dynamic fields.
+  , ssfObjects :: Set.Set Int
+  -- ^ A set of object IDs that have been unified with base raw value.
   }
-  deriving (Show, Functor)
+  deriving (Show)
 
 data LetBinding t = LetBinding
   { lbReferred :: Bool
@@ -76,7 +76,7 @@ data DynamicField t = DynamicField
   , dsfLabel :: t
   , dsfLabelExpr :: AST.Expression
   , dsfValue :: t
-  -- ^ The value is only for the storage purpose. It will not be reduced during reducing pending elements.
+  -- ^ The value is only for the storage purpose. It will not be reduced during reducing dynamic fields.
   }
   deriving (Show)
 
@@ -88,8 +88,7 @@ data StructCnstr t = StructCnstr
   { scsID :: Int
   , scsPattern :: t
   , scsValue :: t
-  -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing pending
-  -- elements.
+  -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing.
   }
   deriving (Show)
 
@@ -101,22 +100,39 @@ data StructElemAdder t
   | EmbedSAdder Int t
   deriving (Show)
 
+{- | Permission item stores permission information for the static fields and dynamic fields of a struct.
+
+Because structs can be merged and constraints can be changed, we need to store the permission information of the
+original struct.
+-}
 data PermItem = PermItem
   { piCnstrs :: Set.Set Int
   , piLabels :: Set.Set String
   , piDyns :: Set.Set Int
   , piOpLabels :: Set.Set String
+  -- ^ The static fields to be checked.
   , piOpDyns :: Set.Set Int
+  -- ^ The dynamic fields to be checked.
   }
   deriving (Show)
 
 instance (Eq t) => Eq (Struct t) where
+  (==) :: (Eq t) => Struct t -> Struct t -> Bool
   (==) s1 s2 =
     stcOrdLabels s1 == stcOrdLabels s2
       && stcFields s1 == stcFields s2
       && stcCnstrs s1 == stcCnstrs s2
-      && stcPendSubs s1 == stcPendSubs s2
+      && stcDynFields s1 == stcDynFields s2
       && stcClosed s1 == stcClosed s2
+
+instance (Show t) => Show (Struct t) where
+  show s =
+    "Struct {"
+      ++ "stcID="
+      ++ show (stcID s)
+      ++ ", stcOrdLabels="
+      ++ show (stcOrdLabels s)
+      ++ "}"
 
 instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
   buildASTExpr _ _ = throwErrSt "not implemented"
@@ -155,14 +171,14 @@ mkStructFromAdders sid as =
     , stcOrdLabels = ordLabels
     , stcFields = Map.fromList vals
     , stcLets = Map.fromList lets
-    , stcPendSubs = pendings
+    , stcDynFields = dyns
     , stcCnstrs = cnstrs
     }
  where
   ordLabels = [l | StaticSAdder l _ <- as]
   vals = [(s, sf) | StaticSAdder s sf <- as]
   lets = [(s, LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
-  pendings =
+  dyns =
     IntMap.fromList $
       foldr
         ( \x acc ->
@@ -190,40 +206,23 @@ emptyStruct =
     , stcOrdLabels = []
     , stcFields = Map.empty
     , stcLets = Map.empty
-    , stcPendSubs = IntMap.empty
+    , stcDynFields = IntMap.empty
     , stcCnstrs = IntMap.empty
     , stcEmbeds = IntMap.empty
     , stcClosed = False
     , stcPerms = []
     }
 
-emptyFieldMker :: t -> LabelAttr -> Field t
-emptyFieldMker t a =
+updateFieldValue :: t -> Field t -> Field t
+updateFieldValue t field = field{ssfValue = t}
+
+staticFieldMker :: (Show t) => t -> LabelAttr -> Field t
+staticFieldMker t a =
   Field
     { ssfValue = t
+    , ssfBaseRaw = Just t
     , ssfAttr = a
-    , ssfCnstrs = []
-    , ssfPends = []
-    , ssfNoStatic = False
-    }
-
-{- | Convert a pending dynamic field to a field.
-
-It marks the pending dynamic field as deleted.
--}
-convertPendDyn ::
-  Struct t -> String -> Field t -> Struct t
-convertPendDyn struct s sf =
-  struct
-    { stcFields = Map.insert s sf (stcFields struct)
-    , stcOrdLabels =
-        stcOrdLabels struct
-          -- TODO: use Map to lookup
-          ++ ( if s `elem` stcOrdLabels struct
-                then []
-                else [s]
-             )
-             -- , stcPendSubs = IntMap.insert dynIdx Nothing (stcPendSubs struct)
+    , ssfObjects = Set.empty
     }
 
 dynToField ::
@@ -237,26 +236,21 @@ dynToField df sfM unifier = case sfM of
   -- in a scope can be ignored.
   Just sf ->
     -- If the dynamic field is already applied to the field, then we do not apply it again.
-    if dsfID df `elem` ssfPends sf
+    if dsfID df `Set.member` ssfObjects sf
       then sf
       else
-        Field
+        sf
           { ssfValue = unifier (ssfValue sf) (dsfValue df)
           , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr df)
-          , -- The dynamic field just turns into a regular field. No constraints are applied.
-            ssfCnstrs = []
-          , ssfPends = ssfPends sf ++ [dsfID df]
-          , ssfNoStatic = False
+          , ssfObjects = Set.insert (dsfID df) (ssfObjects sf)
           }
   -- No existing field, so we just turn the dynamic field into a field.
   _ ->
     Field
       { ssfValue = dsfValue df
+      , ssfBaseRaw = Nothing
       , ssfAttr = dsfAttr df
-      , -- Same as above.
-        ssfCnstrs = []
-      , ssfPends = [dsfID df]
-      , ssfNoStatic = True
+      , ssfObjects = Set.fromList [dsfID df]
       }
 
 addStructLetBind :: Struct t -> String -> t -> Struct t
@@ -282,7 +276,7 @@ markLetBindReferred name struct =
 
 -- | Determines whether the struct has empty fields, including both static and dynamic fields.
 hasEmptyFields :: Struct t -> Bool
-hasEmptyFields s = Map.null (stcFields s) && null (stcPendSubs s)
+hasEmptyFields s = Map.null (stcFields s) && null (stcDynFields s)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -318,20 +312,36 @@ getFieldFromSV sv = case sv of
   SField f -> Just f
   _ -> Nothing
 
-{- | Update the struct with the given label name and field.
+_appendOrdLabelIfNeeded :: String -> Struct t -> Struct t
+_appendOrdLabelIfNeeded name struct =
+  if name `elem` stcOrdLabels struct
+    then struct
+    else struct{stcOrdLabels = stcOrdLabels struct ++ [name]}
 
-The segment should already exist in the struct.
--}
+-- | Update the struct with the given label name and field.
 updateStructField :: String -> Field t -> Struct t -> Struct t
 updateStructField name sub struct =
-  struct
-    { stcFields = Map.insert name sub (stcFields struct)
-    }
+  _appendOrdLabelIfNeeded
+    name
+    ( struct
+        { stcFields = Map.insert name sub (stcFields struct)
+        }
+    )
 
 updateStructLet :: String -> LetBinding t -> Struct t -> Struct t
 updateStructLet name sub struct =
   struct
     { stcLets = Map.insert name sub (stcLets struct)
+    }
+
+updateStructWithFields :: [(String, Field t)] -> Struct t -> Struct t
+updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
+
+removeStructFields :: [String] -> Struct t -> Struct t
+removeStructFields names struct =
+  struct
+    { stcOrdLabels = filter (`notElem` names) (stcOrdLabels struct)
+    , stcFields = foldr Map.delete (stcFields struct) names
     }
 
 {- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic

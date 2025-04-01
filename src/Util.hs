@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Util where
 
 import Control.Monad.Logger (
@@ -5,8 +7,11 @@ import Control.Monad.Logger (
   logDebugN,
  )
 import Control.Monad.State (MonadState, gets, modify)
+import Data.Aeson (ToJSON, object, toJSON, (.=))
+import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
 import Data.Text (pack)
+import Data.Text.Lazy (unpack)
 import Text.Printf (printf)
 
 class HasTrace a where
@@ -25,34 +30,105 @@ data ChromeTrace = ChromeTrace
   { ctrName :: String
   , ctrStart :: Int
   , ctrEnd :: Int
-  , ctrArgs :: Maybe String
+  , ctrArgs :: ChromeTraceArgs
   }
-  deriving (Eq)
+  deriving (Eq, Show)
 
-instance Show ChromeTrace where
-  show ct =
-    printf
-      "ChromeTrace{%s: %s, %s: %s, %s: %s, \"ph\": \"X\", \"pid\": 0, \"tid\": 0"
-      (show "name")
-      (show $ ctrName ct)
-      (show "ts")
-      (show $ ctrStart ct)
-      (show "dur")
-      (show $ ctrEnd ct - ctrStart ct)
-      ++ ( if isNothing (ctrArgs ct)
-            then ""
-            else printf ", \"args\": {\"data\": %s}" (show (fromJust $ ctrArgs ct))
-         )
-      ++ "}"
+data ChromeTraceArgs = ChromeTraceArgs
+  { ctaTraceID :: Int
+  , ctaResVal :: String
+  , ctaBeforeFocus :: String
+  , ctaFocus :: String
+  , ctaCustomVal :: Maybe String
+  }
+  deriving (Eq, Show)
 
-debugSpan :: (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> m a -> m a
+data ChromeInstantTrace = ChromeInstantTrace
+  { ctiName :: String
+  , ctiStart :: Int
+  , ctiArgs :: ChromeInstantTraceArgs
+  }
+  deriving (Eq, Show)
+
+data ChromeInstantTraceArgs = ChromeInstantTraceArgs
+  { ctiTraceID :: Int
+  , ctiCustomVal :: Maybe String
+  }
+  deriving (Eq, Show)
+
+instance ToJSON ChromeTrace where
+  toJSON ct =
+    object
+      [ "name" .= ctrName ct
+      , "ts" .= ctrStart ct
+      , "dur" .= (ctrEnd ct - ctrStart ct)
+      , "ph" .= ("X" :: String)
+      , "pid" .= (0 :: Int)
+      , "tid" .= (0 :: Int)
+      , "args" .= toJSON (ctrArgs ct)
+      ]
+instance ToJSON ChromeTraceArgs where
+  toJSON cta =
+    object
+      ( [ "tid" .= show (ctaTraceID cta)
+        , "res" .= ctaResVal cta
+        , "bfcs" .= ctaBeforeFocus cta
+        , "fcs" .= ctaFocus cta
+        ]
+          ++ ( if isNothing (ctaCustomVal cta)
+                then []
+                else ["ctm" .= fromJust (ctaCustomVal cta)]
+             )
+      )
+instance ToJSON ChromeInstantTrace where
+  toJSON c =
+    object
+      [ "name" .= ctiName c
+      , "ts" .= ctiStart c
+      , "ph" .= ("i" :: String)
+      , "s" .= ("g" :: String)
+      , "pid" .= (0 :: Int)
+      , "tid" .= (0 :: Int)
+      , "args" .= toJSON (ctiArgs c)
+      ]
+instance ToJSON ChromeInstantTraceArgs where
+  toJSON c =
+    object
+      ( [ "tid" .= show (ctiTraceID c)
+        ]
+          ++ ( if isNothing (ctiCustomVal c)
+                then []
+                else ["ctm" .= fromJust (ctiCustomVal c)]
+             )
+      )
+debugSpan ::
+  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> m (a, b, b) -> m a
 debugSpan name addr args f = do
   start <- newTraceStamp
-  res <- f
+  (res, bfocus, focus) <- f
   end <- newTraceStamp
   let msg = printf "%s, at:%s" name addr
-  logDebugStr $ show $ ChromeTrace msg start end args
+  logDebugStr $
+    "ChromeTrace"
+      ++ unpack
+        ( encodeToLazyText
+            ( ChromeTrace msg start end (ChromeTraceArgs start (show res) (show bfocus) (show focus) args)
+            )
+        )
   return res
+
+debugInstant ::
+  (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> m ()
+debugInstant name addr args = do
+  start <- newTraceStamp
+  let msg = printf "%s, at:%s" name addr
+  logDebugStr $
+    "ChromeTrace"
+      ++ unpack
+        ( encodeToLazyText
+            ( ChromeInstantTrace msg start (ChromeInstantTraceArgs start args)
+            )
+        )
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceStamp . getTrace
