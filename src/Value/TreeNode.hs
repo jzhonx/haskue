@@ -135,7 +135,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
 
 -- | Set the sub tree with the given segment and new tree.
 setSubTreeTN ::
-  forall t r m. (Env r m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
+  forall r s t m. (Env r s m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
 setSubTreeTN seg subT parT = do
   n <- case (seg, getTreeNode parT) of
     (StructTASeg s, TNStruct struct) -> updateParStruct struct s

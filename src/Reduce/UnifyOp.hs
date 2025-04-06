@@ -543,9 +543,10 @@ unifyLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
       if Path.isPrefix infAddr curPath
         then RM.putRMTree $ VT.mkBottomTree "structural cycle"
         else do
+          MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
           raw <-
             maybe (throwErrSt "original expression is not found") return (VT.treeExpr t1)
-              >>= RefSys.evalExprRM
+              >>= evalExpr
           -- TODO: why?
           r1 <- reduceUnifyArg (Path.toBinOpTASeg d1) raw
           logDebugStr $
@@ -754,7 +755,7 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
 We need to check all vars. If there is a ref in the deeper block referencing a non-existed field in the current
 block, we should return an error because in the new block the field may exist.
 -}
-_findInvalidBlockVars :: (Env r m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
+_findInvalidBlockVars :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
 _findInvalidBlockVars _tc =
   snd
     <$> TCursorOps.traverseTC
@@ -773,7 +774,7 @@ _findInvalidBlockVars _tc =
           m
       _ -> return (tc, acc)
 
-_rewriteBlockVars :: (Env r m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
+_rewriteBlockVars :: (Env r s m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
 _rewriteBlockVars scopeAddr sid _tc =
   Cursor.vcFocus
     <$> TCursorOps.traverseTCSimple

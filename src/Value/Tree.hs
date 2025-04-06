@@ -335,10 +335,10 @@ instance BuildASTExpr Tree where
     TNStub -> throwErrSt "no expression for stub"
 
 -- | Patterns are not included in the AST.
-buildStructASTExpr :: (Env r m) => Bool -> Struct Tree -> m AST.Expression
+buildStructASTExpr :: (Env r s m) => Bool -> Struct Tree -> m AST.Expression
 buildStructASTExpr concrete s =
   let
-    processSField :: (Env r m, BuildASTExpr t) => (String, Field t) -> m AST.Declaration
+    processSField :: (Env r s m, BuildASTExpr t) => (String, Field t) -> m AST.Declaration
     processSField (sel, sf) = do
       e <- buildASTExpr concrete (ssfValue sf)
       return $
@@ -351,7 +351,7 @@ buildStructASTExpr concrete s =
             ]
             e
 
-    processDynField :: (Env r m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
+    processDynField :: (Env r s m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
     processDynField sf = do
       e <- buildASTExpr concrete (dsfValue sf)
       return $

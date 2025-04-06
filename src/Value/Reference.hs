@@ -3,7 +3,11 @@ module Value.Reference where
 import Data.List (intercalate)
 import qualified Path
 
-data RefArg t = RefPath String [t] | RefIndex [t]
+data RefArg t
+  = -- | RefPath denotes a reference starting with a variable name.
+    RefPath String [t]
+  | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
+    RefIndex [t]
 
 data Reference t = Reference
   { refArg :: RefArg t

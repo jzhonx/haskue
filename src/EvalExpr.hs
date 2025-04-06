@@ -35,17 +35,16 @@ import AST (
   UnaryExpr (..),
   UnaryOp (Star),
  )
-import Common (Env, TreeOp (isTreeValue))
+import Common (Env, IDStore (..), TreeOp (isTreeValue))
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State.Strict (MonadState, get, put)
+import Control.Monad.State.Strict (gets, modify)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Path (
-  StructTASeg (LetTASeg, StringTASeg),
   binOpLeftTASeg,
   binOpRightTASeg,
  )
@@ -64,9 +63,9 @@ import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
 
-type EvalEnv r m = (Env r m, MonadState Int m)
+type EvalEnv r s m = (Env r s m, IDStore s)
 
-evalSourceFile :: (EvalEnv r m) => SourceFile -> m VT.Tree
+evalSourceFile :: (EvalEnv r s m) => SourceFile -> m VT.Tree
 evalSourceFile (SourceFile decls) = do
   logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
   evalStructLit (StructLit decls)
@@ -78,14 +77,14 @@ Every eval* function should return a tree cursor that is at the same level as th
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: (EvalEnv r m) => Expression -> m VT.Tree
+evalExpr :: (EvalEnv r s m) => Expression -> m VT.Tree
 evalExpr e = do
   t <- case e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
   return $ VT.setExpr t (Just e)
 
-evalLiteral :: (EvalEnv r m) => Literal -> m VT.Tree
+evalLiteral :: (EvalEnv r s m) => Literal -> m VT.Tree
 evalLiteral (LitStructLit s) = evalStructLit s
 evalLiteral (ListLit l) = evalListLit l
 evalLiteral lit = return v
@@ -99,7 +98,7 @@ evalLiteral lit = return v
     TopLit -> VT.mkNewTree VT.TNTop
     BottomLit -> VT.mkBottomTree ""
 
-evalStructLit :: (EvalEnv r m) => StructLit -> m VT.Tree
+evalStructLit :: (EvalEnv r s m) => StructLit -> m VT.Tree
 evalStructLit e@(StructLit decls) = do
   sid <- allocOID
   t <- foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
@@ -112,7 +111,7 @@ evalStructLit e@(StructLit decls) = do
     _ -> return t
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree.
-evalDecl :: (EvalEnv r m) => VT.Tree -> Declaration -> m VT.Tree
+evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
 evalDecl x decl = case VT.treeNode x of
   VT.TNBottom _ -> return x
   VT.TNStruct struct -> case decl of
@@ -135,7 +134,7 @@ evalDecl x decl = case VT.treeNode x of
       addNewStructElem adder struct
   _ -> throwErrSt "invalid struct"
 
-evalEmbedding :: (EvalEnv r m) => Embedding -> m VT.Tree
+evalEmbedding :: (EvalEnv r s m) => Embedding -> m VT.Tree
 evalEmbedding (AliasExpr e) = evalExpr e
 evalEmbedding (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
   gev <- evalExpr ge
@@ -143,7 +142,7 @@ evalEmbedding (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) 
   sv <- evalStructLit lit
   return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension gev clsv sv
 
-evalClause :: (EvalEnv r m) => Clause -> m (VT.IterClause VT.Tree)
+evalClause :: (EvalEnv r s m) => Clause -> m (VT.IterClause VT.Tree)
 evalClause (ClauseStartClause (GuardClause e)) = do
   t <- evalExpr e
   return $ VT.IterClauseIf t
@@ -151,10 +150,10 @@ evalClause (ClauseLetClause (LetClause ident le)) = do
   lt <- evalExpr le
   return $ VT.IterClauseLet ident lt
 
--- evalStartClause :: (EvalEnv r m) => StartClause -> m VT.Tree
+-- evalStartClause :: (EvalEnv r s m) => StartClause -> m VT.Tree
 -- evalStartClause (GuardClause e) = evalExpr e
 
-evalFdLabels :: (EvalEnv r m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
+evalFdLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
 evalFdLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
@@ -175,7 +174,7 @@ evalFdLabels lbls e =
         logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
         return adder
  where
-  mkAdder :: (EvalEnv r m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
+  mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsVar = isVar ln}
@@ -215,7 +214,7 @@ evalFdLabels lbls e =
   isVar _ = False
 
 -- Insert a new element into the struct. If the field is already in the struct, then unify the field with the new field.
-addNewStructElem :: (Env r m) => VT.StructElemAdder VT.Tree -> VT.Struct VT.Tree -> m VT.Tree
+addNewStructElem :: (Env r s m) => VT.StructElemAdder VT.Tree -> VT.Struct VT.Tree -> m VT.Tree
 addNewStructElem adder struct = case adder of
   (VT.StaticSAdder name sf) ->
     maybe
@@ -283,12 +282,12 @@ addNewStructElem adder struct = case adder of
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: (EvalEnv r m) => AST.ElementList -> m VT.Tree
+evalListLit :: (EvalEnv r s m) => AST.ElementList -> m VT.Tree
 evalListLit (AST.EmbeddingList es) = do
   xs <- mapM evalEmbedding es
   return $ VT.mkListTree xs
 
-evalUnaryExpr :: (EvalEnv r m) => UnaryExpr -> m VT.Tree
+evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m VT.Tree
 evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
 evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
 
@@ -300,7 +299,7 @@ builtinOpNameTable =
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable
 
-evalPrimExpr :: (EvalEnv r m) => PrimaryExpr -> m VT.Tree
+evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m VT.Tree
 evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
   OpExpression expr -> evalExpr expr
@@ -333,7 +332,7 @@ For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
 -}
 evalSelector ::
-  (EvalEnv r m) => PrimaryExpr -> AST.Selector -> VT.Tree -> m VT.Tree
+  (EvalEnv r s m) => PrimaryExpr -> AST.Selector -> VT.Tree -> m VT.Tree
 evalSelector _ astSel oprnd =
   return $ VT.appendSelToRefTree oprnd (VT.mkAtomTree (VT.String sel))
  where
@@ -342,22 +341,25 @@ evalSelector _ astSel oprnd =
     AST.StringSelector str -> str
 
 evalIndex ::
-  (EvalEnv r m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree
+  (EvalEnv r s m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree
 evalIndex _ (AST.Index e) oprnd = do
   sel <- evalExpr e
   return $ VT.appendSelToRefTree oprnd sel
 
 {- | Evaluates the unary operator.
+
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: (EvalEnv r m) => UnaryOp -> UnaryExpr -> m VT.Tree
+evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m VT.Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
   return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op (RegOps.regUnaryOp op) t)
 
--- order of arguments is important for disjunctions.
--- left is always before right.
-evalBinary :: (EvalEnv r m) => BinaryOp -> Expression -> Expression -> m VT.Tree
+{- | order of arguments is important for disjunctions.
+
+left is always before right.
+-}
+evalBinary :: (EvalEnv r s m) => BinaryOp -> Expression -> Expression -> m VT.Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
@@ -365,7 +367,7 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op (dispBinMutable op) lt rt)
 
-evalDisj :: (EvalEnv r m) => Expression -> Expression -> m VT.Tree
+evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m VT.Tree
 evalDisj e1 e2 = do
   (lt, rt) <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
@@ -405,9 +407,9 @@ evalDisj e1 e2 = do
         logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
         RM.putRMTree u
 
-allocOID :: (EvalEnv r m) => m Int
+allocOID :: (EvalEnv r s m) => m Int
 allocOID = do
-  i <- get
+  i <- gets getID
   let j = i + 1
-  put j
+  modify (`setID` j)
   return j

@@ -8,18 +8,32 @@ import qualified AST
 import Control.Monad.Except (MonadError)
 import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Reader (MonadReader)
+import Control.Monad.State (MonadState)
 import GHC.Stack (HasCallStack)
 import Path (TASeg)
+import Util (HasTrace (..), Trace, emptyTrace)
 
-type Env r m = (MonadError String m, MonadLogger m, HasCallStack, MonadReader r m, HasConfig r)
+type Env r s m =
+  ( MonadError String m
+  , MonadLogger m
+  , HasCallStack
+  , MonadReader r m
+  , HasConfig r
+  , MonadState s m
+  , HasTrace s
+  )
 
 class HasConfig r where
   getConfig :: r -> Config
   setConfig :: r -> Config -> r
 
+class IDStore s where
+  getID :: s -> Int
+  setID :: s -> Int -> s
+
 class BuildASTExpr a where
   -- The first argument is a flag to indicate whether the expression is required to be concrete.
-  buildASTExpr :: (Env r m) => Bool -> a -> m AST.Expression
+  buildASTExpr :: (Env r s m) => Bool -> a -> m AST.Expression
 
 class TreeRepBuilder a where
   repTree :: Int -> a -> String
@@ -31,7 +45,7 @@ class TreeOp a where
 
   -- | Set the subtree to the given tree with the segment. The first argument is the segment, the second argument is the
   -- sub tree, and the third argument is the tree to be updated.
-  setSubTree :: (Env r m) => TASeg -> a -> a -> m a
+  setSubTree :: (Env r s m) => TASeg -> a -> a -> m a
 
   delTemp :: a -> a
 
@@ -83,3 +97,20 @@ emptyRuntimeParams =
   RuntimeParams
     { rpCreateCnstr = False
     }
+
+data EEState = EEState
+  { eesObjID :: Int
+  , eesTrace :: Trace
+  }
+  deriving (Show)
+
+instance IDStore EEState where
+  getID = eesObjID
+  setID s i = s{eesObjID = i}
+
+instance HasTrace EEState where
+  getTrace = eesTrace
+  setTrace s tr = s{eesTrace = tr}
+
+emptyEEState :: EEState
+emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}

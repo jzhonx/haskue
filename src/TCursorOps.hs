@@ -10,6 +10,10 @@ import Exception (throwErrSt)
 import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr))
 import qualified Value.Tree as VT
 
+getTCFocusSeg :: (Env r s m) => TreeCursor VT.Tree -> m TASeg
+getTCFocusSeg (ValCursor _ []) = throwErrSt "already at the top"
+getTCFocusSeg (ValCursor _ ((seg, _) : _)) = return seg
+
 goDownTCAddr :: TreeAddr -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
 goDownTCAddr (TreeAddr sels) = go (reverse sels)
  where
@@ -44,19 +48,25 @@ goDownTCSeg seg tc = do
 
 It stops at the root.
 -}
-propUpTC :: (Env r m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+propUpTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
 propUpTC (ValCursor _ []) = throwErrSt "already at the top"
 propUpTC tc@(ValCursor _ [(RootTASeg, _)]) = return tc
 propUpTC (ValCursor subT ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
   return $ ValCursor t cs
 
+-- | Get the top cursor of the tree. No propagation is involved.
+topTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+topTC (ValCursor _ []) = throwErrSt "already at the top"
+topTC tc@(ValCursor _ ((RootTASeg, _) : _)) = return tc
+topTC (ValCursor _ ((_, parT) : cs)) = topTC $ ValCursor parT cs
+
 {- | Visit every node in the tree in pre-order and apply the function.
 
 It does not re-constrain struct fields.
 -}
 traverseTC ::
-  (Env r m) =>
+  (Env r s m) =>
   (VT.Tree -> [(TASeg, VT.Tree)]) ->
   ((TreeCursor VT.Tree, a) -> m (TreeCursor VT.Tree, a)) ->
   (TreeCursor VT.Tree, a) ->
@@ -73,7 +83,7 @@ traverseTC subNodes f x = do
     (subNodes $ vcFocus $ fst y)
 
 traverseTCSimple ::
-  (Env r m) =>
+  (Env r s m) =>
   (VT.Tree -> [(TASeg, VT.Tree)]) ->
   (TreeCursor VT.Tree -> m VT.Tree) ->
   TreeCursor VT.Tree ->

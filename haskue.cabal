@@ -26,6 +26,7 @@ library
         Path,
         Reduce,
         Reduce.Mutate,
+        Reduce.Notif,
         Reduce.PostReduce,
         Reduce.RMonad,
         Reduce.RefSys,

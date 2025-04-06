@@ -26,6 +26,10 @@ newtype Trace = Trace
 instance Show Trace where
   show t = printf "id=%s" (show $ traceStamp t)
 
+instance HasTrace Trace where
+  getTrace = id
+  setTrace s t = t{traceStamp = traceStamp s}
+
 data ChromeTrace = ChromeTrace
   { ctrName :: String
   , ctrStart :: Int

@@ -38,11 +38,15 @@ instance HasTrace (CtxVal t a) where
   getTrace = ctxTrace . cvCtx
   setTrace cv tr = cv{cvCtx = (cvCtx cv){ctxTrace = tr}}
 
-cvFromCur :: ValCursor t a -> CtxVal t a
-cvFromCur cur =
+instance IDStore (CtxVal t a) where
+  getID cv = ctxObjID (cvCtx cv)
+  setID cv i = cv{cvCtx = (cvCtx cv){ctxObjID = i}}
+
+mkCtxVal :: ValCursor t a -> Int -> Trace -> CtxVal t a
+mkCtxVal cur objID trace =
   CtxVal
     { cvVal = vcFocus cur
-    , cvCtx = emptyContext{ctxCrumbs = vcCrumbs cur}
+    , cvCtx = emptyContext{ctxCrumbs = vcCrumbs cur, ctxObjID = objID, ctxTrace = trace}
     }
 
 type CtxTree t = CtxVal t t
@@ -91,16 +95,20 @@ emptyContext =
     , ctxTrace = emptyTrace
     }
 
-{- | Add a notifier pair to the context.
+{- | Add a notification pair to the context.
+
 The first element is the source addr, which is the addr that is being watched.
 The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
-addCtxNotifiers :: Context t -> (TreeAddr, TreeAddr) -> Context t
-addCtxNotifiers ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
+addCtxNotifPair :: Context t -> (TreeAddr, TreeAddr) -> Context t
+addCtxNotifPair ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
  where
   oldMap = ctxRefSysGraph ctx
   depList = fromMaybe [] $ Map.lookup src oldMap
   newDepList = if dep `elem` depList then depList else dep : depList
+
+hasCtxNotifSender :: TreeAddr -> Context t -> Bool
+hasCtxNotifSender addr ctx = Map.member addr (ctxRefSysGraph ctx)
 
 type TreeCursor t = ValCursor t t
 
@@ -137,7 +145,7 @@ parentTC (ValCursor _ []) = Nothing
 parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
 
 -- | Get the segment paired with the focus of the cursor.
-focusTCSeg :: (Env r m) => TreeCursor t -> m TASeg
+focusTCSeg :: (Env r s m) => TreeCursor t -> m TASeg
 focusTCSeg (ValCursor _ []) = throwErrSt "already at the top"
 focusTCSeg tc = return $ fst . head $ vcCrumbs tc
 

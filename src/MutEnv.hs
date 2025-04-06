@@ -6,12 +6,10 @@
 module MutEnv where
 
 import qualified AST
-import Common (Env, TreeOp)
-import Control.Monad.State.Strict (MonadState)
+import Common (Env, IDStore (..), TreeOp)
 import Cursor (HasCtxVal)
 import Exception (throwErrSt)
 import qualified Path
-import Util (HasTrace)
 import Value.Comprehension (Comprehension)
 import Value.Reference (RefArg)
 import Value.Struct (Struct)
@@ -22,35 +20,33 @@ class HasFuncs r t | r -> t where
   getFuncs :: r -> Functions t
   setFuncs :: r -> Functions t -> r
 
-type EvalEnv r t m =
-  ( Env r m
+type EvalEnv r s t m =
+  ( Env r s m
   , TreeOp t
-  , MonadState Int m
-  , HasFuncs r t
+  , IDStore s
   )
 
-type MutableEnv s r t m =
-  ( Env r m
-  , MonadState s m
+type MutableEnv r s t m =
+  ( Env r s m
   , TreeOp t
+  , IDStore s
   , HasCtxVal s t t
-  , HasTrace s
   , HasFuncs r t
   )
 
 data Functions t = Functions
-  { fnEvalExpr :: forall r m. (EvalEnv r t m) => AST.Expression -> m t
-  , fnClose :: forall s r m. (MutableEnv s r t m) => [t] -> m ()
-  , fnReduce :: forall s r m. (MutableEnv s r t m) => m ()
+  { fnEvalExpr :: forall r s m. (EvalEnv r s t m) => AST.Expression -> m t
+  , fnClose :: forall r s m. (MutableEnv r s t m) => [t] -> m ()
+  , fnReduce :: forall r s m. (MutableEnv r s t m) => m ()
   , fnIndex ::
-      forall s r m.
-      (MutableEnv s r t m) =>
+      forall r s m.
+      (MutableEnv r s t m) =>
       Maybe (Path.TreeAddr, Path.TreeAddr) ->
       RefArg t ->
       m (Either t (Maybe Path.TreeAddr))
-  , fnPropUpStructPost :: forall s r m. (MutableEnv s r t m) => (Path.StructTASeg, Struct t) -> m ()
-  , fnComprehend :: forall s r m. (MutableEnv s r t m) => Comprehension t -> m ()
-  , fnUnifyEmbeds :: forall s r m. (MutableEnv s r t m) => t -> m ()
+  , fnPropUpStructPost :: forall r s m. (MutableEnv r s t m) => (Path.StructTASeg, Struct t) -> m ()
+  , fnComprehend :: forall r s m. (MutableEnv r s t m) => Comprehension t -> m ()
+  , fnUnifyEmbeds :: forall r s m. (MutableEnv r s t m) => t -> m ()
   }
 
 emptyFunctions :: Functions t

@@ -8,12 +8,13 @@
 module Reduce.PostReduce where
 
 import Common (TreeOp (isTreeAtom, isTreeBottom, isTreeMutable))
+import Control.Monad.Reader (asks)
 import Cursor (Context (ctxCnstrValidatorAddr, ctxRefSysGraph))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
+import qualified MutEnv
 import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
 import Reduce.Root (fullReduce)
 import Text.Printf (printf)
 import Util (logDebugStr)
@@ -78,7 +79,8 @@ validateCnstr c = do
   -- run the validator in a sub context.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
   res <- RM.inTempSubRM (VT.mkBottomTree "no value yet") $ do
-    raw <- RefSys.evalExprRM (VT.cnsValidator c)
+    MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
+    raw <- evalExpr (VT.cnsValidator c)
     RM.putRMTree raw
     -- TODO: replace all refs that refer to the cnstr with the atom
     fullReduce >> RM.getRMTree

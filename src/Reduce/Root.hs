@@ -8,13 +8,13 @@ module Reduce.Root where
 
 import qualified AST
 import Common (
-  BuildASTExpr (buildASTExpr),
   TreeOp (isTreeBottom),
  )
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (MonadError)
 import Cursor (
   Context (Context, ctxReduceStack),
+  hasCtxNotifSender,
  )
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -23,6 +23,7 @@ import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.Mutate as Mutate
+import qualified Reduce.Notif as Notif
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import qualified Reduce.RegOps as RegOps
@@ -37,7 +38,7 @@ import qualified Value.Tree as VT
 fullReduce :: (RM.ReduceMonad s r m) => m ()
 fullReduce = RM.debugSpanRM "fullReduce" $ do
   reduce
-  RefSys.drainRefSysQueue
+  Notif.drainRefSysQueue
 
 -- | Reduce the tree to the lowest form.
 reduce :: (RM.ReduceMonad s r m) => m ()
@@ -64,10 +65,14 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   RM.withTree $ \t -> RM.putRMTree $ VT.setTN orig (VT.treeNode t)
 
   notifyEnabled <- RM.getRMRefSysEnabled
+  isSender <- hasCtxNotifSender addr <$> RM.getRMContext
   -- Only notify dependents when we are not in a temporary node.
   let refAddrM = Path.referableAddr addr
-  if (Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM)
-    then (RM.addToRMRefSysQ $ fromJust refAddrM)
+  if isSender && Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM
+    then do
+      let refAddr = fromJust refAddrM
+      RM.debugInstantRM "enqueue" $ printf "addr: %s, enqueue new reduced Addr: %s" (show addr) (show refAddr)
+      RM.addToRMRefSysQ refAddr
     else logDebugStr $ printf "reduce, addr: %s, not accessible or not enabled" (show addr)
 
   pop
@@ -180,44 +185,46 @@ reduceStructField name = whenStruct () $ \struct -> do
 The focus of the tree must be a struct.
 -}
 propUpStructPost :: (RM.ReduceMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
-propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM "propUpStructPost_dynamic" $ do
-  let dsf = VT.stcDynFields _struct IntMap.! i
-  -- First we need to remove the dynamic field with the old label from the struct.
-  (remAffStruct, _) <- removeAppliedObject i _struct
-  let
-    rE = dynFieldToStatic remAffStruct dsf
-    allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
+propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
+  (printf "propUpStructPost_dynamic, idx: %s" (show i))
+  $ do
+    -- First we need to remove the dynamic field with the old label from the struct.
+    (remAffStruct, _) <- removeAppliedObject i _struct
 
-  either
-    RM.modifyRMNodeWithTree
-    ( \labelFieldM -> do
-        -- Constrain the dynamic field with all existing constraints.
-        (addAffFields, addAffLabels) <-
-          maybe
-            (return ([], []))
-            ( \(name, field) -> do
-                newField <- constrainFieldWithCnstrs name field allCnstrs
-                return
-                  ( [(name, newField)]
-                  , if not (null $ VT.ssfObjects newField) then [name] else []
-                  )
-            )
-            labelFieldM
-        RM.withAddrAndFocus $ \addr _ ->
-          logDebugStr $
-            printf
-              "propUpStructPost_dynamic: addr: %s, addAffFields: %s"
-              (show addr)
-              (show addAffFields)
-        RM.modifyRMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
+    let
+      dsf = VT.stcDynFields _struct IntMap.! i
+      rE = dynFieldToStatic remAffStruct dsf
+      allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
 
-        -- Check the permission of the label of newly created field.
-        whenStruct () $ \s -> checkPermForNewPend s (Path.DynFieldTASeg i 0)
+    RM.debugInstantRM "propUpStructPost_dynamic" $ printf "dsf: %s, rE: %s" (show dsf) (show rE)
 
-        -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
-        whenStruct () $ \_ -> mapM_ reduceStructField addAffLabels
-    )
-    rE
+    either
+      RM.modifyRMNodeWithTree
+      ( \labelFieldM -> do
+          -- Constrain the dynamic field with all existing constraints.
+          (addAffFields, addAffLabels) <-
+            maybe
+              (return ([], []))
+              ( \(name, field) -> do
+                  newField <- constrainFieldWithCnstrs name field allCnstrs
+                  return
+                    ( [(name, newField)]
+                    , if not (null $ VT.ssfObjects newField) then [name] else []
+                    )
+              )
+              labelFieldM
+
+          RM.debugInstantRM "propUpStructPost_dynamic" $ printf "addAffFields: %s" (show addAffFields)
+
+          RM.modifyRMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
+
+          -- Check the permission of the label of newly created field.
+          whenStruct () $ \s -> checkPermForNewPend s (Path.DynFieldTASeg i 0)
+
+          -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
+          whenStruct () $ \_ -> mapM_ reduceStructField addAffLabels
+      )
+      rE
 propUpStructPost (Path.PatternTASeg i _, struct) =
   RM.debugSpanRM (printf "propUpStructPost_constraint, idx: %s" (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
@@ -382,32 +389,32 @@ removeAppliedObject ::
   Int ->
   VT.Struct VT.Tree ->
   m (VT.Struct VT.Tree, [String])
-removeAppliedObject delIdx struct = RM.debugSpanRM "removeAppliedObject" $ do
+removeAppliedObject objID struct = RM.debugSpanRM "removeAppliedObject" $ do
   logDebugStr $
     printf
-      "removeAppliedObject: delIdx: %s, struct: %s"
-      (show delIdx)
+      "removeAppliedObject: objID: %s, struct: %s"
+      (show objID)
       (show $ VT.mkStructTree struct)
 
   (remAffFields, removedLabels) <-
     foldM
       ( \(accUpdated, accRemoved) (name, field) -> do
           let
-            newObjectIDs = Set.delete delIdx (VT.ssfObjects field)
+            newObjectIDs = Set.delete objID (VT.ssfObjects field)
             newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
             newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
             baseRawM = VT.ssfBaseRaw field
-          logDebugStr $
+          RM.debugInstantRM "removeAppliedObject" $
             printf
-              "removeAppliedObject: %s, delIdx: %s, newObjectIDs: %s, raw: %s"
+              "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
               name
-              (show delIdx)
-              (show newObjectIDs)
+              (show objID)
+              (show $ Set.toList newObjectIDs)
               (show baseRawM)
           case baseRawM of
             Just raw -> do
               let
-                rawField = field{VT.ssfValue = raw}
+                rawField = field{VT.ssfValue = raw, VT.ssfObjects = Set.empty}
                 fieldWithDyns =
                   foldr
                     (\dyn acc -> VT.dynToField dyn (Just acc) unifier)
@@ -418,7 +425,7 @@ removeAppliedObject delIdx struct = RM.debugSpanRM "removeAppliedObject" $ do
             -- The field is created by a dynamic field, so it does not have a base raw.
             _ ->
               if null newDyns
-                -- If there are no new dynamic fields, then the dynamic field is the field to be removed.
+                -- If there are no dynamic fields left, then the field should be removed.
                 then return (accUpdated, name : accRemoved)
                 else do
                   let
@@ -433,7 +440,7 @@ removeAppliedObject delIdx struct = RM.debugSpanRM "removeAppliedObject" $ do
                   return ((name, newField) : accUpdated, accRemoved)
       )
       ([], [])
-      (fieldsUnifiedWithObject delIdx $ Map.toList $ VT.stcFields struct)
+      (fieldsUnifiedWithObject objID $ Map.toList $ VT.stcFields struct)
   let res = VT.removeStructFields removedLabels $ VT.updateStructWithFields remAffFields struct
   return (res, map fst remAffFields)
  where

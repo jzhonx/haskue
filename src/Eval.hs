@@ -29,13 +29,8 @@ import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (evalStateT, execStateT)
-import Cursor (
-  CtxVal (cvVal),
-  ValCursor (ValCursor),
-  cvFromCur,
-  getCVCursor,
- )
+import Control.Monad.State.Strict (evalStateT, execStateT, runStateT)
+import qualified Cursor
 import Data.ByteString.Builder (
   Builder,
   string7,
@@ -54,15 +49,11 @@ import Reduce (
   reduce,
  )
 import Reduce.PostReduce (postValidation)
+import qualified Reduce.RMonad as RM
 import Reduce.UnifyOp (unifyEmbeds)
 import Text.Printf (printf)
-import Util (logDebugStr)
-import Value.Tree (
-  Bottom (Bottom),
-  Tree (treeNode),
-  TreeNode (TNBottom, TNTop),
-  mkNewTree,
- )
+import Util (emptyTrace, logDebugStr)
+import qualified Value.Tree as VT
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
@@ -80,9 +71,10 @@ emptyEvalConfig =
     , ecFileTreeAddr = ""
     }
 
+-- | Runner holds the configuration and functions for evaluation.
 data Runner = Runner
   { rcConfig :: Common.Config
-  , rcFuncs :: MutEnv.Functions Tree
+  , rcFuncs :: MutEnv.Functions VT.Tree
   }
 
 instance Show Runner where
@@ -107,7 +99,7 @@ emptyRunner =
 updateConfig :: Runner -> Common.Config -> Runner
 updateConfig r c = r{rcConfig = c}
 
-instance MutEnv.HasFuncs Runner Tree where
+instance MutEnv.HasFuncs Runner VT.Tree where
   getFuncs = rcFuncs
   setFuncs r f = r{rcFuncs = f}
 
@@ -133,21 +125,21 @@ runIO s conf =
           return (declsBld 0 decls)
       _ -> throwErrSt "Expected a struct literal"
 
-runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
+runTreeIO :: (MonadIO m, MonadError String m) => String -> m VT.Tree
 runTreeIO s = runNoLoggingT $ runTreeStr s emptyEvalConfig
 
 runStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m (Either String AST.Expression)
 runStr s conf = do
   t <- runTreeStr s conf
-  case treeNode t of
+  case VT.treeNode t of
     -- print the error message to the console.
-    TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> runReaderT (Common.buildASTExpr False t) emptyRunner
+    VT.TNBottom (VT.Bottom msg) -> return $ Left $ printf "error: %s" msg
+    _ -> Right <$> evalStateT (runReaderT (Common.buildASTExpr False t) emptyRunner) emptyTrace
 
-runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m Tree
+runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m VT.Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
-evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m Tree
+evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m VT.Tree
 evalFile sf conf = do
   let runner =
         updateConfig
@@ -168,14 +160,15 @@ evalFile sf conf = do
   rootTC <-
     runReaderT
       ( do
-          root <- evalStateT (evalSourceFile sf) 0
+          (root, eeState) <- runStateT (evalSourceFile sf) Common.emptyEEState
           logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (show root)
+
           let
-            rootTC = ValCursor root [(RootTASeg, mkNewTree TNTop)]
-            cv = cvFromCur rootTC
+            rootTC = Cursor.ValCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
+            cv = Cursor.mkCtxVal rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
           logDebugStr $ printf "---- start reduce tree ----"
           res <- execStateT fullReduce cv
-          logDebugStr $ printf "---- reduced: ----\n%s" (show . getCVCursor $ res)
+          logDebugStr $ printf "---- reduced: ----\n%s" (show . Cursor.getCVCursor $ res)
           return res
       )
       runner
@@ -189,5 +182,5 @@ evalFile sf conf = do
              in c{Common.cfRuntimeParams = (Common.cfRuntimeParams c){Common.rpCreateCnstr = False}}
           )
       )
-  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . getCVCursor $ finalized)
-  return $ cvVal finalized
+  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . Cursor.getCVCursor $ finalized)
+  return $ Cursor.cvVal finalized

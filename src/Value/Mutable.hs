@@ -28,7 +28,7 @@ data StatefulFunc t = StatefulFunc
   , sfnType :: MutableType
   , sfnArgs :: [t]
   -- ^ Args stores the arguments that may or may not need to be evaluated.
-  , sfnExpr :: forall r m. (Env r m) => m AST.Expression
+  , sfnExpr :: forall r s m. (Env r s m) => m AST.Expression
   -- ^ sfnExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
   -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
   -- available.
@@ -146,7 +146,7 @@ mkUnaryOp op f n =
   g [x] = f x
   g _ = throwErrSt "invalid number of arguments for unary function"
 
-buildUnaryExpr :: (Env r m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expression
+buildUnaryExpr :: (Env r s m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expression
 buildUnaryExpr op t = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   te <- buildASTExpr c t
@@ -184,7 +184,7 @@ mkBinaryOp op f l r =
   g [x, y] = f x y
   g _ = throwErrSt "invalid number of arguments for binary function"
 
-buildBinaryExpr :: (Env r e, BuildASTExpr t) => AST.BinaryOp -> t -> t -> e AST.Expression
+buildBinaryExpr :: (Env r s m, BuildASTExpr t) => AST.BinaryOp -> t -> t -> m AST.Expression
 buildBinaryExpr op l r = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   xe <- buildASTExpr c l
