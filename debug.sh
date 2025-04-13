@@ -57,10 +57,10 @@ if [[ "$1" == "run" ]]; then
     gtimeout $timeout cabal run haskue -- -d --show-mutable-args $input 2> _debug/t.log
   fi
 
-  go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
+  # go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
 
   # show the size of the output.md
-  ls -lh _debug/output.md
+  ls -lh _debug/t.log
 
   exit 0
 fi
