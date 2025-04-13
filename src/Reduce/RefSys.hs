@@ -579,11 +579,13 @@ goRMAbsAddr dst = do
   RM.descendRM dstNoRoot
 
 goRMAbsAddrMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
-goRMAbsAddrMust addr = do
-  backOk <- goRMAbsAddr addr
-  unless backOk $
+goRMAbsAddrMust dst = do
+  from <- RM.getRMAbsAddr
+  ok <- goRMAbsAddr dst
+  unless ok $ do
+    tc <- RM.getRMCursor
     throwErrSt $
-      printf "failed to to the addr %s" (show addr)
+      printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
 
 addrHasDef :: Path.TreeAddr -> Bool
 addrHasDef p =

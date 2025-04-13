@@ -123,18 +123,24 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
       ()
       (IntMap.toList $ VT.stcCnstrs s)
 
-  -- Reduce all fields
+  whenStruct () $ \s ->
+    mapM_
+      ( \(i, embed) ->
+          -- Unifying reduced embedding with the rest of the struct is handled by propUpStructPost.
+          RM.inSubRM (Path.StructTASeg (Path.EmbedTASeg i)) (VT.embValue embed) reduce
+      )
+      (IntMap.toList $ VT.stcEmbeds s)
+
+  -- Reduce all fields. New fields might have been created by the dynamic fields.
   whenStruct () $ \s -> mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
 
 whenStruct :: (RM.ReduceMonad s r m) => a -> (VT.Struct VT.Tree -> m a) -> m a
 whenStruct a f = do
   t <- RM.getRMTree
   case VT.treeNode t of
-    VT.TNBottom _ -> return a
     VT.TNStruct struct -> f struct
-    _ -> do
-      RM.putRMTree . VT.mkBottomTree $ printf "%s is not a struct" (show t)
-      return a
+    -- The struct might have been turned to another type due to embedding.
+    _ -> return a
 
 validateLetName :: (RM.ReduceMonad s r m) => String -> m ()
 validateLetName name = whenStruct () $ \_ -> do
@@ -253,22 +259,77 @@ propUpStructPost (Path.PatternTASeg i _, struct) =
 
     let affectedLabels = remAffLabels ++ addAffLabels
     unless (null affectedLabels) $
-      RM.debugSpanArgsRM
-        "propUpStructPost_constraint_after1"
+      RM.debugInstantRM
+        "propUpStructPost_constraint"
         ( printf
             "-ns: %s, +ns: %s, new struct: %s"
             (show remAffLabels)
             (show addAffLabels)
             (show $ VT.mkStructTree newStruct)
         )
-        (return ())
 
     whenStruct () $ \s -> checkPermForNewPattern s (Path.PatternTASeg i 0)
 
-    RM.debugSpanRM "propUpStructPost_constraint_after2" (return ())
-
     -- Reduce the updated struct values.
     whenStruct () $ \_ -> mapM_ reduceStructField affectedLabels
+propUpStructPost (Path.EmbedTASeg i, struct) =
+  RM.debugSpanRM (printf "propUpStructPost_embed, idx: %s" (show i)) $
+    do
+      let embed = VT.stcEmbeds struct IntMap.! i
+          embedVM = case VT.treeNode (VT.embValue embed) of
+            VT.TNMutable mut -> VT.getMutVal mut
+            _ -> Just $ VT.embValue embed
+      case embedVM of
+        Nothing -> return ()
+        Just ev -> do
+          -- First remove the fields, constraints and dynamic fields from the embedding. Every field from the embedding
+          -- has an object ID that is the same as the embedding ID.
+          let rmIDs =
+                i : case VT.treeNode ev of
+                  VT.TNStruct es -> IntMap.keys (VT.stcCnstrs es) ++ IntMap.keys (VT.stcDynFields es)
+                  _ -> []
+
+          (allRmStruct, affectedLabels) <-
+            foldM
+              ( \(accStruct, accLabels) idx -> do
+                  (s, affLabels) <- removeAppliedObject idx accStruct
+                  return (s, affLabels ++ accLabels)
+              )
+              (struct, [])
+              rmIDs
+
+          RM.debugInstantRM "propUpStructPost_embed" $
+            printf
+              "rmIDS: %s, affectedLabels: %s, allRmStruct: %s"
+              (show rmIDs)
+              (show affectedLabels)
+              (show allRmStruct)
+          -- Restore the focus with the struct without the embedding unified.
+          RM.modifyRMTN (VT.TNStruct allRmStruct)
+
+          addr <- RM.getRMAbsAddr
+          let t1 = VT.mkStructTree allRmStruct
+              t2 = ev
+          res <-
+            RM.inTempSubRM
+              ( VT.mkMutableTree $
+                  VT.mkBinaryOp
+                    AST.Unify
+                    ( \_ _ -> do
+                        tmpAddr <- RM.getRMAbsAddr
+                        let
+                          funcAddr = fromJust $ Path.initTreeAddr tmpAddr
+                          rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
+                          ut1 = UnifyOp.UTree t1 Path.L Nothing addr
+                          ut2 = UnifyOp.UTree t2 Path.R (Just i) rAddr
+                        UnifyOp.mergeUTrees ut1 ut2
+                    )
+                    t1
+                    t2
+              )
+              (reduce >> RM.getRMTree)
+
+          RM.modifyRMNodeWithTree res
 propUpStructPost (_, _) = return ()
 
 getLabelFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]

@@ -18,6 +18,7 @@ import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
 import qualified Reduce.RMonad as RM
+import qualified Reduce.RefSys as RefSys
 import Text.Printf (printf)
 import Util (
   getTraceID,
@@ -63,7 +64,7 @@ bfsLoopQ tid = do
 
       origAddr <- lift RM.getRMAbsAddr
       -- First try to go to the addr.
-      found <- lift $ goRMAbsAddr addr
+      found <- lift $ RefSys.goRMAbsAddr addr
       if found
         then do
           when toReduce (lift reduceImParMut)
@@ -77,7 +78,7 @@ bfsLoopQ tid = do
 
       -- We must go back to the original addr even when the addr is not found, because that would lead to unexpected
       -- address.
-      lift $ goRMAbsAddrMust origAddr
+      lift $ RefSys.goRMAbsAddrMust origAddr
       logDebugStr $ printf "id=%s, bfsLoopQ: visiting addr: %s, found: %s" (show tid) (show addr) (show found)
       bfsLoopQ tid
  where
@@ -142,7 +143,7 @@ drainRefSysQueue = do
         maybe
           (logDebugStr $ printf "drainRefSysQueue: addr: %s, not found" (show addr))
           (const $ return ())
-          =<< inAbsAddrRM addr notify
+          =<< RefSys.inAbsAddrRM addr notify
         return True
 
   when more drainRefSysQueue
@@ -187,42 +188,3 @@ locateImMutable = do
           _ -> False
       )
       sels
-
--- | Go to the absolute addr in the tree.
-goRMAbsAddr :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m Bool
-goRMAbsAddr dst = do
-  when (Path.headSeg dst /= Just Path.RootTASeg) $
-    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
-  RM.propUpRMUntilSeg Path.RootTASeg
-  let dstNoRoot = fromJust $ Path.tailTreeAddr dst
-  RM.descendRM dstNoRoot
-
-goRMAbsAddrMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
-goRMAbsAddrMust addr = do
-  backOk <- goRMAbsAddr addr
-  unless backOk $
-    throwErrSt $
-      printf "failed to to the addr %s" (show addr)
-
-{- | Go to the absolute addr in the tree and execute the action if the addr exists.
-
-If the addr does not exist, return Nothing.
--}
-inAbsAddrRM :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m a -> m (Maybe a)
-inAbsAddrRM p f = do
-  origAbsAddr <- RM.getRMAbsAddr
-
-  tarM <- whenM (goRMAbsAddr p) f
-  backOk <- goRMAbsAddr origAbsAddr
-  unless backOk $ do
-    throwErrSt $
-      printf
-        "failed to go back to the original addr %s, dest: %s"
-        (show origAbsAddr)
-        (show p)
-  return tarM
- where
-  whenM :: (RM.ReduceMonad s r m) => m Bool -> m a -> m (Maybe a)
-  whenM cond g = do
-    b <- cond
-    if b then Just <$> g else return Nothing

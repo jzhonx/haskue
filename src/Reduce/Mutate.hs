@@ -40,11 +40,6 @@ mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
     VT.Ref ref -> mutateRef ref
     VT.SFunc fn -> mutateFunc fn >> return Nothing
     VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
-    VT.UEmbeds ue -> do
-      RM.mustMutable $ \_ -> _runInMutValEnv $ do
-        MutEnv.Functions{MutEnv.fnUnifyEmbeds = unifyEmbeds} <- asks MutEnv.getFuncs
-        unifyEmbeds (VT.ueStruct ue)
-      return Nothing
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.

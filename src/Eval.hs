@@ -49,8 +49,6 @@ import Reduce (
   reduce,
  )
 import Reduce.PostReduce (postValidation)
-import qualified Reduce.RMonad as RM
-import Reduce.UnifyOp (unifyEmbeds)
 import Text.Printf (printf)
 import Util (emptyTrace, logDebugStr)
 import qualified Value.Tree as VT
@@ -92,7 +90,6 @@ emptyRunner =
           , MutEnv.fnIndex = index
           , MutEnv.fnPropUpStructPost = propUpStructPost
           , MutEnv.fnComprehend = comprehend
-          , MutEnv.fnUnifyEmbeds = unifyEmbeds
           }
     }
 
@@ -161,7 +158,7 @@ evalFile sf conf = do
     runReaderT
       ( do
           (root, eeState) <- runStateT (evalSourceFile sf) Common.emptyEEState
-          logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (show root)
+          logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (VT.treeFullStr 0 root)
 
           let
             rootTC = Cursor.ValCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]

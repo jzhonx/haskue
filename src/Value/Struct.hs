@@ -25,7 +25,7 @@ data Struct t = Struct
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
   , stcDynFields :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
-  , stcEmbeds :: IntMap.IntMap t
+  , stcEmbeds :: IntMap.IntMap (Embedding t)
   -- ^ The embedded structs are not reduced.
   , stcClosed :: Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
@@ -91,6 +91,12 @@ data StructCnstr t = StructCnstr
   -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing.
   }
   deriving (Show)
+
+data Embedding t = Embedding
+  { embID :: Int
+  , embValue :: t
+  }
+  deriving (Show, Functor)
 
 data StructElemAdder t
   = StaticSAdder String (Field t)
@@ -252,6 +258,13 @@ dynToField df sfM unifier = case sfM of
       , ssfAttr = dsfAttr df
       , ssfObjects = Set.fromList [dsfID df]
       }
+
+mkEmbedding :: Int -> t -> Embedding t
+mkEmbedding eid t =
+  Embedding
+    { embID = eid
+    , embValue = t
+    }
 
 addStructLetBind :: Struct t -> String -> t -> Struct t
 addStructLetBind struct s t =

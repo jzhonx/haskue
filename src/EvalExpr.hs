@@ -99,16 +99,9 @@ evalLiteral lit = return v
     BottomLit -> VT.mkBottomTree ""
 
 evalStructLit :: (EvalEnv r s m) => StructLit -> m VT.Tree
-evalStructLit e@(StructLit decls) = do
+evalStructLit (StructLit decls) = do
   sid <- allocOID
-  t <- foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
-  case VT.treeNode t of
-    VT.TNStruct s ->
-      -- If there are no embeddings, then return the struct as is.
-      if null (VT.stcEmbeds s)
-        then return t
-        else return $ VT.mkMutableTree $ VT.mkUnaryEmbeds t
-    _ -> return t
+  foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree.
 evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
@@ -266,7 +259,9 @@ addNewStructElem adder struct = case adder of
             struct{VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)}
         )
         (existCheck name True)
-  (VT.EmbedSAdder i embed) -> return $ VT.mkStructTree $ struct{VT.stcEmbeds = IntMap.insert i embed (VT.stcEmbeds struct)}
+  (VT.EmbedSAdder i val) -> do
+    let embed = VT.mkEmbedding i val
+    return $ VT.mkStructTree $ struct{VT.stcEmbeds = IntMap.insert i embed (VT.stcEmbeds struct)}
  where
   aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name

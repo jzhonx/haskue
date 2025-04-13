@@ -17,7 +17,6 @@ data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
   | Compreh (Comprehension t)
-  | UEmbeds (UnifyEmbeds t)
 
 data MutableType = RegularMutable | DisjMutable
   deriving (Eq, Show)
@@ -38,24 +37,16 @@ data StatefulFunc t = StatefulFunc
   -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
 
--- | UnifyEmbeds is a stateful function node that unifies the embeds of a struct with itself.
-data UnifyEmbeds t = UnifyEmbeds
-  { ueStruct :: t
-  , ueValue :: Maybe t
-  }
-
 instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
   (==) (Compreh c1) (Compreh c2) = c1 == c2
-  (==) (UEmbeds u1) (UEmbeds u2) = u1 == u2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
   buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
-  buildASTExpr _ (UEmbeds _) = throwErrSt "AST should not be built from UnifyEmbeds"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 =
@@ -69,9 +60,6 @@ instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       then sfnExpr mut
       else maybe (sfnExpr mut) (buildASTExpr c) (sfnValue mut)
-
-instance (Eq t) => Eq (UnifyEmbeds t) where
-  (==) u1 u2 = ueStruct u1 == ueStruct u2
 
 getRefFromMutable :: Mutable t -> Maybe (Reference t)
 getRefFromMutable mut = case mut of
@@ -92,19 +80,16 @@ getMutName :: Mutable t -> (t -> Maybe String) -> String
 getMutName (SFunc mut) _ = sfnName mut
 getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
 getMutName (Compreh _) _ = "comprehend"
-getMutName (UEmbeds _) _ = "embeds_unifier"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
 getMutVal (Compreh c) = cphValue c
-getMutVal (UEmbeds u) = ueValue u
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
-setMutVal m (UEmbeds u) = UEmbeds $ u{ueValue = m}
 
 invokeMutMethod :: (MutableEnv s r t m) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -198,12 +183,4 @@ mkRefMutable var ts =
       { refArg = RefPath var ts
       , refOrigAddrs = Nothing
       , refValue = Nothing
-      }
-
-mkUnaryEmbeds :: forall t. (BuildASTExpr t) => t -> Mutable t
-mkUnaryEmbeds t =
-  UEmbeds $
-    UnifyEmbeds
-      { ueStruct = t
-      , ueValue = Nothing
       }

@@ -87,10 +87,10 @@ data StructTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
     -- let binding.
     StringTASeg String
-  | -- | The first is the OID, the second indicates the i-th value in the constraint.
+  | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
     PatternTASeg Int Int
   | -- | DynFieldTASeg is used to represent a dynamic field.
-    -- The first is the OID, the second indicates the i-th in the dynamic field.
+    -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
     DynFieldTASeg Int Int
   | -- | A let binding is always indexed by the LetTASeg.
     LetTASeg
