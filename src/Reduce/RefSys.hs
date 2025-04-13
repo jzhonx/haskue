@@ -113,20 +113,30 @@ getDstVal ::
   Set.Set Path.TreeAddr ->
   TreeCursor VT.Tree ->
   m (Maybe Path.TreeAddr)
-getDstVal ref origAddrsM trail tc = do
-  RM.debugInstantRM "getDstVal" (printf "tc: %s" (show tc))
+getDstVal ref origAddrsM trail tc = RM.debugSpanArgsRM
+  (printf "getDstVal: ref: %s" (show ref))
+  (printf "trail: %s" (show trail))
+  $ do
+    RM.debugInstantRM "getDstVal" (printf "tc: %s" (show tc))
 
-  rE <- getDstTC ref origAddrsM trail tc
-  case rE of
-    Left err -> RM.putRMTree err >> return Nothing
-    Right Nothing -> return Nothing
-    Right (Just tarTC) -> do
-      raw <- copyRefVal (vcFocus tarTC)
-      newVal <- processCopiedRaw trail tarTC raw
-      RM.putRMTree newVal
-      RM.withAddrAndFocus $ \addr _ ->
-        logDebugStr $ printf "deref: addr: %s, ref: %s, target is found: %s" (show addr) (show ref) (show newVal)
-      tryFollow (newVal <$ tarTC)
+    rE <- getDstTC ref origAddrsM trail tc
+    case rE of
+      Left err -> RM.putRMTree err >> return Nothing
+      Right Nothing -> return Nothing
+      Right (Just tarTC) -> do
+        raw <- copyRefVal (vcFocus tarTC)
+        newVal <- processCopiedRaw trail tarTC raw
+        RM.putRMTree newVal
+        RM.debugInstantRM
+          "getDstVal"
+          ( printf
+              "ref: %s, dstVal: %s, raw: %s, newVal: %s"
+              (show ref)
+              (show $ vcFocus tarTC)
+              (show raw)
+              (show newVal)
+          )
+        tryFollow (newVal <$ tarTC)
  where
   -- Try to follow the reference if the new value is a reference.
   tryFollow utarTC = case ( do

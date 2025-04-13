@@ -565,9 +565,10 @@ treeToSubStr toff moreSub t =
                                     then
                                       treeToSubStr
                                         (length pre)
+                                        -- Some nodes can have one more level of sub-tree.
                                         ( case treeNode sub of
-                                            -- CnstredVal can have one more level of sub-tree.
                                             TNCnstredVal _ -> True
+                                            TNMutable _ -> True
                                             _ -> False
                                         )
                                         sub

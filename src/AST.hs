@@ -258,7 +258,7 @@ litBld ident e = case e of
   ListLit l -> listBld l
 
 strLitBld :: StringLit -> Builder
-strLitBld (SimpleStringLit s) = string7 s
+strLitBld (SimpleStringLit s) = char7 '"' <> string7 s <> char7 '"'
 
 structLitBld :: Int -> StructLit -> Builder
 structLitBld ident (StructLit decls) =
