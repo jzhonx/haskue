@@ -539,12 +539,12 @@ searchRMLetBindValue var = do
       return $ Just r
     _ -> return Nothing
 
-inAbsAddrRMMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m a -> m a
-inAbsAddrRMMust addr f = do
-  m <- inAbsAddrRM addr f
+inAbsAddrRMMust :: (RM.ReduceMonad s r m, Show a) => Path.TreeAddr -> m a -> m a
+inAbsAddrRMMust dst f = RM.debugSpanRM (printf "inAbsAddrRMMust: dst: %s" (show dst)) $ do
+  m <- inAbsAddrRM dst f
   case m of
     Just r -> return r
-    Nothing -> throwErrSt $ printf "failed to go to the addr %s" (show addr)
+    Nothing -> throwErrSt $ printf "failed to go to the dst %s" (show dst)
 
 {- | Go to the absolute addr in the tree and execute the action if the addr exists.
 

@@ -30,11 +30,17 @@ instance HasTrace Trace where
   getTrace = id
   setTrace s t = t{traceStamp = traceStamp s}
 
-data ChromeTrace = ChromeTrace
-  { ctrName :: String
-  , ctrStart :: Int
-  , ctrEnd :: Int
-  , ctrArgs :: ChromeTraceArgs
+data ChromeStartTrace = ChromeStartTrace
+  { cstrName :: String
+  , cstrTime :: Int
+  , cstrArgs :: ChromeTraceArgs
+  }
+  deriving (Eq, Show)
+
+data ChromeEndTrace = ChromeEndTrace
+  { cetrName :: String
+  , cetrTime :: Int
+  , cetrArgs :: ChromeTraceArgs
   }
   deriving (Eq, Show)
 
@@ -60,16 +66,26 @@ data ChromeInstantTraceArgs = ChromeInstantTraceArgs
   }
   deriving (Eq, Show)
 
-instance ToJSON ChromeTrace where
+instance ToJSON ChromeStartTrace where
   toJSON ct =
     object
-      [ "name" .= ctrName ct
-      , "ts" .= ctrStart ct
-      , "dur" .= (ctrEnd ct - ctrStart ct)
-      , "ph" .= ("X" :: String)
+      [ "name" .= cstrName ct
+      , "ts" .= cstrTime ct
+      , "ph" .= ("B" :: String)
       , "pid" .= (0 :: Int)
       , "tid" .= (0 :: Int)
-      , "args" .= toJSON (ctrArgs ct)
+      , "args" .= toJSON (cstrArgs ct)
+      ]
+
+instance ToJSON ChromeEndTrace where
+  toJSON ct =
+    object
+      [ "name" .= cetrName ct
+      , "ts" .= cetrTime ct
+      , "ph" .= ("E" :: String)
+      , "pid" .= (0 :: Int)
+      , "tid" .= (0 :: Int)
+      , "args" .= toJSON (cetrArgs ct)
       ]
 instance ToJSON ChromeTraceArgs where
   toJSON cta =
@@ -108,15 +124,22 @@ instance ToJSON ChromeInstantTraceArgs where
 debugSpan ::
   (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> m (a, b, b) -> m a
 debugSpan name addr args f = do
-  start <- newTraceStamp
-  (res, bfocus, focus) <- f
-  end <- newTraceStamp
   let msg = printf "%s, at:%s" name addr
+  start <- newTraceStamp
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeTrace msg start end (ChromeTraceArgs start (show res) (show bfocus) (show focus) args)
+            ( ChromeStartTrace msg start (ChromeTraceArgs start "" "" "" args)
+            )
+        )
+  (res, bfocus, focus) <- f
+  end <- newTraceStamp
+  logDebugStr $
+    "ChromeTrace"
+      ++ unpack
+        ( encodeToLazyText
+            ( ChromeEndTrace msg end (ChromeTraceArgs start (show res) (show bfocus) (show focus) args)
             )
         )
   return res

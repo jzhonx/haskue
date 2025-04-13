@@ -277,7 +277,12 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
     do
       let embed = VT.stcEmbeds struct IntMap.! i
           embedVM = case VT.treeNode (VT.embValue embed) of
-            VT.TNMutable mut -> VT.getMutVal mut
+            -- TODO: make getMutVal deal with stub value
+            VT.TNMutable mut -> do
+              v <- VT.getMutVal mut
+              if v == VT.stubTree
+                then Nothing
+                else Just v
             _ -> Just $ VT.embValue embed
       case embedVM of
         Nothing -> return ()
@@ -308,8 +313,12 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
           RM.modifyRMTN (VT.TNStruct allRmStruct)
 
           addr <- RM.getRMAbsAddr
-          let t1 = VT.mkStructTree allRmStruct
-              t2 = ev
+
+          let
+            saveEmbeds = VT.stcEmbeds allRmStruct
+            -- We don't want any embeddings to be re-evaluated. Plus, it would make reducing infinite.
+            t1 = VT.mkStructTree (allRmStruct{VT.stcEmbeds = IntMap.empty})
+            t2 = ev
           res <-
             RM.inTempSubRM
               ( VT.mkMutableTree $
@@ -329,7 +338,14 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
               )
               (reduce >> RM.getRMTree)
 
-          RM.modifyRMNodeWithTree res
+          let r = case VT.treeNode res of
+                VT.TNStruct s -> VT.mkStructTree $ s{VT.stcEmbeds = saveEmbeds}
+                _ -> res
+
+          RM.debugInstantRM "propUpStructPost_embed" $
+            printf "r: %s" (VT.treeFullStr 0 r)
+
+          RM.modifyRMNodeWithTree r
 propUpStructPost (_, _) = return ()
 
 getLabelFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]

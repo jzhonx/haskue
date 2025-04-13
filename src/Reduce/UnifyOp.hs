@@ -639,13 +639,12 @@ fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
       , VT.stcLets = VT.stcLets st1 `Map.union` VT.stcLets st2
       , VT.stcDynFields = combinedPendSubs
       , VT.stcCnstrs = combinedPatterns
-      , -- , VT.stcEmbeds = case (eidM1, eidM2) of
-        --     (Nothing, Nothing) -> VT.stcEmbeds st1 `IntMap.union` VT.stcEmbeds st2
-        --     -- If the first is embedded, we only need to keep the non-embedded one.
-        --     (Just _, Nothing) -> VT.stcEmbeds st2
-        --     (Nothing, Just _) -> VT.stcEmbeds st1
-        --     _ -> IntMap.empty
-        VT.stcClosed = VT.stcClosed st1 || VT.stcClosed st2
+      , VT.stcEmbeds = case (eidM1, eidM2) of
+          (Nothing, Nothing) -> VT.stcEmbeds st1 `IntMap.union` VT.stcEmbeds st2
+          -- If the any is embedded, we should not add embedings as reducing the merged embeddings would cause infinite
+          -- evaluation.
+          _ -> IntMap.empty
+      , VT.stcClosed = VT.stcClosed st1 || VT.stcClosed st2
       , VT.stcPerms =
           -- st1 and st2 could be both closed.
           VT.stcPerms st1
