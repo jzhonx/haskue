@@ -566,7 +566,10 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
   putNotUnifiable = mkNodeWithDir ut1 ut2 f
    where
     f :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
-    f x y = RM.putRMTree $ VT.mkBottomTree $ printf "values not unifiable: L:\n%s, R:\n%s" (show x) (show y)
+    f x y = do
+      tx <- VT.showValueType x
+      ty <- VT.showValueType y
+      RM.putRMTree $ VT.mkBottomTree $ printf "%s can not be unified with %s" tx ty
 
 mergeLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> m ()
 mergeLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) = case VT.treeNode t2 of
@@ -635,6 +638,11 @@ fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
     VT.emptyStruct
       { VT.stcID = sid
       , VT.stcOrdLabels = map fst fields
+      , VT.stcBlockIdents = case (eidM1, eidM2) of
+          (Nothing, Nothing) -> VT.stcBlockIdents st1 `Set.union` VT.stcBlockIdents st2
+          (Just _, Nothing) -> VT.stcBlockIdents st2
+          (Nothing, Just _) -> VT.stcBlockIdents st1
+          (Just _, Just _) -> Set.empty
       , VT.stcFields = Map.fromList fields
       , VT.stcLets = VT.stcLets st1 `Map.union` VT.stcLets st2
       , VT.stcDynFields = combinedPendSubs
@@ -753,7 +761,7 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
   preprocess (VT.mkStructTree block <$ ptc)
  where
   preprocess tc = do
-    rM <- _chechRefIdents tc
+    rM <- _validateRefIdents tc
     logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
     maybe
       ( do
@@ -778,15 +786,15 @@ This is needed because after merging two blocks, some not found references could
 could have the identifier. Because we are destroying the block and replace it with the merged block, we need to check
 all sub references to make sure later reducing them will not cause them to find newly created identifiers.
 -}
-_chechRefIdents :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
-_chechRefIdents _tc =
+_validateRefIdents :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
+_validateRefIdents _tc =
   snd <$> TCursorOps.traverseTC _extAllSubNodes find (_tc, Nothing)
  where
   find (tc, acc) = do
     case VT.treeNode (Cursor.vcFocus tc) of
       VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
         m <- RefSys.searchTCIdent ident tc
-        logDebugStr $ printf "_chechRefIdents: ident: %s, m: %s" ident (show m)
+        logDebugStr $ printf "_validateRefIdents: ident: %s, m: %s" ident (show m)
         maybe
           (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" ident))
           (const $ return (tc, acc))

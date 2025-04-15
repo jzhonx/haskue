@@ -18,6 +18,11 @@ data Struct t = Struct
   , stcOrdLabels :: [String]
   -- ^ stcOrdLabels should only contain string labels, meaning it contains all regular fields, hidden fields and
   -- definitions. It should not contain let bindings.
+  , stcBlockIdents :: Set.Set String
+  -- ^ The original identifiers declared in the block. It is used to validate identifiers.
+  -- It includes both static fields and let bindings.
+  -- It is needed because new static fields of embeddings can be merged into the struct.
+  -- Once the struct is created, the identifiers are fixed.
   , stcFields :: Map.Map String (Field t)
   -- ^ It is the fields, excluding the let bindings.
   , stcLets :: Map.Map String (LetBinding t)
@@ -156,10 +161,6 @@ instance (Eq t) => Eq (DynamicField t) where
 instance (Eq t) => Eq (Field t) where
   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
 
--- | Returns keys of both static fields and let bindings.
-structFieldsAndLets :: Struct t -> [String]
-structFieldsAndLets struct = stcOrdLabels struct ++ Map.keys (stcLets struct)
-
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
@@ -172,6 +173,7 @@ mkStructFromAdders sid as =
   emptyStruct
     { stcID = sid
     , stcOrdLabels = ordLabels
+    , stcBlockIdents = Set.fromList ordLabels `Set.union` Set.fromList (map fst lets)
     , stcFields = Map.fromList statics
     , stcLets = Map.fromList lets
     , stcDynFields = dyns
@@ -207,6 +209,7 @@ emptyStruct =
   Struct
     { stcID = 0
     , stcOrdLabels = []
+    , stcBlockIdents = Set.empty
     , stcFields = Map.empty
     , stcLets = Map.empty
     , stcDynFields = IntMap.empty

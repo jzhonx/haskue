@@ -11,6 +11,4 @@ y: {
 	("z"): =~"a"
 }
 -- exp --
-error: values not unifiable: L:
-(3), R:
-({} ord:[], sid:3)
+error: int can not be unified with struct

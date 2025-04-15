@@ -223,7 +223,7 @@ buildRepTreeTN t tn opt = case tn of
               (IntMap.toList $ stcEmbeds s)
 
         metas :: [(String, String)]
-        metas = []
+        metas = [("blockIdents", show $ Set.toList $ stcBlockIdents s)]
      in consRep
           ( (if stcClosed s then "#" else mempty) <> symbol
           , ordLabels <> ", sid:" <> show (stcID s)
@@ -541,6 +541,21 @@ escapedSimpleTreeStr t = case treeNode t of
   TNStruct s -> escape $ "struct:" <> intercalate "," (map show $ stcOrdLabels s)
   TNAtom _ -> "a"
   _ -> escapedTreeSymbol t
+
+showValueType :: (Env r s m) => Tree -> m String
+showValueType t = case treeNode t of
+  TNAtom (AtomV a) -> case a of
+    String _ -> return "string"
+    Int _ -> return "int"
+    Float _ -> return "float"
+    Bool _ -> return "bool"
+    Null -> return "null"
+  TNBounds b -> return $ show b
+  TNBottom _ -> return "_|_"
+  TNStruct _ -> return "struct"
+  TNList _ -> return "list"
+  TNTop -> return "_"
+  _ -> throwErrSt $ "not a value type: " ++ show t
 
 treeToSubStr :: Int -> Bool -> Tree -> String
 treeToSubStr toff moreSub t =

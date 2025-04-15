@@ -119,7 +119,7 @@ evalDecl x decl = case VT.treeNode x of
         (\_ -> throwError "default constraints are not implemented yet")
         cM
     FieldDecl (AST.Field ls e) -> do
-      sfa <- evalFdLabels ls e
+      sfa <- evalFDeclLabels ls e
       addNewStructElem sfa struct
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
@@ -146,25 +146,25 @@ evalClause (ClauseLetClause (LetClause ident le)) = do
 -- evalStartClause :: (EvalEnv r s m) => StartClause -> m VT.Tree
 -- evalStartClause (GuardClause e) = evalExpr e
 
-evalFdLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
-evalFdLabels lbls e =
+evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
+evalFDeclLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
     [l1] ->
       do
-        logDebugStr $ printf "evalFdLabels: lb1: %s" (show l1)
+        logDebugStr $ printf "evalFDeclLabels: lb1: %s" (show l1)
         val <- evalExpr e
         adder <- mkAdder l1 val
-        logDebugStr $ printf "evalFdLabels: adder: %s" (show adder)
+        logDebugStr $ printf "evalFDeclLabels: adder: %s" (show adder)
         return adder
     l1 : l2 : rs ->
       do
-        logDebugStr $ printf "evalFdLabels, nested: lb1: %s" (show l1)
-        sf2 <- evalFdLabels (l2 : rs) e
+        logDebugStr $ printf "evalFDeclLabels, nested: lb1: %s" (show l1)
+        sf2 <- evalFDeclLabels (l2 : rs) e
         sid <- allocOID
         let val = VT.mkNewTree . VT.TNStruct $ VT.mkStructFromAdders sid [sf2]
         adder <- mkAdder l1 val
-        logDebugStr $ printf "evalFdLabels, nested: adder: %s" (show adder)
+        logDebugStr $ printf "evalFDeclLabels, nested: adder: %s" (show adder)
         return adder
  where
   mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
@@ -173,7 +173,7 @@ evalFdLabels lbls e =
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
        in case ln of
             (sselFrom -> Just key) -> do
-              logDebugStr $ printf "evalFdLabels: key: %s, mkAdder, val: %s" key (show val)
+              logDebugStr $ printf "evalFDeclLabels: key: %s, mkAdder, val: %s" key (show val)
               return $ VT.StaticSAdder key (VT.staticFieldMker val attr)
             (dselFrom -> Just se) -> do
               selTree <- evalExpr se
@@ -206,7 +206,9 @@ evalFdLabels lbls e =
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
--- Insert a new element into the struct. If the field is already in the struct, then unify the field with the new field.
+{- | Insert a new element into the struct. If the field is already in the struct, then unify the field with the new
+field.
+-}
 addNewStructElem :: (Env r s m) => VT.StructElemAdder VT.Tree -> VT.Struct VT.Tree -> m VT.Tree
 addNewStructElem adder struct = case adder of
   (VT.StaticSAdder name sf) ->
@@ -237,11 +239,13 @@ addNewStructElem adder struct = case adder of
                 logDebugStr $ printf "addNewStructElem: extSF: %s, sf: %s" (show extSF) (show sf)
                 return $ VT.mkStructTree $ struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}
           [VT.SLet _] -> return $ aliasErr name
+          -- The label is not seen before in the struct.
           [] ->
             return $
               VT.mkStructTree $
                 struct
                   { VT.stcOrdLabels = VT.stcOrdLabels struct ++ [name]
+                  , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
                   , VT.stcFields = Map.insert name sf (VT.stcFields struct)
                   }
           _ -> return $ aliasErr name
@@ -255,8 +259,12 @@ addNewStructElem adder struct = case adder of
   (VT.LetSAdder name val) ->
     return $
       fromMaybe
+        -- The name is not seen before in the struct.
         ( VT.mkStructTree $
-            struct{VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)}
+            struct
+              { VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)
+              , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
+              }
         )
         (existCheck name True)
   (VT.EmbedSAdder i val) -> do

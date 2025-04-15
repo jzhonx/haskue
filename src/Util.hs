@@ -33,23 +33,27 @@ instance HasTrace Trace where
 data ChromeStartTrace = ChromeStartTrace
   { cstrName :: String
   , cstrTime :: Int
-  , cstrArgs :: ChromeTraceArgs
+  , cstrArgs :: ChromeStartTraceArgs
   }
   deriving (Eq, Show)
 
 data ChromeEndTrace = ChromeEndTrace
   { cetrName :: String
   , cetrTime :: Int
-  , cetrArgs :: ChromeTraceArgs
+  , cetrArgs :: ChromeEndTraceArgs
   }
   deriving (Eq, Show)
 
-data ChromeTraceArgs = ChromeTraceArgs
-  { ctaTraceID :: Int
-  , ctaResVal :: String
-  , ctaBeforeFocus :: String
-  , ctaFocus :: String
-  , ctaCustomVal :: Maybe String
+data ChromeStartTraceArgs = ChromeStartTraceArgs
+  { cstaTraceID :: Int
+  , cstaCustomVal :: Maybe String
+  }
+  deriving (Eq, Show)
+
+data ChromeEndTraceArgs = ChromeEndTraceArgs
+  { cetaResVal :: String
+  , cetaBeforeFocus :: String
+  , cetaFocus :: String
   }
   deriving (Eq, Show)
 
@@ -87,19 +91,25 @@ instance ToJSON ChromeEndTrace where
       , "tid" .= (0 :: Int)
       , "args" .= toJSON (cetrArgs ct)
       ]
-instance ToJSON ChromeTraceArgs where
+instance ToJSON ChromeStartTraceArgs where
   toJSON cta =
     object
-      ( [ "tid" .= show (ctaTraceID cta)
-        , "res" .= ctaResVal cta
-        , "bfcs" .= ctaBeforeFocus cta
-        , "fcs" .= ctaFocus cta
+      ( [ "tid" .= show (cstaTraceID cta)
         ]
-          ++ ( if isNothing (ctaCustomVal cta)
+          ++ ( if isNothing (cstaCustomVal cta)
                 then []
-                else ["ctm" .= fromJust (ctaCustomVal cta)]
+                else ["ctm" .= fromJust (cstaCustomVal cta)]
              )
       )
+
+instance ToJSON ChromeEndTraceArgs where
+  toJSON cta =
+    object
+      [ "res" .= cetaResVal cta
+      , "bfcs" .= cetaBeforeFocus cta
+      , "fcs" .= cetaFocus cta
+      ]
+
 instance ToJSON ChromeInstantTrace where
   toJSON c =
     object
@@ -130,7 +140,7 @@ debugSpan name addr args f = do
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeStartTrace msg start (ChromeTraceArgs start "" "" "" args)
+            ( ChromeStartTrace msg start (ChromeStartTraceArgs start args)
             )
         )
   (res, bfocus, focus) <- f
@@ -139,7 +149,7 @@ debugSpan name addr args f = do
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeEndTrace msg end (ChromeTraceArgs start (show res) (show bfocus) (show focus) args)
+            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) (show bfocus) (show focus))
             )
         )
   return res

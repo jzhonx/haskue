@@ -594,8 +594,10 @@ goRMAbsAddrMust dst = do
   ok <- goRMAbsAddr dst
   unless ok $ do
     tc <- RM.getRMCursor
-    throwErrSt $
-      printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
+    case VT.treeNode (vcFocus tc) of
+      -- If the focus of the cursor is a bottom, it is not a problem.
+      VT.TNBottom _ -> return ()
+      _ -> throwErrSt $ printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
 
 addrHasDef :: Path.TreeAddr -> Bool
 addrHasDef p =
@@ -648,6 +650,9 @@ searchRMIdentInPar name = do
 
 {- | Search in the tree for the first identifier that can match the name.
 
+Searching identifiers only searches for the identifiers declared in the block, not for the identifiers added by
+unification with embeddings.
+
 Return a pair. The first is address of the identifier, the second is the identifier is a let binding.
 
 The child value will not be propagated to the parent block. Propagation is not needed because all static fields should
@@ -657,7 +662,7 @@ The tree cursor must at least have the root segment.
 -}
 searchTCIdent :: (Env r s m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
 searchTCIdent name tc = do
-  subM <- findSub name $ vcFocus tc
+  subM <- findSubInBlock name $ vcFocus tc
   r <-
     maybe
       (goUp tc)
@@ -682,22 +687,26 @@ searchTCIdent name tc = do
     searchTCIdent name ptc
 
   -- TODO: findSub for default disjunct
-  findSub :: (Env r s m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
-  findSub ident t = case VT.treeNode t of
+  findSubInBlock :: (Env r s m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
+  findSubInBlock ident t = case VT.treeNode t of
     VT.TNStruct struct -> do
-      let m =
-            catMaybes
-              [ do
-                  sf <- VT.lookupStructIdentField ident struct
-                  return (VT.ssfValue sf, False)
-              , do
-                  lb <- VT.lookupStructLet ident struct
-                  return (VT.lbValue lb, True)
-              ]
-      case m of
-        [] -> return Nothing
-        [x] -> return $ Just x
-        _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" ident, False)
+      let
+        inBlock = ident `Set.member` VT.stcBlockIdents struct
+        m =
+          catMaybes
+            [ do
+                sf <- VT.lookupStructIdentField ident struct
+                return (VT.ssfValue sf, False)
+            , do
+                lb <- VT.lookupStructLet ident struct
+                return (VT.lbValue lb, True)
+            ]
+      if inBlock
+        then case m of
+          [] -> return Nothing
+          [x] -> return $ Just x
+          _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" ident, False)
+        else return Nothing
     VT.TNMutable (VT.Compreh c) -> return Nothing
     _ -> return Nothing
 
