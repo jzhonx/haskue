@@ -688,10 +688,8 @@ searchTCVar name tc = do
       let m =
             catMaybes
               [ do
-                  sf <- VT.lookupStructField var struct
-                  if VT.lbAttrIsVar (VT.ssfAttr sf)
-                    then Just (VT.ssfValue sf, False)
-                    else Nothing
+                  sf <- VT.lookupStructVarField var struct
+                  return (VT.ssfValue sf, False)
               , do
                   lb <- VT.lookupStructLet var struct
                   return (VT.lbValue lb, True)

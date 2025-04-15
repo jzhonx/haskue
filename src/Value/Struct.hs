@@ -160,9 +160,6 @@ instance (Eq t) => Eq (Field t) where
 structFieldsAndLets :: Struct t -> [String]
 structFieldsAndLets struct = stcOrdLabels struct ++ Map.keys (stcLets struct)
 
-defaultLabelAttr :: LabelAttr
-defaultLabelAttr = LabelAttr SFCRegular True
-
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
@@ -175,14 +172,14 @@ mkStructFromAdders sid as =
   emptyStruct
     { stcID = sid
     , stcOrdLabels = ordLabels
-    , stcFields = Map.fromList vals
+    , stcFields = Map.fromList statics
     , stcLets = Map.fromList lets
     , stcDynFields = dyns
     , stcCnstrs = cnstrs
     }
  where
   ordLabels = [l | StaticSAdder l _ <- as]
-  vals = [(s, sf) | StaticSAdder s sf <- as]
+  statics = [(s, sf) | StaticSAdder s sf <- as]
   lets = [(s, LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
   dyns =
     IntMap.fromList $
@@ -311,6 +308,15 @@ lookupStructVal name struct =
 
 lookupStructField :: String -> Struct t -> Maybe (Field t)
 lookupStructField name struct = Map.lookup name (stcFields struct)
+
+lookupStructVarField :: String -> Struct t -> Maybe (Field t)
+lookupStructVarField name struct =
+  case Map.lookup name (stcFields struct) of
+    Just field ->
+      if lbAttrIsVar (ssfAttr field)
+        then Just field
+        else Nothing
+    Nothing -> Nothing
 
 lookupStructLet :: String -> Struct t -> Maybe (LetBinding t)
 lookupStructLet name struct = Map.lookup name (stcLets struct)
