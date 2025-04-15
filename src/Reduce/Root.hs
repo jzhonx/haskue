@@ -343,8 +343,7 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
                 VT.TNStruct s -> VT.mkStructTree $ s{VT.stcEmbeds = saveEmbeds}
                 _ -> res
 
-          RM.debugInstantRM "propUpStructPost_embed" $
-            printf "r: %s" (VT.treeFullStr 0 r)
+          RM.debugInstantRM "propUpStructPost_embed" $ printf "r: %s" (VT.treeFullStr 0 r)
 
           RM.modifyRMNodeWithTree r
 propUpStructPost (_, _) = return ()

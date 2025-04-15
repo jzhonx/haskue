@@ -245,10 +245,7 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
           _ -> procOther
       | otherwise -> procOther
     (_, VT.TNRefCycle _) -> procOther
-    -- If the left atom is embedded in the right struct and there is no fields and no pending dynamic fields, we can
-    -- immediately put the atom into the tree without worrying any future new fields. This is what CUE currently
-    -- does.
-    (_, VT.TNStruct s2) | isJust (utEmbedID ut1) && VT.hasEmptyFields s2 -> putTree (VT.TNAtom v1)
+    (_, VT.TNStruct s2) -> mergeLeftStruct (s2, ut2) ut1
     _ -> mergeLeftOther ut1 ut2
  where
   putTree :: (RM.ReduceMonad s r m) => VT.TreeNode VT.Tree -> m ()
@@ -303,10 +300,7 @@ mergeLeftBound (b1, ut1@(UTree{utVal = t1, utDir = d1})) ut2@(UTree{utVal = t2, 
           case snd r of
             Just a -> RM.putRMTree (VT.mkAtomTree a)
             Nothing -> RM.putRMTree (VT.mkBoundsTree (fst r))
-  -- If the left bounds are embedded in the right struct and there is no fields and no pending dynamic fields, we can
-  -- immediately put the bounds into the tree without worrying any future new fields. This is what CUE currently
-  -- does.
-  VT.TNStruct s2 | isJust (utEmbedID ut1) && VT.hasEmptyFields s2 -> RM.putRMTree t1
+  VT.TNStruct s2 -> mergeLeftStruct (s2, ut2) ut1
   _ -> mergeLeftOther ut2 ut1
 
 mergeAtomBounds :: (Path.BinOpDirect, VT.Atom) -> (Path.BinOpDirect, [VT.Bound]) -> VT.Tree
@@ -572,10 +566,24 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
       RM.putRMTree $ VT.mkBottomTree $ printf "%s can not be unified with %s" tx ty
 
 mergeLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> m ()
-mergeLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) = case VT.treeNode t2 of
-  -- If either of the structs is embedded, closed struct restrictions are ignored.
-  VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
-  _ -> mergeLeftOther ut2 ut1
+mergeLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) =
+  if
+    -- When the left struct is an empty struct with embedded fields, we can get the reduced left struct and unify the
+    -- reduced result (which should be the embeded value) with right value.
+    | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) ->
+        do
+          r1 <- reduceUnifyArg (Path.toBinOpTASeg (utDir ut1)) t2
+          case VT.treeNode r1 of
+            VT.TNMutable _ -> return () -- No concrete value exists.
+            _ -> mergeUTrees (ut1{utVal = r1}) ut2
+    | VT.hasEmptyFields s1 && isJust (utEmbedID ut2) -> case VT.treeNode t2 of
+        -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
+        -- using the embedded value to replace the struct.
+        VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
+        _ -> RM.putRMTree t2
+    | otherwise -> case VT.treeNode t2 of
+        VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
+        _ -> mergeLeftOther ut2 ut1
 
 {- | unify two structs.
 
@@ -868,11 +876,7 @@ mergeLeftDisj (dj1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2}) = do
     VT.TNMutable _ -> mergeLeftOther ut2 ut1
     VT.TNAtomCnstr _ -> mergeLeftOther ut2 ut1
     VT.TNRefCycle _ -> mergeLeftOther ut2 ut1
-    -- If the left disj is embedded in the right struct and there is no fields and no pending dynamic fields, we can
-    -- immediately put the disj into the tree without worrying any future new fields. This is what CUE currently
-    -- does.
-    VT.TNStruct s2
-      | isJust (utEmbedID ut1) && VT.hasEmptyFields s2 -> RM.putRMTree (utVal ut1)
+    -- VT.TNStruct s2 -> mergeLeftStruct (s2, ut2) ut1
     VT.TNDisj dj2 -> case (dj1, dj2) of
       -- this is U0 rule, <v1> & <v2> => <v1&v2>
       (VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
