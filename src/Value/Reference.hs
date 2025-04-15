@@ -4,7 +4,7 @@ import Data.List (intercalate)
 import qualified Path
 
 data RefArg t
-  = -- | RefPath denotes a reference starting with a variable name.
+  = -- | RefPath denotes a reference starting with an identifier.
     RefPath String [t]
   | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
     RefIndex [t]

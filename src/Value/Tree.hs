@@ -170,7 +170,7 @@ buildRepTreeTN t tn opt = case tn of
 
         isVar :: LabelAttr -> String
         isVar a =
-          if lbAttrIsVar a
+          if lbAttrIsIdent a
             then ",v"
             else mempty
 
@@ -339,7 +339,7 @@ buildStructASTExpr concrete s =
         AST.FieldDecl $
           AST.Field
             [ labelCons (ssfAttr sf) $
-                if lbAttrIsVar (ssfAttr sf)
+                if lbAttrIsIdent (ssfAttr sf)
                   then AST.LabelID sel
                   else AST.LabelString sel
             ]

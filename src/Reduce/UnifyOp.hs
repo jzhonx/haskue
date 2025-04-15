@@ -89,7 +89,7 @@ data UTree = UTree
   , utEmbedID :: Maybe Int
   -- ^ Whether the tree is embedded in a struct.
   , utAddr :: Path.TreeAddr
-  -- ^ This address will be used by preprocessor as a starting address to validate and rewrite variables.
+  -- ^ This address will be used by preprocessor as a starting address to validate and rewrite identifiers.
   }
 
 instance Show UTree where
@@ -753,13 +753,13 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
   preprocess (VT.mkStructTree block <$ ptc)
  where
   preprocess tc = do
-    rM <- _chechRefVars tc
+    rM <- _chechRefIdents tc
     logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
     maybe
       ( do
           let sid = VT.stcID block
           structT <- _appendSIDToLetRef blockAddr sid tc
-          -- rewrite all var keys of the let bindings map with the sid.
+          -- rewrite all ident keys of the let bindings map with the sid.
           case VT.treeNode structT of
             VT.TNStruct struct -> do
               let
@@ -772,28 +772,28 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
       (return . Left)
       rM
 
-{- | Validate the reference vars in the sub tree.
+{- | Validate if the identifier of the any reference in the sub tree is in the scope.
 
 This is needed because after merging two blocks, some not found references could become valid because the merged block
-could have the var. Because we are destroying the block and replace it with the merged block, we need to check all sub
-references to make sure later reducing them will not cause them to find newly created vars.
+could have the identifier. Because we are destroying the block and replace it with the merged block, we need to check
+all sub references to make sure later reducing them will not cause them to find newly created identifiers.
 -}
-_chechRefVars :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
-_chechRefVars _tc =
+_chechRefIdents :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
+_chechRefIdents _tc =
   snd <$> TCursorOps.traverseTC _extAllSubNodes find (_tc, Nothing)
  where
   find (tc, acc) = do
     case VT.treeNode (Cursor.vcFocus tc) of
-      VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath var _})) -> do
-        m <- RefSys.searchTCVar var tc
-        logDebugStr $ printf "_chechRefVars: var: %s, m: %s" var (show m)
+      VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
+        m <- RefSys.searchTCIdent ident tc
+        logDebugStr $ printf "_chechRefIdents: ident: %s, m: %s" ident (show m)
         maybe
-          (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" var))
+          (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" ident))
           (const $ return (tc, acc))
           m
       _ -> return (tc, acc)
 
-{- | Append the var of all references in the tree cursor with the sid if the var references a let binding which is
+{- | Append the ident of all references in the tree cursor with the sid if the ident references a let binding which is
 declared in the block specified by the block address.
 
 This makes sure after merging two structs, two same references from two different structs referencing the same let name
@@ -806,9 +806,9 @@ _appendSIDToLetRef blockAddr sid _tc =
   rewrite tc =
     let focus = Cursor.vcFocus tc
      in case VT.treeNode focus of
-          VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath var _})) -> do
-            m <- RefSys.searchTCVar var tc
-            logDebugStr $ printf "_appendSIDToLetRef: var: %s, m: %s" var (show m)
+          VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
+            m <- RefSys.searchTCIdent ident tc
+            logDebugStr $ printf "_appendSIDToLetRef: ident: %s, m: %s" ident (show m)
 
             maybe
               (return focus)
@@ -816,7 +816,7 @@ _appendSIDToLetRef blockAddr sid _tc =
                   logDebugStr $
                     printf
                       "_appendSIDToLetRef: rewrite %s, blockAddr: %s, addr: %s"
-                      var
+                      ident
                       (show blockAddr)
                       (show addr)
                   if isLB && (Just blockAddr == Path.initTreeAddr addr)
@@ -829,8 +829,8 @@ _appendSIDToLetRef blockAddr sid _tc =
           _ -> return focus
 
   append :: VT.Reference VT.Tree -> VT.Reference VT.Tree
-  append ref@(VT.Reference{VT.refArg = VT.RefPath var sels}) =
-    ref{VT.refArg = VT.RefPath (var ++ "_" ++ show sid) sels}
+  append ref@(VT.Reference{VT.refArg = VT.RefPath ident sels}) =
+    ref{VT.refArg = VT.RefPath (ident ++ "_" ++ show sid) sels}
   append r = r
 
 -- | Extended version of all sub nodes of the tree, including patterns, dynamic fields and let bindings.

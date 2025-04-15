@@ -147,7 +147,7 @@ validateLetName :: (RM.ReduceMonad s r m) => String -> m ()
 validateLetName name = whenStruct () $ \_ -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
-  parResM <- RefSys.searchRMVarInPar name
+  parResM <- RefSys.searchRMIdentInPar name
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $
       printf "validateLetName: addr: %s, var %s in parent: %s" (show addr) name (show parResM)
@@ -169,7 +169,7 @@ reduceStructField :: (RM.ReduceMonad s r m) => String -> m ()
 reduceStructField name = whenStruct () $ \struct -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
-  parResM <- RefSys.searchRMVarInPar name
+  parResM <- RefSys.searchRMIdentInPar name
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $
       printf "reduceStructField: addr: %s, var %s in parent: %s" (show addr) name (show parResM)

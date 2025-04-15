@@ -170,7 +170,7 @@ evalFdLabels lbls e =
   mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
-      let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsVar = isVar ln}
+      let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
        in case ln of
             (sselFrom -> Just key) -> do
               logDebugStr $ printf "evalFdLabels: key: %s, mkAdder, val: %s" key (show val)
@@ -271,7 +271,7 @@ addNewStructElem adder struct = case adder of
   existCheck name isNameLet =
     case (VT.lookupStructVal name struct, isNameLet) of
       ([VT.SField f], True)
-        | VT.lbAttrIsVar (VT.ssfAttr f) -> Just $ aliasErr name
+        | VT.lbAttrIsIdent (VT.ssfAttr f) -> Just $ aliasErr name
       ([VT.SLet _], True) -> Just $ lbRedeclErr name
       ([VT.SLet _], False) -> Just $ aliasErr name
       ([_, _], _) -> Just $ aliasErr name

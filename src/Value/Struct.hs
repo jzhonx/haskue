@@ -34,7 +34,7 @@ data Struct t = Struct
 
 data LabelAttr = LabelAttr
   { lbAttrCnstr :: StructFieldCnstr
-  , lbAttrIsVar :: Bool
+  , lbAttrIsIdent :: Bool
   }
   deriving (Show, Eq)
 
@@ -164,7 +164,7 @@ mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
     { lbAttrCnstr = min (lbAttrCnstr a1) (lbAttrCnstr a2)
-    , lbAttrIsVar = lbAttrIsVar a1 || lbAttrIsVar a2
+    , lbAttrIsIdent = lbAttrIsIdent a1 || lbAttrIsIdent a2
     }
 
 mkStructFromAdders :: Int -> [StructElemAdder t] -> Struct t
@@ -309,11 +309,11 @@ lookupStructVal name struct =
 lookupStructField :: String -> Struct t -> Maybe (Field t)
 lookupStructField name struct = Map.lookup name (stcFields struct)
 
-lookupStructVarField :: String -> Struct t -> Maybe (Field t)
-lookupStructVarField name struct =
+lookupStructIdentField :: String -> Struct t -> Maybe (Field t)
+lookupStructIdentField name struct =
   case Map.lookup name (stcFields struct) of
     Just field ->
-      if lbAttrIsVar (ssfAttr field)
+      if lbAttrIsIdent (ssfAttr field)
         then Just field
         else Nothing
     Nothing -> Nothing

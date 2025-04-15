@@ -241,7 +241,7 @@ _detectCycle ref srcAddr trail tc = do
     tar = vcFocus tc
   val <-
     if
-      -- The bottom must return early so that the var not found error would not be replaced with the cycle error.
+      -- The bottom must return early so that the identifier not found error would not be replaced with the cycle error.
       | isTreeBottom tar -> return tar
       -- This handles the case when following the chain of references leads to a cycle.
       -- For example, { a: b, b: a, d: a } and we are at d.
@@ -383,7 +383,7 @@ processCopiedRaw trail tarTC raw = do
 
 {- | Mark all outer references inside a container node with original value address.
 
-The outer references are the nodes inside (not equal to) a container pointing to the out of scope variables. This is
+The outer references are the nodes inside (not equal to) a container pointing to the out of scope identifiers. This is
 needed because after copying the value, the original scope has been lost.
 
 For example, given the following tree:
@@ -443,8 +443,8 @@ markOuterIdents ptc = do
       maybe
         (return False)
         ( \tarIdentAddr -> do
-            let tarIdentInVarScope = Path.isPrefix subtAddr tarIdentAddr && tarIdentAddr /= subtAddr
-            return $ not tarIdentInVarScope
+            let tarIdentInScope = Path.isPrefix subtAddr tarIdentAddr && tarIdentAddr /= subtAddr
+            return $ not tarIdentInScope
         )
         tarIdentAddrM
     logDebugStr $
@@ -461,8 +461,8 @@ markOuterIdents ptc = do
   searchIdent :: (Env r s m) => Path.Reference -> TreeCursor VT.Tree -> m (Maybe Path.TreeAddr)
   searchIdent ref tc = do
     let fstSel = fromJust $ Path.headSel ref
-    var <- selToVar fstSel
-    resM <- searchTCVar var tc
+    ident <- selToIdent fstSel
+    resM <- searchTCIdent ident tc
     return $ fst <$> resM
 
 markRecurClosed :: (Env r s m) => VT.Tree -> m VT.Tree
@@ -491,8 +491,8 @@ refToPotentialAddr ::
   (Env r s m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> TreeCursor VT.Tree -> m (Maybe Path.TreeAddr)
 refToPotentialAddr ref origAddrsM tc = do
   let fstSel = fromJust $ Path.headSel ref
-  var <- selToVar fstSel
-  let f x = searchTCVar var x >>= (\r -> return $ fst <$> r)
+  ident <- selToIdent fstSel
+  let f x = searchTCIdent ident x >>= (\r -> return $ fst <$> r)
 
   -- Search the address of the first identifier, whether from the current env or the original env.
   maybe
@@ -515,36 +515,36 @@ locateRefAndRun ref tc f = do
     Right Nothing -> return $ Right Nothing
     Right (Just tarTC) -> f tarTC
 
--- | Locate the node in the lowest ancestor tree by given reference path. The path must start with a locatable var.
+-- | Locate the node in the lowest ancestor tree by given reference path. The path must start with a locatable ident.
 goTCLAAddr :: (Env r s m) => Path.Reference -> TreeCursor VT.Tree -> m (Either VT.Tree (Maybe (TreeCursor VT.Tree)))
 goTCLAAddr ref tc = do
   when (Path.isRefEmpty ref) $ throwErrSt "empty reference"
   let fstSel = fromJust $ Path.headSel ref
-  var <- selToVar fstSel
-  searchTCVar var tc >>= \case
+  ident <- selToIdent fstSel
+  searchTCIdent ident tc >>= \case
     Nothing -> return . Left $ VT.mkBottomTree $ printf "identifier %s is not found" (show fstSel)
-    Just (varAddr, _) -> do
-      varTCM <- goTCAbsAddr varAddr tc
+    Just (identAddr, _) -> do
+      identTCM <- goTCAbsAddr identAddr tc
       maybe
-        (throwErrSt $ printf "failed to go to the var addr %s" (show varAddr))
-        ( \varTC -> do
+        (throwErrSt $ printf "failed to go to the ident addr %s" (show identAddr))
+        ( \identTC -> do
             -- The ref is non-empty, so the rest must be a valid addr.
             let rest = fromJust $ Path.tailRef ref
-                r = goDownTCAddr (Path.refToAddr rest) varTC
+                r = goDownTCAddr (Path.refToAddr rest) identTC
             return $ Right r
         )
-        varTCM
+        identTCM
 
 -- | TODO: do we need this?
 searchRMLetBindValue :: (RM.ReduceMonad s r m) => String -> m (Maybe VT.Tree)
-searchRMLetBindValue var = do
-  m <- searchRMVar var
+searchRMLetBindValue ident = do
+  m <- searchRMIdent ident
   case m of
     Just (addr, True) -> do
       r <- inAbsAddrRMMust addr $ do
-        varTC <- RM.getRMCursor
-        -- var must be found. Mark the var as referred if it is a let binding.
-        RM.putRMCursor $ _markTCFocusReferred varTC
+        identTC <- RM.getRMCursor
+        -- ident must be found. Mark the ident as referred if it is a let binding.
+        RM.putRMCursor $ _markTCFocusReferred identTC
         RM.getRMTree
       return $ Just r
     _ -> return Nothing
@@ -621,56 +621,56 @@ _markTCFocusReferred tc@(ValCursor sub ((seg@(Path.StructTASeg (Path.LetTASeg na
     (VT.getStructFromTree par)
 _markTCFocusReferred tc = tc
 
-selToVar :: (Env r s m) => Path.Selector -> m String
-selToVar (Path.StringSel s) = return s
-selToVar _ = throwErrSt "invalid selector"
+selToIdent :: (Env r s m) => Path.Selector -> m String
+selToIdent (Path.StringSel s) = return s
+selToIdent _ = throwErrSt "invalid selector"
 
-{- | Search in the tree for the first variable that can match the name.
+{- | Search in the tree for the first identifier that can match the name.
 
-Return if the variable address and whether it is a let binding.
+Return if the identifier address and whether it is a let binding.
 -}
-searchRMVar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
-searchRMVar name = do
+searchRMIdent :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMIdent name = do
   tc <- RM.getRMCursor
-  searchTCVar name tc
+  searchTCIdent name tc
 
-{- | Search in the parent scope for the first variable that can match the segment. Also return if the variable is a
+{- | Search in the parent scope for the first identifier that can match the segment. Also return if the identifier is a
  let binding.
 -}
-searchRMVarInPar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
-searchRMVarInPar name = do
+searchRMIdentInPar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMIdentInPar name = do
   ptc <- do
     tc <- RM.getRMCursor
     maybe (throwErrSt "already on the top") return $ parentTC tc
   if isTCTop ptc
     then return Nothing
-    else searchTCVar name ptc
+    else searchTCIdent name ptc
 
-{- | Search in the tree for the first variable that can match the name.
+{- | Search in the tree for the first identifier that can match the name.
 
-Return a pair. The first is address of the variable, the second is the variable is a let binding.
+Return a pair. The first is address of the identifier, the second is the identifier is a let binding.
 
 The child value will not be propagated to the parent block. Propagation is not needed because all static fields should
 already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCVar :: (Env r s m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
-searchTCVar name tc = do
+searchTCIdent :: (Env r s m) => String -> TreeCursor VT.Tree -> m (Maybe (Path.TreeAddr, Bool))
+searchTCIdent name tc = do
   subM <- findSub name $ vcFocus tc
   r <-
     maybe
       (goUp tc)
       ( \(sub, isLB) ->
           let
-            -- The var address is the address of the value, with the updated segment paired with the it.
+            -- The ident address is the address of the value, with the updated segment paired with the it.
             newTC = mkSubTC (mkSeg isLB) sub tc
            in
             return $ Just (tcTreeAddr newTC, isLB)
       )
       subM
 
-  logDebugStr $ printf "searchTCVar: name: %s, cur_path: %s, result: %s" name (show $ tcTreeAddr tc) (show r)
+  logDebugStr $ printf "searchTCIdent: name: %s, cur_path: %s, result: %s" name (show $ tcTreeAddr tc) (show r)
   return r
  where
   mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
@@ -679,25 +679,25 @@ searchTCVar name tc = do
   goUp (ValCursor _ [(Path.RootTASeg, _)]) = return Nothing -- stop at the root.
   goUp utc = do
     ptc <- maybe (throwErrSt "already on the top") return $ parentTC utc
-    searchTCVar name ptc
+    searchTCIdent name ptc
 
   -- TODO: findSub for default disjunct
   findSub :: (Env r s m) => String -> VT.Tree -> m (Maybe (VT.Tree, Bool))
-  findSub var t = case VT.treeNode t of
+  findSub ident t = case VT.treeNode t of
     VT.TNStruct struct -> do
       let m =
             catMaybes
               [ do
-                  sf <- VT.lookupStructVarField var struct
+                  sf <- VT.lookupStructIdentField ident struct
                   return (VT.ssfValue sf, False)
               , do
-                  lb <- VT.lookupStructLet var struct
+                  lb <- VT.lookupStructLet ident struct
                   return (VT.lbValue lb, True)
               ]
       case m of
         [] -> return Nothing
         [x] -> return $ Just x
-        _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" var, False)
+        _ -> return $ Just (VT.mkBottomTree $ printf "multiple fields found for %s" ident, False)
     VT.TNMutable (VT.Compreh c) -> return Nothing
     _ -> return Nothing
 
