@@ -736,7 +736,10 @@ _mkUnifiedField sf1 sf2 =
 
 {- | Preprocess the block.
 
-Block variables are the variables defined in the current block.
+According to spec, A block is a possibly empty sequence of declarations.
+
+The scope of a declared identifier is the extent of source text in which the identifier denotes the specified field,
+alias, or package.
 -}
 _preprocessBlock ::
   (RM.ReduceMonad s r m) =>
@@ -750,13 +753,12 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
   preprocess (VT.mkStructTree block <$ ptc)
  where
   preprocess tc = do
-    rM <- _findInvalidBlockVars tc
+    rM <- _chechRefVars tc
     logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
     maybe
       ( do
           let sid = VT.stcID block
-          -- Rewrite the block variables.
-          structT <- _rewriteBlockVars blockAddr sid tc
+          structT <- _appendSIDToLetRef blockAddr sid tc
           -- rewrite all var keys of the let bindings map with the sid.
           case VT.treeNode structT of
             VT.TNStruct struct -> do
@@ -770,65 +772,70 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
       (return . Left)
       rM
 
-{- | Validate the vars in the block because after merging two structs, the vars which were invalid could become valid.
+{- | Validate the reference vars in the sub tree.
 
-We need to check all vars. If there is a ref in the deeper block referencing a non-existed field in the current
-block, we should return an error because in the new block the field may exist.
+This is needed because after merging two blocks, some not found references could become valid because the merged block
+could have the var. Because we are destroying the block and replace it with the merged block, we need to check all sub
+references to make sure later reducing them will not cause them to find newly created vars.
 -}
-_findInvalidBlockVars :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
-_findInvalidBlockVars _tc =
-  snd
-    <$> TCursorOps.traverseTC
-      _allSubNodes
-      find
-      (_tc, Nothing)
+_chechRefVars :: (Env r s m) => Cursor.TreeCursor VT.Tree -> m (Maybe VT.Tree)
+_chechRefVars _tc =
+  snd <$> TCursorOps.traverseTC _extAllSubNodes find (_tc, Nothing)
  where
   find (tc, acc) = do
     case VT.treeNode (Cursor.vcFocus tc) of
       VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath var _})) -> do
         m <- RefSys.searchTCVar var tc
-        logDebugStr $ printf "_findInvalidBlockVars: var: %s, m: %s" var (show m)
+        logDebugStr $ printf "_chechRefVars: var: %s, m: %s" var (show m)
         maybe
           (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" var))
           (const $ return (tc, acc))
           m
       _ -> return (tc, acc)
 
-_rewriteBlockVars :: (Env r s m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
-_rewriteBlockVars scopeAddr sid _tc =
-  Cursor.vcFocus
-    <$> TCursorOps.traverseTCSimple
-      _allSubNodes
-      rewrite
-      _tc
+{- | Append the var of all references in the tree cursor with the sid if the var references a let binding which is
+declared in the block specified by the block address.
+
+This makes sure after merging two structs, two same references from two different structs referencing the same let name
+will not conflict with each other.
+-}
+_appendSIDToLetRef :: (Env r s m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
+_appendSIDToLetRef blockAddr sid _tc =
+  Cursor.vcFocus <$> TCursorOps.traverseTCSimple _extAllSubNodes rewrite _tc
  where
   rewrite tc =
     let focus = Cursor.vcFocus tc
      in case VT.treeNode focus of
           VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath var _})) -> do
             m <- RefSys.searchTCVar var tc
-            logDebugStr $ printf "_rewriteBlockVars: var: %s, m: %s" var (show m)
+            logDebugStr $ printf "_appendSIDToLetRef: var: %s, m: %s" var (show m)
 
             maybe
               (return focus)
               ( \(addr, isLB) -> do
-                  logDebugStr $ printf "_rewriteBlockVars: rewrite %s, scopeAddr: %s, addr: %s" var (show scopeAddr) (show addr)
-                  if isLB && (Just scopeAddr == Path.initTreeAddr addr)
+                  logDebugStr $
+                    printf
+                      "_appendSIDToLetRef: rewrite %s, blockAddr: %s, addr: %s"
+                      var
+                      (show blockAddr)
+                      (show addr)
+                  if isLB && (Just blockAddr == Path.initTreeAddr addr)
                     then do
-                      let newFocus = VT.setTN focus (VT.TNMutable $ VT.Ref $ _rewriteLBWithSID sid ref)
+                      let newFocus = VT.setTN focus (VT.TNMutable $ VT.Ref $ append ref)
                       return newFocus
                     else return focus
               )
               m
           _ -> return focus
 
-_rewriteLBWithSID :: Int -> VT.Reference VT.Tree -> VT.Reference VT.Tree
-_rewriteLBWithSID sid ref@(VT.Reference{VT.refArg = VT.RefPath var sels}) =
-  ref{VT.refArg = VT.RefPath (var ++ "_" ++ show sid) sels}
-_rewriteLBWithSID _ r = r
+  append :: VT.Reference VT.Tree -> VT.Reference VT.Tree
+  append ref@(VT.Reference{VT.refArg = VT.RefPath var sels}) =
+    ref{VT.refArg = VT.RefPath (var ++ "_" ++ show sid) sels}
+  append r = r
 
-_allSubNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
-_allSubNodes x = VT.subNodes x ++ rawNodes x
+-- | Extended version of all sub nodes of the tree, including patterns, dynamic fields and let bindings.
+_extAllSubNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
+_extAllSubNodes x = VT.subNodes x ++ rawNodes x
  where
   rawNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
   rawNodes t = case VT.treeNode t of
@@ -836,6 +843,7 @@ _allSubNodes x = VT.subNodes x ++ rawNodes x
       [(Path.StructTASeg $ Path.PatternTASeg i 1, VT.scsValue c) | (i, c) <- IntMap.toList $ VT.stcCnstrs struct]
         ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, VT.dsfValue dsf) | (i, dsf) <- IntMap.toList $ VT.stcDynFields struct]
         ++ [(Path.StructTASeg $ Path.LetTASeg s, VT.lbValue lb) | (s, lb) <- Map.toList $ VT.stcLets struct]
+        ++ [(Path.StructTASeg $ Path.EmbedTASeg i, VT.embValue emb) | (i, emb) <- IntMap.toList $ VT.stcEmbeds struct]
     _ -> []
 
 mkNodeWithDir ::

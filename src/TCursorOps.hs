@@ -82,6 +82,7 @@ traverseTC subNodes f x = do
     y
     (subNodes $ vcFocus $ fst y)
 
+-- | A simple version of the traverseTC function that does not return a custom value.
 traverseTCSimple ::
   (Env r s m) =>
   (VT.Tree -> [(TASeg, VT.Tree)]) ->
