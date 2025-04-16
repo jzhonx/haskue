@@ -10,7 +10,7 @@ import Common (TreeOp (isTreeBottom, treeHasRef))
 import Control.Monad (unless, when)
 import Control.Monad.Reader (asks)
 import Cursor (
-  Context (ctxCnstrValidatorAddr, ctxRefSysGraph),
+  Context (ctxRefSysGraph),
   showRefSysiers,
  )
 import qualified Data.Map.Strict as Map
@@ -85,44 +85,27 @@ mutateRef ref = do
       -- Make sure the mutable is still the focus of the tree.
       assertMVNotRef
 
-      cnstrValAddrM <- ctxCnstrValidatorAddr <$> RM.getRMContext
-      -- When we are in the validating constraint phase, if the constraint value is the same as the target atom value,
-      -- then we should reduce the mutable to atom.
-      if tarAddrM == cnstrValAddrM && isJust tarAddrM
-        then do
-          RM.withAddrAndFocus $ \addr _ ->
-            logDebugStr $
-              printf
-                "mutateRef: addr: %s, validating cnstr, tarAddrM: %s"
-                (show addr)
-                (show tarAddrM)
-          mv <- _getRMMutVal
-          case VT.treeNode <$> mv of
-            Just (VT.TNAtom _) -> reduceToMutVal $ fromJust mv
-            _ -> throwErrSt $ printf "constraint's atom not found, but got: %s" (show mv)
-          return Nothing
+      mvM <- _getRMMutVal
+      if mvM == Just VT.stubTree
+        then return Nothing
         else do
-          mvM <- _getRMMutVal
-          if mvM == Just VT.stubTree
-            then return Nothing
-            else do
-              MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-              _runInMutValEnv reduce
-              RM.withAddrAndFocus $ \addr focus ->
-                logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
+          MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+          _runInMutValEnv reduce
+          RM.withAddrAndFocus $ \addr focus ->
+            logDebugStr $ printf "mutateRef: addr: %s, reduce mv result: %s" (show addr) (show focus)
 
-              _runWithExtMutVal $ \mv ->
-                if
-                  | isRefResReducible mv -> reduceToMutVal mv
-                  -- The result is another mutable, when we reference another mutable.
-                  | Just imut <- VT.getMutableFromTree mv ->
-                      case VT.getMutVal imut of
-                        Just imv -> _mustSetMutVal (Just imv)
-                        -- If the function has no result, then we should set the mutval to the stub.
-                        _ -> _mustSetMutVal (Just VT.stubTree)
-                  | otherwise -> return ()
+          _runWithExtMutVal $ \mv ->
+            if
+              | isRefResReducible mv -> reduceToMutVal mv
+              -- The result is another mutable, when we reference another mutable.
+              | Just imut <- VT.getMutableFromTree mv ->
+                  case VT.getMutVal imut of
+                    Just imv -> _mustSetMutVal (Just imv)
+                    -- If the function has no result, then we should set the mutval to the stub.
+                    _ -> _mustSetMutVal (Just VT.stubTree)
+              | otherwise -> return ()
 
-              return Nothing
+          return Nothing
  where
   assertMVNotRef = _runWithExtMutVal $ \mv -> case VT.getMutableFromTree mv of
     Just (VT.Ref rf)

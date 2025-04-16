@@ -59,7 +59,6 @@ data Context t = Context
   , ctxRefSysGraph :: Map.Map TreeAddr [TreeAddr]
   , ctxRefSysQueue :: [TreeAddr]
   -- ^ The notif queue is a list of addresses that will trigger the notification.
-  , ctxCnstrValidatorAddr :: Maybe TreeAddr
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
@@ -91,7 +90,6 @@ emptyContext =
     , ctxRefSysGraph = Map.empty
     , ctxRefSysQueue = []
     , ctxRefSysEnabled = True
-    , ctxCnstrValidatorAddr = Nothing
     , ctxTrace = emptyTrace
     }
 

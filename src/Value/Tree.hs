@@ -243,7 +243,6 @@ buildRepTreeTN t tn opt = case tn of
       , mempty
       , consFields
           [ ("atom", mempty, mkAtomVTree (cnsAtom c))
-          , ("orig_atom", mempty, mkAtomVTree (cnsOrigAtom c))
           , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
           ]
       , []
@@ -737,7 +736,7 @@ mkBoundsTree :: [Bound] -> Tree
 mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 
 mkCnstrTree :: AtomV -> AST.Expression -> Tree
-mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a a e
+mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a e
 
 mkDisjTree :: Maybe Tree -> [Tree] -> Tree
 mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})

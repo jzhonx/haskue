@@ -267,16 +267,13 @@ _detectCycle ref srcAddr trail tc = do
       -- ref_a
       -- Notice that for self-cycle, the srcTreeAddr could be /addr/sv, and the dstTreeAddr could be /addr. They
       -- are the same in the refNode form.
-      | Just canDstAddr == Path.referableAddr canSrcAddr && srcAddr /= dstAddr -> case VT.treeNode tar of
-          -- In the validation phase, the subnode of the Constraint node might find the parent Constraint node.
-          VT.TNAtomCnstr c -> return (VT.mkAtomVTree $ VT.cnsOrigAtom c)
-          _ -> do
-            logDebugStr $
-              printf
-                "deref_getDstVal: vertical reference cycle tail detected: %s == %s."
-                (show dstAddr)
-                (show srcAddr)
-            return (VT.setTN tar $ VT.TNRefCycle (VT.RefCycleVertMerger (dstAddr, srcAddr)))
+      | Just canDstAddr == Path.referableAddr canSrcAddr && srcAddr /= dstAddr -> do
+          logDebugStr $
+            printf
+              "deref_getDstVal: vertical reference cycle tail detected: %s == %s."
+              (show dstAddr)
+              (show srcAddr)
+          return (VT.setTN tar $ VT.TNRefCycle (VT.RefCycleVertMerger (dstAddr, srcAddr)))
       | Path.isPrefix canDstAddr canSrcAddr && canSrcAddr /= canDstAddr ->
           return
             ( VT.setTN tar $ VT.TNStructuralCycle $ VT.StructuralCycle dstAddr
@@ -416,8 +413,8 @@ markOuterIdents ptc = do
     let focus = vcFocus tc
     rM <- case VT.getMutableFromTree focus of
       Just (VT.Ref rf) -> return $ do
-        newRef <- VT.refFromRefArg (\x -> Path.StringSel <$> VT.getStringFromTree x) (VT.refArg rf)
-        return (newRef, \as -> VT.setTN focus $ VT.TNMutable . VT.Ref $ rf{VT.refOrigAddrs = Just as})
+        newPRef <- VT.refFromRefArg (\x -> Path.StringSel <$> VT.getStringFromTree x) (VT.refArg rf)
+        return (newPRef, \as -> VT.setTN focus $ VT.TNMutable . VT.Ref $ rf{VT.refOrigAddrs = Just as})
       _ -> return Nothing
     maybe
       (return focus)
