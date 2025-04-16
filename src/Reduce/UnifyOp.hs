@@ -553,17 +553,15 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
         then RM.putRMTree $ VT.mkBottomTree "structural cycle"
         else do
           MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
-          raw <-
+          raw1 <-
             maybe (throwErrSt "original expression is not found") return (VT.treeExpr t1)
               >>= evalExpr
-          -- TODO: why?
-          r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1) raw
           logDebugStr $
             printf
               "mergeLeftOther: found structural cycle, trying original deref'd %s with %s"
-              (show r1)
+              (show raw1)
               (show t2)
-          mergeUTrees ut1{utVal = r1} ut2
+          mergeUTrees ut1{utVal = raw1} ut2
     _ -> putNotUnifiable
  where
   putNotUnifiable :: (RM.ReduceMonad s r m) => m ()
