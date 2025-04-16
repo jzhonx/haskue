@@ -22,7 +22,8 @@ data Struct t = Struct
   -- ^ The original identifiers declared in the block. It is used to validate identifiers.
   -- It includes both static fields and let bindings.
   -- It is needed because new static fields of embeddings can be merged into the struct.
-  -- Once the struct is created, the identifiers are fixed.
+  -- Once the struct is created, the static identifiers are fixed. The let identifiers can be rewritten with the scope
+  -- id.
   , stcFields :: Map.Map String (Field t)
   -- ^ It is the fields, excluding the let bindings.
   , stcLets :: Map.Map String (LetBinding t)

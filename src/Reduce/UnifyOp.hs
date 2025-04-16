@@ -779,8 +779,13 @@ _preprocessBlock blockAddr block = RM.debugSpanArgsRM "_preprocessBlock" (printf
           case VT.treeNode structT of
             VT.TNStruct struct -> do
               let
-                m = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
-                newStruct = struct{VT.stcLets = m}
+                blockIdents =
+                  Set.fromList $
+                    map
+                      (\k -> if k `Map.member` VT.stcLets struct then k ++ "_" ++ show sid else k)
+                      (Set.toList $ VT.stcBlockIdents struct)
+                lets = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
+                newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
               logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
               return $ Right newStruct
             _ -> throwErrSt $ printf "tree must be struct, but got %s" (show structT)
