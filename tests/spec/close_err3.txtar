@@ -1,0 +1,10 @@
+-- close_err3 --
+x: close({
+	[=~y]: int
+}) & {
+	a: 1
+}
+y:     *"a" | "b"
+("y"): "b"
+-- exp --
+error: a is not allowed

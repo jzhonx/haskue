@@ -1,10 +1,53 @@
 -- close1 --
-x: close({
-	a: 1
-})
+// successful cases
+c1: {
+	x: close({
+		[=~"a"]: int
+	})
 
-y: x & {
-	b: 2 // error: field "b" not allowed in struct.
+	y: x & {
+		a: 1
+	}
+}
+c2: {
+	x: close({
+		[=~"a"]: int
+	})
+
+	y: x & close({
+		a: 1
+	})
+}
+c3: {
+	x: close({
+		[=~"a"]: int
+	})
+
+	y: close({
+		a: 1
+	})
+
+	z: x & y
 }
 -- exp --
-error: b is not allowed
+c1: {
+    x: {}
+    y: {
+        a: 1
+  }
+}
+c2: {
+    x: {}
+    y: {
+        a: 1
+  }
+}
+c3: {
+    x: {}
+    y: {
+        a: 1
+  }
+    z: {
+        a: 1
+  }
+}

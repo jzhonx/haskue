@@ -32,7 +32,7 @@ data Struct t = Struct
   , stcDynFields :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
   , stcEmbeds :: IntMap.IntMap (Embedding t)
-  -- ^ The embedded structs are not reduced.
+  -- ^ The embeddings make the struct like a mutable.
   , stcClosed :: Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
   , stcPerms :: [PermItem]

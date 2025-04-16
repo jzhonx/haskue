@@ -181,6 +181,16 @@ mergeUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = RM.debugSpanArgsRM
     RM.withTree $ \t ->
       RM.putRMTree (t{VT.treeRecurClosed = VT.treeRecurClosed t1 || VT.treeRecurClosed t2})
 
+-- | Unify the right embedded tree with the left tree.
+mergeRightEmbedded :: (RM.ReduceMonad s r m) => VT.Tree -> (VT.Tree, Int) -> m ()
+mergeRightEmbedded t1 (t2, eid2) = do
+  addr <- RM.getRMAbsAddr
+  let
+    funcAddr = fromJust $ Path.initTreeAddr addr
+    lAddr = Path.appendSeg Path.binOpLeftTASeg funcAddr
+    rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
+  mergeUTrees (UTree t1 Path.L Nothing lAddr) (UTree t2 Path.R (Just eid2) rAddr)
+
 mergeLeftCnstredVal :: (RM.ReduceMonad s r m) => (VT.CnstredVal VT.Tree, UTree) -> UTree -> m ()
 mergeLeftCnstredVal (c1, ut1) ut2@UTree{utVal = t2} = do
   eM2 <- case VT.treeNode t2 of
@@ -1026,17 +1036,17 @@ checkPerm ::
   String ->
   m (Maybe VT.Tree)
 checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel = do
-  r <- _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
-  logDebugStr $
+  res <- _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
+  RM.debugInstantRM "checkPerm" $
     printf
-      "checkPerm: newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s, r: %s"
+      "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s, res: %s"
       (show newLabel)
       (show baseLabels)
       (show baseAllCnstrs)
       (show isBaseClosed)
       (show isEitherEmbedded)
-      (show r)
-  return r
+      (show res)
+  return res
 
 _checkPerm ::
   (RM.ReduceMonad s r m) =>
@@ -1112,13 +1122,3 @@ patMatchLabel pat name = case VT.treeNode pat of
     case VT.getAtomFromTree r of
       Just (VT.String _) -> return True
       _ -> return False
-
--- | Unify the right embedded tree with the left tree.
-mergeRightEmbedded :: (RM.ReduceMonad s r m) => VT.Tree -> (VT.Tree, Int) -> m ()
-mergeRightEmbedded t1 (t2, eid2) = do
-  addr <- RM.getRMAbsAddr
-  let
-    funcAddr = fromJust $ Path.initTreeAddr addr
-    lAddr = Path.appendSeg Path.binOpLeftTASeg funcAddr
-    rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
-  mergeUTrees (UTree t1 Path.L Nothing lAddr) (UTree t2 Path.R (Just eid2) rAddr)

@@ -1,0 +1,14 @@
+-- close_incmpl1 --
+x: close({
+	(y.f): int
+}) & {
+	a: 1
+}
+y: {}
+-- exp --
+x: close({
+    (y.f): int
+}) & {
+    a: 1
+}
+y: {}

@@ -29,10 +29,7 @@ import qualified Reduce.RefSys as RefSys
 import qualified Reduce.RegOps as RegOps
 import qualified Reduce.UnifyOp as UnifyOp
 import Text.Printf (printf)
-import Util (
-  getTraceID,
-  logDebugStr,
- )
+import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 fullReduce :: (RM.ReduceMonad s r m) => m ()
