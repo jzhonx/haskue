@@ -243,7 +243,8 @@ buildRepTreeTN t tn opt = case tn of
       , mempty
       , consFields
           [ ("atom", mempty, mkAtomVTree (cnsAtom c))
-          -- , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
+          , ("orig_atom", mempty, mkAtomVTree (cnsOrigAtom c))
+          , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
           ]
       , []
       )
@@ -584,6 +585,7 @@ treeToSubStr toff moreSub t =
                                         ( case treeNode sub of
                                             TNCnstredVal _ -> True
                                             TNMutable _ -> True
+                                            TNAtomCnstr _ -> True
                                             _ -> False
                                         )
                                         sub

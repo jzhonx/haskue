@@ -257,7 +257,7 @@ _detectCycle ref srcAddr trail tc = do
               (show dstAddr)
               (show $ Set.toList trail)
           return (VT.setTN tar $ VT.TNRefCycle (VT.RefCycleHori (dstAddr, srcAddr)))
-      -- This handles the case when the reference refers to itself that is the ancestor.
+      -- This handles the case when the reference in a sub structure refers to itself.
       -- For example, { a: a + 1 } or { a: !a }.
       -- The tree representation of the latter is,
       -- { }

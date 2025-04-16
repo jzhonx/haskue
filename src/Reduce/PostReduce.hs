@@ -17,7 +17,6 @@ import qualified MutEnv
 import qualified Reduce.RMonad as RM
 import Reduce.Root (fullReduce)
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 postValidation :: (RM.ReduceMonad s r m) => m ()
@@ -62,26 +61,24 @@ snapshotRM = RM.debugSpanRM "snapshotRM" $ do
             }
     _ -> return ()
 
--- Validate the constraint. It creates a validate function, and then evaluates the function. Notice that the validator
--- will be assigned to the constraint in the propValUp.
-validateCnstr :: (RM.ReduceMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
-validateCnstr c = do
-  addr <- RM.getRMAbsAddr
-  logDebugStr $
-    printf
-      "validateCnstr: addr: %s, validator: %s"
-      (show addr)
-      (show (VT.cnsValidator c))
-  RM.modifyRMContext $ \ctx -> ctx{ctxCnstrValidatorAddr = Just addr}
+{- | Validate the constraint.
 
-  -- make sure return the latest atom
-  let atomT = VT.mkAtomVTree $ VT.cnsAtom c
+It creates a validate function, and then evaluates the function. Notice that the validatorß will be assigned to the
+constraint in the propValUp.
+-}
+validateCnstr :: (RM.ReduceMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
+validateCnstr c = RM.debugSpanRM "validateCnstr" $ do
+  addr <- RM.getRMAbsAddr
+  RM.modifyRMContext $ \ctx -> ctx{ctxCnstrValidatorAddr = Just addr}
+  MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
+  raw <- evalExpr (VT.cnsValidator c)
+  RM.debugInstantRM "validateCnstr" $ printf "validator: %s, raw: %s" (show (VT.cnsValidator c)) (VT.treeFullStr 0 raw)
+
+  -- Make sure the original atom is created.
+  let atomT = VT.mkAtomVTree $ VT.cnsOrigAtom c
   -- run the validator in a sub context.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- RM.inTempSubRM (VT.mkBottomTree "no value yet") $ do
-    MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
-    raw <- evalExpr (VT.cnsValidator c)
-    RM.putRMTree raw
+  res <- RM.inTempSubRM raw $ do
     -- TODO: replace all refs that refer to the cnstr with the atom
     fullReduce >> RM.getRMTree
 

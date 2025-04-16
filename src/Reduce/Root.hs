@@ -317,7 +317,7 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
 
           let
             saveEmbeds = VT.stcEmbeds allRmStruct
-            -- We don't want any embeddings to be re-evaluated. Plus, it would make reducing infinite.
+            -- We don't want any embeddings to be re-evaluated in a deeper env. Plus, it would make reducing infinite.
             t1 = VT.mkStructTree (allRmStruct{VT.stcEmbeds = IntMap.empty})
             t2 = ev
           res <-
@@ -332,7 +332,7 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
                           rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
                           ut1 = UnifyOp.UTree t1 Path.L Nothing addr
                           ut2 = UnifyOp.UTree t2 Path.R (Just i) rAddr
-                        UnifyOp.mergeUTrees ut1 ut2
+                        UnifyOp.unifyUTrees ut1 ut2
                     )
                     t1
                     t2
