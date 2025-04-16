@@ -44,7 +44,7 @@ postValidation = RM.debugSpanRM "postValidation" $ do
 1. Replace the Mutable node with the result of the mutator if it exists, otherwise the
 original mutator node is kept.
 2. Replace the CnstredVal node with its value.
-3. Empty all stub value containers of the struct, which are lets, constraints, dynamic fields and embeddings. All the
+3. Empty all stub value containers of the struct, which are constraints, dynamic fields and embeddings. All the
 pending values should have been already applied to the static fields.
 -}
 snapshotRM :: (RM.ReduceMonad s r m) => m ()
@@ -56,8 +56,7 @@ snapshotRM = RM.debugSpanRM "snapshotRM" $ do
       RM.modifyRMTN $
         VT.TNStruct $
           s
-            { VT.stcLets = Map.empty
-            , VT.stcCnstrs = IntMap.empty
+            { VT.stcCnstrs = IntMap.empty
             , VT.stcEmbeds = IntMap.empty
             , VT.stcDynFields = IntMap.empty
             , VT.stcPerms = []
