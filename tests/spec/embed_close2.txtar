@@ -1,6 +1,13 @@
 -- embed_close2 --
-// This case tests the unification of embedded disjunction that has a closed struct.
-x: 1
-(close({}) | int) // ok, embedded closed struct can be unified with the parent struct.
+// The closed embedding will make the x closed.
+x: {
+	a: 1
+	close({
+		b: 2
+	})
+}
 -- exp --
-x: 1
+x: {
+    a: 1
+    b: 2
+}
