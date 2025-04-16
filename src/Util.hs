@@ -46,6 +46,7 @@ data ChromeEndTrace = ChromeEndTrace
 
 data ChromeStartTraceArgs = ChromeStartTraceArgs
   { cstaTraceID :: Int
+  , cstaAddr :: String
   , cstaCustomVal :: Maybe String
   }
   deriving (Eq, Show)
@@ -95,6 +96,7 @@ instance ToJSON ChromeStartTraceArgs where
   toJSON cta =
     object
       ( [ "tid" .= show (cstaTraceID cta)
+        , "addr" .= cstaAddr cta
         ]
           ++ ( if isNothing (cstaCustomVal cta)
                 then []
@@ -135,16 +137,21 @@ debugSpan ::
   (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> m (a, b, b) -> m a
 debugSpan name addr args f = do
   let msg = printf "%s, at:%s" name addr
-  start <- newTraceStamp
+  start <- newTraceStamp 1
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeStartTrace msg start (ChromeStartTraceArgs start args)
+            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr args)
             )
         )
   (res, bfocus, focus) <- f
-  end <- newTraceStamp
+  end <- do
+    poEnd <- lastTraceStamp
+    if poEnd == start
+      -- This is the leaf duration. Make sure its duration is not 0.
+      then newTraceStamp 5
+      else newTraceStamp 1
   logDebugStr $
     "ChromeTrace"
       ++ unpack
@@ -157,7 +164,7 @@ debugSpan name addr args f = do
 debugInstant ::
   (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> m ()
 debugInstant name addr args = do
-  start <- newTraceStamp
+  start <- lastTraceStamp
   let msg = printf "%s, at:%s" name addr
   logDebugStr $
     "ChromeTrace"
@@ -170,14 +177,19 @@ debugInstant name addr args = do
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceStamp . getTrace
 
-newTraceStamp :: (MonadState s m, HasTrace s) => m Int
-newTraceStamp = do
+newTraceStamp :: (MonadState s m, HasTrace s) => Int -> m Int
+newTraceStamp delta = do
   tr <- gets getTrace
   let
-    newStamp = traceStamp tr + 1
+    newStamp = traceStamp tr + delta
     ntr = tr{traceStamp = newStamp}
   modify $ \s -> setTrace s ntr
   return newStamp
+
+lastTraceStamp :: (MonadState s m, HasTrace s) => m Int
+lastTraceStamp = do
+  tr <- gets getTrace
+  return $ traceStamp tr
 
 emptyTrace :: Trace
 emptyTrace = Trace 0
