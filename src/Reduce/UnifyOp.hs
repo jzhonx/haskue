@@ -40,8 +40,8 @@ import qualified Value.Tree as VT
 If the tree is a struct or a list, no sub nodes need to be reduced as these nodes will be merged and reduced in a new
 scope.
 -}
-shallowReduce :: (RM.ReduceMonad s r m) => m ()
-shallowReduce = RM.debugSpanRM "shallowReduce" $ do
+reduceMutTree :: (RM.ReduceMonad s r m) => m ()
+reduceMutTree = RM.debugSpanRM "reduceMutTree" $ do
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
   RM.withTree $ \t -> case VT.treeNode t of
@@ -49,7 +49,7 @@ shallowReduce = RM.debugSpanRM "shallowReduce" $ do
       local
         ( \r ->
             let fns = MutEnv.getFuncs r
-             in MutEnv.setFuncs r fns{MutEnv.fnReduce = shallowReduce}
+             in MutEnv.setFuncs r fns{MutEnv.fnReduce = reduceMutTree}
         )
         Mutate.mutate
     VT.TNStub -> throwErrSt "stub node should not be reduced"
@@ -62,14 +62,14 @@ shallowReduce = RM.debugSpanRM "shallowReduce" $ do
 
 If nothing concrete can be returned, then the original argument is returned.
 -}
-reduceUnifyArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceUnifyArg seg sub = RM.debugSpanArgsRM "reduceUnifyArg" (printf "seg: %s" (show seg)) $ do
+reduceUnifyMutTreeArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
+reduceUnifyMutTreeArg seg sub = RM.debugSpanArgsRM "reduceUnifyMutTreeArg" (printf "seg: %s" (show seg)) $ do
   m <-
     Mutate.mutValToArgsRM
       seg
       sub
       ( do
-          shallowReduce
+          reduceMutTree
           RM.withTree $ \x -> return $ case VT.treeNode x of
             VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
             _ -> Just x
@@ -521,7 +521,7 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
       RM.withAddrAndFocus $ \addr _ ->
         logDebugStr $ printf "mergeLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
       -- If the left value is mutable, we should shallow reduce the left value first.
-      r1 <- reduceUnifyArg (Path.toBinOpTASeg d1) t1
+      r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1) t1
       case VT.treeNode r1 of
         VT.TNMutable _ -> return () -- No concrete value exists.
         _ -> mergeUTrees (ut1{utVal = r1}) ut2
@@ -557,7 +557,7 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
             maybe (throwErrSt "original expression is not found") return (VT.treeExpr t1)
               >>= evalExpr
           -- TODO: why?
-          r1 <- reduceUnifyArg (Path.toBinOpTASeg d1) raw
+          r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1) raw
           logDebugStr $
             printf
               "mergeLeftOther: found structural cycle, trying original deref'd %s with %s"
@@ -582,7 +582,7 @@ mergeLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) =
     -- reduced result (which should be the embeded value) with right value.
     | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) ->
         do
-          r1 <- reduceUnifyArg (Path.toBinOpTASeg (utDir ut1)) t2
+          r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1)) t2
           case VT.treeNode r1 of
             VT.TNMutable _ -> return () -- No concrete value exists.
             _ -> mergeUTrees (ut1{utVal = r1}) ut2
