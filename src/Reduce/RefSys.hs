@@ -192,6 +192,7 @@ getDstTC ref origAddrsM trail refTC =
           (show origAddrsM)
           (show $ Set.toList trail)
     )
+    (vcFocus refTC)
     $ traceAdapt
     $ do
       let
@@ -218,7 +219,7 @@ getDstTC ref origAddrsM trail refTC =
     let after = case r of
           Left err -> err
           Right m -> maybe (VT.mkBottomTree "Healthy Not found") vcFocus m
-    return (r, vcFocus refTC, after)
+    return (r, after)
 
 {- | Detect if the reference leads to a cycle.
 
