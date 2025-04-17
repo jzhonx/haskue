@@ -17,7 +17,7 @@ import qualified MutEnv
 import qualified Path
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
-import Reduce.Root (fullReduce)
+import Reduce.Root (fullReduce, validateStructPerm, whenStruct)
 import qualified TCursorOps
 import Text.Printf (printf)
 import qualified Value.Tree as VT
@@ -30,6 +30,7 @@ postValidation = RM.debugSpanRM "postValidation" $ do
 
   -- rewrite all functions to their results if the results exist.
   snapshotRM
+  simplifyRM
 
   t <- RM.getRMTree
   RM.debugSpanArgsRM "validate" (VT.treeFullStr 0 t) $ do
@@ -41,26 +42,37 @@ postValidation = RM.debugSpanRM "postValidation" $ do
 
 {- | Traverse the tree and does the following things with the node:
 
-1. Replace the Mutable node with the result of the mutator if it exists, otherwise the
-original mutator node is kept.
+1. Replace the Mutable node with the result of the mutator if it exists, otherwise the original mutator node is kept.
 2. Replace the CnstredVal node with its value.
-3. Empty all stub value containers of the struct, which are constraints, dynamic fields and embeddings. All the
-pending values should have been already applied to the static fields.
+3. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
+embeddings. All the pending values should have been already applied to the static fields.
 -}
 snapshotRM :: (RM.ReduceMonad s r m) => m ()
 snapshotRM = RM.debugSpanRM "snapshotRM" $ do
   RM.traverseRM $ RM.withTN $ \case
     VT.TNMutable m -> maybe (return ()) RM.putRMTree (VT.getMutVal m)
     VT.TNCnstredVal c -> RM.putRMTree $ VT.cnsedVal c
-    VT.TNStruct s ->
-      RM.modifyRMTN $
-        VT.TNStruct $
-          s
-            { VT.stcCnstrs = IntMap.empty
-            , VT.stcEmbeds = IntMap.empty
-            , VT.stcDynFields = IntMap.empty
-            , VT.stcPerms = []
-            }
+    _ -> return ()
+
+{- | Traverse the tree and does the following things with the node:
+
+1. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
+embeddings. All the pending values should have been already applied to the static fields.
+-}
+simplifyRM :: (RM.ReduceMonad s r m) => m ()
+simplifyRM = RM.debugSpanRM "simplifyRM" $ do
+  RM.traverseRM $ RM.withTN $ \case
+    VT.TNStruct s -> do
+      validateStructPerm s
+      whenStruct () $ \_ ->
+        RM.modifyRMTN $
+          VT.TNStruct $
+            s
+              { VT.stcCnstrs = IntMap.empty
+              , VT.stcEmbeds = IntMap.empty
+              , VT.stcDynFields = IntMap.empty
+              , VT.stcPerms = []
+              }
     _ -> return ()
 
 {- | Validate the constraint.
@@ -133,7 +145,11 @@ replaceVertCycleRef atomT cnstrTC = do
       )
       rfM
 
--- | Validate if a struct has any unreferenced let clauses.
+{- | Validate the struct for the following cases:
+
+1. If it has any unreferenced let clauses.
+2. If its permission is right.
+-}
 validateStruct :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> m ()
 validateStruct s =
   let errM =

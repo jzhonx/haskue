@@ -367,6 +367,20 @@ removeStructFields names struct =
     , stcFields = foldr Map.delete (stcFields struct) names
     }
 
+{- | Given a struct and a list of static field names, return the permission information to check if the static fields
+are allowed
+-}
+getPermInfoForFields :: Struct t -> [String] -> [PermItem]
+getPermInfoForFields struct = foldr go []
+ where
+  go name ext =
+    foldr
+      ( \p acc ->
+          if name `Set.member` piLabels p || name `Set.member` piOpLabels p then p : acc else acc
+      )
+      ext
+      (stcPerms struct)
+
 {- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic
 field is allowed or whether the dynamic field allows other fields.
 -}

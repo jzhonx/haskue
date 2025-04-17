@@ -151,6 +151,7 @@ propUpRM = do
         putRMTree focus
       else do
         TCursorOps.propUpTC tc >>= putRMCursor
+
         withTree $ \t -> case (seg, VT.getStructFromTree t) of
           (StructTASeg sseg, Just struct) -> do
             MutEnv.Functions{MutEnv.fnPropUpStructPost = propUpStructPost} <- asks MutEnv.getFuncs
@@ -366,7 +367,7 @@ traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
   go :: (ReduceMonad s r m) => (TASeg, VT.Tree) -> m ()
   go (sel, sub) = unlessFocusBottom () $ do
     res <- inSubRM sel sub (f >> getRMTree)
-    -- If the sub node is reduced to bottom, then the parent node should be reduced to bottom.
+    -- If the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
     t <- getRMTree
     case (VT.treeNode t, VT.treeNode res) of
       (VT.TNStruct _, VT.TNBottom _) -> putRMTree res

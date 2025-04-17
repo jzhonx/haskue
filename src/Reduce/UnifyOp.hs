@@ -576,17 +576,18 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
 mergeLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> m ()
 mergeLeftStruct (s1, ut1) ut2@(UTree{utVal = t2}) =
   if
-    -- When the left struct is an empty struct with embedded fields, we can get the reduced left struct and unify the
-    -- reduced result (which should be the embeded value) with right value.
-    | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) ->
-        do
-          r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1)) t2
-          case VT.treeNode r1 of
-            VT.TNMutable _ -> return () -- No concrete value exists.
-            _ -> mergeUTrees (ut1{utVal = r1}) ut2
+    -- When the left struct is an empty struct with embedded fields (an embedded value), we can get the reduced left
+    -- struct and unify the reduced result (which should be the embeded value) with right value.
+    -- For example, {1} & 1.
+    | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) -> do
+        r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1)) t2
+        case VT.treeNode r1 of
+          VT.TNMutable _ -> return () -- No concrete value exists.
+          _ -> mergeUTrees (ut1{utVal = r1}) ut2
+    -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
+    -- using the embedded value to replace the struct.
+    -- For example, the parent struct is {a: 1, b}, and the function is {a: 1} & b.
     | VT.hasEmptyFields s1 && isJust (utEmbedID ut2) -> case VT.treeNode t2 of
-        -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
-        -- using the embedded value to replace the struct.
         VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
         _ -> RM.putRMTree t2
     | otherwise -> case VT.treeNode t2 of
@@ -633,19 +634,19 @@ mergeStructsInner (eidM1, s1) (eidM2, s2) = do
   -- in reduce, the new combined fields will be checked by the combined patterns.
   RM.putRMTree merged
 
-  let isEitherEmbeded = isJust eidM1 || isJust eidM2
-  checkLabelsPerm
-    (Set.fromList $ VT.stcOrdLabels s1)
-    (VT.stcCnstrs s1)
-    (VT.stcClosed s1)
-    isEitherEmbeded
-    (VT.stcOrdLabels s2)
-  checkLabelsPerm
-    (Set.fromList $ VT.stcOrdLabels s2)
-    (VT.stcCnstrs s2)
-    (VT.stcClosed s2)
-    isEitherEmbeded
-    (VT.stcOrdLabels s1)
+-- let isEitherEmbeded = isJust eidM1 || isJust eidM2
+-- checkLabelsPerm
+--   (Set.fromList $ VT.stcOrdLabels s1)
+--   (VT.stcCnstrs s1)
+--   (VT.stcClosed s1)
+--   isEitherEmbeded
+--   (VT.stcOrdLabels s2)
+-- checkLabelsPerm
+--   (Set.fromList $ VT.stcOrdLabels s2)
+--   (VT.stcCnstrs s2)
+--   (VT.stcClosed s2)
+--   isEitherEmbeded
+--   (VT.stcOrdLabels s1)
 
 fieldsToStruct ::
   Int -> [(String, VT.Field VT.Tree)] -> (VT.Struct VT.Tree, Maybe Int) -> (VT.Struct VT.Tree, Maybe Int) -> VT.Tree
@@ -1005,7 +1006,7 @@ checkLabelsPerm ::
   IntMap.IntMap (VT.StructCnstr VT.Tree) ->
   Bool ->
   Bool ->
-  [String] ->
+  Set.Set String ->
   m ()
 checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded =
   mapM_
@@ -1014,14 +1015,14 @@ checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded =
           >>= maybe
             (return ())
             -- If the checkPerm returns a bottom, update the bottom to the struct.
-            ( \btm -> do
-                RM.mustStruct $ \struct -> do
-                  field <-
-                    maybe
-                      (throwErrSt "struct-value is not found")
-                      return
-                      (VT.lookupStructField opLabel struct)
-                  RM.modifyRMTN $ VT.TNStruct $ VT.updateStructField opLabel (btm `VT.updateFieldValue` field) struct
+            ( \err -> RM.putRMTree err
+            -- RM.mustStruct $ \_ -> do
+            -- field <-
+            --   maybe
+            --     (throwErrSt "struct-value is not found")
+            --     return
+            --     (VT.lookupStructField opLabel struct)
+            -- RM.modifyRMTN $ VT.TNStruct $ VT.updateStructField opLabel (btm `VT.updateFieldValue` field) struct
             )
     )
 
@@ -1033,18 +1034,18 @@ checkPerm ::
   Bool ->
   String ->
   m (Maybe VT.Tree)
-checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel = do
-  res <- _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
-  RM.debugInstantRM "checkPerm" $
-    printf
-      "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s, res: %s"
-      (show newLabel)
-      (show baseLabels)
-      (show baseAllCnstrs)
-      (show isBaseClosed)
-      (show isEitherEmbedded)
-      (show res)
-  return res
+checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel =
+  RM.debugSpanArgsRM
+    "checkPerm"
+    ( printf
+        "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s"
+        (show newLabel)
+        (show $ Set.toList baseLabels)
+        (show $ IntMap.toList baseAllCnstrs)
+        (show isBaseClosed)
+        (show isEitherEmbedded)
+    )
+    $ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel
 
 _checkPerm ::
   (RM.ReduceMonad s r m) =>

@@ -129,6 +129,14 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
       )
       (IntMap.toList $ VT.stcEmbeds s)
 
+  -- -- Check the permission of the fields, including both static and dynamic fields.
+  -- -- TODO: do not check dynamic fields because they have been checked in the propUpStructPost.
+  -- whenStruct () $ \s -> do
+  --   let
+  --     names = Map.keys $ VT.stcFields s
+  --     perms = VT.getPermInfoForFields s names
+  --   mapM_ (validatePermItem s) perms
+
   -- Reduce all fields. New fields might have been created by the dynamic fields.
   whenStruct () $ \s -> mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
 
@@ -222,8 +230,8 @@ propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
 
           RM.modifyRMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
 
-          -- Check the permission of the label of newly created field.
-          whenStruct () $ \s -> checkPermForNewPend s (Path.DynFieldTASeg i 0)
+          -- -- Check the permission of the label of newly created field.
+          -- whenStruct () $ \s -> checkPermForNewDyn s (Path.DynFieldTASeg i 0)
 
           -- Reduce the updated struct value, which is the new field, if it is matched with any constraints.
           whenStruct () $ \_ -> mapM_ reduceStructField addAffLabels
@@ -266,7 +274,7 @@ propUpStructPost (Path.PatternTASeg i _, struct) =
             (show $ VT.mkStructTree newStruct)
         )
 
-    whenStruct () $ \s -> checkPermForNewPattern s (Path.PatternTASeg i 0)
+    -- whenStruct () $ \s -> checkPermForNewPattern s (Path.PatternTASeg i 0)
 
     -- Reduce the updated struct values.
     whenStruct () $ \_ -> mapM_ reduceStructField affectedLabels
@@ -554,17 +562,23 @@ applyMoreCnstr cnstr struct = RM.debugSpanRM "applyMoreCnstr" $ do
       (show $ VT.mkStructTree newStruct)
   return (newStruct, addAffLabels)
 
-checkPermForNewPend :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkPermForNewPend struct (Path.DynFieldTASeg i 0) =
-  let perms = VT.getPermInfoForDyn struct i
-   in mapM_ (validatePermItem struct) perms
-checkPermForNewPend _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+-- checkPermForNewDyn :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+-- checkPermForNewDyn struct (Path.DynFieldTASeg i 0) =
+--   let perms = VT.getPermInfoForDyn struct i
+--    in mapM_ (validatePermItem struct) perms
+-- checkPermForNewDyn _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
-checkPermForNewPattern :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
-checkPermForNewPattern struct (Path.PatternTASeg i 0) =
-  let perms = VT.getPermInfoForPattern struct i
-   in mapM_ (validatePermItem struct) perms
-checkPermForNewPattern _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+-- checkPermForNewPattern :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+-- checkPermForNewPattern struct (Path.PatternTASeg i 0) =
+--   let perms = VT.getPermInfoForPattern struct i
+--    in mapM_ (validatePermItem struct) perms
+-- checkPermForNewPattern _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
+
+validateStructPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> m ()
+validateStructPerm struct = RM.debugSpanRM "validateStructPerm" $ do
+  mapM_
+    (\perm -> whenStruct () $ \s -> validatePermItem s perm)
+    (VT.stcPerms struct)
 
 {- | Validate the permission item.
 
@@ -573,24 +587,34 @@ A struct must be provided so that dynamic fields and constraints can be found.
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
 validatePermItem :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
-validatePermItem struct p =
+validatePermItem struct p = RM.debugSpanRM "validatePermItem" $ do
   let
-    labels = VT.piLabels p `Set.union` dynIdxesToLabels (VT.piDyns p)
+    dynsM = dynIdxesToLabels (VT.piDyns p)
+    labels = VT.piLabels p
     cnstrs = IntMap.fromList $ map (\i -> (i, VT.stcCnstrs struct IntMap.! i)) (Set.toList $ VT.piCnstrs p)
-    opLabels = Set.toList $ VT.piOpLabels p `Set.union` dynIdxesToLabels (VT.piOpDyns p)
+    opDynsM = dynIdxesToLabels (VT.piOpDyns p)
+    opLabels = VT.piOpLabels p
    in
-    UnifyOp.checkLabelsPerm labels cnstrs True False opLabels
+    case (dynsM, opDynsM) of
+      (Just dyns, Just opDyns) ->
+        UnifyOp.checkLabelsPerm
+          (labels `Set.union` dyns)
+          cnstrs
+          True
+          False
+          (opLabels `Set.union` opDyns)
+      -- If not all dynamic fields can be resolved to string labels, we can not check the permission.
+      -- This is what CUE does.
+      _ -> return ()
  where
-  dynIdxesToLabels :: Set.Set Int -> Set.Set String
+  dynIdxesToLabels :: Set.Set Int -> Maybe (Set.Set String)
   dynIdxesToLabels idxes =
     Set.fromList
-      ( catMaybes $
-          map
-            ( \i ->
-                VT.getStringFromTree (VT.dsfLabel $ VT.stcDynFields struct IntMap.! i)
-            )
-            (Set.toList idxes)
-      )
+      <$> mapM
+        ( \i ->
+            VT.getStringFromTree (VT.dsfLabel $ VT.stcDynFields struct IntMap.! i)
+        )
+        (Set.toList idxes)
 
 reduceCnstredVal :: (RM.ReduceMonad s r m) => VT.CnstredVal VT.Tree -> m ()
 reduceCnstredVal cv = RM.inSubRM Path.SubValTASeg (VT.cnsedVal cv) reduce

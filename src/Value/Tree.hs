@@ -146,7 +146,8 @@ instance TreeRepBuilderIter Tree where
                   else []
               )
                 ++ trMeta trf
-          , trFields = trFields trf ++ maybe [] (\x -> [TreeRepField (show TempTASeg) "" x]) (treeTemp t)
+          , trFields = trFields trf
+          -- ++ maybe [] (\x -> [TreeRepField (show TempTASeg) "" x]) (treeTemp t)
           }
 
 buildRepTreeTN :: Tree -> TreeNode Tree -> TreeRepBuildOption -> TreeRep
