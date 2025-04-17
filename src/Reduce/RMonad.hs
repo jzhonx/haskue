@@ -400,22 +400,23 @@ instance Show ShowTree where
   show (ShowTree t) = VT.treeToSubStr 0 True t
 
 debugSpanRM :: (ReduceMonad s r m, Show a) => String -> m a -> m a
-debugSpanRM name f =
-  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) Nothing $ _traceActionRM f
+debugSpanRM name = _traceActionRM name Nothing
 
 debugSpanArgsRM :: (ReduceMonad s r m, Show a) => String -> String -> m a -> m a
-debugSpanArgsRM name args f =
-  withAddrAndFocus $ \addr _ -> debugSpan name (show addr) (Just args) $ _traceActionRM f
+debugSpanArgsRM name args = _traceActionRM name (Just args)
 
-_traceActionRM :: (ReduceMonad s r m, Show a) => m a -> m (a, ShowTree, ShowTree)
-_traceActionRM f = do
+_traceActionRM :: (ReduceMonad s r m, Show a) => String -> Maybe String -> m a -> m a
+_traceActionRM name argsM f = withAddrAndFocus $ \addr _ -> do
   seg <- getRMTASeg
   bfocus <- getRMTree
-  res <- f
-  focus <- getRMTree
-  if seg == RootTASeg
-    then return (res, ShowFullTree bfocus, ShowFullTree focus)
-    else return (res, ShowTree bfocus, ShowTree focus)
+  -- res <- f
+  -- focus <- getRMTree
+  let bTraced = if seg == RootTASeg then ShowFullTree bfocus else ShowTree bfocus
+  debugSpan name (show addr) argsM bTraced $ do
+    res <- f
+    focus <- getRMTree
+    let traced = if seg == RootTASeg then ShowFullTree focus else ShowTree focus
+    return (res, traced)
 
 debugInstantRM :: (ReduceMonad s r m) => String -> String -> m ()
 debugInstantRM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)

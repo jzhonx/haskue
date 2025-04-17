@@ -47,13 +47,13 @@ data ChromeEndTrace = ChromeEndTrace
 data ChromeStartTraceArgs = ChromeStartTraceArgs
   { cstaTraceID :: Int
   , cstaAddr :: String
+  , cstaBeforeFocus :: String
   , cstaCustomVal :: Maybe String
   }
   deriving (Eq, Show)
 
 data ChromeEndTraceArgs = ChromeEndTraceArgs
   { cetaResVal :: String
-  , cetaBeforeFocus :: String
   , cetaFocus :: String
   }
   deriving (Eq, Show)
@@ -97,6 +97,7 @@ instance ToJSON ChromeStartTraceArgs where
     object
       ( [ "tid" .= show (cstaTraceID cta)
         , "addr" .= cstaAddr cta
+        , "bfcs" .= cstaBeforeFocus cta
         ]
           ++ ( if isNothing (cstaCustomVal cta)
                 then []
@@ -108,7 +109,6 @@ instance ToJSON ChromeEndTraceArgs where
   toJSON cta =
     object
       [ "res" .= cetaResVal cta
-      , "bfcs" .= cetaBeforeFocus cta
       , "fcs" .= cetaFocus cta
       ]
 
@@ -134,18 +134,30 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> m (a, b, b) -> m a
-debugSpan name addr args f = do
+  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> b -> m (a, b) -> m a
+debugSpan name addr args bTraced f = do
+  start <- debugSpanStart name addr args bTraced
+  debugSpanExec start name addr f
+
+debugSpanStart ::
+  (MonadState s m, MonadLogger m, HasTrace s, Show a) => String -> String -> Maybe String -> a -> m Int
+debugSpanStart name addr args bTraced = do
   let msg = printf "%s, at:%s" name addr
   start <- newTraceStamp 1
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr args)
+            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr (show bTraced) args)
             )
         )
-  (res, bfocus, focus) <- f
+  return start
+
+debugSpanExec ::
+  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => Int -> String -> String -> m (a, b) -> m a
+debugSpanExec start name addr f = do
+  let msg = printf "%s, at:%s" name addr
+  (res, focus) <- f
   end <- do
     poEnd <- lastTraceStamp
     if poEnd == start
@@ -156,7 +168,7 @@ debugSpan name addr args f = do
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) (show bfocus) (show focus))
+            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) (show focus))
             )
         )
   return res
