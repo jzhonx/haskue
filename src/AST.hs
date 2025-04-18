@@ -133,7 +133,7 @@ data LetClause = LetClause Identifer Expression
 
 data BinaryOp
   = Unify
-  | Disjunction
+  | Disjoin
   | Add
   | Sub
   | Mul
@@ -163,7 +163,7 @@ instance Show RelOp where
 
 instance Show BinaryOp where
   show Unify = "&"
-  show Disjunction = "|"
+  show Disjoin = "|"
   show Add = "+"
   show Sub = "-"
   show Mul = "*"
@@ -238,8 +238,8 @@ selBld e = case e of
 opBld :: Int -> Operand -> Builder
 opBld ident op = case op of
   OpLiteral lit -> litBld ident lit
-  OpExpression e -> exprBldIdent ident e
   OperandName on -> opNameBld ident on
+  OpExpression e -> exprBldIdent ident e
 
 opNameBld :: Int -> OperandName -> Builder
 opNameBld _ e = case e of

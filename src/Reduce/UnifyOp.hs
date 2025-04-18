@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Reduce.UnifyOp where
 
@@ -247,12 +248,10 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2, utDir = d2}) 
       logDebugStr $ printf "mergeLeftAtom: VT.TNDisj %s, %s" (show t2) (show v1)
       mergeLeftDisj (dj2, ut2) ut1
     (_, VT.TNMutable mut2)
-      | (VT.SFunc m2) <- mut2 -> case VT.sfnType m2 of
-          -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
-          -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
-          -- marked disjunction.
-          VT.DisjMutable -> mergeLeftOther ut2 ut1
-          _ -> procOther
+      -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
+      -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
+      -- marked disjunction.
+      | (VT.DisjOp _) <- mut2 -> mergeLeftOther ut2 ut1
       | otherwise -> procOther
     (_, VT.TNRefCycle _) -> procOther
     (_, VT.TNStruct s2) -> mergeLeftStruct (s2, ut2) ut1
@@ -883,80 +882,69 @@ mkNodeWithDir (UTree{utVal = t1, utDir = d1}) (UTree{utVal = t2}) f = case d1 of
   Path.R -> f t2 t1
 
 mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> m ()
-mergeLeftDisj (dj1, ut1@(UTree{utDir = d1})) ut2@(UTree{utVal = t2}) = do
+mergeLeftDisj (dj1, ut1) ut2@(UTree{utVal = t2}) = do
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $ printf "mergeLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
   case VT.treeNode t2 of
     VT.TNMutable _ -> mergeLeftOther ut2 ut1
     VT.TNAtomCnstr _ -> mergeLeftOther ut2 ut1
     VT.TNRefCycle _ -> mergeLeftOther ut2 ut1
-    -- VT.TNStruct s2 -> mergeLeftStruct (s2, ut2) ut1
-    VT.TNDisj dj2 -> case (dj1, dj2) of
-      -- this is U0 rule, <v1> & <v2> => <v1&v2>
-      (VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
-        logDebugStr $ printf "mergeLeftDisj: U0, ds1: %s, ds2: %s" (show ds1) (show ds2)
-        ds <- mapM (`oneToManyDisj` (utsFromDisjs ds2 ut2)) (utsFromDisjs ds1 ut1)
-        treeFromNodes Nothing ds >>= RM.putRMTree
-      -- this is U1 rule, <v1,d1> & <v2> => <v1&v2,d1&v2>
-      (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds2}) -> do
-        logDebugStr $ printf "mergeLeftDisj: U1, df1: %s, ds1: %s, df2: N, ds2: %s" (show df1) (show ds1) (show ds2)
-        dfs <- oneToManyDisj (utFromDefault df1 ut1) (utsFromDisjs ds2 ut2)
-        df <- treeFromNodes Nothing [dfs]
-        dss <- manyToManyDisj (utsFromDisjs ds1 ut1) (utsFromDisjs ds2 ut2)
-        treeFromNodes (Just df) dss >>= RM.putRMTree
-      -- this is also the U1 rule.
-      (VT.Disj{VT.dsjDefault = Nothing}, VT.Disj{}) -> mergeLeftDisj (dj2, ut2) ut1
-      -- this is U2 rule, <v1,d1> & <v2,d2> => <v1&v2,d1&d2>
-      (VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1}, VT.Disj{VT.dsjDefault = Just df2, VT.dsjDisjuncts = ds2}) -> do
-        RM.withAddrAndFocus $ \addr _ ->
-          logDebugStr $
-            printf
-              "mergeLeftDisj: addr: %s, U2, d1:%s, df1: %s, ds1: %s, df2: %s, ds2: %s"
-              (show addr)
-              (show d1)
-              (show df1)
-              (show ds1)
-              (show df2)
-              (show ds2)
-        df <- unifyUTreesInTemp (ut1{utVal = df1}) (ut2{utVal = df2})
-        dss <- manyToManyDisj (utsFromDisjs ds1 ut1) (utsFromDisjs ds2 ut2)
-        RM.withAddrAndFocus $ \addr _ ->
-          logDebugStr $ printf "mergeLeftDisj: addr: %s, U2, df: %s, dss: %s" (show addr) (show df) (show dss)
-        treeFromNodes (Just df) dss >>= RM.putRMTree
+    VT.TNDisj dj2 -> unifyDisjWithDisj (dj1, ut1) (dj2, ut2) >>= RM.putRMTree
     -- this is the case for a disjunction unified with a value.
-    _ -> case dj1 of
-      VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = ds1} -> do
-        logDebugStr $
-          printf "mergeLeftDisj: unify with %s, disj: (ds: %s)" (show t2) (show ds1)
-        ds2 <- oneToManyDisj ut2 (utsFromDisjs ds1 ut1)
-        treeFromNodes Nothing [ds2] >>= RM.putRMTree
-      VT.Disj{VT.dsjDefault = Just df1, VT.dsjDisjuncts = ds1} -> do
-        logDebugStr $
-          printf "mergeLeftDisj: U1, unify with %s, disj: (df: %s, ds: %s)" (show t2) (show df1) (show ds1)
-        df2 <- unifyUTreesInTemp (ut1{utVal = df1}) ut2
-        ds2 <- oneToManyDisj ut2 (utsFromDisjs ds1 ut1)
-        logDebugStr $ printf "mergeLeftDisj: U1, df2: %s, ds2: %s" (show df2) (show ds2)
-        r <- treeFromNodes (Just df2) [ds2]
-        logDebugStr $ printf "mergeLeftDisj: U1, result: %s" (show r)
-        RM.putRMTree r
- where
-  utFromDefault :: VT.Tree -> UTree -> UTree
-  utFromDefault df ut@(UTree{utAddr = addr}) = ut{utVal = df, utAddr = Path.appendSeg Path.DisjDefaultTASeg addr}
-
-  utsFromDisjs :: [VT.Tree] -> UTree -> [UTree]
-  utsFromDisjs ds ut@(UTree{utAddr = addr}) =
-    map (\(i, x) -> ut{utVal = x, utAddr = Path.appendSeg (Path.DisjDisjunctTASeg i) addr}) (zip [0 ..] ds)
+    _ -> unifyDisjWithVal (dj1, ut1) ut2 >>= RM.putRMTree
 
 -- Note: isEmbedded is still required. Think about the following values,
 -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
-oneToManyDisj ::
-  (RM.ReduceMonad s r m) => UTree -> [UTree] -> m [VT.Tree]
-oneToManyDisj ut1 = mapM (\ut2 -> unifyUTreesInTemp ut1{utDir = Path.L} ut2{utDir = Path.R})
+unifyDisjWithVal :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> m VT.Tree
+unifyDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir})) _ut2 = RM.debugSpanRM "unifyDisjWithVal" $ do
+  let
+    uts1 = utsFromDisjs (VT.dsjDisjuncts dj1) _ut1
+    defIdxes1 = VT.dsjDefIndexes dj1
+  if fstDir == Path.L
+    -- uts1 & ut2 generates a m x 1 matrix.
+    then do
+      matrix <- mapM (`unifyUTreesInTemp` _ut2) uts1
+      treeFromMatrix (defIdxes1, []) (length uts1, 1) [matrix]
+    -- ut2 & uts1 generates a 1 x m matrix.
+    else do
+      matrix <- mapM (unifyUTreesInTemp _ut2) uts1
+      treeFromMatrix ([], defIdxes1) (1, length uts1) (map (: []) matrix)
 
-manyToManyDisj :: (RM.ReduceMonad s r m) => [UTree] -> [UTree] -> m [[VT.Tree]]
-manyToManyDisj uts1 = mapM (`oneToManyDisj` uts1)
+{- | Unify two disjuncts.
+
+We do not need to compute the unification of default values since they are already unified in the disjuncts. We just
+need to pick the correct indexes of the default values from the matrix.
+
+Some rules for unifying disjuncts:
+
+U0: ⟨v1⟩ & ⟨v2⟩         => ⟨v1&v2⟩
+U1: ⟨v1, d1⟩ & ⟨v2⟩     => ⟨v1&v2, d1&v2⟩
+U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
+-}
+unifyDisjWithDisj ::
+  (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> (VT.Disj VT.Tree, UTree) -> m VT.Tree
+unifyDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) = RM.debugSpanRM "unifyDisjWithDisj" $ do
+  let
+    uts1 = utsFromDisjs (VT.dsjDisjuncts dj1) _ut1
+    uts2 = utsFromDisjs (VT.dsjDisjuncts dj2) _ut2
+    defIdxes1 = VT.dsjDefIndexes dj1
+    defIdxes2 = VT.dsjDefIndexes dj2
+
+  if fstDir == Path.L
+    -- uts1 & uts2 generates a m x n matrix.
+    then do
+      matrix <- mapM (\ut1 -> mapM (`unifyUTreesInTemp` ut1) uts2) uts1
+      treeFromMatrix (defIdxes1, defIdxes2) (length uts1, length uts2) matrix
+    -- uts2 & uts1 generates a n x m matrix.
+    else do
+      matrix <- mapM (\ut2 -> mapM (`unifyUTreesInTemp` ut2) uts1) uts2
+      treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
+
+utsFromDisjs :: [VT.Tree] -> UTree -> [UTree]
+utsFromDisjs ds ut@(UTree{utAddr = addr}) =
+  map (\(i, x) -> ut{utVal = x, utAddr = Path.appendSeg (Path.DisjDisjunctTASeg i) addr}) (zip [0 ..] ds)
 
 unifyUTreesInTemp :: (RM.ReduceMonad s r m) => UTree -> UTree -> m VT.Tree
 unifyUTreesInTemp ut1 ut2 = do
@@ -966,35 +954,17 @@ unifyUTreesInTemp ut1 ut2 = do
     (VT.mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
     $ reduce >> RM.getRMTree
 
-treeFromNodes :: (MonadError String m) => Maybe VT.Tree -> [[VT.Tree]] -> m VT.Tree
-treeFromNodes dfM ds = case (excludeBottomM dfM, concatDedupNonBottoms ds) of
-  -- if there is no non-bottom disjuncts, we return the first bottom.
-  (_, []) -> maybe (throwErrSt $ printf "no disjuncts") return (firstBottom ds)
-  (Nothing, [_d]) -> return $ VT.mkNewTree (VT.treeNode _d)
-  (Nothing, _ds) ->
-    let
-      node = VT.TNDisj $ VT.Disj{VT.dsjDefault = Nothing, VT.dsjDisjuncts = _ds}
-     in
-      return $ VT.mkNewTree node
-  (_df, _ds) ->
-    let
-      node = VT.TNDisj $ VT.Disj{VT.dsjDefault = _df, VT.dsjDisjuncts = _ds}
-     in
-      return $ VT.mkNewTree node
- where
-  -- concat and dedup the non-bottom disjuncts
-  concatDedupNonBottoms :: [[VT.Tree]] -> [VT.Tree]
-  concatDedupNonBottoms xs =
-    dedup $ concatMap (filter (not . isTreeBottom)) xs
-
-  firstBottom :: [[VT.Tree]] -> Maybe VT.Tree
-  firstBottom xs = let ys = concatMap (filter isTreeBottom) xs in if null ys then Nothing else Just $ head ys
-
-  excludeBottomM :: Maybe VT.Tree -> Maybe VT.Tree
-  excludeBottomM = maybe Nothing (\x -> if isTreeBottom x then Nothing else Just x)
-
-  dedup :: [VT.Tree] -> [VT.Tree]
-  dedup = foldr (\y acc -> if y `elem` acc then acc else y : acc) []
+treeFromMatrix :: (Env r s m) => ([Int], [Int]) -> (Int, Int) -> [[VT.Tree]] -> m VT.Tree
+treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
+  let defIndexes = case (lDefIndexes, rDefIndexes) of
+        ([], []) -> []
+        -- For each i in the left default indexes, we have a list of default values, x<i,0>, x<i,1>, ..., x<i,(n-1)>
+        (ls, []) -> concatMap (\i -> map (+ (i * n)) [0 .. n - 1]) ls
+        -- For each j in the right default indexes, we have a list of default values, x<0,j>, x<1,j>, ..., x<(m-1),j>
+        ([], rs) -> concatMap (\j -> map (\i -> (i * n) + j) [0 .. m - 1]) rs
+        -- For each i in the left default indexes, we have one default value, x<i,j>.
+        (ls, rs) -> concatMap (\i -> map (+ (i * n)) rs) ls
+  return $ VT.mkDisjTree $ VT.emptyDisj{VT.dsjDefIndexes = defIndexes, VT.dsjDisjuncts = concat matrix}
 
 {- | Check the labels' permission.
 

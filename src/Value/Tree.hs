@@ -19,6 +19,7 @@ module Value.Tree (
   module Value.Mutable,
   module Value.Reference,
   module Value.Comprehension,
+  module Value.DisjoinOp,
 )
 where
 
@@ -57,6 +58,7 @@ import Value.Comprehension
 import Value.Constraint
 import Value.Cycle
 import Value.Disj
+import Value.DisjoinOp
 import Value.List
 import Value.Mutable
 import Value.Reference
@@ -78,6 +80,8 @@ data Tree = Tree
   -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
   , treeRecurClosed :: Bool
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
+  , treeIsRootOfSubTree :: Bool
+  -- ^ treeIsRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parenthesis.
   }
 
 newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
@@ -143,6 +147,7 @@ instance TreeRepBuilderIter Tree where
                   then
                     (if treeRecurClosed t then "t_#," else "")
                       ++ (if isJust (treeExpr t) then "" else "t_N,")
+                      ++ (if treeIsRootOfSubTree t then "t_R," else "")
                   else []
               )
                 ++ trMeta trf
@@ -237,7 +242,7 @@ buildRepTreeTN t tn opt = case tn of
   TNDisj d ->
     let dfField = maybe [] (\v -> [(show DisjDefaultTASeg, mempty, v)]) (dsjDefault d)
         djFields = zipWith (\j v -> (show $ DisjDisjunctTASeg j, mempty, v)) [0 ..] (dsjDisjuncts d)
-     in consRep (symbol, mempty, consFields dfField ++ consFields djFields, [])
+     in consRep (symbol, printf "dis:%s" (show $ dsjDefIndexes d), consFields dfField ++ consFields djFields, [])
   TNAtomCnstr c ->
     consRep
       ( symbol
@@ -287,6 +292,26 @@ buildRepTreeTN t tn opt = case tn of
           , []
           )
     Compreh _ -> consRep (symbol, "", [], [])
+    DisjOp d ->
+      let
+        terms =
+          if trboShowMutArgs opt
+            then
+              zipWith
+                ( \j v ->
+                    (show (MutableArgTASeg j), if dstMarked v then ",*" else "", dstValue v)
+                )
+                [0 ..]
+                (djoTerms d)
+            else []
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (djoValue d)
+       in
+        consRep
+          ( symbol
+          , mempty
+          , consFields (terms ++ val)
+          , []
+          )
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -320,6 +345,7 @@ instance BuildASTExpr Tree where
       SFunc _ -> buildASTExpr cr mut
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
       Compreh _ -> maybe (throwErrSt "expression not found for comprehension") return (treeExpr t)
+      DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
@@ -524,6 +550,7 @@ showTreeSymbol t = case treeNode t of
     SFunc _ -> "fn"
     Ref _ -> "ref"
     Compreh _ -> "compreh"
+    DisjOp _ -> "disjoin"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -637,6 +664,7 @@ mutHasRef :: Mutable Tree -> Bool
 mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = any treeHasRef (sfnArgs fn)
 mutHasRef (Compreh c) = any treeHasRef (cphStart c : cphStruct c : [getValFromIterClause x | x <- cphIterClauses c])
+mutHasRef (DisjOp d) = any treeHasRef [dstValue x | x <- djoTerms d]
 
 -- Helpers
 
@@ -647,6 +675,7 @@ emptyTree =
     , treeExpr = Nothing
     , treeTemp = Nothing
     , treeRecurClosed = False
+    , treeIsRootOfSubTree = False
     }
 
 setTN :: Tree -> TreeNode Tree -> Tree
@@ -681,6 +710,16 @@ getBoundsFromTree t = case treeNode t of
 getCnstrFromTree :: Tree -> Maybe (AtomCnstr Tree)
 getCnstrFromTree t = case treeNode t of
   TNAtomCnstr c -> Just c
+  _ -> Nothing
+
+{- | Get the disjunction from the tree.
+
+It stops at the first disjunction found. It does not go deeper to the default value of the disjunction.
+-}
+getDisjFromTree :: Tree -> Maybe (Disj Tree)
+getDisjFromTree t = case treeNode t of
+  TNMutable mut -> getMutVal mut >>= getDisjFromTree
+  TNDisj d -> Just d
   _ -> Nothing
 
 getMutableFromTree :: Tree -> Maybe (Mutable Tree)
@@ -739,8 +778,8 @@ mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
 mkCnstrTree :: AtomV -> AST.Expression -> Tree
 mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a e
 
-mkDisjTree :: Maybe Tree -> [Tree] -> Tree
-mkDisjTree m js = mkNewTree (TNDisj $ Disj{dsjDefault = m, dsjDisjuncts = js})
+mkDisjTree :: Disj Tree -> Tree
+mkDisjTree d = mkNewTree (TNDisj d)
 
 mkMutableTree :: Mutable Tree -> Tree
 mkMutableTree fn = mkNewTree (TNMutable fn)

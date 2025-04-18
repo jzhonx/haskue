@@ -10,6 +10,7 @@ import Common (BuildASTExpr (..), Env)
 import Exception (throwErrSt)
 import MutEnv (MutableEnv)
 import Value.Comprehension
+import Value.DisjoinOp
 import Value.Reference
 
 -- | Mutable is a tree node whose value can be changed.
@@ -17,14 +18,11 @@ data Mutable t
   = SFunc (StatefulFunc t)
   | Ref (Reference t)
   | Compreh (Comprehension t)
-
-data MutableType = RegularMutable | DisjMutable
-  deriving (Eq, Show)
+  | DisjOp (DisjoinOp t)
 
 -- | StatefulFunc is a tree node that represents a function.
 data StatefulFunc t = StatefulFunc
   { sfnName :: String
-  , sfnType :: MutableType
   , sfnArgs :: [t]
   -- ^ Args stores the arguments that may or may not need to be evaluated.
   , sfnExpr :: forall r s m. (Env r s m) => m AST.Expression
@@ -47,12 +45,10 @@ instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr c (SFunc m) = buildASTExpr c m
   buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
   buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
+  buildASTExpr _ (DisjOp _) = throwErrSt "AST should not be built from DisjoinOp"
 
 instance (Eq t) => Eq (StatefulFunc t) where
-  (==) f1 f2 =
-    sfnName f1 == sfnName f2
-      && sfnType f1 == sfnType f2
-      && sfnArgs f1 == sfnArgs f2
+  (==) f1 f2 = sfnName f1 == sfnName f2 && sfnArgs f1 == sfnArgs f2
 
 instance (BuildASTExpr t) => BuildASTExpr (StatefulFunc t) where
   buildASTExpr c mut = do
@@ -72,24 +68,25 @@ getSFuncFromMutable mut = case mut of
   _ -> Nothing
 
 requireMutableConcrete :: StatefulFunc t -> Bool
-requireMutableConcrete mut
-  | RegularMutable <- sfnType mut = sfnName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
-requireMutableConcrete _ = False
+requireMutableConcrete mut = sfnName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
 getMutName :: Mutable t -> (t -> Maybe String) -> String
 getMutName (SFunc mut) _ = sfnName mut
 getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
 getMutName (Compreh _) _ = "comprehend"
+getMutName (DisjOp _) _ = "disjoin"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
 getMutVal (Compreh c) = cphValue c
+getMutVal (DisjOp d) = djoValue d
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
+setMutVal m (DisjOp d) = DisjOp $ d{djoValue = m}
 
 invokeMutMethod :: (MutableEnv s r t m) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -102,7 +99,6 @@ emptySFunc :: StatefulFunc t
 emptySFunc =
   StatefulFunc
     { sfnName = ""
-    , sfnType = RegularMutable
     , sfnArgs = []
     , sfnExpr = throwErrSt "stub mutable"
     , sfnMethod = \_ -> throwErrSt "stub mutable"
@@ -120,7 +116,6 @@ mkUnaryOp op f n =
   SFunc $
     StatefulFunc
       { sfnMethod = g
-      , sfnType = RegularMutable
       , sfnExpr = buildUnaryExpr op n
       , sfnName = show op
       , sfnArgs = [n]
@@ -156,9 +151,6 @@ mkBinaryOp op f l r =
   SFunc $
     StatefulFunc
       { sfnMethod = g
-      , sfnType = case op of
-          AST.Disjunction -> DisjMutable
-          _ -> RegularMutable
       , sfnExpr = buildBinaryExpr op l r
       , sfnName = show op
       , sfnArgs = [l, r]
@@ -184,3 +176,6 @@ mkRefMutable var ts =
       , refOrigAddrs = Nothing
       , refValue = Nothing
       }
+
+mkDisjoinOp :: [DisjTerm t] -> Mutable t
+mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}

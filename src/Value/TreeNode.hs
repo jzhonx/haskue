@@ -32,6 +32,7 @@ import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Cycle (RefCycle, StructuralCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
+import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
 import Value.List (List (lstSubs))
 import Value.Mutable (
   Mutable (..),
@@ -118,6 +119,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (_, TNMutable mut)
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
+    | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
     | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
     | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
@@ -153,6 +155,12 @@ setSubTreeTN seg subT parT = do
           let
             sels = subRefArgs (refArg ref)
             l = TNMutable . Ref $ ref{refArg = setRefArgs (refArg ref) $ take i sels ++ [subT] ++ drop (i + 1) sels}
+          return l
+      | MutableArgTASeg i <- seg
+      , DisjOp d <- mut -> do
+          let
+            terms = djoTerms d
+            l = TNMutable . DisjOp $ d{djoTerms = take i terms ++ [subT <$ terms !! i] ++ drop (i + 1) terms}
           return l
       | ComprehTASeg ComprehStartTASeg <- seg
       , Compreh c <- mut ->

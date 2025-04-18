@@ -14,7 +14,7 @@ import Cursor (
   showRefSysiers,
  )
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Maybe (fromJust, fromMaybe)
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -40,6 +40,7 @@ mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
     VT.Ref ref -> mutateRef ref
     VT.SFunc fn -> mutateFunc fn >> return Nothing
     VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
+    VT.DisjOp disjOp -> mutateDisjOp disjOp >> return Nothing
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.
@@ -241,6 +242,69 @@ delMutValRecvs mutAddr = do
                 not $ Path.isPrefix mutValAddr recv
           )
       )
+
+mutateDisjOp :: (RM.ReduceMonad s r m) => VT.DisjoinOp VT.Tree -> m ()
+mutateDisjOp terms = RM.debugSpanRM "mutateDisjoinOp" $ _runInMutValEnv $ do
+  disjuncts <- procMarkedTerms (VT.djoTerms terms)
+  RM.debugInstantRM "mutateDisjOp" $ printf "disjuncts: %s" (show disjuncts)
+  let
+    d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
+    norm = VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
+  RM.putRMTree norm
+
+{- | Construct a disjunction from the default and the disjuncts.
+
+Some existing rules for marked disjunctions:
+M0:  ⟨v⟩    => ⟨v⟩        don't introduce defaults for unmarked term
+M1: *⟨v⟩    => ⟨v, v⟩     introduce identical default for marked term
+M2: *⟨v, d⟩ => ⟨v, d⟩     keep existing defaults for marked term
+M3:  ⟨v, d⟩ => ⟨v⟩        strip existing defaults from unmarked term
+-}
+procMarkedTerms :: (RM.ReduceMonad s r m) => [VT.DisjTerm VT.Tree] -> m [VT.Tree]
+procMarkedTerms terms = do
+  reducedTerms <-
+    mapM
+      ( \(i, term) -> do
+          let t = VT.dstValue term
+          a <- reduceMutableArg (Path.MutableArgTASeg i) t
+          return $ term{VT.dstValue = a}
+      )
+      (zip [0 ..] terms)
+  let hasMarked = any VT.dstMarked terms
+  return $
+    foldr
+      ( \term accDisjuncts ->
+          let val = VT.dstValue term
+           in if
+                -- Apply Rule M1 and M2
+                | hasMarked && VT.dstMarked term ->
+                    VT.setTN
+                      val
+                      ( VT.TNDisj $
+                          maybe
+                            -- Rule M1
+                            (VT.emptyDisj{VT.dsjDefIndexes = [0], VT.dsjDisjuncts = [val]})
+                            ( \d ->
+                                if null (VT.dsjDefIndexes d)
+                                  -- Rule M1
+                                  then d{VT.dsjDefIndexes = [0 .. length (VT.dsjDisjuncts d)]}
+                                  -- Rule M2
+                                  else d
+                            )
+                            (VT.getDisjFromTree val)
+                      )
+                      : accDisjuncts
+                -- Apply Rule M0 and M3
+                | hasMarked ->
+                    maybe
+                      val
+                      (\d -> VT.setTN val $ VT.TNDisj $ d{VT.dsjDefIndexes = []})
+                      (VT.getDisjFromTree val)
+                      : accDisjuncts
+                | otherwise -> val : accDisjuncts
+      )
+      []
+      reducedTerms
 
 {- | Reduce the argument of the mutable.
 

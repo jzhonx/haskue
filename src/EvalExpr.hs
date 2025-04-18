@@ -7,7 +7,7 @@
 module EvalExpr where
 
 import AST (
-  BinaryOp (Disjunction, Unify),
+  BinaryOp (Disjoin, Unify),
   Clause (..),
   Clauses (..),
   Comprehension (..),
@@ -35,7 +35,7 @@ import AST (
   UnaryExpr (..),
   UnaryOp (Star),
  )
-import Common (Env, IDStore (..), TreeOp (isTreeValue))
+import Common (Env, IDStore (..))
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (gets, modify)
@@ -44,21 +44,13 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
-import Path (
-  binOpLeftTASeg,
-  binOpRightTASeg,
- )
-import Reduce (
-  DisjItem (DisjDefault, DisjRegular),
+import Reduce.Nodes (
   builtinMutableTable,
   dispBinMutable,
   mkVarLinkTree,
-  reduceDisjPair,
-  reduceMutableArg,
-  unify,
  )
-import qualified Reduce.RMonad as RM
 import qualified Reduce.RegOps as RegOps
+import Reduce.UnifyOp (unify)
 import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
@@ -305,10 +297,13 @@ builtinOpNameTable =
 evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m VT.Tree
 evalPrimExpr (PrimExprOperand op) = case op of
   OpLiteral lit -> evalLiteral lit
-  OpExpression expr -> evalExpr expr
   OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
     Just v -> return v
     Nothing -> mkVarLinkTree ident
+  OpExpression expr -> do
+    x <- evalExpr expr
+    logDebugStr $ printf "evalPrimExpr: new root: %s" (show x)
+    return $ x{VT.treeIsRootOfSubTree = True}
 evalPrimExpr e@(PrimExprSelector primExpr sel) = do
   p <- evalPrimExpr primExpr
   evalSelector e sel p
@@ -364,7 +359,7 @@ left is always before right.
 -}
 evalBinary :: (EvalEnv r s m) => BinaryOp -> Expression -> Expression -> m VT.Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-evalBinary AST.Disjunction e1 e2 = evalDisj e1 e2
+evalBinary AST.Disjoin e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
@@ -372,43 +367,54 @@ evalBinary op e1 e2 = do
 
 evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m VT.Tree
 evalDisj e1 e2 = do
-  (lt, rt) <- case (e1, e2) of
+  ((isLStar, lt), (isRStar, rt)) <- case (e1, e2) of
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
       l <- evalUnaryExpr se1
       r <- evalUnaryExpr se2
-      return (l, r)
+      return ((,) True l, (,) True r)
     (ExprUnaryExpr (UnaryExprUnaryOp Star se1), _) -> do
       l <- evalUnaryExpr se1
       r <- evalExpr e2
-      return (l, r)
+      return ((,) True l, (,) False r)
     (_, ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
       l <- evalExpr e1
       r <- evalUnaryExpr se2
-      return (l, r)
+      return ((,) False l, (,) True r)
     (_, _) -> do
       l <- evalExpr e1
       r <- evalExpr e2
-      return (l, r)
-  return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp AST.Disjunction reduceDisjAdapt lt rt)
+      return ((,) False l, (,) False r)
+  let r = flattenDisj (VT.DisjTerm isLStar lt) (VT.DisjTerm isRStar rt)
+  logDebugStr $ printf "evalDisj: l: %s, r: %s, result: %s" (show lt) (show rt) (show r)
+  return r
+
+{- | Flatten the disjoin op tree.
+
+Since the leftmost term is in the deepest left and the next term is always on the right, either at this
+level or the next level, we can append the right term to accumulating disjunction terms.
+
+For example, a | b | c is parsed as
+     |
+   /   \
+   |    c
+ /   \
+ a   b
+
+We start with the a, where a is one of a root disj, a marked term or a regular non-disjunction value. Then append b to
+it, and then append c to the accumulator.
+We never need to go deeper into the right nodes.
+-}
+flattenDisj :: VT.DisjTerm VT.Tree -> VT.DisjTerm VT.Tree -> VT.Tree
+flattenDisj l r = case getLeftAcc of
+  Just acc -> VT.mkMutableTree $ VT.mkDisjoinOp (acc ++ [r])
+  Nothing -> VT.mkMutableTree $ VT.mkDisjoinOp [l, r]
  where
-  reduceDisjAdapt :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
-  reduceDisjAdapt unt1 unt2 = do
-    t1 <- reduceMutableArg Path.binOpLeftTASeg unt1
-    t2 <- reduceMutableArg Path.binOpRightTASeg unt2
-    if not (isTreeValue t1) || not (isTreeValue t2)
-      then
-        logDebugStr $ printf "reduceDisjAdapt: %s, %s are not value nodes, delay" (show t1) (show t2)
-      else do
-        u <- case (e1, e2) of
-          (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-            reduceDisjPair (DisjDefault t1) (DisjDefault t2)
-          (AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _), _) ->
-            reduceDisjPair (DisjDefault t1) (DisjRegular t2)
-          (_, AST.ExprUnaryExpr (AST.UnaryExprUnaryOp AST.Star _)) ->
-            reduceDisjPair (DisjRegular t1) (DisjDefault t2)
-          (_, _) -> reduceDisjPair (DisjRegular t1) (DisjRegular t2)
-        logDebugStr $ printf "reduceDisjAdapt: evaluated to %s" (show u)
-        RM.putRMTree u
+  getLeftAcc = case VT.treeNode (VT.dstValue l) of
+    VT.TNMutable (VT.DisjOp dj)
+      -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
+      -- If the left term is a marked term, it implies that it is a root.
+      | not (VT.dstMarked l) && not (VT.treeIsRootOfSubTree (VT.dstValue l)) -> Just (VT.djoTerms dj)
+    _ -> Nothing
 
 allocOID :: (EvalEnv r s m) => m Int
 allocOID = do

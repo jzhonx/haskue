@@ -135,7 +135,7 @@ modifyRMNodeWithTree t = modifyRMTN (VT.treeNode t)
 
 {- | Propagate the value up.
 
-If the segment is a pending
+It surfaces the bottom if the focus is a bottom and the parent is a struct.
 -}
 propUpRM :: (ReduceMonad s r m) => m ()
 propUpRM = do
@@ -294,7 +294,7 @@ treeDepthCheck :: (ReduceMonad s r m) => m ()
 treeDepthCheck = do
   crumbs <- getRMCrumbs
   let depth = length crumbs
-  when (depth > 1000) $ throwError "tree depth exceeds 1000"
+  when (depth > 50) $ throwError "tree depth exceeds 50"
 
 unlessFocusBottom :: (ReduceMonad s r m) => a -> m a -> m a
 unlessFocusBottom a f = do

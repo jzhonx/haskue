@@ -15,9 +15,10 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import qualified MutEnv
 import qualified Path
+import Reduce.Nodes (validateStructPerm, whenStruct)
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
-import Reduce.Root (fullReduce, validateStructPerm, whenStruct)
+import Reduce.Root (fullReduce)
 import qualified TCursorOps
 import Text.Printf (printf)
 import qualified Value.Tree as VT
