@@ -10,6 +10,7 @@ import Common (
   Env,
   TreeOp (isTreeBottom),
  )
+import Control.Monad (foldM)
 import qualified Data.Set as Set
 
 -- | Disjuntion
@@ -65,18 +66,19 @@ buildDefVal toTree d = d{dsjDefault = defValFromDisj toTree d}
 4. If the disjunct is left with only one element, return the value.
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
-normalizeDisj :: (TreeOp t, Eq t, Show t) => (t -> Maybe (Disj t)) -> (Disj t -> t) -> Disj t -> t
-normalizeDisj getDisjFromTree toTree d =
+normalizeDisj :: (Env r s m, TreeOp t, Eq t, Show t) => (t -> Maybe (Disj t)) -> (Disj t -> t) -> Disj t -> m t
+normalizeDisj getDisjFromTree toTree d = do
+  flattened <- flattenDisjuncts getDisjFromTree d
+  final <- removeUnwantedDisjuncts flattened
   let
-    flattened = flattenDisjuncts getDisjFromTree d
-    final = removeUnwantedDisjuncts flattened
     finalDisjs = dsjDisjuncts final
    in
-    if
-      | null finalDisjs -> head $ filter isTreeBottom (dsjDisjuncts flattened)
-      -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
-      | length finalDisjs == 1 && null (dsjDefIndexes final) -> head finalDisjs
-      | otherwise -> toTree $ buildDefVal toTree final
+    return
+      if
+        | null finalDisjs -> head $ filter isTreeBottom (dsjDisjuncts flattened)
+        -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
+        | length finalDisjs == 1 && null (dsjDefIndexes final) -> head finalDisjs
+        | otherwise -> toTree $ buildDefVal toTree final
 
 {- | Flatten the disjuncts.
 
@@ -98,11 +100,11 @@ D2: ⟨v1, d1⟩ | ⟨v2, d2⟩ => ⟨v1|v2, d1|d2⟩
 
 TODO: more efficiency
 -}
-flattenDisjuncts :: (t -> Maybe (Disj t)) -> Disj t -> Disj t
-flattenDisjuncts getDisjFromTree (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) =
+flattenDisjuncts :: (Env r s m) => (t -> Maybe (Disj t)) -> Disj t -> m (Disj t)
+flattenDisjuncts getDisjFromTree (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
-  let (newIndexes, newDisjs) = foldl flatten ([], []) (zip [0 ..] disjuncts)
-   in emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
+  (newIndexes, newDisjs) <- foldM flatten ([], []) (zip [0 ..] disjuncts)
+  return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
  where
   origDefIdxesSet = Set.fromList idxes
   -- Suppose we are processing the ith disjunct, and we have accumulated the disjuncts xs.
@@ -110,32 +112,34 @@ flattenDisjuncts getDisjFromTree (Disj{dsjDefIndexes = idxes, dsjDisjuncts = dis
   -- to the default indexes if it belongs to the default disjunction.
   flatten (accIs, accDs) (origIdx, t) =
     case getDisjFromTree t of
-      Just sub ->
-        let Disj{dsjDefIndexes = subDefIndexes, dsjDisjuncts = subDisjs} = flattenDisjuncts getDisjFromTree sub
-            -- Add offset to the indexes of the new disjuncts. The offset is the length of the accumulated disjuncts.
-            newDefIndexes =
-              -- If no sub defaults found for the disjunct but the disjunct is a default disjunct, that means the
-              -- disjunct has been flattened to multiple disjuncts.
-              if null subDefIndexes && origIdx `Set.member` origDefIdxesSet
-                then map (+ length accDs) [0 .. length subDisjs - 1]
-                else map (+ length accDs) subDefIndexes
-         in (accIs ++ newDefIndexes, accDs ++ subDisjs)
+      Just sub -> do
+        Disj{dsjDefIndexes = subDefIndexes, dsjDisjuncts = subDisjs} <- flattenDisjuncts getDisjFromTree sub
+        let
+          -- Add offset to the indexes of the new disjuncts. The offset is the length of the accumulated disjuncts.
+          newDefIndexes =
+            -- If no sub defaults found for the disjunct but the disjunct is a default disjunct, that means the
+            -- disjunct has been flattened to multiple disjuncts.
+            if null subDefIndexes && origIdx `Set.member` origDefIdxesSet
+              then map (+ length accDs) [0 .. length subDisjs - 1]
+              else map (+ length accDs) subDefIndexes
+        return (accIs ++ newDefIndexes, accDs ++ subDisjs)
       _ ->
-        ( if origIdx `Set.member` origDefIdxesSet
-            -- The index of the new disjunct is the length of the accumulated disjuncts.
-            then accIs ++ [length accDs]
-            else accIs
-        , accDs ++ [t]
-        )
+        return
+          ( if origIdx `Set.member` origDefIdxesSet
+              -- The index of the new disjunct is the length of the accumulated disjuncts.
+              then accIs ++ [length accDs]
+              else accIs
+          , accDs ++ [t]
+          )
 
 {- | Remove the duplicate default disjuncts, duplicate disjuncts and bottom disjuncts.
 
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
-removeUnwantedDisjuncts :: (Eq t, TreeOp t) => Disj t -> Disj t
-removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) =
+removeUnwantedDisjuncts :: (Env r s m, Eq t, TreeOp t, Show t) => Disj t -> m (Disj t)
+removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) = do
   let (newIndexes, newDisjs) = foldl go ([], []) (zip [0 ..] disjuncts)
-   in emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
+   in return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
  where
   defValues = map (disjuncts !!) dfIdxes
   origDefIdxesSet = Set.fromList dfIdxes

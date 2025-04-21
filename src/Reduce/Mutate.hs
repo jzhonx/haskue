@@ -249,7 +249,7 @@ mutateDisjOp terms = RM.debugSpanRM "mutateDisjoinOp" $ _runInMutValEnv $ do
   RM.debugInstantRM "mutateDisjOp" $ printf "disjuncts: %s" (show disjuncts)
   let
     d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
-    norm = VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
+  norm <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
   RM.putRMTree norm
 
 {- | Construct a disjunction from the default and the disjuncts.

@@ -67,6 +67,7 @@ data ChromeInstantTrace = ChromeInstantTrace
 
 data ChromeInstantTraceArgs = ChromeInstantTraceArgs
   { ctiTraceID :: Int
+  , ctiAddr :: String
   , ctiCustomVal :: Maybe String
   }
   deriving (Eq, Show)
@@ -95,7 +96,7 @@ instance ToJSON ChromeEndTrace where
 instance ToJSON ChromeStartTraceArgs where
   toJSON cta =
     object
-      ( [ "tid" .= show (cstaTraceID cta)
+      ( [ "traceid" .= show (cstaTraceID cta)
         , "addr" .= cstaAddr cta
         , "bfcs" .= cstaBeforeFocus cta
         ]
@@ -126,7 +127,8 @@ instance ToJSON ChromeInstantTrace where
 instance ToJSON ChromeInstantTraceArgs where
   toJSON c =
     object
-      ( [ "tid" .= show (ctiTraceID c)
+      ( [ "traceid" .= show (ctiTraceID c)
+        , "addr" .= ctiAddr c
         ]
           ++ ( if isNothing (ctiCustomVal c)
                 then []
@@ -182,7 +184,7 @@ debugInstant name addr args = do
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeInstantTrace msg start (ChromeInstantTraceArgs start args)
+            ( ChromeInstantTrace msg start (ChromeInstantTraceArgs start addr args)
             )
         )
 

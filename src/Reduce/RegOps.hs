@@ -21,10 +21,7 @@ import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import qualified TCursorOps
 import Text.Printf (printf)
-import Util (
-  debugSpan,
-  logDebugStr,
- )
+import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 reduceAtomOpArg :: (RM.ReduceMonad s r m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)

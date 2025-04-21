@@ -133,8 +133,8 @@ instance (Eq t) => Eq (Struct t) where
   (==) s1 s2 =
     stcOrdLabels s1 == stcOrdLabels s2
       && stcFields s1 == stcFields s2
-      && stcCnstrs s1 == stcCnstrs s2
-      && stcDynFields s1 == stcDynFields s2
+      -- && stcCnstrs s1 == stcCnstrs s2
+      -- && stcDynFields s1 == stcDynFields s2
       && stcClosed s1 == stcClosed s2
 
 instance (Show t) => Show (Struct t) where

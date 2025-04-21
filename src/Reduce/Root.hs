@@ -31,9 +31,6 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   RM.treeDepthCheck
   push addr
 
-  -- tid <- getTraceID
-  -- RM.dumpEntireTree $ printf "reduce id=%s start" (show tid)
-
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
   RM.withTree $ \t -> case VT.treeNode t of
@@ -62,8 +59,6 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
 
   pop
  where
-  -- RM.dumpEntireTree $ printf "reduce id=%s done" (show tid)
-
   push addr = RM.modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
 
   pop = RM.modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}

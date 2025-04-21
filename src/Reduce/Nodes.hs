@@ -588,7 +588,7 @@ reduceDisj d = do
     mapM
       (\(i, val) -> RM.inSubRM (Path.DisjDisjunctTASeg i) val $ reduce >> RM.getRMTree)
       (zip [0 ..] (VT.dsjDisjuncts d))
-  let newDisjT = VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree (d{VT.dsjDisjuncts = disjuncts})
+  newDisjT <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree (d{VT.dsjDisjuncts = disjuncts})
   RM.modifyRMNodeWithTree newDisjT
 
 -- built-in functions

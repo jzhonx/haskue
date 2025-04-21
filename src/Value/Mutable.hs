@@ -39,6 +39,7 @@ instance (Eq t) => Eq (Mutable t) where
   (==) (SFunc m1) (SFunc m2) = m1 == m2
   (==) (Ref r1) (Ref r2) = r1 == r2
   (==) (Compreh c1) (Compreh c2) = c1 == c2
+  (==) (DisjOp d1) (DisjOp d2) = d1 == d2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
