@@ -113,7 +113,7 @@ mutateRef ref = do
       | VT.isRefRef rf -> throwErrSt "mutateRef: mutable value should not be a ref"
     _ -> return ()
 
-  isRefResReducible t = isTreeBottom t || VT.isTreeRefCycleTail t || VT.isTreeStructuralCycle t
+  isRefResReducible t = isTreeBottom t || VT.isTreeRefCycleTail t
 
 mutateFunc :: (RM.ReduceMonad s r m) => VT.StatefulFunc VT.Tree -> m ()
 mutateFunc fn = RM.withTree $ \t -> do
@@ -133,7 +133,6 @@ mutateFunc fn = RM.withTree $ \t -> do
   isMutableTreeReducible mut mv =
     isTreeBottom mv
       || VT.isTreeRefCycleTail mv
-      || VT.isTreeStructuralCycle mv
       -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
       || not (treeHasRef mut)
 
@@ -156,7 +155,6 @@ mutateCompreh compreh = RM.withTree $ \t -> do
   isMutableTreeReducible mut mv =
     isTreeBottom mv
       || VT.isTreeRefCycleTail mv
-      || VT.isTreeStructuralCycle mv
       -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
       || not (treeHasRef mut)
 

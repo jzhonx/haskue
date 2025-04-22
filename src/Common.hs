@@ -70,6 +70,7 @@ data Config = Config
 data Settings = Settings
   { stMermaid :: Bool
   , stShowMutArgs :: Bool
+  , stMaxTreeDepth :: Int
   }
   deriving (Show)
 
@@ -90,6 +91,7 @@ emptySettings =
   Settings
     { stMermaid = False
     , stShowMutArgs = False
+    , stMaxTreeDepth = 0
     }
 
 emptyRuntimeParams :: RuntimeParams

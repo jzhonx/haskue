@@ -46,15 +46,15 @@ fi
 if [[ "$1" == "run" ]]; then
   # if the input is empty, use the path, _debug/_t.cue
   input="${2:-_debug/_t.cue}"
-  timeout="$3"
+  maxTreeDepth="$3"
 
   cabal build
   echo ""
   # Run the program with the input file and redirect the output to a log file.
-  if [[ -z "$timeout" ]]; then
+  if [[ -z "$maxTreeDepth" ]]; then
     cabal run haskue -- -d --show-mutable-args $input 2> _debug/t.log
   else
-    gtimeout $timeout cabal run haskue -- -d --show-mutable-args $input 2> _debug/t.log
+    cabal run haskue -- -d --show-mutable-args --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
   fi
 
   go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json

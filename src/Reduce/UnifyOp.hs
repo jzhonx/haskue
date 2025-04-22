@@ -156,7 +156,7 @@ unifyUTrees ut1 ut2 = RM.debugSpanRM
 mergeUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
 mergeUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = RM.debugSpanArgsRM
   "mergeUTrees"
-  (printf ("unifying %s" ++ "\n" ++ "with %s") (show ut1) (show ut2))
+  (printf ("merging %s" ++ "\n" ++ "with %s") (show ut1) (show ut2))
   $ do
     -- Each case should handle embedded case when the left value is embedded.
     case (VT.treeNode t1, VT.treeNode t2) of
@@ -541,26 +541,26 @@ mergeLeftOther ut1@(UTree{utVal = t1, utDir = d1}) ut2@(UTree{utVal = t2}) =
     -- We can just return the second value.
     (VT.TNRefCycle _) -> RM.putRMTree t2
     -- TODO: comment
-    VT.TNStructuralCycle (VT.StructuralCycle infAddr) -> do
-      curPath <- RM.getRMAbsAddr
-      logDebugStr $
-        printf
-          "mergeLeftOther: unifying with structural cycle, inf path: %s, current path: %s"
-          (show infAddr)
-          (show curPath)
-      if Path.isPrefix infAddr curPath
-        then RM.putRMTree $ VT.mkBottomTree "structural cycle"
-        else do
-          MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
-          raw1 <-
-            maybe (throwErrSt "original expression is not found") return (VT.treeExpr t1)
-              >>= evalExpr
-          logDebugStr $
-            printf
-              "mergeLeftOther: found structural cycle, trying original deref'd %s with %s"
-              (show raw1)
-              (show t2)
-          mergeUTrees ut1{utVal = raw1} ut2
+    -- VT.TNStructuralCycle (VT.StructuralCycle infAddr) -> do
+    --   curPath <- RM.getRMAbsAddr
+    --   logDebugStr $
+    --     printf
+    --       "mergeLeftOther: unifying with structural cycle, inf path: %s, current path: %s"
+    --       (show infAddr)
+    --       (show curPath)
+    --   if Path.isPrefix infAddr curPath
+    --     then RM.putRMTree $ VT.mkBottomTree "structural cycle"
+    --     else do
+    --       MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
+    --       raw1 <-
+    --         maybe (throwErrSt "original expression is not found") return (VT.treeExpr t1)
+    --           >>= evalExpr
+    --       logDebugStr $
+    --         printf
+    --           "mergeLeftOther: found structural cycle, trying original deref'd %s with %s"
+    --           (show raw1)
+    --           (show t2)
+    --       mergeUTrees ut1{utVal = raw1} ut2
     _ -> putNotUnifiable
  where
   putNotUnifiable :: (RM.ReduceMonad s r m) => m ()
@@ -949,10 +949,13 @@ utsFromDisjs ds ut@(UTree{utAddr = addr}) =
 unifyUTreesInTemp :: (RM.ReduceMonad s r m) => UTree -> UTree -> m VT.Tree
 unifyUTreesInTemp ut1 ut2 = do
   -- TODO: just mergeUTrees?
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-  RM.inTempSubRM
-    (VT.mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
-    $ reduce >> RM.getRMTree
+  -- MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  RM.inTempSubRM VT.stubTree $ do
+    mergeUTrees ut1 ut2
+    RM.getRMTree
+
+-- (VT.mkMutableTree $ mkUnifyUTreesNode ut1 ut2)
+-- \$ reduce >> RM.getRMTree
 
 treeFromMatrix :: (Env r s m) => ([Int], [Int]) -> (Int, Int) -> [[VT.Tree]] -> m VT.Tree
 treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do

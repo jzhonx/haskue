@@ -57,6 +57,7 @@ data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecMermaidGraph :: Bool
   , ecShowMutArgs :: Bool
+  , ecMaxTreeDepth :: Int
   , ecFileTreeAddr :: String
   }
 
@@ -66,6 +67,7 @@ emptyEvalConfig =
     { ecDebugLogging = False
     , ecMermaidGraph = False
     , ecShowMutArgs = False
+    , ecMaxTreeDepth = 0
     , ecFileTreeAddr = ""
     }
 
@@ -146,6 +148,7 @@ evalFile sf conf = do
                   (Common.cfSettings . rcConfig $ emptyRunner)
                     { Common.stMermaid = ecMermaidGraph conf
                     , Common.stShowMutArgs = ecShowMutArgs conf
+                    , Common.stMaxTreeDepth = ecMaxTreeDepth conf
                     }
               , Common.cfRuntimeParams =
                   (Common.cfRuntimeParams . rcConfig $ emptyRunner)

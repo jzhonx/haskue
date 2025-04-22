@@ -30,7 +30,7 @@ import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
 import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
-import Value.Cycle (RefCycle, StructuralCycle)
+import Value.Cycle (RefCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
 import Value.List (List (lstSubs))
@@ -70,7 +70,6 @@ data TreeNode t
   | TNBounds Bounds
   | TNAtomCnstr (AtomCnstr t)
   | TNRefCycle RefCycle
-  | TNStructuralCycle StructuralCycle
   | TNMutable (Mutable t)
   | TNCnstredVal (CnstredVal t)
   | TNTop
@@ -92,7 +91,6 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNMutable f1) (TNMutable f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNCnstredVal v1) (TNCnstredVal v2) = v1 == v2
-  (==) (TNStructuralCycle c1) (TNStructuralCycle c2) = c1 == c2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) TNStub TNStub = True

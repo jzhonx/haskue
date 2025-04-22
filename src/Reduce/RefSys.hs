@@ -208,9 +208,9 @@ getDstTC ref origAddrsM trail refTC =
             -- For example, { x: a, y: 1, a: {b: y} }, where /a is the address of the subt value.
             -- The "y" in the struct {b: y} is an outer reference.
             -- We should first go to the original value address, which is /a/b.
-            infE <- locateRefAndRun ref tarTC (_checkInf ref srcAddr origValAddr)
+            -- infE <- locateRefAndRun ref tarTC (_checkInf ref srcAddr origValAddr)
             rE <- f tarTC
-            return $ infE >> rE
+            return rE
         )
         origAddrsM
  where
@@ -276,14 +276,13 @@ _detectCycle ref srcAddr trail tc = do
               (show srcAddr)
           return (VT.setTN tar $ VT.TNRefCycle (VT.RefCycleVertMerger (dstAddr, srcAddr)))
       | Path.isPrefix canDstAddr canSrcAddr && canSrcAddr /= canDstAddr ->
-          return
-            ( VT.setTN tar $ VT.TNStructuralCycle $ VT.StructuralCycle dstAddr
-            )
+          return $ VT.mkBottomTree "structural cycle"
       | otherwise -> return tar
   return . Right $ Just (val <$ tc)
 
-{- | Check if the reference leads to a structural cycle. If it does, return the cycle with the start address being the
-srcAddr, which is the current ref's addr.
+{- | Check if the reference leads to a structural cycle.
+
+If it does, return the cycle with the start address being the srcAddr, which is the current ref's addr.
 
 The origValAddr is the original value address. See the comment of the caller.
 -}
@@ -307,7 +306,7 @@ _checkInf ref srcAddr origValAddr dstTC = do
     r =
       -- Pointing to ancestor generates a structural cycle.
       if Path.isPrefix canDstAddr canSrcAddr && canSrcAddr /= canDstAddr
-        then Left (VT.setTN t $ VT.TNStructuralCycle $ VT.StructuralCycle srcAddr)
+        then Left (VT.mkBottomTree "structural cycle")
         else Right Nothing
 
   logDebugStr $
@@ -337,7 +336,6 @@ copyRefVal tar = do
     VT.TNAtom _ -> return tar
     VT.TNBottom _ -> return tar
     VT.TNRefCycle _ -> return tar
-    VT.TNStructuralCycle _ -> return tar
     VT.TNAtomCnstr c -> return (VT.mkAtomVTree $ VT.cnsAtom c)
     _ -> do
       e <- maybe (buildASTExpr False tar) return (VT.treeExpr tar)

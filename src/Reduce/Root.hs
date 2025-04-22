@@ -39,7 +39,7 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
     VT.TNList _ -> RM.traverseSub reduce
     VT.TNDisj d -> reduceDisj d
     VT.TNCnstredVal cv -> reduceCnstredVal cv
-    VT.TNStructuralCycle _ -> RM.putRMTree $ VT.mkBottomTree "structural cycle"
+    -- VT.TNStructuralCycle _ -> RM.putRMTree $ VT.mkBottomTree "structural cycle"
     VT.TNStub -> throwErrSt "stub node should not be reduced"
     _ -> return ()
 

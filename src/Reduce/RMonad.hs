@@ -294,7 +294,12 @@ treeDepthCheck :: (ReduceMonad s r m) => m ()
 treeDepthCheck = do
   crumbs <- getRMCrumbs
   let depth = length crumbs
-  when (depth > 50) $ throwError "tree depth exceeds 50"
+  Common.Config
+    { Common.cfSettings = Common.Settings{Common.stMaxTreeDepth = maxDepth}
+    } <-
+    asks Common.getConfig
+  let maxDepthVal = if maxDepth <= 0 then 1000 else maxDepth
+  when (depth > maxDepthVal) $ throwError $ printf "tree depth exceeds max depth (%d)" maxDepthVal
 
 unlessFocusBottom :: (ReduceMonad s r m) => a -> m a -> m a
 unlessFocusBottom a f = do

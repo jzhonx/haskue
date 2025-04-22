@@ -257,7 +257,6 @@ buildRepTreeTN t tn opt = case tn of
     RefCycleVert -> consRep (symbol, "vert", [], [])
     RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
     RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
-  TNStructuralCycle (StructuralCycle p) -> consRep (symbol, "inf: " ++ show p, [], [])
   TNMutable m -> case m of
     SFunc mut ->
       let
@@ -351,7 +350,6 @@ instance BuildASTExpr Tree where
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeExpr t)
       RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
-    TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
     TNStub -> throwErrSt "no expression for stub"
 
@@ -545,7 +543,6 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle _ -> "RC"
-  TNStructuralCycle _ -> "SC"
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
@@ -753,11 +750,6 @@ isTreeRefCycleTail :: Tree -> Bool
 isTreeRefCycleTail t = case treeNode t of
   TNRefCycle (RefCycleVertMerger _) -> True
   -- TNRefCycle (RefCycleHori _) -> True
-  _ -> False
-
-isTreeStructuralCycle :: Tree -> Bool
-isTreeStructuralCycle t = case treeNode t of
-  TNStructuralCycle _ -> True
   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
