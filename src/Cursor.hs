@@ -1,6 +1,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+
+-- {-# LANGUAGE FunctionalDependencies #-}
 
 module Cursor where
 
@@ -12,61 +14,50 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
 import Exception (throwErrSt)
 import Path (TASeg, TreeAddr (TreeAddr))
-import Util (HasTrace (..), Trace, emptyTrace)
 
-class HasCtxVal s t a | s -> a, s -> t where
-  getCtxVal :: s -> CtxVal t a
-  setCtxVal :: s -> CtxVal t a -> s
+class HasTreeCursor s t where
+  getTreeCursor :: s -> TreeCursor t
+  setTreeCursor :: s -> TreeCursor t -> s
 
-data CtxVal t a = CtxVal
-  { cvVal :: a
-  , cvCtx :: Context t
-  }
+-- class HasCtxVal s t a | s -> a, s -> t where
+--   getCtxVal :: s -> CtxVal t a
+--   setCtxVal :: s -> CtxVal t a -> s
 
-instance Functor (CtxVal t) where
-  fmap f c = c{cvVal = f (cvVal c)}
+-- data CtxVal t a = CtxVal
+--   { cvVal :: a
+--   , cvCtx :: Context t
+--   }
 
-instance HasCtxVal (CtxVal t a) t a where
-  getCtxVal = id
-  setCtxVal _ x = x
+-- instance Functor (CtxVal t) where
+--   fmap f c = c{cvVal = f (cvVal c)}
 
-instance HasTrace (CtxVal t a) where
-  getTrace = ctxTrace . cvCtx
-  setTrace cv tr = cv{cvCtx = (cvCtx cv){ctxTrace = tr}}
+-- instance HasCtxVal (CtxVal t a) t a where
+--   getCtxVal = id
+--   setCtxVal _ x = x
 
-instance IDStore (CtxVal t a) where
-  getID cv = ctxObjID (cvCtx cv)
-  setID cv i = cv{cvCtx = (cvCtx cv){ctxObjID = i}}
+-- instance HasTrace (CtxVal t a) where
+--   getTrace = ctxTrace . cvCtx
+--   setTrace cv tr = cv{cvCtx = (cvCtx cv){ctxTrace = tr}}
 
-mkCtxVal :: ValCursor t a -> Int -> Trace -> CtxVal t a
-mkCtxVal cur objID trace =
-  CtxVal
-    { cvVal = vcFocus cur
-    , cvCtx = emptyContext{ctxCrumbs = vcCrumbs cur, ctxObjID = objID, ctxTrace = trace}
-    }
+-- instance IDStore (CtxVal t a) where
+--   getID cv = ctxObjID (cvCtx cv)
+--   setID cv i = cv{cvCtx = (cvCtx cv){ctxObjID = i}}
 
-type CtxTree t = CtxVal t t
+-- mkCtxVal :: TreeCursor t -> Int -> Trace -> CtxVal t a
+-- mkCtxVal cur objID trace =
+--   CtxVal
+--     { cvVal = tcFocus cur
+--     , cvCtx = emptyContext{ctxCrumbs = tcCrumbs cur, ctxObjID = objID, ctxTrace = trace}
+--     }
 
-data Context t = Context
-  { ctxCrumbs :: [TreeCrumb t]
-  , ctxObjID :: Int
-  , ctxReduceStack :: [TreeAddr]
-  , ctxRefSysEnabled :: Bool
-  , ctxRefSysGraph :: Map.Map TreeAddr [TreeAddr]
-  , ctxRefSysQueue :: [TreeAddr]
-  -- ^ The notif queue is a list of addresses that will trigger the notification.
-  , ctxTrace :: Trace
-  }
-  deriving (Eq, Show)
+-- type CtxTree t = CtxVal t t
 
 type TreeCrumb t = (TASeg, t)
 
-ctxTreeAddr :: Context t -> TreeAddr
-ctxTreeAddr = addrFromCrumbs . ctxCrumbs
+-- ctxTreeAddr :: Context t -> TreeAddr
+-- ctxTreeAddr = addrFromCrumbs . ctxCrumbs
 
 addrFromCrumbs :: [TreeCrumb t] -> TreeAddr
 addrFromCrumbs crumbs = TreeAddr . reverse $ go crumbs []
@@ -75,40 +66,23 @@ addrFromCrumbs crumbs = TreeAddr . reverse $ go crumbs []
   go [] acc = acc
   go ((n, _) : cs) acc = go cs (n : acc)
 
-cvTreeAddr :: CtxVal t a -> TreeAddr
-cvTreeAddr = ctxTreeAddr . cvCtx
+-- cvTreeAddr :: CtxVal t a -> TreeAddr
+-- cvTreeAddr = ctxTreeAddr . cvCtx
 
-getCVCursor :: CtxVal t a -> ValCursor t a
-getCVCursor cv = ValCursor (cvVal cv) (ctxCrumbs . cvCtx $ cv)
+-- getCVCursor :: CtxVal t a -> TreeCursor t
+-- getCVCursor cv = TreeCursor (cvVal cv) (ctxCrumbs . cvCtx $ cv)
 
-emptyContext :: Context t
-emptyContext =
-  Context
-    { ctxCrumbs = []
-    , ctxObjID = 0
-    , ctxReduceStack = []
-    , ctxRefSysGraph = Map.empty
-    , ctxRefSysQueue = []
-    , ctxRefSysEnabled = True
-    , ctxTrace = emptyTrace
-    }
-
-{- | Add a notification pair to the context.
-
-The first element is the source addr, which is the addr that is being watched.
-The second element is the dependent addr, which is the addr that is watching the source addr.
--}
-addCtxNotifPair :: Context t -> (TreeAddr, TreeAddr) -> Context t
-addCtxNotifPair ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
- where
-  oldMap = ctxRefSysGraph ctx
-  depList = fromMaybe [] $ Map.lookup src oldMap
-  newDepList = if dep `elem` depList then depList else dep : depList
-
-hasCtxNotifSender :: TreeAddr -> Context t -> Bool
-hasCtxNotifSender addr ctx = Map.member addr (ctxRefSysGraph ctx)
-
-type TreeCursor t = ValCursor t t
+-- emptyContext :: Context t
+-- emptyContext =
+--   Context
+--     { ctxCrumbs = []
+--     , ctxObjID = 0
+--     , ctxReduceStack = []
+--     , ctxRefSysGraph = Map.empty
+--     , ctxRefSysQueue = []
+--     , ctxRefSysEnabled = True
+--     , ctxTrace = emptyTrace
+--     }
 
 {- | TreeCursor is a pair of a value and a list of crumbs.
 For example,
@@ -122,40 +96,43 @@ a: {
 Suppose the cursor is at the struct that contains the value 42. The cursor is
 (struct_c, [("b", struct_b), ("a", struct_a)]).
 -}
-data ValCursor t a = ValCursor
-  { vcFocus :: a
-  , vcCrumbs :: [TreeCrumb t]
+data TreeCursor t = TreeCursor
+  { tcFocus :: t
+  , tcCrumbs :: [TreeCrumb t]
   }
   deriving (Eq)
 
-instance (Show t, Show a) => Show (ValCursor t a) where
+instance (Show t) => Show (TreeCursor t) where
   show = showCursor
 
-instance Functor (ValCursor t) where
-  fmap f (ValCursor t cs) = ValCursor (f t) cs
+setTCFocus :: t -> TreeCursor t -> TreeCursor t
+setTCFocus t (TreeCursor _ cs) = TreeCursor t cs
 
-tcTreeAddr :: ValCursor t a -> TreeAddr
-tcTreeAddr c = addrFromCrumbs (vcCrumbs c)
+tcTreeAddr :: TreeCursor t -> TreeAddr
+tcTreeAddr c = addrFromCrumbs (tcCrumbs c)
 
 -- | Get the parent of the cursor without propagating the value up.
 parentTC :: TreeCursor t -> Maybe (TreeCursor t)
-parentTC (ValCursor _ []) = Nothing
-parentTC (ValCursor _ ((_, t) : cs)) = Just $ ValCursor t cs
+parentTC (TreeCursor _ []) = Nothing
+parentTC (TreeCursor _ ((_, t) : cs)) = Just $ TreeCursor t cs
+
+parentTCMust :: (Env r s m) => TreeCursor t -> m (TreeCursor t)
+parentTCMust tc = maybe (throwErrSt "already top") return (parentTC tc)
 
 -- | Get the segment paired with the focus of the cursor.
 focusTCSeg :: (Env r s m) => TreeCursor t -> m TASeg
-focusTCSeg (ValCursor _ []) = throwErrSt "already at the top"
-focusTCSeg tc = return $ fst . head $ vcCrumbs tc
+focusTCSeg (TreeCursor _ []) = throwErrSt "already at the top"
+focusTCSeg tc = return $ fst . head $ tcCrumbs tc
 
 isTCTop :: TreeCursor t -> Bool
-isTCTop (ValCursor _ []) = True
+isTCTop (TreeCursor _ []) = True
 isTCTop _ = False
 
-showCursor :: (Show t, Show a) => ValCursor t a -> String
+showCursor :: (Show t) => TreeCursor t -> String
 showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
  where
-  prettyBldr :: (Show t, Show a) => ValCursor t a -> Builder
-  prettyBldr (ValCursor t cs) =
+  prettyBldr :: (Show t) => TreeCursor t -> Builder
+  prettyBldr (TreeCursor t cs) =
     string7 "-- ():\n"
       <> string7 (show t)
       <> char7 '\n'
@@ -172,13 +149,5 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-showRefSysiers :: Map.Map TreeAddr [TreeAddr] -> String
-showRefSysiers notifiers =
-  let s = Map.foldrWithKey go "" notifiers
-   in if null s then "[]" else "[" ++ s ++ "\n]"
- where
-  go :: TreeAddr -> [TreeAddr] -> String -> String
-  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
-
-mkSubTC :: TASeg -> a -> TreeCursor t -> ValCursor t a
-mkSubTC seg a tc = ValCursor a ((seg, vcFocus tc) : vcCrumbs tc)
+mkSubTC :: TASeg -> t -> TreeCursor t -> TreeCursor t
+mkSubTC seg a tc = TreeCursor a ((seg, tcFocus tc) : tcCrumbs tc)

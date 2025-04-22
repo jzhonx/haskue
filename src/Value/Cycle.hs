@@ -34,14 +34,3 @@ instance Eq RefCycle where
 instance BuildASTExpr RefCycle where
   -- The tree should use the original expression instead.
   buildASTExpr _ _ = throwErrSt "RefCycle should not be used in the AST"
-
--- | StructuralCycle represents a structural cycle. It also represents infinite structure.
-newtype StructuralCycle
-  = -- | The address is the start of the structural cycle.
-    -- It is used to terminate the cycle. For example, when a SC ref is used inside a infinite structure, the
-    -- unification should immediately stop.
-    StructuralCycle TreeAddr
-  deriving (Show, Eq)
-
-instance BuildASTExpr StructuralCycle where
-  buildASTExpr _ _ = throwErrSt "StructuralCycle should not be used in the AST"

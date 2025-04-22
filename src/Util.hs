@@ -136,7 +136,13 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => String -> String -> Maybe String -> b -> m (a, b) -> m a
+  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b, Show c) =>
+  String ->
+  String ->
+  Maybe String ->
+  b ->
+  m (a, c) ->
+  m a
 debugSpan name addr args bTraced f = do
   start <- debugSpanStart name addr args bTraced
   debugSpanExec start name addr f

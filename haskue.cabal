@@ -50,6 +50,7 @@ library
         Value.Struct,
         Value.Tree,
         Value.TreeNode,
+        Value.UnifyOp,
 
     other-modules:
       Paths_haskue

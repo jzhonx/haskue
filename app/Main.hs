@@ -24,6 +24,12 @@ options =
       ( long "show-mutable-args"
           <> help "Show mutable args in the mermaid graph"
       )
+    <*> option
+      auto
+      ( long "max-tree-depth"
+          <> help "Maximum depth of the tree"
+          <> value 0
+      )
     <*> argument
       str
       ( metavar "FILE"

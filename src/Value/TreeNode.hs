@@ -30,7 +30,7 @@ import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
 import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
-import Value.Cycle (RefCycle, StructuralCycle)
+import Value.Cycle (RefCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
 import Value.List (List (lstSubs))
@@ -54,6 +54,7 @@ import Value.Struct (
   updateStructField,
   updateStructLet,
  )
+import Value.UnifyOp (UnifyOp (ufConjuncts, ufValue))
 
 class HasTreeNode t where
   getTreeNode :: t -> TreeNode t
@@ -70,7 +71,6 @@ data TreeNode t
   | TNBounds Bounds
   | TNAtomCnstr (AtomCnstr t)
   | TNRefCycle RefCycle
-  | TNStructuralCycle StructuralCycle
   | TNMutable (Mutable t)
   | TNCnstredVal (CnstredVal t)
   | TNTop
@@ -92,7 +92,6 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNMutable f1) (TNMutable f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNCnstredVal v1) (TNCnstredVal v2) = v1 == v2
-  (==) (TNStructuralCycle c1) (TNStructuralCycle c2) = c1 == c2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) TNStub TNStub = True
@@ -120,6 +119,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
+    | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
     | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
     | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
@@ -161,6 +161,12 @@ setSubTreeTN seg subT parT = do
           let
             terms = djoTerms d
             l = TNMutable . DisjOp $ d{djoTerms = take i terms ++ [subT <$ terms !! i] ++ drop (i + 1) terms}
+          return l
+      | MutableArgTASeg i <- seg
+      , UOp u <- mut -> do
+          let
+            conjuncts = ufConjuncts u
+            l = TNMutable . UOp $ u{ufConjuncts = take i conjuncts ++ [subT] ++ drop (i + 1) conjuncts}
           return l
       | ComprehTASeg ComprehStartTASeg <- seg
       , Compreh c <- mut ->

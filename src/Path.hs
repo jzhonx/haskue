@@ -9,45 +9,45 @@ import qualified Data.Set as Set
 data Selector = StringSel String | IntSel Int
   deriving (Eq, Ord)
 
-{- | Reference is a list of selectors.
+{- ValPath is a list of selectors.
 
 The selectors are not stored in reverse order.
 -}
-newtype Reference = Reference {getRefSels :: [Selector]}
+newtype ValPath = ValPath {getRefSels :: [Selector]}
   deriving (Eq, Ord)
 
 instance Show Selector where
   show (StringSel s) = s
   show (IntSel i) = show i
 
-instance Show Reference where
-  show (Reference sels) = intercalate "." (map show sels)
+instance Show ValPath where
+  show (ValPath sels) = intercalate "." (map show sels)
 
-emptyRef :: Reference
-emptyRef = Reference []
+emptyValPath :: ValPath
+emptyValPath = ValPath []
 
-headSel :: Reference -> Maybe Selector
-headSel (Reference []) = Nothing
-headSel (Reference sels) = Just $ sels !! 0
+headSel :: ValPath -> Maybe Selector
+headSel (ValPath []) = Nothing
+headSel (ValPath sels) = Just $ sels !! 0
 
-tailRef :: Reference -> Maybe Reference
-tailRef (Reference []) = Nothing
-tailRef (Reference sels) = Just $ Reference (tail sels)
+tailValPath :: ValPath -> Maybe ValPath
+tailValPath (ValPath []) = Nothing
+tailValPath (ValPath sels) = Just $ ValPath (tail sels)
 
-appendRefs ::
+appendValPaths ::
   -- | front
-  Reference ->
+  ValPath ->
   -- | back
-  Reference ->
-  Reference
-appendRefs (Reference xs) (Reference ys) = Reference (xs ++ ys)
+  ValPath ->
+  ValPath
+appendValPaths (ValPath xs) (ValPath ys) = ValPath (xs ++ ys)
 
-isRefEmpty :: Reference -> Bool
-isRefEmpty (Reference []) = True
-isRefEmpty _ = False
+isValPathEmpty :: ValPath -> Bool
+isValPathEmpty (ValPath []) = True
+isValPathEmpty _ = False
 
-refToAddr :: Reference -> TreeAddr
-refToAddr (Reference sels) = addrFromList $ map selToTASeg sels
+valPathToAddr :: ValPath -> TreeAddr
+valPathToAddr (ValPath sels) = addrFromList $ map selToTASeg sels
 
 selToTASeg :: Selector -> TASeg
 selToTASeg (StringSel s) = StructTASeg $ StringTASeg s

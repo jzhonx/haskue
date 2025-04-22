@@ -20,6 +20,7 @@ module Value.Tree (
   module Value.Reference,
   module Value.Comprehension,
   module Value.DisjoinOp,
+  module Value.UnifyOp,
 )
 where
 
@@ -34,7 +35,6 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Path (
-  Reference (Reference),
   Selector (..),
   StructTASeg (..),
   TASeg (
@@ -48,6 +48,7 @@ import Path (
     TempTASeg
   ),
   TreeAddr (TreeAddr),
+  ValPath (ValPath),
   addrToNormOrdList,
  )
 import Text.Printf (printf)
@@ -64,6 +65,7 @@ import Value.Mutable
 import Value.Reference
 import Value.Struct
 import Value.TreeNode
+import Value.UnifyOp
 
 class TreeRepBuilderIter a where
   iterRepTree :: a -> TreeRepBuildOption -> TreeRep
@@ -82,6 +84,11 @@ data Tree = Tree
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
   , treeIsRootOfSubTree :: Bool
   -- ^ treeIsRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parenthesis.
+  , treeIsCyclic :: Bool
+  -- ^ treeIsCyclic is used to indicate whether the tree is cyclic.
+  -- According to the spec,
+  -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
+  -- of its descendants are also regarded as cyclic.
   }
 
 newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
@@ -148,6 +155,7 @@ instance TreeRepBuilderIter Tree where
                     (if treeRecurClosed t then "t_#," else "")
                       ++ (if isJust (treeExpr t) then "" else "t_N,")
                       ++ (if treeIsRootOfSubTree t then "t_R," else "")
+                      ++ (if treeIsCyclic t then "t_C," else "")
                   else []
               )
                 ++ trMeta trf
@@ -257,7 +265,6 @@ buildRepTreeTN t tn opt = case tn of
     RefCycleVert -> consRep (symbol, "vert", [], [])
     RefCycleVertMerger p -> consRep (symbol, "vert-merger: " ++ show p, [], [])
     RefCycleHori p -> consRep (symbol, "hori " ++ show p, [], [])
-  TNStructuralCycle (StructuralCycle p) -> consRep (symbol, "inf: " ++ show p, [], [])
   TNMutable m -> case m of
     SFunc mut ->
       let
@@ -312,6 +319,19 @@ buildRepTreeTN t tn opt = case tn of
           , consFields (terms ++ val)
           , []
           )
+    UOp u ->
+      let
+        conjuncts =
+          if trboShowMutArgs opt
+            then
+              zipWith
+                (\j v -> (show (MutableArgTASeg j), mempty, v))
+                [0 ..]
+                (ufConjuncts u)
+            else []
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ufValue u)
+       in
+        consRep (symbol, mempty, consFields (conjuncts ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -346,12 +366,12 @@ instance BuildASTExpr Tree where
       Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
       Compreh _ -> maybe (throwErrSt "expression not found for comprehension") return (treeExpr t)
       DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
+      UOp _ -> maybe (buildASTExpr cr mut) return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle c -> case c of
       RefCycleHori _ -> return $ AST.litCons AST.TopLit
       RefCycleVert -> maybe (throwErrSt "RefCycle: original expression not found") return (treeExpr t)
       RefCycleVertMerger _ -> throwErrSt "RefCycleVertMerger should not be used in the AST"
-    TNStructuralCycle _ -> throwErrSt "StructuralCycle should not be used in the AST"
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
     TNStub -> throwErrSt "no expression for stub"
 
@@ -545,12 +565,12 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle _ -> "RC"
-  TNStructuralCycle _ -> "SC"
   TNMutable m -> case m of
     SFunc _ -> "fn"
     Ref _ -> "ref"
     Compreh _ -> "compreh"
     DisjOp _ -> "disjoin"
+    UOp _ -> "unify"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -665,6 +685,7 @@ mutHasRef (Ref _) = True
 mutHasRef (SFunc fn) = any treeHasRef (sfnArgs fn)
 mutHasRef (Compreh c) = any treeHasRef (cphStart c : cphStruct c : [getValFromIterClause x | x <- cphIterClauses c])
 mutHasRef (DisjOp d) = any treeHasRef [dstValue x | x <- djoTerms d]
+mutHasRef (UOp u) = any treeHasRef (ufConjuncts u)
 
 -- Helpers
 
@@ -676,6 +697,7 @@ emptyTree =
     , treeTemp = Nothing
     , treeRecurClosed = False
     , treeIsRootOfSubTree = False
+    , treeIsCyclic = False
     }
 
 setTN :: Tree -> TreeNode Tree -> Tree
@@ -755,11 +777,6 @@ isTreeRefCycleTail t = case treeNode t of
   -- TNRefCycle (RefCycleHori _) -> True
   _ -> False
 
-isTreeStructuralCycle :: Tree -> Bool
-isTreeStructuralCycle t = case treeNode t of
-  TNStructuralCycle _ -> True
-  _ -> False
-
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = emptyTree{treeNode = n}
 
@@ -804,8 +821,8 @@ appendSelToRefTree oprnd selArg = case treeNode oprnd of
 stubTree :: Tree
 stubTree = mkNewTree TNStub
 
-treesToRef :: [Tree] -> Maybe Path.Reference
-treesToRef ts = Path.Reference <$> mapM treeToSel ts
+treesToValPath :: [Tree] -> Maybe Path.ValPath
+treesToValPath ts = Path.ValPath <$> mapM treeToSel ts
 
 treeToSel :: Tree -> Maybe Selector
 treeToSel t = case treeNode t of

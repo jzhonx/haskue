@@ -40,15 +40,9 @@ import Exception (throwErrSt)
 import qualified MutEnv
 import Parser (parseSourceFile)
 import Path (TASeg (RootTASeg))
-import Reduce (
-  close,
-  comprehend,
-  fullReduce,
-  index,
-  propUpStructPost,
-  reduce,
- )
+import qualified Reduce
 import Reduce.PostReduce (postValidation)
+import qualified Reduce.RMonad as RM
 import Text.Printf (printf)
 import Util (emptyTrace, logDebugStr)
 import qualified Value.Tree as VT
@@ -57,6 +51,7 @@ data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecMermaidGraph :: Bool
   , ecShowMutArgs :: Bool
+  , ecMaxTreeDepth :: Int
   , ecFileTreeAddr :: String
   }
 
@@ -66,6 +61,7 @@ emptyEvalConfig =
     { ecDebugLogging = False
     , ecMermaidGraph = False
     , ecShowMutArgs = False
+    , ecMaxTreeDepth = 0
     , ecFileTreeAddr = ""
     }
 
@@ -85,11 +81,11 @@ emptyRunner =
     , rcFuncs =
         MutEnv.Functions
           { MutEnv.fnEvalExpr = evalExpr
-          , MutEnv.fnClose = close
-          , MutEnv.fnReduce = reduce
-          , MutEnv.fnIndex = index
-          , MutEnv.fnPropUpStructPost = propUpStructPost
-          , MutEnv.fnComprehend = comprehend
+          , MutEnv.fnClose = Reduce.close
+          , MutEnv.fnReduce = Reduce.reduce
+          , MutEnv.fnIndex = Reduce.index
+          , MutEnv.fnPropUpStructPost = Reduce.propUpStructPost
+          , MutEnv.fnComprehend = Reduce.comprehend
           }
     }
 
@@ -146,6 +142,7 @@ evalFile sf conf = do
                   (Common.cfSettings . rcConfig $ emptyRunner)
                     { Common.stMermaid = ecMermaidGraph conf
                     , Common.stShowMutArgs = ecShowMutArgs conf
+                    , Common.stMaxTreeDepth = ecMaxTreeDepth conf
                     }
               , Common.cfRuntimeParams =
                   (Common.cfRuntimeParams . rcConfig $ emptyRunner)
@@ -154,30 +151,32 @@ evalFile sf conf = do
               }
           )
   logDebugStr $ printf "runner: %s" (show runner)
-  rootTC <-
+  reduced <-
     runReaderT
       ( do
           (root, eeState) <- runStateT (evalSourceFile sf) Common.emptyEEState
           logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (VT.treeFullStr 0 root)
 
           let
-            rootTC = Cursor.ValCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
-            cv = Cursor.mkCtxVal rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
+            rootTC = Cursor.TreeCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
+            cv = RM.mkRTState rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
           logDebugStr $ printf "---- start reduce tree ----"
-          res <- execStateT fullReduce cv
-          logDebugStr $ printf "---- reduced: ----\n%s" (show . Cursor.getCVCursor $ res)
+          res <- execStateT Reduce.fullReduce cv
+          let reducedTC = RM.rtsTC res
+          logDebugStr $ printf "---- reduced: ----\n%s" (show reducedTC)
           return res
       )
       runner
 
   finalized <-
     runReaderT
-      (execStateT postValidation rootTC)
+      (execStateT postValidation reduced)
       ( updateConfig
           runner
           ( let c = rcConfig runner
              in c{Common.cfRuntimeParams = (Common.cfRuntimeParams c){Common.rpCreateCnstr = False}}
           )
       )
-  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . Cursor.getCVCursor $ finalized)
-  return $ Cursor.cvVal finalized
+  let finalTC = Cursor.getTreeCursor finalized
+  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show finalTC)
+  return $ Cursor.tcFocus finalTC

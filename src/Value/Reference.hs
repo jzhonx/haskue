@@ -42,13 +42,16 @@ isRefRef r = case refArg r of
   RefPath _ _ -> False
   RefIndex _ -> True
 
-refFromRefArg :: (t -> Maybe Path.Selector) -> RefArg t -> Maybe Path.Reference
-refFromRefArg treeToSel arg = case arg of
+valPathFromRefArg :: (t -> Maybe String) -> RefArg t -> Maybe Path.ValPath
+valPathFromRefArg treeToStr arg = case arg of
   RefPath s xs -> do
-    sels <- mapM treeToSel xs
-    return $ Path.Reference (Path.StringSel s : sels)
+    sels <- mapM (fmap Path.StringSel . treeToStr) xs
+    return $ Path.ValPath (Path.StringSel s : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
+
+valPathFromRef :: (t -> Maybe String) -> Reference t -> Maybe Path.ValPath
+valPathFromRef treeToStr ref = valPathFromRefArg treeToStr (refArg ref)
 
 appendRefArg :: t -> RefArg t -> RefArg t
 appendRefArg y = appendRefArgs [y]
