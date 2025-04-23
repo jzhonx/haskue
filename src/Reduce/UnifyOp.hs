@@ -3,7 +3,6 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Reduce.UnifyOp where
 
@@ -14,10 +13,8 @@ import Common (
   Env,
   HasConfig (..),
   RuntimeParams (RuntimeParams, rpCreateCnstr),
-  TreeOp (isTreeBottom),
  )
-import Control.Monad (foldM, forM, when)
-import Control.Monad.Except (MonadError)
+import Control.Monad (foldM, foldM_, forM, when)
 import Control.Monad.Reader (asks, local)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
@@ -46,13 +43,19 @@ reduceMutTree = RM.debugSpanRM "reduceMutTree" $ do
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
   RM.withTree $ \t -> case VT.treeNode t of
-    VT.TNMutable _ ->
+    VT.TNMutable m ->
       local
         ( \r ->
             let fns = MutEnv.getFuncs r
              in MutEnv.setFuncs r fns{MutEnv.fnReduce = reduceMutTree}
         )
-        Mutate.mutate
+        ( Mutate.mutate $ case m of
+            VT.Ref ref -> Mutate.mutateRef ref
+            VT.SFunc fn -> Mutate.mutateFunc fn >> return Nothing
+            VT.Compreh compreh -> Mutate.mutateCompreh compreh >> return Nothing
+            VT.DisjOp disjOp -> Mutate.mutateDisjOp disjOp >> return Nothing
+            VT.UOp u -> unify (VT.ufConjuncts u) >> return Nothing
+        )
     VT.TNStub -> throwErrSt "stub node should not be reduced"
     _ -> return ()
 
@@ -77,11 +80,11 @@ reduceUnifyMutTreeArg seg sub = RM.debugSpanArgsRM "reduceUnifyMutTreeArg" (prin
       )
   return $ fromJust m
 
--- | Create a unify node from two UTrees.
-mkUnifyUTreesNode :: UTree -> UTree -> VT.Mutable VT.Tree
-mkUnifyUTreesNode ut1 ut2 =
-  -- Values of UTrees are created to receive the updated values.
-  VT.mkBinaryOp AST.Unify (\a b -> unifyUTrees (ut1{utVal = a}) (ut2{utVal = b})) (utVal ut1) (utVal ut2)
+-- -- | Create a unify node from two UTrees.
+-- mkUnifyUTreesNode :: UTree -> UTree -> VT.Mutable VT.Tree
+-- mkUnifyUTreesNode ut1 ut2 =
+--   -- Values of UTrees are created to receive the updated values.
+--   VT.mkBinaryOp AST.Unify (\a b -> unifyUTrees (ut1{utVal = a}) (ut2{utVal = b})) (utVal ut1) (utVal ut2)
 
 -- | UTree is a tree with a direction and an embedded flag.
 data UTree = UTree
@@ -96,16 +99,37 @@ data UTree = UTree
 instance Show UTree where
   show (UTree t d e a) = printf "(%s,addr:%s,embed:%s,\n%s)" (show d) (show a) (show e) (show t)
 
-unify :: (RM.ReduceMonad s r m) => VT.Tree -> VT.Tree -> m ()
-unify t1 t2 = do
-  addr <- RM.getRMAbsAddr
-  let
-    funcAddr = fromJust $ Path.initTreeAddr addr
-    lAddr = Path.appendSeg Path.binOpLeftTASeg funcAddr
-    rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
-  unifyUTrees (UTree t1 Path.L Nothing lAddr) (UTree t2 Path.R Nothing rAddr)
+unify :: (RM.ReduceMonad s r m) => [VT.Tree] -> m ()
+unify ts = do
+  when (length ts < 2) $ throwErrSt "not enough arguments"
+  let isAllCyclic = all VT.treeIsCyclic ts
+  if isAllCyclic
+    then RM.putRMTree $ VT.mkBottomTree "structural cycle"
+    else do
+      addr <- RM.getRMAbsAddr
+      foldM_
+        ( \acc (i, t) -> do
+            let
+              funcAddr = fromJust $ Path.initTreeAddr addr
+              lAddr = Path.appendSeg (Path.MutableArgTASeg (i - 1)) funcAddr
+              rAddr = Path.appendSeg (Path.MutableArgTASeg i) funcAddr
+            mergeUTrees (UTree acc Path.L Nothing lAddr) (UTree t Path.R Nothing rAddr)
+            RM.getRMTree
+        )
+        (head ts)
+        (zip [1 ..] (tail ts))
+  reduceMerged
 
-{- | Unify UTrees.
+reduceMerged :: (RM.ReduceMonad s r m) => m ()
+reduceMerged = do
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  -- reduce the merged tree
+  RM.withTree $ \t -> case VT.treeNode t of
+    -- If the unify result is incomplete, skip the reduction.
+    VT.TNStub -> return ()
+    _ -> reduce
+
+{- | Merge UTrees.
 
 The special case is the struct. If two operands are structs, we must not immediately reduce the operands. Instead, we
 should combine both fields and reduce sub-fields. The reason is stated in the spec,
@@ -140,19 +164,6 @@ The "b" in the first struct will have to see the atom 50.
 For operands that are references, we do not need reduce them. We only evaluate the expression when the reference is
 dereferenced. If the reference is evaluated to a struct, the struct will be a raw struct.
 -}
-unifyUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
-unifyUTrees ut1 ut2 = RM.debugSpanRM
-  "unifyUTrees"
-  $ do
-    mergeUTrees ut1 ut2
-
-    MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-    -- reduce the merged tree
-    RM.withTree $ \t -> case VT.treeNode t of
-      -- If the unify result is incomplete, skip the reduction.
-      VT.TNStub -> return ()
-      _ -> reduce
-
 mergeUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
 mergeUTrees ut1@(UTree{utVal = t1}) ut2@(UTree{utVal = t2}) = RM.debugSpanArgsRM
   "mergeUTrees"
@@ -745,9 +756,9 @@ _mkUnifiedField :: VT.Field VT.Tree -> VT.Field VT.Tree -> VT.Field VT.Tree
 _mkUnifiedField sf1 sf2 =
   let
     -- No original node exists yet
-    unifyValOp = VT.mkBinaryOp AST.Unify unify (VT.ssfValue sf1) (VT.ssfValue sf2)
+    unifyValOp = VT.mkUnifyOp [VT.ssfValue sf1, VT.ssfValue sf2]
     unifiedBaseRaw = case catMaybes [VT.ssfBaseRaw sf1, VT.ssfBaseRaw sf2] of
-      [br1, br2] -> Just $ VT.mkMutableTree $ VT.mkBinaryOp AST.Unify unify br1 br2
+      [br1, br2] -> Just $ VT.mkMutableTree $ VT.mkUnifyOp [br1, br2]
       [br] -> Just br
       _ -> Nothing
    in
@@ -1076,8 +1087,7 @@ patMatchLabel pat name = case VT.treeNode pat of
   match v = do
     MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
     let
-      mkUnifyNode = VT.mkBinaryOp AST.Unify unify
-      segOp = VT.mkMutableTree $ mkUnifyNode (VT.mkAtomTree $ VT.String name) v
+      segOp = VT.mkMutableTree $ VT.mkUnifyOp [VT.mkAtomTree $ VT.String name, v]
     -- Since segOps a list of unify nodes that unify the string with the bounds, we can use RM.inDiscardSubRM to
     -- evaluate the unify nodes and get the strings.
     r <-

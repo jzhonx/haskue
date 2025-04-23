@@ -25,22 +25,18 @@ import qualified Value.Tree as VT
 
 {- | Mutate the Mutable.
 
-The mutation is run in the mutval environment.
+The mutable (function with returning Maybe Tree) is run in the mutval environment.
 
 The focus of the tree should still be of type Mutable after the mutation.
 
 No global states should be changed too.
 -}
-mutate :: (RM.ReduceMonad s r m) => m ()
-mutate = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
+mutate :: (RM.ReduceMonad s r m) => m (Maybe VT.Tree) -> m ()
+mutate f = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
   -- Set the mutval to the stub since mutable should not depend on the previous mutable value.
   _mustSetMutVal (Just VT.stubTree)
   let name = VT.getMutName m VT.getStringFromTree
-  rM <- RM.debugSpanRM (printf "mutate %s" (show name)) $ case m of
-    VT.Ref ref -> mutateRef ref
-    VT.SFunc fn -> mutateFunc fn >> return Nothing
-    VT.Compreh compreh -> mutateCompreh compreh >> return Nothing
-    VT.DisjOp disjOp -> mutateDisjOp disjOp >> return Nothing
+  rM <- RM.debugSpanRM (printf "mutate %s" (show name)) f
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.
@@ -127,14 +123,14 @@ mutateFunc fn = RM.withTree $ \t -> do
         printf "mutateFunc: mutable value of the VT.StatefulFunc should not be a VT.StatefulFunc, but got: %s" (show mv)
     _ -> return ()
 
-  -- Check whether the mutator is reducible.
-  -- The first argument is a mutable node, and the second argument is the mutval.
-  isMutableTreeReducible :: VT.Tree -> VT.Tree -> Bool
-  isMutableTreeReducible mut mv =
-    isTreeBottom mv
-      || VT.isTreeRefCycleTail mv
-      -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
-      || not (treeHasRef mut)
+-- Check whether the mutator is reducible.
+-- The first argument is a mutable node, and the second argument is the mutval.
+isMutableTreeReducible :: VT.Tree -> VT.Tree -> Bool
+isMutableTreeReducible mut mv =
+  isTreeBottom mv
+    || VT.isTreeRefCycleTail mv
+    -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
+    || not (treeHasRef mut)
 
 mutateCompreh :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> m ()
 mutateCompreh compreh = RM.withTree $ \t -> do
@@ -149,14 +145,14 @@ mutateCompreh compreh = RM.withTree $ \t -> do
         printf "mutateCompreh: mutable value of the VT.StatefulFunc should not be a VT.StatefulFunc, but got: %s" (show mv)
     _ -> return ()
 
-  -- Check whether the mutator is reducible.
-  -- The first argument is a mutable node, and the second argument is the mutval.
-  isMutableTreeReducible :: VT.Tree -> VT.Tree -> Bool
-  isMutableTreeReducible mut mv =
-    isTreeBottom mv
-      || VT.isTreeRefCycleTail mv
-      -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
-      || not (treeHasRef mut)
+-- -- Check whether the mutator is reducible.
+-- -- The first argument is a mutable node, and the second argument is the mutval.
+-- isMutableTreeReducible :: VT.Tree -> VT.Tree -> Bool
+-- isMutableTreeReducible mut mv =
+--   isTreeBottom mv
+--     || VT.isTreeRefCycleTail mv
+--     -- If the mutible tree does not have any references, then we can safely replace the mutible with the result.
+--     || not (treeHasRef mut)
 
 -- | Replace the mutable tree node with the mutval.
 reduceToMutVal :: (RM.ReduceMonad s r m) => VT.Tree -> m ()

@@ -46,7 +46,6 @@ import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Reduce.Nodes (
   builtinMutableTable,
-  dispBinMutable,
   mkVarLinkTree,
  )
 import qualified Reduce.RegOps as RegOps
@@ -212,16 +211,12 @@ addNewStructElem adder struct = case adder of
                 VT.Field
                   { VT.ssfValue =
                       VT.mkNewTree
-                        (VT.TNMutable $ VT.mkBinaryOp AST.Unify unify (VT.ssfValue extSF) (VT.ssfValue sf))
+                        (VT.TNMutable $ VT.mkUnifyOp [VT.ssfValue extSF, VT.ssfValue sf])
                   , VT.ssfBaseRaw =
                       Just $
                         VT.mkNewTree
                           ( VT.TNMutable $
-                              VT.mkBinaryOp
-                                AST.Unify
-                                unify
-                                (fromJust $ VT.ssfBaseRaw extSF)
-                                (fromJust $ VT.ssfBaseRaw sf)
+                              VT.mkUnifyOp [fromJust $ VT.ssfBaseRaw extSF, fromJust $ VT.ssfBaseRaw sf]
                           )
                   , VT.ssfAttr = VT.mergeAttrs (VT.ssfAttr extSF) (VT.ssfAttr sf)
                   , VT.ssfObjects = Set.empty
@@ -363,7 +358,19 @@ evalBinary AST.Disjoin e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
-  return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op (dispBinMutable op) lt rt)
+  case op of
+    AST.Unify -> return $ flattenUnify lt rt
+    _ -> return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op (RegOps.regBin op) lt rt)
+
+flattenUnify :: VT.Tree -> VT.Tree -> VT.Tree
+flattenUnify l r = case getLeftAcc of
+  Just acc -> VT.mkMutableTree $ VT.mkUnifyOp (acc ++ [r])
+  Nothing -> VT.mkMutableTree $ VT.mkUnifyOp [l, r]
+ where
+  getLeftAcc = case VT.treeNode l of
+    -- The left tree is an accumulator only if it is a unify op.
+    VT.TNMutable (VT.UOp u) -> Just (VT.ufConjuncts u)
+    _ -> Nothing
 
 evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m VT.Tree
 evalDisj e1 e2 = do

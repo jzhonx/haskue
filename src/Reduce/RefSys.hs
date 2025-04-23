@@ -166,7 +166,7 @@ The result is either an error, such as a bottom or a structural cycle, or a vali
 -}
 type DstTC = Either VT.Tree (Maybe (TreeCursor VT.Tree))
 
-{- | Get the value pointed by the reference.
+{- | Get the processed tree cursor pointed by the reference.
 
 If the reference addr is self or visited, then return the tuple of the absolute addr of the start of the cycle and
 the cycle tail relative addr.
@@ -185,13 +185,7 @@ getDstTC ref origAddrsM trail refTC =
   debugSpan
     "deref_getDstTC"
     (show $ tcTreeAddr refTC)
-    ( Just $
-        printf
-          "ref: %s, origSubTAddr: %s, trail: %s"
-          (show ref)
-          (show origAddrsM)
-          (show $ Set.toList trail)
-    )
+    (Just $ printf "ref: %s, origAddrsM: %s, trail: %s" (show ref) (show origAddrsM) (show $ Set.toList trail))
     (vcFocus refTC)
     $ traceAdapt
     $ do
@@ -210,6 +204,7 @@ getDstTC ref origAddrsM trail refTC =
             -- We should first go to the original value address, which is /a/b.
             -- infE <- locateRefAndRun ref tarTC (_checkInf ref srcAddr origValAddr)
             rE <- f tarTC
+            -- return $ infE >> rE
             return rE
         )
         origAddrsM
@@ -377,9 +372,9 @@ processCopiedRaw trail tarTC raw = do
         markRecurClosed val
       else return val
 
-{- | Mark all outer references inside a container node with original value address.
+{- | Mark all outer references inside a block with original value address.
 
-The outer references are the nodes inside (not equal to) a container pointing to the out of scope identifiers. This is
+The outer references are the nodes inside (not equal to) a block pointing to the out of block identifiers. This is
 needed because after copying the value, the original scope has been lost.
 
 For example, given the following tree:
@@ -390,7 +385,7 @@ a: {
 	i2: 2
 }
 
-The container node is {j1: i2}. We need to mark the i2 so that its value can be looked up in /y.
+The block is {j1: i2}. We need to mark the i2 so that its value can be looked up in /y.
 -}
 markOuterIdents ::
   (Env r s m) =>
@@ -428,7 +423,7 @@ markOuterIdents ptc = do
   -- Check if the reference is an outer reference.
   isOuterScope ::
     (Env r s m) =>
-    -- The container node address.
+    -- The block node address.
     Path.TreeAddr ->
     TreeCursor VT.Tree ->
     Path.Reference ->
@@ -547,10 +542,11 @@ searchRMLetBindValue ident = do
 
 inAbsAddrRMMust :: (RM.ReduceMonad s r m, Show a) => Path.TreeAddr -> m a -> m a
 inAbsAddrRMMust dst f = RM.debugSpanRM (printf "inAbsAddrRMMust: dst: %s" (show dst)) $ do
+  addr <- RM.getRMAbsAddr
   m <- inAbsAddrRM dst f
   case m of
     Just r -> return r
-    Nothing -> throwErrSt $ printf "failed to go to the dst %s" (show dst)
+    Nothing -> throwErrSt $ printf "failed to go to the dst %s, from: %s" (show dst) (show addr)
 
 {- | Go to the absolute addr in the tree and execute the action if the addr exists.
 

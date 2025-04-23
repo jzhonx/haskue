@@ -5,6 +5,7 @@
 
 module Reduce.Root where
 
+import Control.Monad (when)
 import Cursor (
   Context (Context, ctxReduceStack),
   hasCtxNotifSender,
@@ -16,6 +17,7 @@ import qualified Reduce.Mutate as Mutate
 import Reduce.Nodes (reduceCnstredVal, reduceDisj, reduceStruct)
 import qualified Reduce.Notif as Notif
 import qualified Reduce.RMonad as RM
+import qualified Reduce.UnifyOp as UnifyOp
 import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
@@ -34,7 +36,16 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   -- save the original tree before effects are applied to the focus of the tree.
   orig <- RM.getRMTree
   RM.withTree $ \t -> case VT.treeNode t of
-    VT.TNMutable _ -> Mutate.mutate
+    VT.TNMutable m -> Mutate.mutate $ case m of
+      VT.Ref ref -> Mutate.mutateRef ref
+      VT.SFunc fn -> Mutate.mutateFunc fn >> return Nothing
+      VT.Compreh compreh -> Mutate.mutateCompreh compreh >> return Nothing
+      VT.DisjOp disjOp -> Mutate.mutateDisjOp disjOp >> return Nothing
+      VT.UOp u -> RM.mustMutable $ \_ -> RM.withTree $ \mutT -> do
+        Mutate._runInMutValEnv $ UnifyOp.unify (VT.ufConjuncts u)
+        -- Mutate.assertMVNotFunc
+        Mutate._runWithExtMutVal $ \mv -> when (Mutate.isMutableTreeReducible mutT mv) $ Mutate.reduceToMutVal mv
+        return Nothing
     VT.TNStruct _ -> reduceStruct
     VT.TNList _ -> RM.traverseSub reduce
     VT.TNDisj d -> reduceDisj d

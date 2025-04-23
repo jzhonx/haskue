@@ -286,7 +286,8 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
                           rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
                           ut1 = UnifyOp.UTree t1 Path.L Nothing addr
                           ut2 = UnifyOp.UTree t2 Path.R (Just i) rAddr
-                        UnifyOp.unifyUTrees ut1 ut2
+                        UnifyOp.mergeUTrees ut1 ut2
+                        UnifyOp.reduceMerged
                     )
                     t1
                     t2
@@ -327,7 +328,7 @@ dynFieldToStatic struct df = case VT.treeNode label of
   label = VT.dsfLabel df
   mkField s =
     let
-      unifier l r = VT.mkMutableTree $ mkUnifyNode l r
+      unifier l r = VT.mkMutableTree $ VT.mkUnifyOp [l, r]
       newSF = VT.dynToField df (VT.lookupStructField s struct) unifier
      in
       return (Just (s, newSF))
@@ -365,7 +366,7 @@ bindFieldWithCnstr name field cnstr = do
   let
     fval = VT.ssfValue field
     -- TODO: comment on why mkCnstredValTree is used.
-    op = VT.mkMutableTree $ mkUnifyNode fval (VT.mkCnstredValTree (VT.scsValue cnstr) Nothing)
+    op = VT.mkMutableTree $ VT.mkUnifyOp [fval, VT.mkCnstredValTree (VT.scsValue cnstr) Nothing]
     newField =
       if matched
         then field{VT.ssfValue = op, VT.ssfObjects = Set.insert (VT.scsID cnstr) (VT.ssfObjects field)}
@@ -375,9 +376,6 @@ bindFieldWithCnstr name field cnstr = do
     printf "bindFieldWithCnstr: %s with %s, matched: %s, newField: %s" name (show selPattern) (show matched) (show newField)
 
   return (newField, matched)
-
-mkUnifyNode :: VT.Tree -> VT.Tree -> VT.Mutable VT.Tree
-mkUnifyNode = VT.mkBinaryOp AST.Unify UnifyOp.unify
 
 {- | Update the struct with the constrained result.
 
@@ -477,7 +475,7 @@ removeAppliedObject objID struct = RM.debugSpanRM "removeAppliedObject" $ do
  where
   allCnstrs = VT.stcCnstrs struct
   allDyns = VT.stcDynFields struct
-  unifier l r = VT.mkMutableTree $ mkUnifyNode l r
+  unifier l r = VT.mkMutableTree $ VT.mkUnifyOp [l, r]
 
   -- Find the fields that are unified with the object
   fieldsUnifiedWithObject :: Int -> [(String, VT.Field VT.Tree)] -> [(String, VT.Field VT.Tree)]
@@ -575,11 +573,6 @@ mkVarLinkTree :: (MonadError String m) => String -> m VT.Tree
 mkVarLinkTree var = do
   let mut = VT.mkRefMutable var []
   return $ VT.mkMutableTree mut
-
-dispBinMutable :: (RM.ReduceMonad s r m) => AST.BinaryOp -> VT.Tree -> VT.Tree -> m ()
-dispBinMutable op = case op of
-  AST.Unify -> UnifyOp.unify
-  _ -> RegOps.regBin op
 
 reduceDisj :: (RM.ReduceMonad s r m) => VT.Disj VT.Tree -> m ()
 reduceDisj d = do

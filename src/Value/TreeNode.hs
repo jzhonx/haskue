@@ -54,6 +54,7 @@ import Value.Struct (
   updateStructField,
   updateStructLet,
  )
+import Value.UnifyOp (UnifyOp (ufConjuncts, ufValue))
 
 class HasTreeNode t where
   getTreeNode :: t -> TreeNode t
@@ -118,6 +119,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
+    | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
     | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
     | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
@@ -159,6 +161,12 @@ setSubTreeTN seg subT parT = do
           let
             terms = djoTerms d
             l = TNMutable . DisjOp $ d{djoTerms = take i terms ++ [subT <$ terms !! i] ++ drop (i + 1) terms}
+          return l
+      | MutableArgTASeg i <- seg
+      , UOp u <- mut -> do
+          let
+            conjuncts = ufConjuncts u
+            l = TNMutable . UOp $ u{ufConjuncts = take i conjuncts ++ [subT] ++ drop (i + 1) conjuncts}
           return l
       | ComprehTASeg ComprehStartTASeg <- seg
       , Compreh c <- mut ->

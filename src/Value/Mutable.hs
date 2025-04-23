@@ -12,6 +12,7 @@ import MutEnv (MutableEnv)
 import Value.Comprehension
 import Value.DisjoinOp
 import Value.Reference
+import Value.UnifyOp
 
 -- | Mutable is a tree node whose value can be changed.
 data Mutable t
@@ -19,6 +20,22 @@ data Mutable t
   | Ref (Reference t)
   | Compreh (Comprehension t)
   | DisjOp (DisjoinOp t)
+  | UOp (UnifyOp t)
+
+instance (Eq t) => Eq (Mutable t) where
+  (==) (SFunc m1) (SFunc m2) = m1 == m2
+  (==) (Ref r1) (Ref r2) = r1 == r2
+  (==) (Compreh c1) (Compreh c2) = c1 == c2
+  (==) (DisjOp d1) (DisjOp d2) = d1 == d2
+  (==) (UOp u1) (UOp u2) = u1 == u2
+  (==) _ _ = False
+
+instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
+  buildASTExpr c (SFunc m) = buildASTExpr c m
+  buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
+  buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
+  buildASTExpr _ (DisjOp _) = throwErrSt "AST should not be built from DisjoinOp"
+  buildASTExpr c (UOp u) = buildASTExpr c u
 
 -- | StatefulFunc is a tree node that represents a function.
 data StatefulFunc t = StatefulFunc
@@ -34,19 +51,6 @@ data StatefulFunc t = StatefulFunc
   , sfnValue :: Maybe t
   -- ^ sfnValue stores the non-atom, non-Mutable (isTreeValue true) value.
   }
-
-instance (Eq t) => Eq (Mutable t) where
-  (==) (SFunc m1) (SFunc m2) = m1 == m2
-  (==) (Ref r1) (Ref r2) = r1 == r2
-  (==) (Compreh c1) (Compreh c2) = c1 == c2
-  (==) (DisjOp d1) (DisjOp d2) = d1 == d2
-  (==) _ _ = False
-
-instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
-  buildASTExpr c (SFunc m) = buildASTExpr c m
-  buildASTExpr _ (Ref _) = throwErrSt "AST should not be built from Reference"
-  buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
-  buildASTExpr _ (DisjOp _) = throwErrSt "AST should not be built from DisjoinOp"
 
 instance (Eq t) => Eq (StatefulFunc t) where
   (==) f1 f2 = sfnName f1 == sfnName f2 && sfnArgs f1 == sfnArgs f2
@@ -76,18 +80,21 @@ getMutName (SFunc mut) _ = sfnName mut
 getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
 getMutName (Compreh _) _ = "comprehend"
 getMutName (DisjOp _) _ = "disjoin"
+getMutName (UOp _) _ = "unify"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (SFunc mut) = sfnValue mut
 getMutVal (Ref ref) = refValue ref
 getMutVal (Compreh c) = cphValue c
 getMutVal (DisjOp d) = djoValue d
+getMutVal (UOp u) = ufValue u
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (SFunc mut) = SFunc $ mut{sfnValue = m}
 setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
 setMutVal m (DisjOp d) = DisjOp $ d{djoValue = m}
+setMutVal m (UOp u) = UOp $ u{ufValue = m}
 
 invokeMutMethod :: (MutableEnv s r t m) => StatefulFunc t -> m ()
 invokeMutMethod mut = sfnMethod mut (sfnArgs mut)
@@ -180,3 +187,6 @@ mkRefMutable var ts =
 
 mkDisjoinOp :: [DisjTerm t] -> Mutable t
 mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}
+
+mkUnifyOp :: [t] -> Mutable t
+mkUnifyOp ts = UOp $ UnifyOp{ufConjuncts = ts, ufValue = Nothing}
