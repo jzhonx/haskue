@@ -36,11 +36,11 @@ deref ::
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
   m (Maybe Path.TreeAddr)
 deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
-  RM.debugSpanRM (printf "deref: origAddrsM: %s, ref: %s" (show origAddrsM) (show ref)) $ do
+  RM.debugSpanTM (printf "deref: origAddrsM: %s, ref: %s" (show origAddrsM) (show ref)) $ do
     -- Propagate the changes to the root and get back to the addr. This makes sure the tree cursor sess the latest
     -- changes.
     do
-      tc <- RM.getRMCursor
+      tc <- RM.getTMCursor
       -- We should not propagate the current node's state to the parent because its value has just been made to stub,
       -- which will disrupt the parent if the parent is a struct.
       refTC <- TCursorOps.propUpTC tc
@@ -49,12 +49,12 @@ deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
       -- from ref_addr to par_addr.
       parTC <- maybe (throwErrSt "already on the top") return (Cursor.parentTC refTC)
       RM.putRMCursor parTC
-      RM.propUpRMUntilSeg Path.RootTASeg
+      RM.propUpTMUntilSeg Path.RootTASeg
       -- First go back to the ref_addr and replace stale value of the ref_addr with the preserved value.
       goRMAbsAddrMust refAddr
-      RM.putRMTree (Cursor.tcFocus refTC)
+      RM.putTMTree (Cursor.tcFocus refTC)
       -- Go to the sv.
-      ok <- RM.descendRMSeg Path.SubValTASeg
+      ok <- RM.descendTMSeg Path.SubValTASeg
       unless ok $ throwErrSt $ printf "failed to go to the sv addr of %s" (show refAddr)
 
     -- Add the notifier anyway.
@@ -63,7 +63,7 @@ deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
     let
       selfAddr = Path.noSubValAddr addr
       trail = Set.fromList [selfAddr]
-    tc <- RM.getRMCursor
+    tc <- RM.getTMCursor
     getDstVal ref origAddrsM trail tc
 
 {- | Monitor the absoluate address of the reference searched from the original environment by adding a notifier pair
@@ -75,13 +75,13 @@ Duplicate cases are handled by the addCtxNotifPair.
 -}
 watchRefRM :: (RM.ReduceTCMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
 watchRefRM ref origAddrsM = do
-  tc <- RM.getRMCursor
+  tc <- RM.getTMCursor
   srcAddrM <-
     refToPotentialAddr ref origAddrsM tc >>= \xM -> return $ do
       x <- xM
       Path.referableAddr x
   -- Since we are in the /sv environment, we need to get the referable addr.
-  recvAddr <- Path.noSubValAddr <$> RM.getRMAbsAddr
+  recvAddr <- Path.noSubValAddr <$> RM.getTMAbsAddr
 
   maybe
     (logDebugStr $ printf "watchRefRM: ref %s is not found" (show ref))
@@ -105,21 +105,21 @@ getDstVal ::
   Set.Set Path.TreeAddr ->
   Cursor.TreeCursor VT.Tree ->
   m (Maybe Path.TreeAddr)
-getDstVal ref origAddrsM trail tc = RM.debugSpanArgsRM
+getDstVal ref origAddrsM trail tc = RM.debugSpanArgsTM
   (printf "getDstVal: ref: %s" (show ref))
   (printf "trail: %s" (show trail))
   $ do
-    RM.debugInstantRM "getDstVal" (printf "tc: %s" (show tc))
+    RM.debugInstantTM "getDstVal" (printf "tc: %s" (show tc))
 
     rE <- getDstTC ref origAddrsM trail tc
     case rE of
-      Left err -> RM.putRMTree err >> return Nothing
+      Left err -> RM.putTMTree err >> return Nothing
       Right Nothing -> return Nothing
       Right (Just tarTC) -> do
         raw <- copyRefVal (Cursor.tcFocus tarTC)
         newVal <- processCopiedRaw trail tarTC raw
-        RM.putRMTree newVal
-        RM.debugInstantRM
+        RM.putTMTree newVal
+        RM.debugInstantTM
           "getDstVal"
           ( printf
               "ref: %s, dstVal: %s, raw: %s, newVal: %s"
@@ -536,7 +536,7 @@ searchRMLetBindValue ident = do
   case m of
     Just (addr, True) -> do
       r <- inAbsAddrRMMust addr $ do
-        identTC <- RM.getRMCursor
+        identTC <- RM.getTMCursor
         -- ident must be found. Mark the ident as referred if it is a let binding.
         RM.putRMCursor $ _markTCFocusReferred identTC
         RM.getRMTree
@@ -544,8 +544,8 @@ searchRMLetBindValue ident = do
     _ -> return Nothing
 
 inAbsAddrRMMust :: (RM.ReduceTCMonad s r m, Show a) => Path.TreeAddr -> m a -> m a
-inAbsAddrRMMust dst f = RM.debugSpanRM (printf "inAbsAddrRMMust: dst: %s" (show dst)) $ do
-  addr <- RM.getRMAbsAddr
+inAbsAddrRMMust dst f = RM.debugSpanTM (printf "inAbsAddrRMMust: dst: %s" (show dst)) $ do
+  addr <- RM.getTMAbsAddr
   m <- inAbsAddrRM dst f
   case m of
     Just r -> return r
@@ -557,7 +557,7 @@ If the addr does not exist, return Nothing.
 -}
 inAbsAddrRM :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m a -> m (Maybe a)
 inAbsAddrRM p f = do
-  origAbsAddr <- RM.getRMAbsAddr
+  origAbsAddr <- RM.getTMAbsAddr
 
   tarM <- whenM (goRMAbsAddr p) f
   backOk <- goRMAbsAddr origAbsAddr
@@ -579,16 +579,16 @@ goRMAbsAddr :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m Bool
 goRMAbsAddr dst = do
   when (Path.headSeg dst /= Just Path.RootTASeg) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))
-  RM.propUpRMUntilSeg Path.RootTASeg
+  RM.propUpTMUntilSeg Path.RootTASeg
   let dstNoRoot = fromJust $ Path.tailTreeAddr dst
-  RM.descendRM dstNoRoot
+  RM.descendTM dstNoRoot
 
 goRMAbsAddrMust :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m ()
 goRMAbsAddrMust dst = do
-  from <- RM.getRMAbsAddr
+  from <- RM.getTMAbsAddr
   ok <- goRMAbsAddr dst
   unless ok $ do
-    tc <- RM.getRMCursor
+    tc <- RM.getTMCursor
     case VT.treeNode (Cursor.tcFocus tc) of
       -- If the focus of the cursor is a bottom, it is not a problem.
       VT.TNBottom _ -> return ()
@@ -628,7 +628,7 @@ Return if the identifier address and whether it is a let binding.
 -}
 searchRMIdent :: (RM.ReduceTCMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMIdent name = do
-  tc <- RM.getRMCursor
+  tc <- RM.getTMCursor
   searchTCIdent name tc
 
 {- | Search in the parent scope for the first identifier that can match the segment. Also return if the identifier is a
@@ -637,7 +637,7 @@ searchRMIdent name = do
 searchRMIdentInPar :: (RM.ReduceTCMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMIdentInPar name = do
   ptc <- do
-    tc <- RM.getRMCursor
+    tc <- RM.getTMCursor
     maybe (throwErrSt "already on the top") return $ Cursor.parentTC tc
   if Cursor.isTCTop ptc
     then return Nothing

@@ -24,7 +24,7 @@ import Text.Printf (printf)
 import qualified Value.Tree as VT
 
 postValidation :: (RM.ReduceTCMonad s r m) => m ()
-postValidation = RM.debugSpanRM "postValidation" $ do
+postValidation = RM.debugSpanTM "postValidation" $ do
   ctx <- RM.getRMContext
   -- remove all notifiers.
   RM.putRMContext $ ctx{ctxRefSysGraph = Map.empty}
@@ -34,9 +34,9 @@ postValidation = RM.debugSpanRM "postValidation" $ do
   simplifyRM
 
   t <- RM.getRMTree
-  RM.debugSpanArgsRM "validate" (VT.treeFullStr 0 t) $ do
+  RM.debugSpanArgsTM "validate" (VT.treeFullStr 0 t) $ do
     -- then validate all constraints.
-    RM.traverseRM $ RM.withTN $ \case
+    RM.traverseTM $ RM.withTN $ \case
       VT.TNAtomCnstr c -> validateCnstr c
       VT.TNStruct s -> validateStruct s
       _ -> return ()
@@ -49,10 +49,10 @@ postValidation = RM.debugSpanRM "postValidation" $ do
 embeddings. All the pending values should have been already applied to the static fields.
 -}
 snapshotRM :: (RM.ReduceTCMonad s r m) => m ()
-snapshotRM = RM.debugSpanRM "snapshotRM" $ do
-  RM.traverseRM $ RM.withTN $ \case
-    VT.TNMutable m -> maybe (return ()) RM.putRMTree (VT.getMutVal m)
-    VT.TNCnstredVal c -> RM.putRMTree $ VT.cnsedVal c
+snapshotRM = RM.debugSpanTM "snapshotRM" $ do
+  RM.traverseTM $ RM.withTN $ \case
+    VT.TNMutable m -> maybe (return ()) RM.putTMTree (VT.getMutVal m)
+    VT.TNCnstredVal c -> RM.putTMTree $ VT.cnsedVal c
     _ -> return ()
 
 {- | Traverse the tree and does the following things with the node:
@@ -61,12 +61,12 @@ snapshotRM = RM.debugSpanRM "snapshotRM" $ do
 embeddings. All the pending values should have been already applied to the static fields.
 -}
 simplifyRM :: (RM.ReduceTCMonad s r m) => m ()
-simplifyRM = RM.debugSpanRM "simplifyRM" $ do
-  RM.traverseRM $ RM.withTN $ \case
+simplifyRM = RM.debugSpanTM "simplifyRM" $ do
+  RM.traverseTM $ RM.withTN $ \case
     VT.TNStruct s -> do
       validateStructPerm s
       whenStruct () $ \_ ->
-        RM.modifyRMTN $
+        RM.modifyTMTN $
           VT.TNStruct $
             s
               { VT.stcCnstrs = IntMap.empty
@@ -82,24 +82,24 @@ It creates a validate function, and then evaluates the function. Notice that the
 constraint in the propValUp.
 -}
 validateCnstr :: (RM.ReduceTCMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
-validateCnstr c = RM.debugSpanRM "validateCnstr" $ do
+validateCnstr c = RM.debugSpanTM "validateCnstr" $ do
   -- We can first assume that the tree value is an atom. Make sure the latest atom is created.
   let atomT = VT.mkAtomVTree $ VT.cnsAtom c
-  RM.putRMTree atomT
+  RM.putTMTree atomT
 
   raw <- RM.evalExprRM (VT.cnsValidator c)
-  tc <- RM.getRMCursor
+  tc <- RM.getTMCursor
   validator <- replaceVertCycleRef (VT.mkAtomVTree $ VT.cnsAtom c) (raw `Cursor.setTCFocus` tc)
-  RM.debugInstantRM "validateCnstr" $
+  RM.debugInstantTM "validateCnstr" $
     printf "raw: %s, validator: %s" (VT.treeFullStr 0 raw) (VT.treeFullStr 0 validator)
 
   -- Run the validator in a sub context of an atom value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- RM.inTempSubRM validator $ do
+  res <- RM.inTempSubTM validator $ do
     -- TODO: replace all refs that refer to the cnstr with the atom
     fullReduce >> RM.getRMTree
 
-  RM.putRMTree $
+  RM.putTMTree $
     if
       | isTreeBottom res -> res
       -- The result is valid.
@@ -161,4 +161,4 @@ validateStruct s =
           )
           Nothing
           (VT.stcLets s)
-   in maybe (return ()) RM.putRMTree errM
+   in maybe (return ()) RM.putTMTree errM

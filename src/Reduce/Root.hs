@@ -23,13 +23,13 @@ import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 fullReduce :: (RM.ReduceTCMonad s r m) => m ()
-fullReduce = RM.debugSpanRM "fullReduce" $ do
+fullReduce = RM.debugSpanTM "fullReduce" $ do
   reduce
   Notif.drainRefSysQueue
 
 -- | Reduce the tree to the lowest form.
 reduce :: (RM.ReduceTCMonad s r m) => m ()
-reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
+reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanTM "reduce" $ do
   RM.treeDepthCheck
   push addr
 
@@ -50,12 +50,12 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
     VT.TNList _ -> RM.traverseSub reduce
     VT.TNDisj d -> reduceDisj d
     VT.TNCnstredVal cv -> reduceCnstredVal cv
-    -- VT.TNStructuralCycle _ -> RM.putRMTree $ VT.mkBottomTree "structural cycle"
+    -- VT.TNStructuralCycle _ -> RM.putTMTree $ VT.mkBottomTree "structural cycle"
     VT.TNStub -> throwErrSt "stub node should not be reduced"
     _ -> return ()
 
   -- Overwrite the treenode of the raw with the reduced tree's VT.TreeNode to preserve tree attributes.
-  RM.withTree $ \t -> RM.putRMTree $ VT.setTN orig (VT.treeNode t)
+  RM.withTree $ \t -> RM.putTMTree $ VT.setTN orig (VT.treeNode t)
 
   notifyEnabled <- RM.getRMRefSysEnabled
   isSender <- hasCtxNotifSender addr <$> RM.getRMContext
@@ -64,7 +64,7 @@ reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   if isSender && Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM
     then do
       let refAddr = fromJust refAddrM
-      RM.debugInstantRM "enqueue" $ printf "addr: %s, enqueue new reduced Addr: %s" (show addr) (show refAddr)
+      RM.debugInstantTM "enqueue" $ printf "addr: %s, enqueue new reduced Addr: %s" (show addr) (show refAddr)
       RM.addToRMRefSysQ refAddr
     else logDebugStr $ printf "reduce, addr: %s, not accessible or not enabled" (show addr)
 

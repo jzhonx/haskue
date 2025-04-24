@@ -33,7 +33,7 @@ mutate f = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
   -- Set the mutval to the stub since mutable should not depend on the previous mutable value.
   _mustSetMutVal (Just VT.stubTree)
   let name = VT.getMutName m VT.getStringFromTree
-  rM <- RM.debugSpanRM (printf "mutate %s" (show name)) f
+  rM <- RM.debugSpanTM (printf "mutate %s" (show name)) f
 
   -- If the mutval still exists, we should delete the notification receivers that have the /addr because once reduced,
   -- the mutval should not be notified.
@@ -52,7 +52,7 @@ mutate f = RM.mustMutable $ \m -> RM.withAddrAndFocus $ \addr _ -> do
   maybe
     (return ())
     ( \newT -> do
-        RM.modifyRMNodeWithTree newT
+        RM.modifyTMNodeWithTree newT
         MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
         -- TODO: use a thinner reduce, which does not notify.
         reduce
@@ -154,7 +154,7 @@ mutateCompreh compreh = RM.withTree $ \t -> do
 -- | Replace the mutable tree node with the mutval.
 reduceToMutVal :: (RM.ReduceTCMonad s r m) => VT.Tree -> m ()
 reduceToMutVal val = do
-  RM.modifyRMTN (VT.treeNode val)
+  RM.modifyTMTN (VT.treeNode val)
   handleRefCycle
 
 {- | Convert the RefCycleTail to VT.RefCycle if the addr is the same as the cycle start addr.
@@ -164,13 +164,13 @@ RefCycleTail is like Bottom.
 handleRefCycle :: (RM.ReduceTCMonad s r m) => m ()
 handleRefCycle = RM.withTree $ \val -> case VT.treeNode val of
   VT.TNRefCycle (VT.RefCycleVertMerger (cycleStartTreeAddr, _)) -> do
-    addr <- RM.getRMAbsAddr
+    addr <- RM.getTMAbsAddr
     if Path.referableAddr cycleStartTreeAddr == Path.referableAddr addr
       then do
         logDebugStr $ printf "handleRefCycle: addr: %s, cycle head found" (show addr)
         -- The ref cycle tree must record the original tree.
-        RM.modifyRMTN (VT.TNRefCycle VT.RefCycleVert)
-      else RM.modifyRMTN (VT.treeNode val)
+        RM.modifyTMTN (VT.TNRefCycle VT.RefCycleVert)
+      else RM.modifyTMTN (VT.treeNode val)
   _ -> return ()
 
 {- | Delete the notification receivers that have the specified prefix.
@@ -233,13 +233,13 @@ delMutValRecvs mutAddr = do
       )
 
 mutateDisjOp :: (RM.ReduceTCMonad s r m) => VT.DisjoinOp VT.Tree -> m ()
-mutateDisjOp terms = RM.debugSpanRM "mutateDisjoinOp" $ _runInMutValEnv $ do
+mutateDisjOp terms = RM.debugSpanTM "mutateDisjoinOp" $ _runInMutValEnv $ do
   disjuncts <- procMarkedTerms (VT.djoTerms terms)
-  RM.debugInstantRM "mutateDisjOp" $ printf "disjuncts: %s" (show disjuncts)
+  RM.debugInstantTM "mutateDisjOp" $ printf "disjuncts: %s" (show disjuncts)
   let
     d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
   norm <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
-  RM.putRMTree norm
+  RM.putTMTree norm
 
 {- | Construct a disjunction from the default and the disjuncts.
 
@@ -300,7 +300,7 @@ procMarkedTerms terms = do
 If nothing concrete can be returned, then the original argument is returned.
 -}
 reduceMutableArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceMutableArg seg sub = RM.debugSpanArgsRM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
+reduceMutableArg seg sub = RM.debugSpanArgsTM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
   m <-
     mutValToArgsRM
       seg
@@ -321,33 +321,33 @@ reduceMutableArg seg sub = RM.debugSpanArgsRM "reduceMutableArg" (printf "seg: %
 The mutable must see changes propagated from the argument environment.
 -}
 mutValToArgsRM :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m a -> m a
-mutValToArgsRM subSeg sub f = doInMutRM $ RM.mustMutable $ \_ -> RM.inSubRM subSeg sub f
+mutValToArgsRM subSeg sub f = doInMutRM $ RM.mustMutable $ \_ -> RM.inSubTM subSeg sub f
  where
   -- Run the action in the parent tree. All changes will be propagated to the parent tree and back to the current
   -- tree.
   -- After evaluating the argument environment, the focus of the tree should still be the mutable.
   doInMutRM :: (RM.ReduceTCMonad s r m) => m a -> m a
   doInMutRM action = do
-    seg <- RM.getRMTASeg
-    RM.propUpRM
+    seg <- RM.getTMTASeg
+    RM.propUpTM
     r <- action
-    ok <- RM.descendRMSeg seg
+    ok <- RM.descendTMSeg seg
     unless ok $ throwErrSt $ printf "failed to go down with seg %s" (show seg)
     return r
 
 _runInMutValEnv :: (RM.ReduceTCMonad s r m) => m a -> m a
 _runInMutValEnv f = RM.mustMutable $ \_ -> do
-  ok <- RM.descendRMSeg Path.SubValTASeg
+  ok <- RM.descendTMSeg Path.SubValTASeg
   unless ok $ throwErrSt "can not descend to the mutable value"
   r <- f
-  RM.propUpRM
+  RM.propUpTM
   return r
 
 _resetRMMutVal :: (RM.ReduceTCMonad s r m) => m ()
 _resetRMMutVal = _mustSetMutVal Nothing
 
 _mustSetMutVal :: (RM.ReduceTCMonad s r m) => Maybe VT.Tree -> m ()
-_mustSetMutVal m = RM.mustMutable $ \mut -> RM.modifyRMTN (VT.TNMutable $ VT.setMutVal m mut)
+_mustSetMutVal m = RM.mustMutable $ \mut -> RM.modifyTMTN (VT.TNMutable $ VT.setMutVal m mut)
 
 {- | Get the mutable value of the mutable node.
 

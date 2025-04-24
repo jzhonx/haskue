@@ -132,50 +132,60 @@ getRMRefSysEnabled = Common.ctxRefSysEnabled <$> getRMContext
 setRMRefSysEnabled :: (ReduceMonad r s m) => Bool -> m ()
 setRMRefSysEnabled b = modifyRMContext (\ctx -> ctx{Common.ctxRefSysEnabled = b})
 
+evalExprRM :: (ReduceMonad r s m) => AST.Expression -> m VT.Tree
+evalExprRM e = do
+  MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
+  curSID <- getRMObjID
+  trace <- getRMTrace
+  (rawT, newEEState) <- runStateT (evalExpr e) (Common.EEState curSID trace)
+  setRMObjID (Common.eesObjID newEEState)
+  setRMTrace (Common.eesTrace newEEState)
+  return rawT
+
 {-
 ====== TreeAddr ======
 -}
 
-getRMAbsAddr :: (ReduceTCMonad r s m) => m TreeAddr
-getRMAbsAddr = Cursor.tcTreeAddr <$> getRMCursor
+getTMAbsAddr :: (ReduceTCMonad r s m) => m TreeAddr
+getTMAbsAddr = Cursor.tcTreeAddr <$> getTMCursor
 
-getRMTASeg :: (ReduceTCMonad r s m) => m TASeg
-getRMTASeg = do
-  tc <- getRMCursor
+getTMTASeg :: (ReduceTCMonad r s m) => m TASeg
+getTMTASeg = do
+  tc <- getTMCursor
   TCursorOps.getTCFocusSeg tc
 
 -- Cursor
 
-getRMCursor :: (ReduceTCMonad r s m) => m (Cursor.TreeCursor VT.Tree)
-getRMCursor = gets Cursor.getTreeCursor
+getTMCursor :: (ReduceTCMonad r s m) => m (Cursor.TreeCursor VT.Tree)
+getTMCursor = gets Cursor.getTreeCursor
 
 putRMCursor :: (ReduceTCMonad r s m) => Cursor.TreeCursor VT.Tree -> m ()
 putRMCursor tc = modify $ \s -> Cursor.setTreeCursor s tc
 
 -- Crumbs
 
-getRMCrumbs :: (ReduceTCMonad r s m) => m [Cursor.TreeCrumb VT.Tree]
-getRMCrumbs = Cursor.tcCrumbs <$> getRMCursor
+getTMCrumbs :: (ReduceTCMonad r s m) => m [Cursor.TreeCrumb VT.Tree]
+getTMCrumbs = Cursor.tcCrumbs <$> getTMCursor
 
 -- VT.Tree
 
 getRMTree :: (ReduceTCMonad r s m) => m VT.Tree
-getRMTree = Cursor.tcFocus <$> getRMCursor
+getRMTree = Cursor.tcFocus <$> getTMCursor
 
 {- | Get the parent of the current focus.
 
 This does not propagate the value up.
 -}
-getRMParent :: (ReduceTCMonad r s m) => m VT.Tree
-getRMParent = do
-  crumbs <- getRMCrumbs
+getTMParent :: (ReduceTCMonad r s m) => m VT.Tree
+getTMParent = do
+  crumbs <- getTMCrumbs
   case crumbs of
     [] -> throwErrSt "already at the top"
     (_, t) : _ -> return t
 
-putRMTree :: (ReduceTCMonad r s m) => VT.Tree -> m ()
-putRMTree t = do
-  tc <- getRMCursor
+putTMTree :: (ReduceTCMonad r s m) => VT.Tree -> m ()
+putTMTree t = do
+  tc <- getTMCursor
   putRMCursor (t `Cursor.setTCFocus` tc)
 
 withTree :: (ReduceTCMonad r s m) => (VT.Tree -> m a) -> m a
@@ -183,7 +193,7 @@ withTree f = getRMTree >>= f
 
 withAddrAndFocus :: (ReduceTCMonad r s m) => (TreeAddr -> VT.Tree -> m a) -> m a
 withAddrAndFocus f = do
-  addr <- getRMAbsAddr
+  addr <- getTMAbsAddr
   withTree (f addr)
 
 -- VT.TreeNode
@@ -191,13 +201,13 @@ withAddrAndFocus f = do
 withTN :: (ReduceTCMonad r s m) => (VT.TreeNode VT.Tree -> m a) -> m a
 withTN f = withTree (f . VT.treeNode)
 
-modifyRMTN :: (ReduceTCMonad r s m) => VT.TreeNode VT.Tree -> m ()
-modifyRMTN tn = do
+modifyTMTN :: (ReduceTCMonad r s m) => VT.TreeNode VT.Tree -> m ()
+modifyTMTN tn = do
   t <- getRMTree
-  putRMTree $ VT.setTN t tn
+  putTMTree $ VT.setTN t tn
 
-modifyRMNodeWithTree :: (ReduceTCMonad r s m) => VT.Tree -> m ()
-modifyRMNodeWithTree t = modifyRMTN (VT.treeNode t)
+modifyTMNodeWithTree :: (ReduceTCMonad r s m) => VT.Tree -> m ()
+modifyTMNodeWithTree t = modifyTMTN (VT.treeNode t)
 
 -- ReduceTCMonad operations
 
@@ -207,18 +217,18 @@ modifyRMNodeWithTree t = modifyRMTN (VT.treeNode t)
 
 It surfaces the bottom if the focus is a bottom and the parent is a struct.
 -}
-propUpRM :: (ReduceTCMonad r s m) => m ()
-propUpRM = do
-  tc <- getRMCursor
+propUpTM :: (ReduceTCMonad r s m) => m ()
+propUpTM = do
+  tc <- getTMCursor
   seg <- Cursor.focusTCSeg tc
   focus <- getRMTree
-  p <- getRMParent
-  debugSpanArgsRM "propUpRM" (printf "bpar: %s" (show p)) $
+  p <- getTMParent
+  debugSpanArgsTM "propUpTM" (printf "bpar: %s" (show p)) $
     -- If the focus is a bottom and the parent is a struct, overwrite the parent with the bottom.
     if Common.isTreeBottom focus && isSegStruct seg
       then do
-        _discardRMAndPop
-        putRMTree focus
+        _discardTMAndPop
+        putTMTree focus
       else do
         TCursorOps.propUpTC tc >>= putRMCursor
 
@@ -234,26 +244,26 @@ propUpRM = do
   isSegStruct _ = False
 
 -- Propagate the value up until the lowest segment is matched.
-propUpRMUntilSeg :: (ReduceTCMonad r s m) => TASeg -> m ()
-propUpRMUntilSeg seg = do
-  tc <- getRMCursor
+propUpTMUntilSeg :: (ReduceTCMonad r s m) => TASeg -> m ()
+propUpTMUntilSeg seg = do
+  tc <- getTMCursor
   unless (isMatched tc) $ do
-    propUpRM
-    propUpRMUntilSeg seg
+    propUpTM
+    propUpTMUntilSeg seg
  where
   isMatched :: Cursor.TreeCursor VT.Tree -> Bool
-  isMatched (Cursor.TreeCursor _ []) = False -- propUpRM would panic.
+  isMatched (Cursor.TreeCursor _ []) = False -- propUpTM would panic.
   isMatched (Cursor.TreeCursor _ ((s, _) : _)) = s == seg
 
 -- Move down operations
 
-descendRM :: (ReduceTCMonad r s m) => TreeAddr -> m Bool
-descendRM dst = go (addrToNormOrdList dst)
+descendTM :: (ReduceTCMonad r s m) => TreeAddr -> m Bool
+descendTM dst = go (addrToNormOrdList dst)
  where
   go :: (ReduceTCMonad r s m) => [TASeg] -> m Bool
   go [] = return True
   go (x : xs) = do
-    r <- descendRMSeg x
+    r <- descendTMSeg x
     if r
       then go xs
       else return False
@@ -262,9 +272,9 @@ descendRM dst = go (addrToNormOrdList dst)
 
 It closes the sub tree based on the parent tree.
 -}
-descendRMSeg :: (ReduceTCMonad r s m) => TASeg -> m Bool
-descendRMSeg seg = do
-  tc <- getRMCursor
+descendTMSeg :: (ReduceTCMonad r s m) => TASeg -> m Bool
+descendTMSeg seg = do
+  tc <- getTMCursor
   maybe
     (return False)
     (\r -> putRMCursor r >> return True)
@@ -273,9 +283,9 @@ descendRMSeg seg = do
 -- Push down operations
 
 -- | Push down the segment with the new value.
-_pushRMSub :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m ()
-_pushRMSub seg sub = do
-  (Cursor.TreeCursor p crumbs) <- getRMCursor
+_pushTMSub :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m ()
+_pushTMSub seg sub = do
+  (Cursor.TreeCursor p crumbs) <- getTMCursor
   putRMCursor $
     Cursor.TreeCursor
       sub
@@ -283,39 +293,39 @@ _pushRMSub seg sub = do
 
 -- Push and pop operations
 
-inSubRM :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m a -> m a
-inSubRM seg t f = do
-  _pushRMSub seg t
+inSubTM :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m a -> m a
+inSubTM seg t f = do
+  _pushTMSub seg t
   r <- f
-  propUpRM
+  propUpTM
   return r
 
-inDiscardSubRM :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m a -> m a
-inDiscardSubRM seg t f = do
-  _pushRMSub seg t
+inDiscardSubTM :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m a -> m a
+inDiscardSubTM seg t f = do
+  _pushTMSub seg t
   r <- f
-  _discardRMAndPop
+  _discardTMAndPop
   return r
 
 -- | discard the current focus, pop up and put the original focus in the crumbs back.
-_discardRMAndPop :: (ReduceTCMonad r s m) => m ()
-_discardRMAndPop = do
-  tc <- getRMCursor
+_discardTMAndPop :: (ReduceTCMonad r s m) => m ()
+_discardTMAndPop = do
+  tc <- getTMCursor
   let
     crumbs = Cursor.tcCrumbs tc
     headC = head crumbs
   putRMCursor (Cursor.TreeCursor (snd headC) (tail crumbs))
 
-inTempSubRM :: (ReduceTCMonad r s m) => VT.Tree -> m a -> m a
-inTempSubRM sub f = do
-  _pushRMSub TempTASeg sub
+inTempSubTM :: (ReduceTCMonad r s m) => VT.Tree -> m a -> m a
+inTempSubTM sub f = do
+  _pushTMSub TempTASeg sub
   r <- f
-  propUpRM
+  propUpTM
   return r
 
 treeDepthCheck :: (ReduceTCMonad r s m) => m ()
 treeDepthCheck = do
-  crumbs <- getRMCrumbs
+  crumbs <- getTMCrumbs
   let depth = length crumbs
   Common.Config
     { Common.cfSettings = Common.Settings{Common.stMaxTreeDepth = maxDepth}
@@ -350,11 +360,11 @@ traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
  where
   go :: (ReduceTCMonad r s m) => (TASeg, VT.Tree) -> m ()
   go (sel, sub) = unlessFocusBottom () $ do
-    res <- inSubRM sel sub (f >> getRMTree)
+    res <- inSubTM sel sub (f >> getRMTree)
     -- If the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
     t <- getRMTree
     case (VT.treeNode t, VT.treeNode res) of
-      (VT.TNStruct _, VT.TNBottom _) -> putRMTree res
+      (VT.TNStruct _, VT.TNBottom _) -> putTMTree res
       _ -> return ()
 
 {- | Traverse the leaves of the tree cursor in the following order
@@ -362,18 +372,8 @@ traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
 1. Traverse the current node.
 2. Traverse the sub-tree with the segment.
 -}
-traverseRM :: (ReduceTCMonad r s m) => m () -> m ()
-traverseRM f = f >> traverseSub (traverseRM f)
-
-evalExprRM :: (ReduceTCMonad r s m) => AST.Expression -> m VT.Tree
-evalExprRM e = do
-  MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
-  curSID <- getRMObjID
-  trace <- getRMTrace
-  (rawT, newEEState) <- runStateT (evalExpr e) (Common.EEState curSID trace)
-  setRMObjID (Common.eesObjID newEEState)
-  setRMTrace (Common.eesTrace newEEState)
-  return rawT
+traverseTM :: (ReduceTCMonad r s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)
 
 logDebugStrRM :: (ReduceTCMonad r s m) => String -> String -> m ()
 logDebugStrRM hdr msg = withAddrAndFocus $ \addr _ -> logDebugStr $ printf "%s: addr: %s, %s" hdr (show addr) msg
@@ -384,15 +384,15 @@ instance Show ShowTree where
   show (ShowFullTree t) = VT.treeFullStr 0 t
   show (ShowTree t) = VT.treeToSubStr 0 True t
 
-debugSpanRM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
-debugSpanRM name = _traceActionRM name Nothing
+debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
+debugSpanTM name = _traceActionTM name Nothing
 
-debugSpanArgsRM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m a
-debugSpanArgsRM name args = _traceActionRM name (Just args)
+debugSpanArgsTM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m a
+debugSpanArgsTM name args = _traceActionTM name (Just args)
 
-_traceActionRM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
-_traceActionRM name argsM f = withAddrAndFocus $ \addr _ -> do
-  seg <- getRMTASeg
+_traceActionTM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
+_traceActionTM name argsM f = withAddrAndFocus $ \addr _ -> do
+  seg <- getTMTASeg
   bfocus <- getRMTree
   let bTraced = if seg == RootTASeg then ShowFullTree bfocus else ShowTree bfocus
   debugSpan name (show addr) argsM bTraced $ do
@@ -401,5 +401,5 @@ _traceActionRM name argsM f = withAddrAndFocus $ \addr _ -> do
     let traced = if seg == RootTASeg then ShowFullTree focus else ShowTree focus
     return (res, traced)
 
-debugInstantRM :: (ReduceTCMonad r s m) => String -> String -> m ()
-debugInstantRM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)
+debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
+debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)

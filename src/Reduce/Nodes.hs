@@ -34,13 +34,13 @@ import qualified Value.Tree as VT
 Most of the heavy work is done in the propUpStructPost function.
 -}
 reduceStruct :: forall s r m. (RM.ReduceTCMonad s r m) => m ()
-reduceStruct = RM.debugSpanRM "reduceStruct" $ do
+reduceStruct = RM.debugSpanTM "reduceStruct" $ do
   -- Close the struct if the tree is closed.
   RM.mustStruct $ \s -> do
     closed <- VT.treeRecurClosed <$> RM.getRMTree
     when closed $
-      -- Use RM.modifyRMTN instead of VT.mkNewTree because tree attributes need to be preserved, such as VT.treeRecurClosed.
-      RM.modifyRMTN (VT.TNStruct $ s{VT.stcClosed = True})
+      -- Use RM.modifyTMTN instead of VT.mkNewTree because tree attributes need to be preserved, such as VT.treeRecurClosed.
+      RM.modifyTMTN (VT.TNStruct $ s{VT.stcClosed = True})
 
   whenStruct () $ \s -> mapM_ validateLetName (Map.keys $ VT.stcLets s)
 
@@ -51,7 +51,7 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
     foldM
       ( \_ (i, df) ->
           -- Inserting reduced dynamic field element into the struct is handled by propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.DynFieldTASeg i 0)) (VT.dsfLabel df) reduce
+          RM.inSubTM (Path.StructTASeg (Path.DynFieldTASeg i 0)) (VT.dsfLabel df) reduce
       )
       ()
       (IntMap.toList $ VT.stcDynFields s)
@@ -63,7 +63,7 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
           -- resolved in the unification node of the static field.
           -- See unify for more details.
           -- reduced constraint will constrain fields, which is done in the propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.PatternTASeg i 0)) (VT.scsPattern cnstr) reduce
+          RM.inSubTM (Path.StructTASeg (Path.PatternTASeg i 0)) (VT.scsPattern cnstr) reduce
       )
       ()
       (IntMap.toList $ VT.stcCnstrs s)
@@ -72,7 +72,7 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
     mapM_
       ( \(i, embed) ->
           -- Unifying reduced embedding with the rest of the struct is handled by propUpStructPost.
-          RM.inSubRM (Path.StructTASeg (Path.EmbedTASeg i)) (VT.embValue embed) reduce
+          RM.inSubTM (Path.StructTASeg (Path.EmbedTASeg i)) (VT.embValue embed) reduce
       )
       (IntMap.toList $ VT.stcEmbeds s)
 
@@ -106,9 +106,9 @@ validateLetName name = whenStruct () $ \_ -> do
 
   case parResM of
     -- If the let binding with the name is found in the scope.
-    Just (_, True) -> RM.putRMTree $ lbRedeclErr name
+    Just (_, True) -> RM.putTMTree $ lbRedeclErr name
     -- If the field with the same name is found in the scope.
-    Just (_, False) -> RM.putRMTree $ aliasErr name
+    Just (_, False) -> RM.putTMTree $ aliasErr name
     _ -> return ()
 
 aliasErr :: String -> VT.Tree
@@ -128,7 +128,7 @@ reduceStructField name = whenStruct () $ \struct -> do
 
   case parResM of
     -- If the let binding with the name is found in the scope.
-    Just (_, True) -> RM.putRMTree $ aliasErr name
+    Just (_, True) -> RM.putTMTree $ aliasErr name
     _ -> return ()
 
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
@@ -138,14 +138,14 @@ reduceStructField name = whenStruct () $ \struct -> do
         (throwErrSt $ printf "%s is not found" (show name))
         return
         (VT.lookupStructField name struct)
-    RM.inSubRM (Path.StructTASeg $ Path.StringTASeg name) (VT.ssfValue sub) reduce
+    RM.inSubTM (Path.StructTASeg $ Path.StringTASeg name) (VT.ssfValue sub) reduce
 
 {- | Handle the post process of propagating value into struct.
 
 The focus of the tree must be a struct.
 -}
 propUpStructPost :: (RM.ReduceTCMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
-propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
+propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanTM
   (printf "propUpStructPost_dynamic, idx: %s" (show i))
   $ do
     -- First we need to remove the dynamic field with the old label from the struct.
@@ -156,10 +156,10 @@ propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
       rE = dynFieldToStatic remAffStruct dsf
       allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
 
-    RM.debugInstantRM "propUpStructPost_dynamic" $ printf "dsf: %s, rE: %s" (show dsf) (show rE)
+    RM.debugInstantTM "propUpStructPost_dynamic" $ printf "dsf: %s, rE: %s" (show dsf) (show rE)
 
     either
-      RM.modifyRMNodeWithTree
+      RM.modifyTMNodeWithTree
       ( \labelFieldM -> do
           -- Constrain the dynamic field with all existing constraints.
           (addAffFields, addAffLabels) <-
@@ -174,9 +174,9 @@ propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
               )
               labelFieldM
 
-          RM.debugInstantRM "propUpStructPost_dynamic" $ printf "addAffFields: %s" (show addAffFields)
+          RM.debugInstantTM "propUpStructPost_dynamic" $ printf "addAffFields: %s" (show addAffFields)
 
-          RM.modifyRMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
+          RM.modifyTMNodeWithTree (VT.mkStructTree $ VT.updateStructWithFields addAffFields remAffStruct)
 
           -- -- Check the permission of the label of newly created field.
           -- whenStruct () $ \s -> checkPermForNewDyn s (Path.DynFieldTASeg i 0)
@@ -186,7 +186,7 @@ propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
       )
       rE
 propUpStructPost (Path.PatternTASeg i _, struct) =
-  RM.debugSpanRM (printf "propUpStructPost_constraint, idx: %s" (show i)) $ do
+  RM.debugSpanTM (printf "propUpStructPost_constraint, idx: %s" (show i)) $ do
     -- Constrain all fields with the new constraint if it exists.
     let cnstr = VT.stcCnstrs struct IntMap.! i
     -- New constraint might have the following effects:
@@ -209,11 +209,11 @@ propUpStructPost (Path.PatternTASeg i _, struct) =
           (show remAffLabels)
           (show $ VT.mkStructTree remAffStruct)
     (newStruct, addAffLabels) <- applyMoreCnstr cnstr remAffStruct
-    RM.modifyRMNodeWithTree (VT.mkStructTree newStruct)
+    RM.modifyTMNodeWithTree (VT.mkStructTree newStruct)
 
     let affectedLabels = remAffLabels ++ addAffLabels
     unless (null affectedLabels) $
-      RM.debugInstantRM
+      RM.debugInstantTM
         "propUpStructPost_constraint"
         ( printf
             "-ns: %s, +ns: %s, new struct: %s"
@@ -227,7 +227,7 @@ propUpStructPost (Path.PatternTASeg i _, struct) =
     -- Reduce the updated struct values.
     whenStruct () $ \_ -> mapM_ reduceStructField affectedLabels
 propUpStructPost (Path.EmbedTASeg i, struct) =
-  RM.debugSpanRM (printf "propUpStructPost_embed, idx: %s" (show i)) $
+  RM.debugSpanTM (printf "propUpStructPost_embed, idx: %s" (show i)) $
     do
       let embed = VT.stcEmbeds struct IntMap.! i
           embedVM = case VT.treeNode (VT.embValue embed) of
@@ -257,17 +257,17 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
               (struct, [])
               rmIDs
 
-          RM.debugInstantRM "propUpStructPost_embed" $
+          RM.debugInstantTM "propUpStructPost_embed" $
             printf
               "rmIDS: %s, affectedLabels: %s, allRmStruct: %s"
               (show rmIDs)
               (show affectedLabels)
               (show allRmStruct)
           -- Restore the focus with the struct without the embedding unified.
-          RM.modifyRMTN (VT.TNStruct allRmStruct)
+          RM.modifyTMTN (VT.TNStruct allRmStruct)
 
           MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-          addr <- RM.getRMAbsAddr
+          addr <- RM.getTMAbsAddr
 
           let
             saveEmbeds = VT.stcEmbeds allRmStruct
@@ -275,12 +275,12 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
             t1 = VT.mkStructTree (allRmStruct{VT.stcEmbeds = IntMap.empty})
             t2 = ev
           res <-
-            RM.inTempSubRM
+            RM.inTempSubTM
               ( VT.mkMutableTree $
                   VT.mkBinaryOp
                     AST.Unify
                     ( \_ _ -> do
-                        -- tmpAddr <- RM.getRMAbsAddr
+                        -- tmpAddr <- RM.getTMAbsAddr
                         -- let
                         --   funcAddr = fromJust $ Path.initTreeAddr tmpAddr
                         --   rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
@@ -300,9 +300,9 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
                 VT.TNStruct s -> VT.mkStructTree $ s{VT.stcEmbeds = saveEmbeds}
                 _ -> res
 
-          RM.debugInstantRM "propUpStructPost_embed" $ printf "r: %s" (VT.treeFullStr 0 r)
+          RM.debugInstantTM "propUpStructPost_embed" $ printf "r: %s" (VT.treeFullStr 0 r)
 
-          RM.modifyRMNodeWithTree r
+          RM.modifyTMNodeWithTree r
 propUpStructPost (_, _) = return ()
 
 getLabelFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]
@@ -420,7 +420,7 @@ removeAppliedObject ::
   Int ->
   VT.Struct VT.Tree ->
   m (VT.Struct VT.Tree, [String])
-removeAppliedObject objID struct = RM.debugSpanRM "removeAppliedObject" $ do
+removeAppliedObject objID struct = RM.debugSpanTM "removeAppliedObject" $ do
   logDebugStr $
     printf
       "removeAppliedObject: objID: %s, struct: %s"
@@ -435,7 +435,7 @@ removeAppliedObject objID struct = RM.debugSpanRM "removeAppliedObject" $ do
             newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
             newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
             baseRawM = VT.ssfBaseRaw field
-          RM.debugInstantRM "removeAppliedObject" $
+          RM.debugInstantTM "removeAppliedObject" $
             printf
               "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
               name
@@ -490,7 +490,7 @@ applyMoreCnstr ::
   VT.StructCnstr VT.Tree ->
   VT.Struct VT.Tree ->
   m (VT.Struct VT.Tree, [String])
-applyMoreCnstr cnstr struct = RM.debugSpanRM "applyMoreCnstr" $ do
+applyMoreCnstr cnstr struct = RM.debugSpanTM "applyMoreCnstr" $ do
   (addAffFields, addAffLabels) <-
     foldM
       ( \(accFields, accLabels) (name, field) -> do
@@ -524,7 +524,7 @@ applyMoreCnstr cnstr struct = RM.debugSpanRM "applyMoreCnstr" $ do
 -- checkPermForNewPattern _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
 validateStructPerm :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> m ()
-validateStructPerm struct = RM.debugSpanRM "validateStructPerm" $ do
+validateStructPerm struct = RM.debugSpanTM "validateStructPerm" $ do
   mapM_
     (\perm -> whenStruct () $ \s -> validatePermItem s perm)
     (VT.stcPerms struct)
@@ -536,7 +536,7 @@ A struct must be provided so that dynamic fields and constraints can be found.
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
 validatePermItem :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
-validatePermItem struct p = RM.debugSpanRM "validatePermItem" $ do
+validatePermItem struct p = RM.debugSpanTM "validatePermItem" $ do
   let
     dynsM = dynIdxesToLabels (VT.piDyns p)
     labels = VT.piLabels p
@@ -566,7 +566,7 @@ validatePermItem struct p = RM.debugSpanRM "validatePermItem" $ do
         (Set.toList idxes)
 
 reduceCnstredVal :: (RM.ReduceTCMonad s r m) => VT.CnstredVal VT.Tree -> m ()
-reduceCnstredVal cv = RM.inSubRM Path.SubValTASeg (VT.cnsedVal cv) $ do
+reduceCnstredVal cv = RM.inSubTM Path.SubValTASeg (VT.cnsedVal cv) $ do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   reduce
 
@@ -581,10 +581,10 @@ reduceDisj d = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   disjuncts <-
     mapM
-      (\(i, val) -> RM.inSubRM (Path.DisjDisjunctTASeg i) val $ reduce >> RM.getRMTree)
+      (\(i, val) -> RM.inSubTM (Path.DisjDisjunctTASeg i) val $ reduce >> RM.getRMTree)
       (zip [0 ..] (VT.dsjDisjuncts d))
   newDisjT <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree (d{VT.dsjDisjuncts = disjuncts})
-  RM.modifyRMNodeWithTree newDisjT
+  RM.modifyTMNodeWithTree newDisjT
 
 -- built-in functions
 builtinMutableTable :: [(String, VT.Tree)]
@@ -611,7 +611,7 @@ close args
       case VT.treeNode r of
         -- If the argument is pending, wait for the result.
         VT.TNMutable _ -> return ()
-        _ -> RM.putRMTree $ closeTree r
+        _ -> RM.putTMTree $ closeTree r
 
 -- | Close a struct when the tree has struct.
 closeTree :: VT.Tree -> VT.Tree

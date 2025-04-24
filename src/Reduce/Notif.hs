@@ -35,7 +35,7 @@ propagates to the dependents of the visiting node and the dependents of its ance
 The propagation starts from the current focus.
 -}
 notify :: (RM.ReduceTCMonad s r m) => m ()
-notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "notify" $ do
+notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanTM "notify" $ do
   origRefSysEnabled <- RM.getRMRefSysEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
   RM.setRMRefSysEnabled False
@@ -63,7 +63,7 @@ bfsLoopQ tid = do
     ((addr, toReduce) : xs) -> do
       put state{bfsQueue = xs}
 
-      origAddr <- lift RM.getRMAbsAddr
+      origAddr <- lift RM.getTMAbsAddr
       -- First try to go to the addr.
       found <- lift $ RefSys.goRMAbsAddr addr
       if found
@@ -87,12 +87,12 @@ bfsLoopQ tid = do
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
   addDepsUntilRoot :: (RM.ReduceTCMonad s r m) => BFSMonad m ()
   addDepsUntilRoot = do
-    cs <- lift RM.getRMCrumbs
+    cs <- lift RM.getTMCrumbs
     -- We should not use root value to notify.
     when (length cs > 1) $ do
       recvs <- lift $ do
         notifyG <- ctxRefSysGraph <$> RM.getRMContext
-        addr <- RM.getRMAbsAddr
+        addr <- RM.getTMAbsAddr
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
         -- finalized address can be notified.
         -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
@@ -118,14 +118,14 @@ bfsLoopQ tid = do
           recvs
 
       inReducing <- lift $ do
-        ptc <- RM.getRMCursor
+        ptc <- RM.getTMCursor
         -- We must check if the parent is reducing. If the parent is reducing, we should not go up and keep
         -- notifying the dependents.
         -- Because once parent is done with reducing, it will notify its dependents.
         parentIsReducing $ Cursor.tcTreeAddr ptc
 
       unless inReducing $ do
-        lift RM.propUpRM
+        lift RM.propUpTM
         addDepsUntilRoot
 
   parentIsReducing parTreeAddr = do
@@ -135,7 +135,7 @@ bfsLoopQ tid = do
 drainRefSysQueue :: (RM.ReduceTCMonad s r m) => m ()
 drainRefSysQueue = do
   q <- RM.getRMRefSysQ
-  more <- RM.debugSpanArgsRM "drainRefSysQueue" (printf "q: %s" (show q)) $ do
+  more <- RM.debugSpanArgsTM "drainRefSysQueue" (printf "q: %s" (show q)) $ do
     headM <- RM.popRMRefSysQ
     case headM of
       Nothing -> return False
@@ -155,7 +155,7 @@ reduceImParMut = do
   -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
   -- Notice the tree focus now changes to the Im mutable.
   locateImMutable
-  addr <- RM.getRMAbsAddr
+  addr <- RM.getTMAbsAddr
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   RM.withTree $ \t -> case VT.treeNode t of
     VT.TNMutable mut
@@ -174,11 +174,11 @@ reduceImParMut = do
 -- TODO: consider the mutable does not have arguments.
 locateImMutable :: (RM.ReduceTCMonad s r m) => m ()
 locateImMutable = do
-  addr <- RM.getRMAbsAddr
+  addr <- RM.getTMAbsAddr
   if hasEmptyTreeAddr addr || not (hasMutableArgSeg addr)
     then return ()
     -- If the addr has mutable argument segments, that means we are in a mutable node.
-    else RM.propUpRM >> locateImMutable
+    else RM.propUpTM >> locateImMutable
  where
   hasEmptyTreeAddr (Path.TreeAddr sels) = null sels
   -- Check if the addr has mutable argument segments.

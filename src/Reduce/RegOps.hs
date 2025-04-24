@@ -24,7 +24,7 @@ import qualified Value.Tree as VT
 
 reduceAtomOpArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
 reduceAtomOpArg seg sub =
-  RM.debugSpanArgsRM "reduceAtomOpArg" (printf "seg: %s" (show seg)) $
+  RM.debugSpanArgsTM "reduceAtomOpArg" (printf "seg: %s" (show seg)) $
     Mutate.mutValToArgsRM
       seg
       sub
@@ -46,16 +46,16 @@ regUnaryOp :: (RM.ReduceTCMonad s r m) => AST.UnaryOp -> VT.Tree -> m ()
 regUnaryOp op _t = do
   t <- Mutate.reduceMutableArg Path.unaryOpTASeg _t
   case VT.treeNode t of
-    VT.TNBottom _ -> RM.putRMTree t
+    VT.TNBottom _ -> RM.putTMTree t
     VT.TNMutable _ -> return ()
-    VT.TNRefCycle (VT.RefCycleVertMerger _) -> RM.putRMTree t
+    VT.TNRefCycle (VT.RefCycleVertMerger _) -> RM.putTMTree t
     _
       | Just ta <- VT.getAtomFromTree t -> case (op, ta) of
           (AST.Plus, VT.Int i) -> ia i id
           (AST.Plus, VT.Float i) -> fa i id
           (AST.Minus, VT.Int i) -> ia i negate
           (AST.Minus, VT.Float i) -> fa i negate
-          (AST.Not, VT.Bool b) -> RM.putRMTree (VT.mkAtomTree (VT.Bool (not b)))
+          (AST.Not, VT.Bool b) -> RM.putTMTree (VT.mkAtomTree (VT.Bool (not b)))
           (AST.UnaRelOp uop, _) -> case (uop, ta) of
             (AST.NE, a) -> mkb (VT.BdNE a)
             (AST.LT, VT.Int i) -> mkib VT.BdLT i
@@ -66,8 +66,8 @@ regUnaryOp op _t = do
             (AST.GT, VT.Float f) -> mkfb VT.BdGT f
             (AST.GE, VT.Int i) -> mkib VT.BdGE i
             (AST.GE, VT.Float f) -> mkfb VT.BdGE f
-            (AST.ReMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReMatch p])
-            (AST.ReNotMatch, VT.String p) -> RM.putRMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReNotMatch p])
+            (AST.ReMatch, VT.String p) -> RM.putTMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReMatch p])
+            (AST.ReNotMatch, VT.String p) -> RM.putTMTree (VT.mkBoundsTree [VT.BdStrMatch $ VT.BdReNotMatch p])
             _ -> putConflict
           _ -> putConflict
     _ -> putConflict
@@ -76,22 +76,22 @@ regUnaryOp op _t = do
   conflictErr = VT.mkBottomTree $ printf "%s cannot be used for %s" (show _t) (show op)
 
   putConflict :: (RM.ReduceTCMonad s r m) => m ()
-  putConflict = RM.putRMTree conflictErr
+  putConflict = RM.putTMTree conflictErr
 
   ia :: (RM.ReduceTCMonad s r m) => Integer -> (Integer -> Integer) -> m ()
-  ia a f = RM.putRMTree (VT.mkAtomTree (VT.Int $ f a))
+  ia a f = RM.putTMTree (VT.mkAtomTree (VT.Int $ f a))
 
   fa :: (RM.ReduceTCMonad s r m) => Double -> (Double -> Double) -> m ()
-  fa a f = RM.putRMTree (VT.mkAtomTree (VT.Float $ f a))
+  fa a f = RM.putTMTree (VT.mkAtomTree (VT.Float $ f a))
 
   mkb :: (RM.ReduceTCMonad s r m) => VT.Bound -> m ()
-  mkb b = RM.putRMTree (VT.mkBoundsTree [b])
+  mkb b = RM.putTMTree (VT.mkBoundsTree [b])
 
   mkib :: (RM.ReduceTCMonad s r m) => VT.BdNumCmpOp -> Integer -> m ()
-  mkib uop i = RM.putRMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumInt i)])
+  mkib uop i = RM.putTMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumInt i)])
 
   mkfb :: (RM.ReduceTCMonad s r m) => VT.BdNumCmpOp -> Double -> m ()
-  mkfb uop f = RM.putRMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumFloat f)])
+  mkfb uop f = RM.putTMTree (VT.mkBoundsTree [VT.BdNumCmp $ VT.BdNumCmpCons uop (VT.NumFloat f)])
 
 -- * Regular Binary Ops
 
@@ -114,10 +114,10 @@ regBinDir op (d1, _t1) (d2, _t2) = do
 
   case (t1M, t2M) of
     (Just t1, Just t2) -> case (VT.treeNode t1, VT.treeNode t2) of
-      (VT.TNBottom _, _) -> RM.putRMTree t1
-      (_, VT.TNBottom _) -> RM.putRMTree t2
-      (VT.TNRefCycle (VT.RefCycleVertMerger _), _) -> RM.putRMTree t1
-      (_, VT.TNRefCycle (VT.RefCycleVertMerger _)) -> RM.putRMTree t2
+      (VT.TNBottom _, _) -> RM.putTMTree t1
+      (_, VT.TNBottom _) -> RM.putTMTree t2
+      (VT.TNRefCycle (VT.RefCycleVertMerger _), _) -> RM.putTMTree t1
+      (_, VT.TNRefCycle (VT.RefCycleVertMerger _)) -> RM.putTMTree t2
       (VT.TNAtom l1, _) -> regBinLeftAtom op (d1, l1, t1) (d2, t2)
       (_, VT.TNAtom l2) -> regBinLeftAtom op (d2, l2, t2) (d1, t1)
       (VT.TNStruct s1, _) -> regBinLeftStruct op (d1, s1, t1) (d2, t2)
@@ -126,11 +126,11 @@ regBinDir op (d1, _t1) (d2, _t2) = do
       (_, VT.TNDisj dj2) -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
       _ -> regBinLeftOther op (d1, t1) (d2, t2)
     (Just t1, _)
-      | VT.TNBottom _ <- VT.treeNode t1 -> RM.putRMTree t1
-      | VT.TNRefCycle (VT.RefCycleVertMerger _) <- VT.treeNode t1 -> RM.putRMTree t1
+      | VT.TNBottom _ <- VT.treeNode t1 -> RM.putTMTree t1
+      | VT.TNRefCycle (VT.RefCycleVertMerger _) <- VT.treeNode t1 -> RM.putTMTree t1
     (_, Just t2)
-      | VT.TNBottom _ <- VT.treeNode t2 -> RM.putRMTree t2
-      | VT.TNRefCycle (VT.RefCycleVertMerger _) <- VT.treeNode t2 -> RM.putRMTree t2
+      | VT.TNBottom _ <- VT.treeNode t2 -> RM.putTMTree t2
+      | VT.TNRefCycle (VT.RefCycleVertMerger _) <- VT.treeNode t2 -> RM.putTMTree t2
     _ -> return ()
 
 regBinLeftAtom ::
@@ -158,11 +158,11 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ uncmpAtoms a1 a2
            in
             case r of
-              Right b -> RM.putRMTree $ VT.mkAtomTree b
-              Left err -> RM.putRMTree err
+              Right b -> RM.putTMTree $ VT.mkAtomTree b
+              Left err -> RM.putTMTree err
         VT.TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
-        VT.TNStruct _ -> RM.putRMTree $ cmpNull a1 t2
-        VT.TNList _ -> RM.putRMTree $ cmpNull a1 t2
+        VT.TNStruct _ -> RM.putTMTree $ cmpNull a1 t2
+        VT.TNList _ -> RM.putTMTree $ cmpNull a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
     -- arithmetic operators
     | op `elem` arithOps -> case VT.treeNode t2 of
@@ -195,13 +195,13 @@ regBinLeftAtom op (d1, ta1, t1) (d2, t2) = do
               _ -> Left $ mismatch op a1 (VT.amvAtom ta2)
            in
             case r of
-              Right b -> RM.putRMTree $ VT.mkAtomTree b
-              Left err -> RM.putRMTree err
+              Right b -> RM.putTMTree $ VT.mkAtomTree b
+              Left err -> RM.putTMTree err
         VT.TNDisj dj2 -> regBinLeftDisj op (d2, dj2, t2) (d1, t1)
-        VT.TNStruct _ -> RM.putRMTree $ mismatchArith a1 t2
-        VT.TNList _ -> RM.putRMTree $ mismatchArith a1 t2
+        VT.TNStruct _ -> RM.putTMTree $ mismatchArith a1 t2
+        VT.TNList _ -> RM.putTMTree $ mismatchArith a1 t2
         _ -> regBinLeftOther op (d2, t2) (d1, t1)
-    | otherwise -> RM.putRMTree (VT.mkBottomTree $ printf "operator %s is not supported" (show op))
+    | otherwise -> RM.putTMTree (VT.mkBottomTree $ printf "operator %s is not supported" (show op))
  where
   a1 = VT.amvAtom ta1
   cmpOps = [(AST.Equ, (==)), (AST.BinRelOp AST.NE, (/=))]
@@ -236,7 +236,7 @@ regBinLeftStruct ::
   m ()
 regBinLeftStruct op (d1, _, t1) (d2, t2) = case VT.treeNode t2 of
   VT.TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-  _ -> RM.putRMTree (mismatch op t1 t2)
+  _ -> RM.putTMTree (mismatch op t1 t2)
 
 regBinLeftDisj ::
   (RM.ReduceTCMonad s r m) =>
@@ -248,7 +248,7 @@ regBinLeftDisj op (d1, dj1, t1) (d2, t2) = case dj1 of
   VT.Disj{VT.dsjDefault = Just d} -> regBinDir op (d1, d) (d2, t2)
   _ -> case VT.treeNode t2 of
     VT.TNAtom a2 -> regBinLeftAtom op (d2, a2, t2) (d1, t1)
-    _ -> RM.putRMTree (mismatch op t1 t2)
+    _ -> RM.putTMTree (mismatch op t1 t2)
 
 regBinLeftOther ::
   (RM.ReduceTCMonad s r m) => AST.BinaryOp -> (Path.BinOpDirect, VT.Tree) -> (Path.BinOpDirect, VT.Tree) -> m ()
@@ -260,9 +260,9 @@ regBinLeftOther op (d1, t1) (d2, t2) = do
     (VT.TNAtomCnstr c, _) -> do
       na <- regBinDir op (d1, VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c)) (d2, t2) >> RM.getRMTree
       case VT.treeNode na of
-        VT.TNAtom atom -> RM.putRMTree (VT.mkNewTree (VT.TNAtomCnstr $ VT.updateCnstrAtom atom c))
+        VT.TNAtom atom -> RM.putTMTree (VT.mkNewTree (VT.TNAtomCnstr $ VT.updateCnstrAtom atom c))
         _ -> undefined
-    _ -> RM.putRMTree (VT.mkBottomTree mismatchErr)
+    _ -> RM.putTMTree (VT.mkBottomTree mismatchErr)
  where
   mismatchErr :: String
   mismatchErr = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
@@ -329,15 +329,15 @@ _indexExpr :: (RM.ReduceTCMonad s r m) => Path.Reference -> VT.Tree -> m ()
 _indexExpr idxRef end = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   orig <- RM.getRMTree -- save stub
-  RM.putRMTree end
+  RM.putTMTree end
   reduce
   RM.unlessFocusBottom () $ do
-    -- descendRM can not be used here because it would change the tree cursor.
-    tc <- RM.getRMCursor
+    -- descendTM can not be used here because it would change the tree cursor.
+    tc <- RM.getTMCursor
     maybe
       -- If the index is not found, the original tree (stub) is restored.
-      (RM.putRMTree orig)
-      (RM.putRMTree . Cursor.tcFocus)
+      (RM.putTMTree orig)
+      (RM.putTMTree . Cursor.tcFocus)
       (TCursorOps.goDownTCAddr (Path.refToAddr idxRef) tc)
 
     RM.withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
@@ -358,14 +358,14 @@ comprehend c = do
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $ printf "comprehend: addr: %s start reduced to: %s" (show addr) (show t)
   case VT.treeNode t of
-    VT.TNBottom _ -> RM.putRMTree t
+    VT.TNBottom _ -> RM.putTMTree t
     VT.TNMutable _ -> return ()
     _
       | Just (VT.Bool b) <- VT.getAtomFromTree t ->
           if b
             then do
-              RM.putRMTree (VT.cphStruct c)
+              RM.putTMTree (VT.cphStruct c)
               MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
               reduce
-            else RM.putRMTree $ VT.mkStructTree VT.emptyStruct
-    _ -> RM.putRMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)
+            else RM.putTMTree $ VT.mkStructTree VT.emptyStruct
+    _ -> RM.putTMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)
