@@ -66,13 +66,13 @@ reduceMutTree = RM.debugSpanTM "reduceMutTree" $ do
 
 If nothing concrete can be returned, then the original argument is returned.
 -}
-reduceUnifyMutTreeArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceUnifyMutTreeArg seg sub = RM.debugSpanArgsTM "reduceUnifyMutTreeArg" (printf "seg: %s" (show seg)) $ do
+reduceUnifyMutTreeArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> m VT.Tree
+reduceUnifyMutTreeArg seg = RM.debugSpanArgsTM "reduceUnifyMutTreeArg" (printf "seg: %s" (show seg)) $ do
   m <-
     Mutate.mutValToArgsRM
       seg
-      sub
       ( do
+          sub <- RM.getRMTree
           reduceMutTree
           RM.withTree $ \x -> return $ case VT.treeNode x of
             VT.TNMutable mut -> Just $ fromMaybe sub (VT.getMutVal mut)
@@ -139,9 +139,9 @@ normalizeUnify tc = do
     VT.TNMutable (VT.UOp u) -> do
       let conjuncts = VT.ufConjuncts u
       foldM
-        ( \acc (i, conj) -> do
+        ( \acc (i, _) -> do
             -- TODO: Resolve the reference.
-            r <- reduceUnifyMutTreeArg (Path.MutableArgTASeg i) conj
+            r <- reduceUnifyMutTreeArg (Path.MutableArgTASeg i)
             _conjTC <- TCursorOps.goDownTCSegMust (Path.MutableArgTASeg i) tc
             let conjTC = r `Cursor.setTCFocus` _conjTC
 
@@ -580,7 +580,7 @@ mergeLeftOther ut1@(UTree{utTC = tc1, utDir = d1}) ut2@(UTree{utTC = tc2}) = do
       RM.withAddrAndFocus $ \addr _ ->
         logDebugStr $ printf "mergeLeftOther starts, addr: %s, %s, %s" (show addr) (show ut1) (show ut2)
       -- If the left value is mutable, we should shallow reduce the left value first.
-      r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1) t1
+      r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1)
       case VT.treeNode r1 of
         VT.TNMutable _ -> return () -- No concrete value exists.
         _ -> mergeUTrees (ut1{utTC = r1 `Cursor.setTCFocus` tc1}) ut2
@@ -640,7 +640,7 @@ mergeLeftStruct (s1, ut1) ut2@(UTree{utTC = tc2}) = do
     -- struct and unify the reduced result (which should be the embeded value) with right value.
     -- For example, {1} & 1.
     | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) -> do
-        r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1)) t2
+        r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1))
         case VT.treeNode r1 of
           VT.TNMutable _ -> return () -- No concrete value exists.
           _ -> mergeUTrees (ut1{utTC = r1 `Cursor.setTCFocus` utTC ut1}) ut2

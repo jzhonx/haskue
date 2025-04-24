@@ -606,8 +606,7 @@ close :: (RM.ReduceTCMonad s r m) => [VT.Tree] -> m ()
 close args
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
-      let a = head args
-      r <- Mutate.reduceMutableArg Path.unaryOpTASeg a
+      r <- Mutate.reduceMutableArg Path.unaryOpTASeg
       case VT.treeNode r of
         -- If the argument is pending, wait for the result.
         VT.TNMutable _ -> return ()

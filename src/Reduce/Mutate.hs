@@ -254,8 +254,7 @@ procMarkedTerms terms = do
   reducedTerms <-
     mapM
       ( \(i, term) -> do
-          let t = VT.dstValue term
-          a <- reduceMutableArg (Path.MutableArgTASeg i) t
+          a <- reduceMutableArg (Path.MutableArgTASeg i)
           return $ term{VT.dstValue = a}
       )
       (zip [0 ..] terms)
@@ -299,13 +298,13 @@ procMarkedTerms terms = do
 
 If nothing concrete can be returned, then the original argument is returned.
 -}
-reduceMutableArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m VT.Tree
-reduceMutableArg seg sub = RM.debugSpanArgsTM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
+reduceMutableArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> m VT.Tree
+reduceMutableArg seg = RM.debugSpanArgsTM "reduceMutableArg" (printf "seg: %s" (show seg)) $ do
   m <-
     mutValToArgsRM
       seg
-      sub
       ( do
+          sub <- RM.getRMTree
           MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
           reduce
           RM.withTree $ \x -> return $ case VT.treeNode x of
@@ -320,8 +319,8 @@ reduceMutableArg seg sub = RM.debugSpanArgsTM "reduceMutableArg" (printf "seg: %
 
 The mutable must see changes propagated from the argument environment.
 -}
-mutValToArgsRM :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m a -> m a
-mutValToArgsRM subSeg sub f = doInMutRM $ RM.mustMutable $ \_ -> RM.inSubTM subSeg sub f
+mutValToArgsRM :: (RM.ReduceTCMonad s r m) => Path.TASeg -> m a -> m a
+mutValToArgsRM subSeg f = doInMutRM $ RM.mustMutable $ \_ -> RM.inSubTM subSeg f
  where
   -- Run the action in the parent tree. All changes will be propagated to the parent tree and back to the current
   -- tree.

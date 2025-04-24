@@ -22,12 +22,11 @@ import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
 
-reduceAtomOpArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> VT.Tree -> m (Maybe VT.Tree)
-reduceAtomOpArg seg sub =
+reduceAtomOpArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> m (Maybe VT.Tree)
+reduceAtomOpArg seg =
   RM.debugSpanArgsTM "reduceAtomOpArg" (printf "seg: %s" (show seg)) $
     Mutate.mutValToArgsRM
       seg
-      sub
       ( do
           MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
           reduce
@@ -44,7 +43,7 @@ reduceAtomOpArg seg sub =
 
 regUnaryOp :: (RM.ReduceTCMonad s r m) => AST.UnaryOp -> VT.Tree -> m ()
 regUnaryOp op _t = do
-  t <- Mutate.reduceMutableArg Path.unaryOpTASeg _t
+  t <- Mutate.reduceMutableArg Path.unaryOpTASeg
   case VT.treeNode t of
     VT.TNBottom _ -> RM.putTMTree t
     VT.TNMutable _ -> return ()
@@ -105,8 +104,8 @@ regBinDir op (d1, _t1) (d2, _t2) = do
     logDebugStr $
       printf "regBinDir: addr: %s, %s: %s with %s: %s" (show addr) (show d1) (show _t1) (show d2) (show _t2)
 
-  t1M <- reduceAtomOpArg (Path.toBinOpTASeg d1) _t1
-  t2M <- reduceAtomOpArg (Path.toBinOpTASeg d2) _t2
+  t1M <- reduceAtomOpArg (Path.toBinOpTASeg d1)
+  t2M <- reduceAtomOpArg (Path.toBinOpTASeg d2)
 
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $
@@ -278,7 +277,7 @@ index ::
   VT.RefArg VT.Tree ->
   m (Either VT.Tree (Maybe Path.TreeAddr))
 index origAddrsM (VT.RefPath var sels) = do
-  refSels <- mapM (\(i, t) -> reduceAtomOpArg (Path.MutableArgTASeg i) t) (zip [0 ..] sels)
+  refSels <- mapM (\(i, _) -> reduceAtomOpArg (Path.MutableArgTASeg i)) (zip [0 ..] sels)
   let refRestPathM = VT.treesToRef . Data.Maybe.catMaybes $ refSels
   logDebugStr $ printf "index: refRestPathM is reduced to %s" (show refRestPathM)
   maybe
@@ -313,7 +312,7 @@ index origAddrsM (VT.RefPath var sels) = do
     refRestPathM
 -- in-place expression, like ({}).a, or regular functions.
 index _ (VT.RefIndex (end : rest)) = do
-  idxSels <- mapM (\(i, x) -> reduceAtomOpArg (Path.MutableArgTASeg i) x) (zip [1 ..] rest)
+  idxSels <- mapM (\(i, _) -> reduceAtomOpArg (Path.MutableArgTASeg i)) (zip [1 ..] rest)
   let idxRefM = VT.treesToRef . Data.Maybe.catMaybes $ idxSels
   logDebugStr $ printf "index: idxRefM is reduced to %s" (show idxRefM)
   maybe
@@ -342,11 +341,10 @@ _indexExpr idxRef end = do
 
     RM.withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
 
-evalIndexArg :: (RM.ReduceTCMonad s r m) => Int -> VT.Tree -> m VT.Tree
-evalIndexArg i t =
+evalIndexArg :: (RM.ReduceTCMonad s r m) => Int -> m VT.Tree
+evalIndexArg i =
   Mutate.mutValToArgsRM
     (Path.MutableArgTASeg i)
-    t
     ( do
         MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
         reduce >> RM.getRMTree
@@ -354,7 +352,7 @@ evalIndexArg i t =
 
 comprehend :: (RM.ReduceTCMonad s r m) => VT.Comprehension VT.Tree -> m ()
 comprehend c = do
-  t <- Mutate.reduceMutableArg (Path.ComprehTASeg Path.ComprehStartTASeg) (VT.cphStart c)
+  t <- Mutate.reduceMutableArg (Path.ComprehTASeg Path.ComprehStartTASeg)
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $ printf "comprehend: addr: %s start reduced to: %s" (show addr) (show t)
   case VT.treeNode t of
