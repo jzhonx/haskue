@@ -30,7 +30,7 @@ If the target is found, a copy of the target value is put to the tree. The targe
 Otherwise, a stub is put to the tree.
 -}
 deref ::
-  (RM.ReduceMonad s r m) =>
+  (RM.ReduceTCMonad s r m) =>
   -- | the reference addr
   Path.Reference ->
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
@@ -73,7 +73,7 @@ If the reference is not found, the function does nothing.
 
 Duplicate cases are handled by the addCtxNotifPair.
 -}
-watchRefRM :: (RM.ReduceMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
+watchRefRM :: (RM.ReduceTCMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
 watchRefRM ref origAddrsM = do
   tc <- RM.getRMCursor
   srcAddrM <-
@@ -99,7 +99,7 @@ If the reference value is another reference, it will follow the reference.
 The environment is the current reference environment. The reference value will be put to the current environment.
 -}
 getDstVal ::
-  (RM.ReduceMonad s r m) =>
+  (RM.ReduceTCMonad s r m) =>
   Path.Reference ->
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
   Set.Set Path.TreeAddr ->
@@ -310,14 +310,14 @@ _checkInf ref srcAddr origValAddr dstTC = do
 
 The arg trail is used to decide whether to close the deref'd value.
 
-The ReduceMonad is only used to run the evalExpr.
+The ReduceTCMonad is only used to run the evalExpr.
 
 From the spec:
 The value of a reference is a copy of the expression associated with the field that it is bound to, with
 any references within that expression bound to the respective copies of the fields they were originally
 bound to.
 -}
-copyRefVal :: (RM.ReduceMonad s r m) => VT.Tree -> m VT.Tree
+copyRefVal :: (RM.ReduceTCMonad s r m) => VT.Tree -> m VT.Tree
 copyRefVal tar = do
   case VT.treeNode tar of
     VT.TNAtom _ -> return tar
@@ -530,7 +530,7 @@ goTCLAAddr ref tc = do
         identTCM
 
 -- | TODO: do we need this?
-searchRMLetBindValue :: (RM.ReduceMonad s r m) => String -> m (Maybe VT.Tree)
+searchRMLetBindValue :: (RM.ReduceTCMonad s r m) => String -> m (Maybe VT.Tree)
 searchRMLetBindValue ident = do
   m <- searchRMIdent ident
   case m of
@@ -543,7 +543,7 @@ searchRMLetBindValue ident = do
       return $ Just r
     _ -> return Nothing
 
-inAbsAddrRMMust :: (RM.ReduceMonad s r m, Show a) => Path.TreeAddr -> m a -> m a
+inAbsAddrRMMust :: (RM.ReduceTCMonad s r m, Show a) => Path.TreeAddr -> m a -> m a
 inAbsAddrRMMust dst f = RM.debugSpanRM (printf "inAbsAddrRMMust: dst: %s" (show dst)) $ do
   addr <- RM.getRMAbsAddr
   m <- inAbsAddrRM dst f
@@ -555,7 +555,7 @@ inAbsAddrRMMust dst f = RM.debugSpanRM (printf "inAbsAddrRMMust: dst: %s" (show 
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrRM :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m a -> m (Maybe a)
+inAbsAddrRM :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m a -> m (Maybe a)
 inAbsAddrRM p f = do
   origAbsAddr <- RM.getRMAbsAddr
 
@@ -569,13 +569,13 @@ inAbsAddrRM p f = do
         (show p)
   return tarM
  where
-  whenM :: (RM.ReduceMonad s r m) => m Bool -> m a -> m (Maybe a)
+  whenM :: (RM.ReduceTCMonad s r m) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
     if b then Just <$> g else return Nothing
 
 -- | Go to the absolute addr in the tree.
-goRMAbsAddr :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m Bool
+goRMAbsAddr :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m Bool
 goRMAbsAddr dst = do
   when (Path.headSeg dst /= Just Path.RootTASeg) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))
@@ -583,7 +583,7 @@ goRMAbsAddr dst = do
   let dstNoRoot = fromJust $ Path.tailTreeAddr dst
   RM.descendRM dstNoRoot
 
-goRMAbsAddrMust :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
+goRMAbsAddrMust :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m ()
 goRMAbsAddrMust dst = do
   from <- RM.getRMAbsAddr
   ok <- goRMAbsAddr dst
@@ -626,7 +626,7 @@ selToIdent _ = throwErrSt "invalid selector"
 
 Return if the identifier address and whether it is a let binding.
 -}
-searchRMIdent :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMIdent :: (RM.ReduceTCMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMIdent name = do
   tc <- RM.getRMCursor
   searchTCIdent name tc
@@ -634,7 +634,7 @@ searchRMIdent name = do
 {- | Search in the parent scope for the first identifier that can match the segment. Also return if the identifier is a
  let binding.
 -}
-searchRMIdentInPar :: (RM.ReduceMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
+searchRMIdentInPar :: (RM.ReduceTCMonad s r m) => String -> m (Maybe (Path.TreeAddr, Bool))
 searchRMIdentInPar name = do
   ptc <- do
     tc <- RM.getRMCursor

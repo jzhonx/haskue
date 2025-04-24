@@ -23,7 +23,7 @@ import qualified TCursorOps
 import Text.Printf (printf)
 import qualified Value.Tree as VT
 
-postValidation :: (RM.ReduceMonad s r m) => m ()
+postValidation :: (RM.ReduceTCMonad s r m) => m ()
 postValidation = RM.debugSpanRM "postValidation" $ do
   ctx <- RM.getRMContext
   -- remove all notifiers.
@@ -48,7 +48,7 @@ postValidation = RM.debugSpanRM "postValidation" $ do
 3. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
-snapshotRM :: (RM.ReduceMonad s r m) => m ()
+snapshotRM :: (RM.ReduceTCMonad s r m) => m ()
 snapshotRM = RM.debugSpanRM "snapshotRM" $ do
   RM.traverseRM $ RM.withTN $ \case
     VT.TNMutable m -> maybe (return ()) RM.putRMTree (VT.getMutVal m)
@@ -60,7 +60,7 @@ snapshotRM = RM.debugSpanRM "snapshotRM" $ do
 1. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
-simplifyRM :: (RM.ReduceMonad s r m) => m ()
+simplifyRM :: (RM.ReduceTCMonad s r m) => m ()
 simplifyRM = RM.debugSpanRM "simplifyRM" $ do
   RM.traverseRM $ RM.withTN $ \case
     VT.TNStruct s -> do
@@ -81,7 +81,7 @@ simplifyRM = RM.debugSpanRM "simplifyRM" $ do
 It creates a validate function, and then evaluates the function. Notice that the validatorß will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: (RM.ReduceMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
+validateCnstr :: (RM.ReduceTCMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
 validateCnstr c = RM.debugSpanRM "validateCnstr" $ do
   -- We can first assume that the tree value is an atom. Make sure the latest atom is created.
   let atomT = VT.mkAtomVTree $ VT.cnsAtom c
@@ -151,7 +151,7 @@ replaceVertCycleRef atomT cnstrTC = do
 1. If it has any unreferenced let clauses.
 2. If its permission is right.
 -}
-validateStruct :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> m ()
+validateStruct :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> m ()
 validateStruct s =
   let errM =
         Map.foldrWithKey

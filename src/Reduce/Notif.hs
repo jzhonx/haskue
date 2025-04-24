@@ -34,7 +34,7 @@ propagates to the dependents of the visiting node and the dependents of its ance
 
 The propagation starts from the current focus.
 -}
-notify :: (RM.ReduceMonad s r m) => m ()
+notify :: (RM.ReduceTCMonad s r m) => m ()
 notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "notify" $ do
   origRefSysEnabled <- RM.getRMRefSysEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
@@ -55,7 +55,7 @@ data BFSState = BFSState
 
 type BFSMonad m a = StateT BFSState m a
 
-bfsLoopQ :: (RM.ReduceMonad s r m) => Int -> BFSMonad m ()
+bfsLoopQ :: (RM.ReduceTCMonad s r m) => Int -> BFSMonad m ()
 bfsLoopQ tid = do
   state@(BFSState{bfsQueue = q}) <- get
   case q of
@@ -85,7 +85,7 @@ bfsLoopQ tid = do
  where
   -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-  addDepsUntilRoot :: (RM.ReduceMonad s r m) => BFSMonad m ()
+  addDepsUntilRoot :: (RM.ReduceTCMonad s r m) => BFSMonad m ()
   addDepsUntilRoot = do
     cs <- lift RM.getRMCrumbs
     -- We should not use root value to notify.
@@ -132,7 +132,7 @@ bfsLoopQ tid = do
     stack <- ctxReduceStack <$> RM.getRMContext
     return $ length stack > 1 && stack !! 1 == parTreeAddr
 
-drainRefSysQueue :: (RM.ReduceMonad s r m) => m ()
+drainRefSysQueue :: (RM.ReduceTCMonad s r m) => m ()
 drainRefSysQueue = do
   q <- RM.getRMRefSysQ
   more <- RM.debugSpanArgsRM "drainRefSysQueue" (printf "q: %s" (show q)) $ do
@@ -150,7 +150,7 @@ drainRefSysQueue = do
   when more drainRefSysQueue
 
 -- | Reduce the immediate parent mutable.
-reduceImParMut :: (RM.ReduceMonad s r m) => m ()
+reduceImParMut :: (RM.ReduceTCMonad s r m) => m ()
 reduceImParMut = do
   -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
   -- Notice the tree focus now changes to the Im mutable.
@@ -172,7 +172,7 @@ reduceImParMut = do
 
 -- Locate the immediate parent mutable.
 -- TODO: consider the mutable does not have arguments.
-locateImMutable :: (RM.ReduceMonad s r m) => m ()
+locateImMutable :: (RM.ReduceTCMonad s r m) => m ()
 locateImMutable = do
   addr <- RM.getRMAbsAddr
   if hasEmptyTreeAddr addr || not (hasMutableArgSeg addr)

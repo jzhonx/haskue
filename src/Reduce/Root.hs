@@ -22,13 +22,13 @@ import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
 
-fullReduce :: (RM.ReduceMonad s r m) => m ()
+fullReduce :: (RM.ReduceTCMonad s r m) => m ()
 fullReduce = RM.debugSpanRM "fullReduce" $ do
   reduce
   Notif.drainRefSysQueue
 
 -- | Reduce the tree to the lowest form.
-reduce :: (RM.ReduceMonad s r m) => m ()
+reduce :: (RM.ReduceTCMonad s r m) => m ()
 reduce = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanRM "reduce" $ do
   RM.treeDepthCheck
   push addr

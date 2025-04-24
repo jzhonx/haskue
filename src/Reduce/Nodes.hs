@@ -33,7 +33,7 @@ import qualified Value.Tree as VT
 
 Most of the heavy work is done in the propUpStructPost function.
 -}
-reduceStruct :: forall s r m. (RM.ReduceMonad s r m) => m ()
+reduceStruct :: forall s r m. (RM.ReduceTCMonad s r m) => m ()
 reduceStruct = RM.debugSpanRM "reduceStruct" $ do
   -- Close the struct if the tree is closed.
   RM.mustStruct $ \s -> do
@@ -87,7 +87,7 @@ reduceStruct = RM.debugSpanRM "reduceStruct" $ do
   -- Reduce all fields. New fields might have been created by the dynamic fields.
   whenStruct () $ \s -> mapM_ (reduceStructField . fst) (Map.toList . VT.stcFields $ s)
 
-whenStruct :: (RM.ReduceMonad s r m) => a -> (VT.Struct VT.Tree -> m a) -> m a
+whenStruct :: (RM.ReduceTCMonad s r m) => a -> (VT.Struct VT.Tree -> m a) -> m a
 whenStruct a f = do
   t <- RM.getRMTree
   case VT.treeNode t of
@@ -95,7 +95,7 @@ whenStruct a f = do
     -- The struct might have been turned to another type due to embedding.
     _ -> return a
 
-validateLetName :: (RM.ReduceMonad s r m) => String -> m ()
+validateLetName :: (RM.ReduceTCMonad s r m) => String -> m ()
 validateLetName name = whenStruct () $ \_ -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
@@ -117,7 +117,7 @@ aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with
 lbRedeclErr :: String -> VT.Tree
 lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
 
-reduceStructField :: (RM.ReduceMonad s r m) => String -> m ()
+reduceStructField :: (RM.ReduceTCMonad s r m) => String -> m ()
 reduceStructField name = whenStruct () $ \struct -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
@@ -144,7 +144,7 @@ reduceStructField name = whenStruct () $ \struct -> do
 
 The focus of the tree must be a struct.
 -}
-propUpStructPost :: (RM.ReduceMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
+propUpStructPost :: (RM.ReduceTCMonad s r m) => (Path.StructTASeg, VT.Struct VT.Tree) -> m ()
 propUpStructPost (Path.DynFieldTASeg i _, _struct) = RM.debugSpanRM
   (printf "propUpStructPost_dynamic, idx: %s" (show i))
   $ do
@@ -340,7 +340,7 @@ dynFieldToStatic struct df = case VT.treeNode label of
 Returns the new field. If the field is not matched with the pattern, it returns the original field.
 -}
 constrainFieldWithCnstrs ::
-  (RM.ReduceMonad s r m) => String -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> m (VT.Field VT.Tree)
+  (RM.ReduceTCMonad s r m) => String -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> m (VT.Field VT.Tree)
 constrainFieldWithCnstrs name =
   foldM
     ( \accField cnstr -> do
@@ -358,7 +358,7 @@ The field should not have been applied with the constraint before.
 It can run in any kind of node.
 -}
 bindFieldWithCnstr ::
-  (RM.ReduceMonad s r m) => String -> VT.Field VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Field VT.Tree, Bool)
+  (RM.ReduceTCMonad s r m) => String -> VT.Field VT.Tree -> VT.StructCnstr VT.Tree -> m (VT.Field VT.Tree, Bool)
 bindFieldWithCnstr name field cnstr = do
   let selPattern = VT.scsPattern cnstr
 
@@ -400,7 +400,7 @@ updateStructWithCnstredRes res struct =
     res
 
 -- | Filter the names that are matched with the constraint's pattern.
-filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [String] -> m [String]
+filterMatchedNames :: (RM.ReduceTCMonad s r m) => VT.StructCnstr VT.Tree -> [String] -> m [String]
 filterMatchedNames cnstr =
   foldM
     ( \acc name -> do
@@ -416,7 +416,7 @@ Returns the updated struct and the list of labels whose fields are affected.
 This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 -}
 removeAppliedObject ::
-  (RM.ReduceMonad s r m) =>
+  (RM.ReduceTCMonad s r m) =>
   Int ->
   VT.Struct VT.Tree ->
   m (VT.Struct VT.Tree, [String])
@@ -486,7 +486,7 @@ removeAppliedObject objID struct = RM.debugSpanRM "removeAppliedObject" $ do
 
 -- | Apply the additional constraint to the fields.
 applyMoreCnstr ::
-  (RM.ReduceMonad s r m) =>
+  (RM.ReduceTCMonad s r m) =>
   VT.StructCnstr VT.Tree ->
   VT.Struct VT.Tree ->
   m (VT.Struct VT.Tree, [String])
@@ -511,19 +511,19 @@ applyMoreCnstr cnstr struct = RM.debugSpanRM "applyMoreCnstr" $ do
       (show $ VT.mkStructTree newStruct)
   return (newStruct, addAffLabels)
 
--- checkPermForNewDyn :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+-- checkPermForNewDyn :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
 -- checkPermForNewDyn struct (Path.DynFieldTASeg i 0) =
 --   let perms = VT.getPermInfoForDyn struct i
 --    in mapM_ (validatePermItem struct) perms
 -- checkPermForNewDyn _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
--- checkPermForNewPattern :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
+-- checkPermForNewPattern :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> Path.StructTASeg -> m ()
 -- checkPermForNewPattern struct (Path.PatternTASeg i 0) =
 --   let perms = VT.getPermInfoForPattern struct i
 --    in mapM_ (validatePermItem struct) perms
 -- checkPermForNewPattern _ opLabel = throwErrSt $ printf "invalid opLabel %s" (show opLabel)
 
-validateStructPerm :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> m ()
+validateStructPerm :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> m ()
 validateStructPerm struct = RM.debugSpanRM "validateStructPerm" $ do
   mapM_
     (\perm -> whenStruct () $ \s -> validatePermItem s perm)
@@ -535,7 +535,7 @@ A struct must be provided so that dynamic fields and constraints can be found.
 
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
-validatePermItem :: (RM.ReduceMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
+validatePermItem :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
 validatePermItem struct p = RM.debugSpanRM "validatePermItem" $ do
   let
     dynsM = dynIdxesToLabels (VT.piDyns p)
@@ -565,7 +565,7 @@ validatePermItem struct p = RM.debugSpanRM "validatePermItem" $ do
         )
         (Set.toList idxes)
 
-reduceCnstredVal :: (RM.ReduceMonad s r m) => VT.CnstredVal VT.Tree -> m ()
+reduceCnstredVal :: (RM.ReduceTCMonad s r m) => VT.CnstredVal VT.Tree -> m ()
 reduceCnstredVal cv = RM.inSubRM Path.SubValTASeg (VT.cnsedVal cv) $ do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   reduce
@@ -576,7 +576,7 @@ mkVarLinkTree var = do
   let mut = VT.mkRefMutable var []
   return $ VT.mkMutableTree mut
 
-reduceDisj :: (RM.ReduceMonad s r m) => VT.Disj VT.Tree -> m ()
+reduceDisj :: (RM.ReduceTCMonad s r m) => VT.Disj VT.Tree -> m ()
 reduceDisj d = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   disjuncts <-
@@ -602,7 +602,7 @@ builtinMutableTable =
   ]
 
 -- | Closes a struct when the tree has struct.
-close :: (RM.ReduceMonad s r m) => [VT.Tree] -> m ()
+close :: (RM.ReduceTCMonad s r m) => [VT.Tree] -> m ()
 close args
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
