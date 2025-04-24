@@ -286,16 +286,18 @@ descendTMSeg seg = do
 _pushTMSub :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m ()
 _pushTMSub seg sub = do
   (Cursor.TreeCursor p crumbs) <- getTMCursor
-  putRMCursor $
-    Cursor.TreeCursor
-      sub
-      ((seg, p) : crumbs)
+  putRMCursor $ Cursor.TreeCursor sub ((seg, p) : crumbs)
 
 -- Push and pop operations
 
-inSubTM :: (ReduceTCMonad r s m) => TASeg -> VT.Tree -> m a -> m a
-inSubTM seg t f = do
-  _pushTMSub seg t
+{- | Run the action in the sub tree.
+
+The sub tree must exist.
+-}
+inSubTM :: (ReduceTCMonad r s m) => TASeg -> m a -> m a
+inSubTM seg f = do
+  ok <- descendTMSeg seg
+  unless ok $ throwErrSt $ printf "descend to %s failed" (show seg)
   r <- f
   propUpTM
   return r
@@ -359,8 +361,8 @@ traverseSub :: forall s r m. (ReduceTCMonad r s m) => m () -> m ()
 traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
  where
   go :: (ReduceTCMonad r s m) => (TASeg, VT.Tree) -> m ()
-  go (sel, sub) = unlessFocusBottom () $ do
-    res <- inSubTM sel sub (f >> getRMTree)
+  go (sel, _) = unlessFocusBottom () $ do
+    res <- inSubTM sel (f >> getRMTree)
     -- If the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
     t <- getRMTree
     case (VT.treeNode t, VT.treeNode res) of

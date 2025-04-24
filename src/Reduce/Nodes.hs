@@ -49,30 +49,30 @@ reduceStruct = RM.debugSpanTM "reduceStruct" $ do
   -- reduce the labels of the dynamic fields first. If the dynfields become actual fields, later they will be reduced.
   whenStruct () $ \s ->
     foldM
-      ( \_ (i, df) ->
+      ( \_ (i, _) ->
           -- Inserting reduced dynamic field element into the struct is handled by propUpStructPost.
-          RM.inSubTM (Path.StructTASeg (Path.DynFieldTASeg i 0)) (VT.dsfLabel df) reduce
+          RM.inSubTM (Path.StructTASeg (Path.DynFieldTASeg i 0)) reduce
       )
       ()
       (IntMap.toList $ VT.stcDynFields s)
 
   whenStruct () $ \s ->
     foldM
-      ( \_ (i, cnstr) ->
+      ( \_ (i, _) ->
           -- pattern value should never be reduced because the references inside the pattern value should only be
           -- resolved in the unification node of the static field.
           -- See unify for more details.
           -- reduced constraint will constrain fields, which is done in the propUpStructPost.
-          RM.inSubTM (Path.StructTASeg (Path.PatternTASeg i 0)) (VT.scsPattern cnstr) reduce
+          RM.inSubTM (Path.StructTASeg (Path.PatternTASeg i 0)) reduce
       )
       ()
       (IntMap.toList $ VT.stcCnstrs s)
 
   whenStruct () $ \s ->
     mapM_
-      ( \(i, embed) ->
+      ( \(i, _) ->
           -- Unifying reduced embedding with the rest of the struct is handled by propUpStructPost.
-          RM.inSubTM (Path.StructTASeg (Path.EmbedTASeg i)) (VT.embValue embed) reduce
+          RM.inSubTM (Path.StructTASeg (Path.EmbedTASeg i)) reduce
       )
       (IntMap.toList $ VT.stcEmbeds s)
 
@@ -118,7 +118,7 @@ lbRedeclErr :: String -> VT.Tree
 lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
 
 reduceStructField :: (RM.ReduceTCMonad s r m) => String -> m ()
-reduceStructField name = whenStruct () $ \struct -> do
+reduceStructField name = whenStruct () $ \_ -> do
   -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
   -- in the parent scope that there is no field with the same name.
   parResM <- RefSys.searchRMIdentInPar name
@@ -133,12 +133,12 @@ reduceStructField name = whenStruct () $ \struct -> do
 
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   whenStruct () $ \_ -> do
-    sub <-
-      maybe
-        (throwErrSt $ printf "%s is not found" (show name))
-        return
-        (VT.lookupStructField name struct)
-    RM.inSubTM (Path.StructTASeg $ Path.StringTASeg name) (VT.ssfValue sub) reduce
+    -- sub <-
+    --   maybe
+    --     (throwErrSt $ printf "%s is not found" (show name))
+    --     return
+    --     (VT.lookupStructField name struct)
+    RM.inSubTM (Path.StructTASeg $ Path.StringTASeg name) reduce
 
 {- | Handle the post process of propagating value into struct.
 
@@ -566,7 +566,7 @@ validatePermItem struct p = RM.debugSpanTM "validatePermItem" $ do
         (Set.toList idxes)
 
 reduceCnstredVal :: (RM.ReduceTCMonad s r m) => VT.CnstredVal VT.Tree -> m ()
-reduceCnstredVal cv = RM.inSubTM Path.SubValTASeg (VT.cnsedVal cv) $ do
+reduceCnstredVal _ = RM.inSubTM Path.SubValTASeg $ do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   reduce
 
@@ -581,7 +581,7 @@ reduceDisj d = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   disjuncts <-
     mapM
-      (\(i, val) -> RM.inSubTM (Path.DisjDisjunctTASeg i) val $ reduce >> RM.getRMTree)
+      (\(i, _) -> RM.inSubTM (Path.DisjDisjunctTASeg i) $ reduce >> RM.getRMTree)
       (zip [0 ..] (VT.dsjDisjuncts d))
   newDisjT <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree (d{VT.dsjDisjuncts = disjuncts})
   RM.modifyTMNodeWithTree newDisjT
