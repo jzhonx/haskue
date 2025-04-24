@@ -35,36 +35,47 @@ deref ::
   Path.Reference ->
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
   m (Maybe Path.TreeAddr)
-deref ref origAddrsM = RM.withAddrAndFocus $ \addr _ ->
+deref ref origAddrsM =
   RM.debugSpanTM (printf "deref: origAddrsM: %s, ref: %s" (show origAddrsM) (show ref)) $ do
-    -- Propagate the changes to the root and get back to the addr. This makes sure the tree cursor sess the latest
-    -- changes.
-    do
-      tc <- RM.getTMCursor
-      -- We should not propagate the current node's state to the parent because its value has just been made to stub,
-      -- which will disrupt the parent if the parent is a struct.
-      refTC <- TCursorOps.propUpTC tc
-      let refAddr = Cursor.tcTreeAddr refTC
-      -- Notice the deref is in the /par_addr/ref_addr/sv, we need to move up to the /par_addr without any propagation
-      -- from ref_addr to par_addr.
-      parTC <- maybe (throwErrSt "already on the top") return (Cursor.parentTC refTC)
-      RM.putRMCursor parTC
-      RM.propUpTMUntilSeg Path.RootTASeg
-      -- First go back to the ref_addr and replace stale value of the ref_addr with the preserved value.
-      goRMAbsAddrMust refAddr
-      RM.putTMTree (Cursor.tcFocus refTC)
-      -- Go to the sv.
-      ok <- RM.descendTMSeg Path.SubValTASeg
-      unless ok $ throwErrSt $ printf "failed to go to the sv addr of %s" (show refAddr)
+    -- -- Propagate the changes to the root and get back to the addr. This makes sure the tree cursor sess the latest
+    -- -- changes.
+    -- do
+    --   tc <- RM.getTMCursor
+    --   -- We should not propagate the current node's state to the parent because its value has just been made to stub,
+    --   -- which will disrupt the parent if the parent is a struct.
+    --   refTC <- TCursorOps.propUpTC tc
+    --   let refAddr = Cursor.tcTreeAddr refTC
+    --   -- Notice the deref is in the /par_addr/ref_addr/sv, we need to move up to the /par_addr without any propagation
+    --   -- from ref_addr to par_addr.
+    --   parTC <- maybe (throwErrSt "already on the top") return (Cursor.parentTC refTC)
+    --   RM.putRMCursor parTC
+    --   RM.propUpTMUntilSeg Path.RootTASeg
+    --   -- First go back to the ref_addr and replace stale value of the ref_addr with the preserved value.
+    --   goRMAbsAddrMust refAddr
+    --   RM.putTMTree (Cursor.tcFocus refTC)
+    --   -- Go to the sv.
+    --   ok <- RM.descendTMSeg Path.SubValTASeg
+    --   unless ok $ throwErrSt $ printf "failed to go to the sv addr of %s" (show refAddr)
 
     -- Add the notifier anyway.
-    watchRefRM ref origAddrsM
+    tc <- RM.getTMCursor
+    watchRefRM ref origAddrsM tc
 
     let
-      selfAddr = Path.noSubValAddr addr
+      selfAddr = Path.noSubValAddr (Cursor.tcTreeAddr tc)
       trail = Set.fromList [selfAddr]
-    tc <- RM.getTMCursor
-    getDstVal ref origAddrsM trail tc
+    tarTCM <- getDstVal ref origAddrsM trail tc
+    maybe
+      (return Nothing)
+      ( \tarTC -> do
+          let
+            tarAddr = Cursor.tcTreeAddr tarTC
+            focus = Cursor.tcFocus tarTC
+          case VT.treeNode focus of
+            VT.TNBottom _ -> return Nothing
+            _ -> return $ Just tarAddr
+      )
+      tarTCM
 
 {- | Monitor the absoluate address of the reference searched from the original environment by adding a notifier pair
 from the current environment address to the searched address.
@@ -73,15 +84,19 @@ If the reference is not found, the function does nothing.
 
 Duplicate cases are handled by the addCtxNotifPair.
 -}
-watchRefRM :: (RM.ReduceTCMonad s r m) => Path.Reference -> Maybe (Path.TreeAddr, Path.TreeAddr) -> m ()
-watchRefRM ref origAddrsM = do
-  tc <- RM.getTMCursor
+watchRefRM ::
+  (RM.ReduceMonad s r m) =>
+  Path.Reference ->
+  Maybe (Path.TreeAddr, Path.TreeAddr) ->
+  Cursor.TreeCursor VT.Tree ->
+  m ()
+watchRefRM ref origAddrsM tc = do
   srcAddrM <-
     refToPotentialAddr ref origAddrsM tc >>= \xM -> return $ do
       x <- xM
       Path.referableAddr x
   -- Since we are in the /sv environment, we need to get the referable addr.
-  recvAddr <- Path.noSubValAddr <$> RM.getTMAbsAddr
+  let recvAddr = Path.noSubValAddr $ Cursor.tcTreeAddr tc
 
   maybe
     (logDebugStr $ printf "watchRefRM: ref %s is not found" (show ref))
@@ -99,27 +114,27 @@ If the reference value is another reference, it will follow the reference.
 The environment is the current reference environment. The reference value will be put to the current environment.
 -}
 getDstVal ::
-  (RM.ReduceTCMonad s r m) =>
+  (RM.ReduceMonad s r m) =>
   Path.Reference ->
   Maybe (Path.TreeAddr, Path.TreeAddr) ->
   Set.Set Path.TreeAddr ->
   Cursor.TreeCursor VT.Tree ->
-  m (Maybe Path.TreeAddr)
-getDstVal ref origAddrsM trail tc = RM.debugSpanArgsTM
+  m (Maybe (Cursor.TreeCursor VT.Tree))
+getDstVal ref origAddrsM trail tc = RM.debugSpanArgsRM
   (printf "getDstVal: ref: %s" (show ref))
   (printf "trail: %s" (show trail))
+  tc
   $ do
-    RM.debugInstantTM "getDstVal" (printf "tc: %s" (show tc))
+    RM.debugInstantRM "getDstVal" (printf "tc: %s" (show tc)) tc
 
     rE <- getDstTC ref origAddrsM trail tc
     case rE of
-      Left err -> RM.putTMTree err >> return Nothing
+      Left err -> return $ Just $ err `Cursor.setTCFocus` tc
       Right Nothing -> return Nothing
       Right (Just tarTC) -> do
         raw <- copyRefVal (Cursor.tcFocus tarTC)
         newVal <- processCopiedRaw trail tarTC raw
-        RM.putTMTree newVal
-        RM.debugInstantTM
+        RM.debugInstantRM
           "getDstVal"
           ( printf
               "ref: %s, dstVal: %s, raw: %s, newVal: %s"
@@ -128,29 +143,35 @@ getDstVal ref origAddrsM trail tc = RM.debugSpanArgsTM
               (show raw)
               (show newVal)
           )
-        tryFollow (newVal `Cursor.setTCFocus` tarTC)
- where
-  -- Try to follow the reference if the new value is a reference.
-  tryFollow utarTC = case ( do
-                              rf <- VT.getMutableFromTree (Cursor.tcFocus utarTC) >>= VT.getRefFromMutable
+          tc
+        tryFollow trail (newVal `Cursor.setTCFocus` tarTC)
+
+-- Try to follow the reference if the new value is a reference.
+tryFollow ::
+  (RM.ReduceMonad s r m) =>
+  Set.Set Path.TreeAddr ->
+  Cursor.TreeCursor VT.Tree ->
+  m (Maybe (Cursor.TreeCursor VT.Tree))
+tryFollow trail tc = case ( do
+                              rf <- VT.getMutableFromTree (Cursor.tcFocus tc) >>= VT.getRefFromMutable
                               newRef <-
                                 VT.refFromRefArg
                                   (\x -> Path.StringSel <$> VT.getStringFromTree x)
                                   (VT.refArg rf)
                               return (newRef, VT.refOrigAddrs rf)
                           ) of
-    -- follow the reference.
-    Just (rf, rfOirgAddrs) -> do
-      let dstAddr = Cursor.tcTreeAddr utarTC
-      RM.withAddrAndFocus $ \addr _ ->
-        logDebugStr $
-          printf
-            "deref_getDstVal: addr: %s, dstAddr: %s, follow the new reference: %s"
-            (show addr)
-            (show dstAddr)
-            (show rf)
-      getDstVal rf rfOirgAddrs (Set.insert dstAddr trail) utarTC
-    _ -> return (Just $ Cursor.tcTreeAddr utarTC)
+  -- follow the reference.
+  Just (rf, rfOirgAddrs) -> do
+    let dstAddr = Cursor.tcTreeAddr tc
+    -- RM.withAddrAndFocus $ \addr _ ->
+    --   logDebugStr $
+    --     printf
+    --       "deref_getDstVal: addr: %s, dstAddr: %s, follow the new reference: %s"
+    --       (show addr)
+    --       (show dstAddr)
+    --       (show rf)
+    getDstVal rf rfOirgAddrs (Set.insert dstAddr trail) tc
+  _ -> return (Just tc)
 
 {- | The result of getting the destination value.
 
@@ -317,7 +338,7 @@ The value of a reference is a copy of the expression associated with the field t
 any references within that expression bound to the respective copies of the fields they were originally
 bound to.
 -}
-copyRefVal :: (RM.ReduceTCMonad s r m) => VT.Tree -> m VT.Tree
+copyRefVal :: (RM.ReduceMonad s r m) => VT.Tree -> m VT.Tree
 copyRefVal tar = do
   case VT.treeNode tar of
     VT.TNAtom _ -> return tar

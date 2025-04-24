@@ -405,3 +405,25 @@ _traceActionTM name argsM f = withAddrAndFocus $ \addr _ -> do
 
 debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
 debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)
+
+debugSpanRM :: (ReduceMonad r s m, Show a) => String -> Cursor.TreeCursor VT.Tree -> m a -> m a
+debugSpanRM name = _traceActionRM name Nothing
+
+debugSpanArgsRM :: (ReduceMonad r s m, Show a) => String -> String -> Cursor.TreeCursor VT.Tree -> m a -> m a
+debugSpanArgsRM name args = _traceActionRM name (Just args)
+
+_traceActionRM :: (ReduceMonad r s m, Show a) => String -> Maybe String -> Cursor.TreeCursor VT.Tree -> m a -> m a
+_traceActionRM name argsM tc f = do
+  seg <- TCursorOps.getTCFocusSeg tc
+  let
+    addr = Cursor.tcTreeAddr tc
+    bfocus = Cursor.tcFocus tc
+    bTraced = if seg == RootTASeg then ShowFullTree bfocus else ShowTree bfocus
+  debugSpan name (show addr) argsM bTraced $ do
+    res <- f
+    return (res, ())
+
+debugInstantRM :: (ReduceMonad r s m) => String -> String -> Cursor.TreeCursor VT.Tree -> m ()
+debugInstantRM name args tc = do
+  let addr = Cursor.tcTreeAddr tc
+  debugInstant name (show addr) (Just args)
