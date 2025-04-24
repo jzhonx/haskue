@@ -8,6 +8,7 @@ import Control.Monad (foldM)
 import Cursor
 import Exception (throwErrSt)
 import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr))
+import Text.Printf (printf)
 import qualified Value.Tree as VT
 
 getTCFocusSeg :: (Env r s m) => TreeCursor VT.Tree -> m TASeg
@@ -43,6 +44,13 @@ goDownTCSeg seg tc = do
           return (dft, DisjDefaultTASeg)
         _ -> Nothing
       goDownTCSeg seg $ mkSubTC nextSeg nextTree tc
+
+goDownTCSegMust :: (Env r s m) => TASeg -> TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+goDownTCSegMust seg tc =
+  maybe
+    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcTreeAddr tc))
+    return
+    $ goDownTCSeg seg tc
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
