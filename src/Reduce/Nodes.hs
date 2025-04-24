@@ -280,12 +280,14 @@ propUpStructPost (Path.EmbedTASeg i, struct) =
                   VT.mkBinaryOp
                     AST.Unify
                     ( \_ _ -> do
-                        tmpAddr <- RM.getRMAbsAddr
-                        let
-                          funcAddr = fromJust $ Path.initTreeAddr tmpAddr
-                          rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
-                          ut1 = UnifyOp.UTree t1 Path.L Nothing addr
-                          ut2 = UnifyOp.UTree t2 Path.R (Just i) rAddr
+                        -- tmpAddr <- RM.getRMAbsAddr
+                        -- let
+                        --   funcAddr = fromJust $ Path.initTreeAddr tmpAddr
+                        --   rAddr = Path.appendSeg Path.binOpRightTASeg funcAddr
+                        --   ut1 = UnifyOp.UTree t1 Path.L Nothing addr
+                        --   ut2 = UnifyOp.UTree t2 Path.R (Just i) rAddr
+                        let ut1 = undefined
+                            ut2 = undefined
                         UnifyOp.mergeUTrees ut1 ut2
                         UnifyOp.reduceMerged
                     )

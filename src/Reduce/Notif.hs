@@ -6,6 +6,7 @@
 
 module Reduce.Notif where
 
+import Common (ctxReduceStack, ctxRefSysGraph)
 import Control.Monad (unless, when)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put)
@@ -90,7 +91,7 @@ bfsLoopQ tid = do
     -- We should not use root value to notify.
     when (length cs > 1) $ do
       recvs <- lift $ do
-        notifyG <- Cursor.ctxRefSysGraph <$> RM.getRMContext
+        notifyG <- ctxRefSysGraph <$> RM.getRMContext
         addr <- RM.getRMAbsAddr
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
         -- finalized address can be notified.
@@ -128,7 +129,7 @@ bfsLoopQ tid = do
         addDepsUntilRoot
 
   parentIsReducing parTreeAddr = do
-    stack <- Cursor.ctxReduceStack <$> RM.getRMContext
+    stack <- ctxReduceStack <$> RM.getRMContext
     return $ length stack > 1 && stack !! 1 == parTreeAddr
 
 drainRefSysQueue :: (RM.ReduceMonad s r m) => m ()

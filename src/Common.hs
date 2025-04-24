@@ -9,8 +9,10 @@ import Control.Monad.Except (MonadError)
 import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import GHC.Stack (HasCallStack)
-import Path (TASeg)
+import Path (TASeg, TreeAddr)
 import Util (HasTrace (..), Trace, emptyTrace)
 
 type Env r s m =
@@ -30,6 +32,11 @@ class HasConfig r where
 class IDStore s where
   getID :: s -> Int
   setID :: s -> Int -> s
+
+class HasContext s where
+  getContext :: s -> Context
+  setContext :: s -> Context -> s
+  modifyContext :: s -> (Context -> Context) -> s
 
 class BuildASTExpr a where
   -- The first argument is a flag to indicate whether the expression is required to be concrete.
@@ -116,3 +123,56 @@ instance HasTrace EEState where
 
 emptyEEState :: EEState
 emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}
+
+data Context = Context
+  { ctxObjID :: Int
+  , ctxReduceStack :: [TreeAddr]
+  , ctxRefSysEnabled :: Bool
+  , ctxRefSysGraph :: Map.Map TreeAddr [TreeAddr]
+  , ctxRefSysQueue :: [TreeAddr]
+  -- ^ The notif queue is a list of addresses that will trigger the notification.
+  , ctxTrace :: Trace
+  }
+  deriving (Eq, Show)
+
+instance HasTrace Context where
+  getTrace = ctxTrace
+  setTrace ctx t = ctx{ctxTrace = t}
+
+instance IDStore Context where
+  getID = ctxObjID
+  setID ctx i = ctx{ctxObjID = i}
+
+emptyContext :: Context
+emptyContext =
+  Context
+    { ctxObjID = 0
+    , ctxReduceStack = []
+    , ctxRefSysGraph = Map.empty
+    , ctxRefSysQueue = []
+    , ctxRefSysEnabled = True
+    , ctxTrace = emptyTrace
+    }
+
+{- | Add a notification pair to the context.
+
+The first element is the source addr, which is the addr that is being watched.
+The second element is the dependent addr, which is the addr that is watching the source addr.
+-}
+addCtxNotifPair :: Context -> (TreeAddr, TreeAddr) -> Context
+addCtxNotifPair ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
+ where
+  oldMap = ctxRefSysGraph ctx
+  depList = fromMaybe [] $ Map.lookup src oldMap
+  newDepList = if dep `elem` depList then depList else dep : depList
+
+hasCtxNotifSender :: TreeAddr -> Context -> Bool
+hasCtxNotifSender addr ctx = Map.member addr (ctxRefSysGraph ctx)
+
+showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
+showRefNotifiers notifiers =
+  let s = Map.foldrWithKey go "" notifiers
+   in if null s then "[]" else "[" ++ s ++ "\n]"
+ where
+  go :: TreeAddr -> [TreeAddr] -> String -> String
+  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps

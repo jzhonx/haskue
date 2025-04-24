@@ -6,8 +6,8 @@
 module MutEnv where
 
 import qualified AST
-import Common (Env, IDStore (..), TreeOp)
-import Cursor (HasCtxVal)
+import Common (Env, HasContext, IDStore (..), TreeOp)
+import Cursor (HasTreeCursor)
 import Exception (throwErrSt)
 import qualified Path
 import Value.Comprehension (Comprehension)
@@ -29,9 +29,10 @@ type EvalEnv r s t m =
 type MutableEnv r s t m =
   ( Env r s m
   , TreeOp t
-  , IDStore s
-  , HasCtxVal s t t
+  , HasTreeCursor s t
   , HasFuncs r t
+  , HasContext s
+  , IDStore s
   )
 
 data Functions t = Functions

@@ -12,8 +12,8 @@ import Text.Printf (printf)
 import qualified Value.Tree as VT
 
 getTCFocusSeg :: (Env r s m) => TreeCursor VT.Tree -> m TASeg
-getTCFocusSeg (ValCursor _ []) = throwErrSt "already at the top"
-getTCFocusSeg (ValCursor _ ((seg, _) : _)) = return seg
+getTCFocusSeg (TreeCursor _ []) = throwErrSt "already at the top"
+getTCFocusSeg (TreeCursor _ ((seg, _) : _)) = return seg
 
 goDownTCAddr :: TreeAddr -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
 goDownTCAddr (TreeAddr sels) = go (reverse sels)
@@ -30,7 +30,7 @@ It handles the case when the current node is a disjunction node.
 -}
 goDownTCSeg :: TASeg -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
 goDownTCSeg seg tc = do
-  let focus = vcFocus tc
+  let focus = tcFocus tc
   case subTree seg focus of
     Just nextTree -> return $ mkSubTC seg nextTree tc
     Nothing -> do
@@ -57,17 +57,17 @@ goDownTCSegMust seg tc =
 It stops at the root.
 -}
 propUpTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
-propUpTC (ValCursor _ []) = throwErrSt "already at the top"
-propUpTC tc@(ValCursor _ [(RootTASeg, _)]) = return tc
-propUpTC (ValCursor subT ((seg, parT) : cs)) = do
+propUpTC (TreeCursor _ []) = throwErrSt "already at the top"
+propUpTC tc@(TreeCursor _ [(RootTASeg, _)]) = return tc
+propUpTC (TreeCursor subT ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
-  return $ ValCursor t cs
+  return $ TreeCursor t cs
 
 -- | Get the top cursor of the tree. No propagation is involved.
 topTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
-topTC (ValCursor _ []) = throwErrSt "already at the top"
-topTC tc@(ValCursor _ ((RootTASeg, _) : _)) = return tc
-topTC (ValCursor _ ((_, parT) : cs)) = topTC $ ValCursor parT cs
+topTC (TreeCursor _ []) = throwErrSt "already at the top"
+topTC tc@(TreeCursor _ ((RootTASeg, _) : _)) = return tc
+topTC (TreeCursor _ ((_, parT) : cs)) = topTC $ TreeCursor parT cs
 
 {- | Visit every node in the tree in pre-order and apply the function.
 
@@ -88,7 +88,7 @@ traverseTC subNodes f x = do
         return (nextTC, snd z)
     )
     y
-    (subNodes $ vcFocus $ fst y)
+    (subNodes $ tcFocus $ fst y)
 
 -- | A simple version of the traverseTC function that does not return a custom value.
 traverseTCSimple ::
@@ -98,5 +98,5 @@ traverseTCSimple ::
   TreeCursor VT.Tree ->
   m (TreeCursor VT.Tree)
 traverseTCSimple subNodes f tc = do
-  (r, _) <- traverseTC subNodes (\(x, _) -> f x >>= \y -> return (y <$ x, ())) (tc, ())
+  (r, _) <- traverseTC subNodes (\(x, _) -> f x >>= \y -> return (y `setTCFocus` x, ())) (tc, ())
   return r

@@ -5,11 +5,11 @@
 
 module Reduce.Root where
 
-import Control.Monad (when)
-import Cursor (
+import Common (
   Context (Context, ctxReduceStack),
   hasCtxNotifSender,
  )
+import Control.Monad (when)
 import Data.Maybe (fromJust, isJust)
 import Exception (throwErrSt)
 import qualified Path

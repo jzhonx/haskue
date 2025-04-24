@@ -40,15 +40,9 @@ import Exception (throwErrSt)
 import qualified MutEnv
 import Parser (parseSourceFile)
 import Path (TASeg (RootTASeg))
-import Reduce (
-  close,
-  comprehend,
-  fullReduce,
-  index,
-  propUpStructPost,
-  reduce,
- )
+import qualified Reduce
 import Reduce.PostReduce (postValidation)
+import qualified Reduce.RMonad as RM
 import Text.Printf (printf)
 import Util (emptyTrace, logDebugStr)
 import qualified Value.Tree as VT
@@ -87,11 +81,11 @@ emptyRunner =
     , rcFuncs =
         MutEnv.Functions
           { MutEnv.fnEvalExpr = evalExpr
-          , MutEnv.fnClose = close
-          , MutEnv.fnReduce = reduce
-          , MutEnv.fnIndex = index
-          , MutEnv.fnPropUpStructPost = propUpStructPost
-          , MutEnv.fnComprehend = comprehend
+          , MutEnv.fnClose = Reduce.close
+          , MutEnv.fnReduce = Reduce.reduce
+          , MutEnv.fnIndex = Reduce.index
+          , MutEnv.fnPropUpStructPost = Reduce.propUpStructPost
+          , MutEnv.fnComprehend = Reduce.comprehend
           }
     }
 
@@ -164,11 +158,11 @@ evalFile sf conf = do
           logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (VT.treeFullStr 0 root)
 
           let
-            rootTC = Cursor.ValCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
-            cv = Cursor.mkCtxVal rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
+            rootTC = Cursor.TreeCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
+            cv = RM.mkRTState rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
           logDebugStr $ printf "---- start reduce tree ----"
-          res <- execStateT fullReduce cv
-          logDebugStr $ printf "---- reduced: ----\n%s" (show . Cursor.getCVCursor $ res)
+          res <- execStateT Reduce.fullReduce cv
+          logDebugStr $ printf "---- reduced: ----\n%s" (show . Cursor.getTreeCursor $ res)
           return res
       )
       runner
@@ -182,5 +176,6 @@ evalFile sf conf = do
              in c{Common.cfRuntimeParams = (Common.cfRuntimeParams c){Common.rpCreateCnstr = False}}
           )
       )
-  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show . Cursor.getCVCursor $ finalized)
-  return $ Cursor.cvVal finalized
+  let finalTC = Cursor.getTreeCursor finalized
+  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show finalTC)
+  return $ Cursor.tcFocus finalTC

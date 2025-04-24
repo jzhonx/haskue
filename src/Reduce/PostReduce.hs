@@ -7,7 +7,7 @@
 
 module Reduce.PostReduce where
 
-import Common (Env, TreeOp (isTreeAtom, isTreeBottom, isTreeMutable))
+import Common (Env, TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), ctxRefSysGraph)
 import Control.Monad.Reader (asks)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
@@ -27,7 +27,7 @@ postValidation :: (RM.ReduceMonad s r m) => m ()
 postValidation = RM.debugSpanRM "postValidation" $ do
   ctx <- RM.getRMContext
   -- remove all notifiers.
-  RM.putRMContext $ ctx{Cursor.ctxRefSysGraph = Map.empty}
+  RM.putRMContext $ ctx{ctxRefSysGraph = Map.empty}
 
   -- rewrite all functions to their results if the results exist.
   snapshotRM
@@ -90,7 +90,7 @@ validateCnstr c = RM.debugSpanRM "validateCnstr" $ do
   MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
   raw <- evalExpr (VT.cnsValidator c)
   tc <- RM.getRMCursor
-  validator <- replaceVertCycleRef (VT.mkAtomVTree $ VT.cnsAtom c) (raw <$ tc)
+  validator <- replaceVertCycleRef (VT.mkAtomVTree $ VT.cnsAtom c) (raw `Cursor.setTCFocus` tc)
   RM.debugInstantRM "validateCnstr" $
     printf "raw: %s, validator: %s" (VT.treeFullStr 0 raw) (VT.treeFullStr 0 validator)
 
@@ -118,10 +118,10 @@ replaceVertCycleRef :: (Env r s m) => VT.Tree -> Cursor.TreeCursor VT.Tree -> m 
 replaceVertCycleRef atomT cnstrTC = do
   let cnstrAddr = Cursor.tcTreeAddr cnstrTC
   utc <- TCursorOps.traverseTCSimple VT.subNodes (replace cnstrAddr) cnstrTC
-  return (Cursor.vcFocus utc)
+  return (Cursor.tcFocus utc)
  where
   replace cnstrAddr tc = do
-    let focus = Cursor.vcFocus tc
+    let focus = Cursor.tcFocus tc
     rfM <- case VT.getMutableFromTree focus of
       Just (VT.Ref rf) -> return $ VT.refFromRefArg (\x -> Path.StringSel <$> VT.getStringFromTree x) (VT.refArg rf)
       _ -> return Nothing

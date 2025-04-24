@@ -102,7 +102,7 @@ instance Show UTree where
       (show d)
       (show $ Cursor.tcTreeAddr tc)
       (show e)
-      (show $ Cursor.vcFocus tc)
+      (show $ Cursor.tcFocus tc)
 
 unify :: (RM.ReduceMonad s r m) => [VT.Tree] -> m ()
 unify ts = do
@@ -134,7 +134,7 @@ It does the following:
 -}
 normalizeUnify :: (RM.ReduceMonad s r m) => Cursor.TreeCursor VT.Tree -> m [UTree]
 normalizeUnify tc = do
-  let t = Cursor.vcFocus tc
+  let t = Cursor.tcFocus tc
   case VT.treeNode t of
     VT.TNMutable (VT.UOp u) -> do
       let conjuncts = VT.ufConjuncts u
@@ -143,7 +143,7 @@ normalizeUnify tc = do
             -- Resolve the reference.
             r <- reduceUnifyMutTreeArg (Path.MutableArgTASeg i) conj
             _conjTC <- TCursorOps.goDownTCSegMust (Path.MutableArgTASeg i) tc
-            let conjTC = r <$ _conjTC
+            let conjTC = r `Cursor.setTCFocus` _conjTC
 
             case VT.treeNode r of
               VT.TNRefCycle _ ->
@@ -208,8 +208,8 @@ mergeUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) = RM.debugSpanArgsRM
   "mergeUTrees"
   (printf ("merging %s" ++ "\n" ++ "with %s") (show ut1) (show ut2))
   $ do
-    let t1 = Cursor.vcFocus tc1
-        t2 = Cursor.vcFocus tc2
+    let t1 = Cursor.tcFocus tc1
+        t2 = Cursor.tcFocus tc2
     -- Each case should handle embedded case when the left value is embedded.
     case (VT.treeNode t1, VT.treeNode t2) of
       -- VT.CnstredVal has the highest priority, because the real operand is the value of the VT.CnstredVal.
@@ -246,7 +246,7 @@ mergeUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) = RM.debugSpanArgsRM
 
 mergeLeftCnstredVal :: (RM.ReduceMonad s r m) => (VT.CnstredVal VT.Tree, UTree) -> UTree -> m ()
 mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} = do
-  let t2 = Cursor.vcFocus tc2
+  let t2 = Cursor.tcFocus tc2
   eM2 <- case VT.treeNode t2 of
     -- ut2 is VT.CnstredVal, we need to merge original expressions.
     VT.TNCnstredVal c2 -> return $ VT.cnsedOrigExpr c2
@@ -260,7 +260,7 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} = do
     [e1, e2] -> return $ AST.binaryOpCons AST.Unify e1 e2
     _ -> throwErrSt "both CnstredVals are empty"
 
-  mergeUTrees ut1{utTC = VT.cnsedVal c1 <$ utTC ut1} ut2
+  mergeUTrees ut1{utTC = VT.cnsedVal c1 `Cursor.setTCFocus` utTC ut1} ut2
   -- Re-encapsulate the VT.CnstredVal.
   RM.withTree $ \t -> case VT.treeNode t of
     VT.TNCnstredVal c -> RM.modifyRMTN (VT.TNCnstredVal $ c{VT.cnsedOrigExpr = Just e})
@@ -268,8 +268,8 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} = do
 
 mergeLeftTop :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
 mergeLeftTop ut1 ut2 = do
-  let t1 = Cursor.vcFocus (utTC ut1)
-      t2 = Cursor.vcFocus (utTC ut2)
+  let t1 = Cursor.tcFocus (utTC ut1)
+      t2 = Cursor.tcFocus (utTC ut2)
   case VT.treeNode t2 of
     -- If the left top is embedded in the right struct, we can immediately put the top into the tree without worrying
     -- any future existing/new fields. Because for example {_, a: 1} is equivalent to _ & {a: 1}. This follows the
@@ -282,7 +282,7 @@ mergeLeftTop ut1 ut2 = do
 
 mergeLeftAtom :: (RM.ReduceMonad s r m) => (VT.AtomV, UTree) -> UTree -> m ()
 mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) = do
-  let t2 = Cursor.vcFocus tc2
+  let t2 = Cursor.tcFocus tc2
   case (VT.amvAtom v1, VT.treeNode t2) of
     (VT.String x, VT.TNAtom s)
       | VT.String y <- VT.amvAtom s -> putTree $ if x == y then VT.TNAtom v1 else amismatch x y
@@ -343,7 +343,7 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
 
 mergeLeftBound :: (RM.ReduceMonad s r m) => (VT.Bounds, UTree) -> UTree -> m ()
 mergeLeftBound (b1, ut1@(UTree{utTC = t1, utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) = do
-  let t2 = Cursor.vcFocus tc2
+  let t2 = Cursor.tcFocus tc2
   case VT.treeNode t2 of
     VT.TNAtom ta2 -> do
       logDebugStr $ printf "mergeAtomBounds: %s, %s" (show t1) (show t2)
@@ -573,8 +573,8 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
 -- | mergeLeftOther is the sink of the unification process.
 mergeLeftOther :: (RM.ReduceMonad s r m) => UTree -> UTree -> m ()
 mergeLeftOther ut1@(UTree{utTC = tc1, utDir = d1}) ut2@(UTree{utTC = tc2}) = do
-  let t1 = Cursor.vcFocus tc1
-      t2 = Cursor.vcFocus tc2
+  let t1 = Cursor.tcFocus tc1
+      t2 = Cursor.tcFocus tc2
   case VT.treeNode t1 of
     (VT.TNMutable _) -> do
       RM.withAddrAndFocus $ \addr _ ->
@@ -583,12 +583,12 @@ mergeLeftOther ut1@(UTree{utTC = tc1, utDir = d1}) ut2@(UTree{utTC = tc2}) = do
       r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg d1) t1
       case VT.treeNode r1 of
         VT.TNMutable _ -> return () -- No concrete value exists.
-        _ -> mergeUTrees (ut1{utTC = r1 <$ tc1}) ut2
+        _ -> mergeUTrees (ut1{utTC = r1 `Cursor.setTCFocus` tc1}) ut2
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
     (VT.TNAtomCnstr c1) -> do
-      mergeUTrees (ut1{utTC = VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c1) <$ tc1}) ut2
+      mergeUTrees (ut1{utTC = VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c1) `Cursor.setTCFocus` tc1}) ut2
       na <- RM.getRMTree
       RM.putRMTree $ case VT.treeNode na of
         VT.TNBottom _ -> na
@@ -634,7 +634,7 @@ mergeLeftOther ut1@(UTree{utTC = tc1, utDir = d1}) ut2@(UTree{utTC = tc2}) = do
 
 mergeLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> m ()
 mergeLeftStruct (s1, ut1) ut2@(UTree{utTC = tc2}) = do
-  let t2 = Cursor.vcFocus tc2
+  let t2 = Cursor.tcFocus tc2
   if
     -- When the left struct is an empty struct with embedded fields (an embedded value), we can get the reduced left
     -- struct and unify the reduced result (which should be the embeded value) with right value.
@@ -643,7 +643,7 @@ mergeLeftStruct (s1, ut1) ut2@(UTree{utTC = tc2}) = do
         r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1)) t2
         case VT.treeNode r1 of
           VT.TNMutable _ -> return () -- No concrete value exists.
-          _ -> mergeUTrees (ut1{utTC = r1 <$ utTC ut1}) ut2
+          _ -> mergeUTrees (ut1{utTC = r1 `Cursor.setTCFocus` utTC ut1}) ut2
     -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
     -- using the embedded value to replace the struct.
     -- For example, the parent struct is {a: 1, b}, and the function is {a: 1} & b.
@@ -877,7 +877,7 @@ _validateRefIdents _tc =
   snd <$> TCursorOps.traverseTC _extAllSubNodes find (_tc, Nothing)
  where
   find (tc, acc) = do
-    case VT.treeNode (Cursor.vcFocus tc) of
+    case VT.treeNode (Cursor.tcFocus tc) of
       VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
         m <- RefSys.searchTCIdent ident tc
         logDebugStr $ printf "_validateRefIdents: ident: %s, m: %s" ident (show m)
@@ -895,10 +895,10 @@ will not conflict with each other.
 -}
 _appendSIDToLetRef :: (Env r s m) => Path.TreeAddr -> Int -> Cursor.TreeCursor VT.Tree -> m VT.Tree
 _appendSIDToLetRef blockAddr sid _tc =
-  Cursor.vcFocus <$> TCursorOps.traverseTCSimple _extAllSubNodes rewrite _tc
+  Cursor.tcFocus <$> TCursorOps.traverseTCSimple _extAllSubNodes rewrite _tc
  where
   rewrite tc =
-    let focus = Cursor.vcFocus tc
+    let focus = Cursor.tcFocus tc
      in case VT.treeNode focus of
           VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
             m <- RefSys.searchTCIdent ident tc
@@ -943,8 +943,8 @@ _extAllSubNodes x = VT.subNodes x ++ rawNodes x
 mkNodeWithDir ::
   (RM.ReduceMonad s r m) => UTree -> UTree -> (VT.Tree -> VT.Tree -> m ()) -> m ()
 mkNodeWithDir (UTree{utTC = tc1, utDir = d1}) (UTree{utTC = tc2}) f = do
-  let t1 = Cursor.vcFocus tc1
-      t2 = Cursor.vcFocus tc2
+  let t1 = Cursor.tcFocus tc1
+      t2 = Cursor.tcFocus tc2
   case d1 of
     Path.L -> f t1 t2
     Path.R -> f t2 t1
@@ -953,7 +953,7 @@ mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> 
 mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) = do
   RM.withAddrAndFocus $ \addr _ ->
     logDebugStr $ printf "mergeLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
-  let t2 = Cursor.vcFocus tc2
+  let t2 = Cursor.tcFocus tc2
   case VT.treeNode t2 of
     VT.TNMutable _ -> mergeLeftOther ut2 ut1
     VT.TNAtomCnstr _ -> mergeLeftOther ut2 ut1

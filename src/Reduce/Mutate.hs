@@ -6,13 +6,10 @@
 
 module Reduce.Mutate where
 
-import Common (TreeOp (isTreeBottom, treeHasRef))
+import Common (TreeOp (isTreeBottom, treeHasRef), ctxRefSysGraph, showRefNotifiers)
 import Control.Monad (unless, when)
 import Control.Monad.Reader (asks)
-import Cursor (
-  Context (ctxRefSysGraph),
-  showRefSysiers,
- )
+import qualified Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import Exception (throwErrSt)
@@ -184,8 +181,7 @@ deleted.
 -}
 delRefSysRecvPrefix :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
 delRefSysRecvPrefix addrPrefix = do
-  RM.withContext $ \ctx -> do
-    RM.putRMContext $ ctx{ctxRefSysGraph = delEmptyElem $ del (ctxRefSysGraph ctx)}
+  RM.modifyRMContext $ \ctx -> ctx{ctxRefSysGraph = delEmptyElem $ del (ctxRefSysGraph ctx)}
   RM.withAddrAndFocus $ \addr _ -> do
     notifiers <- ctxRefSysGraph <$> RM.getRMContext
     logDebugStr $
@@ -193,7 +189,7 @@ delRefSysRecvPrefix addrPrefix = do
         "delRefSysRecvs: addr: %s delete receiver prefix: %s, updated notifiers: %s"
         (show addr)
         (show addrPrefix)
-        (showRefSysiers notifiers)
+        (showRefNotifiers notifiers)
  where
   delEmptyElem :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
   delEmptyElem = Map.filter (not . null)
@@ -210,8 +206,7 @@ If the receiver addresss is the mutable address plus the argument segment, then 
 -}
 delMutValRecvs :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
 delMutValRecvs mutAddr = do
-  RM.withContext $ \ctx ->
-    RM.putRMContext $ ctx{ctxRefSysGraph = delEmptyElem $ delRecvs (ctxRefSysGraph ctx)}
+  RM.modifyRMContext $ \ctx -> ctx{ctxRefSysGraph = delEmptyElem $ delRecvs (ctxRefSysGraph ctx)}
   RM.withAddrAndFocus $ \addr _ -> do
     notifiers <- ctxRefSysGraph <$> RM.getRMContext
     logDebugStr $
@@ -219,7 +214,7 @@ delMutValRecvs mutAddr = do
         "delMutValRecvs: addr: %s delete mutval receiver: %s, updated notifiers to: %s"
         (show addr)
         (show mutAddr)
-        (showRefSysiers notifiers)
+        (showRefNotifiers notifiers)
  where
   delEmptyElem :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
   delEmptyElem = Map.filter (not . null)

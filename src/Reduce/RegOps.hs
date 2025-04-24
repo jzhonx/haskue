@@ -9,9 +9,7 @@ module Reduce.RegOps where
 
 import qualified AST
 import Control.Monad.Reader (asks)
-import Cursor (
-  ValCursor (vcFocus),
- )
+import qualified Cursor
 import Data.Maybe (catMaybes, fromJust, isJust)
 import Exception (throwErrSt)
 import qualified MutEnv
@@ -339,7 +337,7 @@ _indexExpr idxRef end = do
     maybe
       -- If the index is not found, the original tree (stub) is restored.
       (RM.putRMTree orig)
-      (RM.putRMTree . vcFocus)
+      (RM.putRMTree . Cursor.tcFocus)
       (TCursorOps.goDownTCAddr (Path.refToAddr idxRef) tc)
 
     RM.withAddrAndFocus $ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
