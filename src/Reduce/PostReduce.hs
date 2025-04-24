@@ -87,8 +87,7 @@ validateCnstr c = RM.debugSpanRM "validateCnstr" $ do
   let atomT = VT.mkAtomVTree $ VT.cnsAtom c
   RM.putRMTree atomT
 
-  MutEnv.Functions{MutEnv.fnEvalExpr = evalExpr} <- asks MutEnv.getFuncs
-  raw <- evalExpr (VT.cnsValidator c)
+  raw <- RM.evalExprRM (VT.cnsValidator c)
   tc <- RM.getRMCursor
   validator <- replaceVertCycleRef (VT.mkAtomVTree $ VT.cnsAtom c) (raw `Cursor.setTCFocus` tc)
   RM.debugInstantRM "validateCnstr" $

@@ -10,11 +10,10 @@ import qualified AST
 import qualified Common
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
-import Control.Monad.Reader (MonadReader, asks)
+import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify, runStateT)
 import qualified Cursor
 import Exception (throwErrSt)
-import GHC.Stack (HasCallStack)
 import qualified MutEnv
 import Path (
   TASeg (RootTASeg, StructTASeg, TempTASeg),
@@ -30,11 +29,7 @@ import qualified Value.Tree as VT
 type ReduceMonad r s m =
   ( Common.Env r s m
   , Common.HasContext s
-  , MonadReader r m
-  , HasCallStack
-  , Common.HasConfig r
   , MutEnv.HasFuncs r VT.Tree
-  , Common.IDStore s
   )
 
 -- | ReduceTCMonad is the environment for reducing the tree with tree cursor stored.
@@ -363,6 +358,7 @@ traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
       _ -> return ()
 
 {- | Traverse the leaves of the tree cursor in the following order
+
 1. Traverse the current node.
 2. Traverse the sub-tree with the segment.
 -}

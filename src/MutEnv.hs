@@ -32,7 +32,6 @@ type MutableEnv r s t m =
   , HasTreeCursor s t
   , HasFuncs r t
   , HasContext s
-  , IDStore s
   )
 
 data Functions t = Functions

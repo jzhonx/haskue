@@ -140,7 +140,7 @@ normalizeUnify tc = do
       let conjuncts = VT.ufConjuncts u
       foldM
         ( \acc (i, conj) -> do
-            -- Resolve the reference.
+            -- TODO: Resolve the reference.
             r <- reduceUnifyMutTreeArg (Path.MutableArgTASeg i) conj
             _conjTC <- TCursorOps.goDownTCSegMust (Path.MutableArgTASeg i) tc
             let conjTC = r `Cursor.setTCFocus` _conjTC
