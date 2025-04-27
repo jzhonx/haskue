@@ -64,3 +64,11 @@ getStringFromAtom a = case a of
 
 getStringFromAtomV :: AtomV -> Maybe String
 getStringFromAtomV (AtomV a) = getStringFromAtom a
+
+getIntFromAtom :: Atom -> Maybe Int
+getIntFromAtom a = case a of
+  Int i -> Just (fromIntegral i)
+  _ -> Nothing
+
+getIntFromAtomV :: AtomV -> Maybe Int
+getIntFromAtomV (AtomV a) = getIntFromAtom a

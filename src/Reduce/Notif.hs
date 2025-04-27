@@ -6,7 +6,7 @@
 
 module Reduce.Notif where
 
-import Common (ctxReduceStack, ctxRefSysGraph)
+import qualified Common
 import Control.Monad (unless, when)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put)
@@ -14,7 +14,6 @@ import Control.Monad.Trans (lift)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
-import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
@@ -36,9 +35,9 @@ The propagation starts from the current focus.
 -}
 notify :: (RM.ReduceTCMonad s r m) => m ()
 notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanTM "notify" $ do
-  origRefSysEnabled <- RM.getRMRefSysEnabled
+  origRefSysEnabled <- RM.getRMNotifEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
-  RM.setRMRefSysEnabled False
+  RM.setRMNotifEnabled False
   let
     visiting = [addr]
     -- The initial node has already been reduced.
@@ -46,7 +45,7 @@ notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanTM "notify" $ do
 
   tid <- getTraceID
   evalStateT (bfsLoopQ tid) (BFSState visiting q)
-  RM.setRMRefSysEnabled origRefSysEnabled
+  RM.setRMNotifEnabled origRefSysEnabled
 
 data BFSState = BFSState
   { _bfsVisiting :: [Path.TreeAddr]
@@ -91,7 +90,7 @@ bfsLoopQ tid = do
     -- We should not use root value to notify.
     when (length cs > 1) $ do
       recvs <- lift $ do
-        notifyG <- ctxRefSysGraph <$> RM.getRMContext
+        notifyG <- Common.ctxNotifGraph <$> RM.getRMContext
         addr <- RM.getTMAbsAddr
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
         -- finalized address can be notified.
@@ -110,8 +109,7 @@ bfsLoopQ tid = do
         foldr
           ( \recv s@(BFSState v q) ->
               if recv `notElem` v
-                then
-                  BFSState (recv : v) (q ++ [(recv, True)])
+                then BFSState (recv : v) (q ++ [(recv, True)])
                 else s
           )
           state
@@ -125,18 +123,33 @@ bfsLoopQ tid = do
         parentIsReducing $ Cursor.tcTreeAddr ptc
 
       unless inReducing $ do
-        lift RM.propUpTM
+        lift propFocusUpWithPostHandling
         addDepsUntilRoot
 
   parentIsReducing parTreeAddr = do
-    stack <- ctxReduceStack <$> RM.getRMContext
+    stack <- Common.ctxReduceStack <$> RM.getRMContext
     return $ length stack > 1 && stack !! 1 == parTreeAddr
+
+propFocusUpWithPostHandling :: (RM.ReduceTCMonad s r m) => m ()
+propFocusUpWithPostHandling = do
+  tc <- RM.getTMCursor
+  seg <- Cursor.focusTCSeg tc
+  p <- RM.getTMParent
+  RM.debugSpanArgsTM "propFocusUpWithPostHandling" (printf "bpar: %s" (show p)) $ do
+    RM.propUpTM
+    RM.withTree $ \t -> case (seg, VT.getStructFromTree t) of
+      (Path.StructTASeg sseg, Just struct) -> do
+        MutEnv.Functions{MutEnv.fnPropUpStructPost = propUpStructPost} <- asks MutEnv.getFuncs
+        RM.runTMTCAction $ propUpStructPost (sseg, struct)
+      -- invalid combination should have been ruled out by the propUpTC
+      _ -> return ()
 
 drainRefSysQueue :: (RM.ReduceTCMonad s r m) => m ()
 drainRefSysQueue = do
-  q <- RM.getRMRefSysQ
-  more <- RM.debugSpanArgsTM "drainRefSysQueue" (printf "q: %s" (show q)) $ do
-    headM <- RM.popRMRefSysQ
+  q <- RM.getRMNotifQ
+  deps <- Common.ctxNotifGraph <$> RM.getRMContext
+  more <- RM.debugSpanArgsTM "drainRefSysQueue" (printf "q: %s, deps: %s" (show q) (show $ Map.toList deps)) $ do
+    headM <- RM.popRMNotifQ
     case headM of
       Nothing -> return False
       Just addr -> do
@@ -156,19 +169,26 @@ reduceImParMut = do
   -- Notice the tree focus now changes to the Im mutable.
   locateImMutable
   addr <- RM.getTMAbsAddr
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  -- MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   RM.withTree $ \t -> case VT.treeNode t of
     VT.TNMutable mut
       | Just _ <- VT.getRefFromMutable mut -> do
           logDebugStr $
             printf "reduceImParMut: ImPar is a reference, addr: %s, node: %s" (show addr) (show t)
-          reduce
+          reduceFocus
       -- re-evaluate the mutable when it is not a reference.
       | otherwise -> do
           logDebugStr $
             printf "reduceImParMut: re-evaluating the ImPar, addr: %s, node: %s" (show addr) (show t)
-          reduce
+          reduceFocus
     _ -> logDebugStr "reduceImParMut: ImPar is not found"
+
+reduceFocus :: (RM.ReduceTCMonad s r m) => m ()
+reduceFocus = do
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  tc <- RM.getTMCursor
+  r <- reduce tc
+  RM.putTMCursor (r `Cursor.setTCFocus` tc)
 
 -- Locate the immediate parent mutable.
 -- TODO: consider the mutable does not have arguments.

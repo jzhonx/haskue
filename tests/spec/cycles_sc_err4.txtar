@@ -1,0 +1,4 @@
+-- cycles_sc_err4 --
+f: { out: f & {} }
+-- exp --
+error: structural cycle

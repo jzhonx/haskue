@@ -59,7 +59,8 @@ class TreeOp a where
   isTreeAtom :: a -> Bool
   isTreeBottom :: a -> Bool
   isTreeCnstr :: a -> Bool
-  isTreeRefCycle :: a -> Bool
+
+  -- isTreeRefCycle :: a -> Bool
   isTreeMutable :: a -> Bool
   isTreeValue :: a -> Bool
 
@@ -127,10 +128,11 @@ emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}
 data Context = Context
   { ctxObjID :: Int
   , ctxReduceStack :: [TreeAddr]
-  , ctxRefSysEnabled :: Bool
-  , ctxRefSysGraph :: Map.Map TreeAddr [TreeAddr]
-  , ctxRefSysQueue :: [TreeAddr]
+  , ctxNotifEnabled :: Bool
+  , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
+  , ctxNotifQueue :: [TreeAddr]
   -- ^ The notif queue is a list of addresses that will trigger the notification.
+  , ctxLetMap :: Map.Map TreeAddr Bool
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
@@ -148,9 +150,10 @@ emptyContext =
   Context
     { ctxObjID = 0
     , ctxReduceStack = []
-    , ctxRefSysGraph = Map.empty
-    , ctxRefSysQueue = []
-    , ctxRefSysEnabled = True
+    , ctxNotifGraph = Map.empty
+    , ctxNotifQueue = []
+    , ctxNotifEnabled = True
+    , ctxLetMap = Map.empty
     , ctxTrace = emptyTrace
     }
 
@@ -160,14 +163,14 @@ The first element is the source addr, which is the addr that is being watched.
 The second element is the dependent addr, which is the addr that is watching the source addr.
 -}
 addCtxNotifPair :: Context -> (TreeAddr, TreeAddr) -> Context
-addCtxNotifPair ctx (src, dep) = ctx{ctxRefSysGraph = Map.insert src newDepList oldMap}
+addCtxNotifPair ctx (src, dep) = ctx{ctxNotifGraph = Map.insert src newDepList oldMap}
  where
-  oldMap = ctxRefSysGraph ctx
+  oldMap = ctxNotifGraph ctx
   depList = fromMaybe [] $ Map.lookup src oldMap
   newDepList = if dep `elem` depList then depList else dep : depList
 
 hasCtxNotifSender :: TreeAddr -> Context -> Bool
-hasCtxNotifSender addr ctx = Map.member addr (ctxRefSysGraph ctx)
+hasCtxNotifSender addr ctx = Map.member addr (ctxNotifGraph ctx)
 
 showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
 showRefNotifiers notifiers =

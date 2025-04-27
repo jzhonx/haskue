@@ -114,6 +114,9 @@ data StructElemAdder t
 
 {- | Permission item stores permission information for the static fields and dynamic fields of a struct.
 
+The permission information is used to check if the opposite labels and dynamic fields are allowed when the base struct
+is closed and neither of the structs is embedded.
+
 Because structs can be merged and constraints can be changed, we need to store the permission information of the
 original struct.
 -}

@@ -1,7 +1,11 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module Value.Reference where
 
+import qualified Common
 import Data.List (intercalate)
 import qualified Path
+import Value.Atom
 
 data RefArg t
   = -- | RefPath denotes a reference starting with an identifier.
@@ -11,12 +15,12 @@ data RefArg t
 
 data Reference t = Reference
   { refArg :: RefArg t
-  , refOrigAddrs :: Maybe (Path.TreeAddr, Path.TreeAddr)
+  , refOrigAddrs :: Maybe Path.TreeAddr
   -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
   -- expression.
   -- If it is, the address of the scope is stored here.
   -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
-  -- The first is the subtree root address, the second is the abs address of the value in the subtree.
+  -- The address is the abs address of the value in the subtree.
   , refValue :: Maybe t
   }
   deriving (Show)
@@ -35,23 +39,30 @@ instance (Eq t) => Eq (Reference t) where
 
 showRefArg :: RefArg t -> (t -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (s : map (\x -> maybe "_" id (f x)) xs)
-showRefArg (RefIndex xs) f = "index_" ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)
+showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)
 
 isRefRef :: Reference t -> Bool
 isRefRef r = case refArg r of
   RefPath _ _ -> False
   RefIndex _ -> True
 
-valPathFromRefArg :: (t -> Maybe String) -> RefArg t -> Maybe Path.ValPath
-valPathFromRefArg treeToStr arg = case arg of
-  RefPath s xs -> do
-    sels <- mapM (fmap Path.StringSel . treeToStr) xs
-    return $ Path.ValPath (Path.StringSel s : sels)
+valPathFromRefArg :: (t -> Maybe Atom) -> RefArg t -> Maybe Path.ValPath
+valPathFromRefArg treeToA arg = case arg of
+  RefPath var xs -> do
+    sels <-
+      mapM
+        ( \x -> case treeToA x of
+            Just (String s) -> return $ Path.StringSel s
+            Just (Int i) -> return $ Path.IntSel (fromIntegral i)
+            _ -> Nothing
+        )
+        xs
+    return $ Path.ValPath (Path.StringSel var : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
 
-valPathFromRef :: (t -> Maybe String) -> Reference t -> Maybe Path.ValPath
-valPathFromRef treeToStr ref = valPathFromRefArg treeToStr (refArg ref)
+valPathFromRef :: (t -> Maybe Atom) -> Reference t -> Maybe Path.ValPath
+valPathFromRef treeToA ref = valPathFromRefArg treeToA (refArg ref)
 
 appendRefArg :: t -> RefArg t -> RefArg t
 appendRefArg y = appendRefArgs [y]
@@ -75,3 +86,19 @@ mkIndexRef ts =
     , refValue = Nothing
     , refOrigAddrs = Nothing
     }
+
+mkRefFromValPath :: (Common.Env r s m) => (Atom -> t) -> String -> Path.ValPath -> m (Reference t)
+mkRefFromValPath aToTree var (Path.ValPath xs) = do
+  ys <-
+    mapM
+      ( \y -> case y of
+          Path.StringSel s -> return $ aToTree (String s)
+          Path.IntSel i -> return $ aToTree (Int $ fromIntegral i)
+      )
+      xs
+  return $
+    Reference
+      { refArg = RefPath var ys
+      , refValue = Nothing
+      , refOrigAddrs = Nothing
+      }

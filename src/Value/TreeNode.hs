@@ -36,7 +36,7 @@ import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
 import Value.List (List (lstSubs))
 import Value.Mutable (
   Mutable (..),
-  StatefulFunc (sfnArgs),
+  RegularOp (ropArgs),
   getMutVal,
   setMutVal,
  )
@@ -70,7 +70,7 @@ data TreeNode t
     TNAtom AtomV
   | TNBounds Bounds
   | TNAtomCnstr (AtomCnstr t)
-  | TNRefCycle RefCycle
+  | TNRefCycle
   | TNMutable (Mutable t)
   | TNCnstredVal (CnstredVal t)
   | TNTop
@@ -83,7 +83,6 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
   (==) (TNAtomCnstr c1) (TNAtomCnstr c2) = c1 == c2
-  (==) (TNRefCycle c1) (TNRefCycle c2) = c1 == c2
   (==) (TNDisj dj1) n2@(TNAtom _) =
     if isNothing (dsjDefault dj1)
       then False
@@ -95,6 +94,7 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) TNStub TNStub = True
+  (==) TNRefCycle TNRefCycle = True
   (==) _ _ = False
 
 {- | descend into the tree with the given segment.
@@ -116,7 +116,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     _ -> Nothing
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
-    | (MutableArgTASeg i, SFunc m) <- (seg, mut) -> sfnArgs m `indexList` i
+    | (MutableArgTASeg i, RegOp m) <- (seg, mut) -> ropArgs m `indexList` i
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
     | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
@@ -145,10 +145,10 @@ setSubTreeTN seg subT parT = do
        in return l
     (_, TNMutable mut)
       | MutableArgTASeg i <- seg
-      , SFunc f <- mut -> do
+      , RegOp f <- mut -> do
           let
-            args = sfnArgs f
-            l = TNMutable . SFunc $ f{sfnArgs = take i args ++ [subT] ++ drop (i + 1) args}
+            args = ropArgs f
+            l = TNMutable . RegOp $ f{ropArgs = take i args ++ [subT] ++ drop (i + 1) args}
           return l
       | MutableArgTASeg i <- seg
       , Ref ref <- mut -> do

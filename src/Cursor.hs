@@ -78,9 +78,9 @@ addrFromCrumbs crumbs = TreeAddr . reverse $ go crumbs []
 --     { ctxCrumbs = []
 --     , ctxObjID = 0
 --     , ctxReduceStack = []
---     , ctxRefSysGraph = Map.empty
---     , ctxRefSysQueue = []
---     , ctxRefSysEnabled = True
+--     , ctxNotifGraph = Map.empty
+--     , ctxNotifQueue = []
+--     , ctxNotifEnabled = True
 --     , ctxTrace = emptyTrace
 --     }
 

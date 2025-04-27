@@ -34,7 +34,7 @@ library
         Reduce.RegOps,
         Reduce.Root,
         Reduce.UnifyOp,
-        TCursorOps,
+        TCOps,
         Util,
         Value.Atom,
         Value.Bottom,

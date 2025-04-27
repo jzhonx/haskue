@@ -1,0 +1,4 @@
+-- cycles_ref1_1 --
+x: x & x
+-- exp --
+x: _

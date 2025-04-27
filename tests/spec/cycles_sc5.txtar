@@ -1,0 +1,12 @@
+-- cycles_sc5 --
+f: { out: null | f }
+y: f & { out: {} }
+-- exp --
+f: {
+    out: null
+}
+y: {
+    out: {
+        out: null
+  }
+}

@@ -1,0 +1,8 @@
+-- cycles_sc6 --
+f: {out: null | f & {}}
+-- exp --
+f: {
+    out: null | {
+        out: null
+  }
+}

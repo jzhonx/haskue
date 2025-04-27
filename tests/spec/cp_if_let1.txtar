@@ -1,0 +1,9 @@
+-- cp_if_let1 --
+if true 
+let y = 1
+{
+	x: y
+}
+-- exp --
+x: 1
+

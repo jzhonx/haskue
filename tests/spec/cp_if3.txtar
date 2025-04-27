@@ -1,0 +1,10 @@
+-- cp_if3 --
+p: {a: true}
+if p.a {
+	x: p.a
+}
+-- exp --
+p: {
+    a: true
+}
+x: true

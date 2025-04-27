@@ -1,3 +1,5 @@
+{-# LANGUAGE ViewPatterns #-}
+
 module Path where
 
 import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
@@ -151,6 +153,10 @@ isSegAccessible seg = case seg of
   DisjDefaultTASeg -> True
   _ -> False
 
+isSegDisj :: Path.TASeg -> Bool
+isSegDisj (Path.DisjDisjunctTASeg _) = True
+isSegDisj _ = False
+
 data BinOpDirect = L | R deriving (Eq, Ord)
 
 instance Show BinOpDirect where
@@ -206,15 +212,15 @@ initTreeAddr :: TreeAddr -> Maybe TreeAddr
 initTreeAddr (TreeAddr []) = Nothing
 initTreeAddr (TreeAddr xs) = Just $ TreeAddr (drop 1 xs)
 
--- | Canonicalize address by removing helper segments, such as Mutable argument or subval segments.
+-- | Convert the addr to canonical form which only contains string or int segments.
 canonicalizeAddr :: TreeAddr -> TreeAddr
-canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter (not . isIgnored) xs
+canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter isKept xs
  where
-  isIgnored :: TASeg -> Bool
-  isIgnored (MutableArgTASeg _) = True
-  isIgnored SubValTASeg = True
-  isIgnored TempTASeg = True
-  isIgnored _ = False
+  isKept :: TASeg -> Bool
+  isKept (StructTASeg (getStrFromSeg -> Just _)) = True
+  isKept (IndexTASeg _) = True
+  isKept RootTASeg = True
+  isKept _ = False
 
 -- | Get the tail addr of a addr, excluding the head segment.
 tailTreeAddr :: TreeAddr -> Maybe TreeAddr
@@ -321,6 +327,9 @@ hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
+
+isInDisj :: Path.TreeAddr -> Bool
+isInDisj (Path.TreeAddr xs) = any Path.isSegDisj xs
 
 {- | Convert the address to referable address.
 

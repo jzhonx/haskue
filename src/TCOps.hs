@@ -1,34 +1,49 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module TCursorOps where
+module TCOps where
 
 import Common (Env, TreeOp (setSubTree, subTree))
 import Control.Monad (foldM)
 import Cursor
 import Exception (throwErrSt)
-import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr))
+import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr), tailTreeAddr)
 import Text.Printf (printf)
 import qualified Value.Tree as VT
 
-getTCFocusSeg :: (Env r s m) => TreeCursor VT.Tree -> m TASeg
+type TrCur = TreeCursor VT.Tree
+
+setTCFocusTN :: VT.TreeNode VT.Tree -> TrCur -> TrCur
+setTCFocusTN tn tc = let focus = tcFocus tc in VT.setTN focus tn `setTCFocus` tc
+
+getTCFocusSeg :: (Env r s m) => TrCur -> m TASeg
 getTCFocusSeg (TreeCursor _ []) = throwErrSt "already at the top"
 getTCFocusSeg (TreeCursor _ ((seg, _) : _)) = return seg
 
-goDownTCAddr :: TreeAddr -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
+goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
 goDownTCAddr (TreeAddr sels) = go (reverse sels)
  where
-  go :: [TASeg] -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
+  go :: [TASeg] -> TrCur -> Maybe TrCur
   go [] cursor = Just cursor
   go (x : xs) cursor = do
     nextCur <- goDownTCSeg x cursor
     go xs nextCur
 
+goDownTAddr :: TreeAddr -> VT.Tree -> Maybe TrCur
+goDownTAddr addr starT = goDownTCAddr addr (TreeCursor starT [])
+
+goDownTCAddrMust :: (Env r s m) => TreeAddr -> TrCur -> m TrCur
+goDownTCAddrMust addr tc =
+  maybe
+    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcTreeAddr tc))
+    return
+    (goDownTCAddr addr tc)
+
 {- | Go down the TreeCursor with the given segment and return the new cursor.
 
-It handles the case when the current node is a disjunction node.
+It handles the cases when a node can be accessed without segments, such as the default value of a disjunction.
 -}
-goDownTCSeg :: TASeg -> TreeCursor VT.Tree -> Maybe (TreeCursor VT.Tree)
+goDownTCSeg :: TASeg -> TrCur -> Maybe TrCur
 goDownTCSeg seg tc = do
   let focus = tcFocus tc
   case subTree seg focus of
@@ -45,26 +60,45 @@ goDownTCSeg seg tc = do
         _ -> Nothing
       goDownTCSeg seg $ mkSubTC nextSeg nextTree tc
 
-goDownTCSegMust :: (Env r s m) => TASeg -> TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+goDownTCSegMust :: (Env r s m) => TASeg -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
     (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcTreeAddr tc))
     return
     $ goDownTCSeg seg tc
 
+{- | Go down the Tree with the given segment and return the new cursor with the visiting path.
+
+It handles the cases when a node can be accessed without segments, such as the default value of a disjunction.
+-}
+goDownTSeg :: TASeg -> VT.Tree -> Maybe TrCur
+goDownTSeg seg startT = goDownTCSeg seg (TreeCursor startT [])
+
 {- | Propagates the changes made to the focus to the parent nodes.
 
 It stops at the root.
 -}
-propUpTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+propUpTC :: (Env r s m) => TrCur -> m TrCur
 propUpTC (TreeCursor _ []) = throwErrSt "already at the top"
 propUpTC tc@(TreeCursor _ [(RootTASeg, _)]) = return tc
 propUpTC (TreeCursor subT ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
   return $ TreeCursor t cs
 
+-- Propagate the bottom value up until the root and return the updated tree cursor with the original cursor position.
+syncTC :: (Env r s m) => TrCur -> m TrCur
+syncTC tc = do
+  let addr = tcTreeAddr tc
+      addrTillRootM = tailTreeAddr addr
+  top <- go tc
+  addrTillRoot <- maybe (throwErrSt $ printf "tail tree addr of %s does not exist" (show addr)) return addrTillRootM
+  goDownTCAddrMust addrTillRoot top
+ where
+  go cur@(TreeCursor _ [(RootTASeg, _)]) = return cur
+  go cur = propUpTC cur >>= go
+
 -- | Get the top cursor of the tree. No propagation is involved.
-topTC :: (Env r s m) => TreeCursor VT.Tree -> m (TreeCursor VT.Tree)
+topTC :: (Env r s m) => TrCur -> m TrCur
 topTC (TreeCursor _ []) = throwErrSt "already at the top"
 topTC tc@(TreeCursor _ ((RootTASeg, _) : _)) = return tc
 topTC (TreeCursor _ ((_, parT) : cs)) = topTC $ TreeCursor parT cs
@@ -76,9 +110,9 @@ It does not re-constrain struct fields.
 traverseTC ::
   (Env r s m) =>
   (VT.Tree -> [(TASeg, VT.Tree)]) ->
-  ((TreeCursor VT.Tree, a) -> m (TreeCursor VT.Tree, a)) ->
-  (TreeCursor VT.Tree, a) ->
-  m (TreeCursor VT.Tree, a)
+  ((TrCur, a) -> m (TrCur, a)) ->
+  (TrCur, a) ->
+  m (TrCur, a)
 traverseTC subNodes f x = do
   y <- f x
   foldM
@@ -94,9 +128,15 @@ traverseTC subNodes f x = do
 traverseTCSimple ::
   (Env r s m) =>
   (VT.Tree -> [(TASeg, VT.Tree)]) ->
-  (TreeCursor VT.Tree -> m VT.Tree) ->
-  TreeCursor VT.Tree ->
-  m (TreeCursor VT.Tree)
+  (TrCur -> m VT.Tree) ->
+  TrCur ->
+  m TrCur
 traverseTCSimple subNodes f tc = do
   (r, _) <- traverseTC subNodes (\(x, _) -> f x >>= \y -> return (y `setTCFocus` x, ())) (tc, ())
   return r
+
+inSubTC :: (Env r s m) => TASeg -> (TrCur -> m VT.Tree) -> TrCur -> m TrCur
+inSubTC seg f tc = do
+  subTC <- goDownTCSegMust seg tc
+  r <- f subTC
+  propUpTC (r `Cursor.setTCFocus` subTC)

@@ -312,7 +312,7 @@ evalPrimExpr (PrimExprArguments primExpr aes) = do
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
 replaceFuncArgs t args = case VT.getMutableFromTree t of
-  Just (VT.SFunc fn) -> return . VT.setTN t $ VT.TNMutable . VT.SFunc $ fn{VT.sfnArgs = args}
+  Just (VT.RegOp fn) -> return . VT.setTN t $ VT.TNMutable . VT.RegOp $ fn{VT.ropArgs = args}
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
@@ -345,7 +345,7 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m VT.Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op (RegOps.regUnaryOp op) t)
+  return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op t)
 
 {- | order of arguments is important for disjunctions.
 
@@ -359,7 +359,7 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   case op of
     AST.Unify -> return $ flattenUnify lt rt
-    _ -> return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op (RegOps.regBin op) lt rt)
+    _ -> return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op lt rt)
 
 flattenUnify :: VT.Tree -> VT.Tree -> VT.Tree
 flattenUnify l r = case getLeftAcc of

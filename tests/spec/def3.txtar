@@ -1,27 +1,26 @@
 -- def3 --
-#D: {
-	#OneOf
+#A: {a: int}
 
-	c: int // adds this field.
+B: {
+	// #A only "recursively" closes the #A, and the B via embedding. But {b: c: int} is not closed by #A because no
+	// #ident exists for {b: c: int}.
+	#A
+	b: c: int
 }
 
-#OneOf: {a: int} | {b: int}
-
-D1: #D & {a: 12, c: 22} // { a: 12, c: 22 }
+y: B.b
+y: d: 3 // allowed as nothing closes b
 -- exp --
-#D: {
-    c: int
+#A: {
     a: int
-} | {
-    c: int
-    b: int
 }
-#OneOf: {
+B: {
+    b: {
+        c: int
+  }
     a: int
-} | {
-    b: int
 }
-D1: {
-    a: 12
-    c: 22
+y: {
+    c: int
+    d: 3
 }

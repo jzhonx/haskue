@@ -1,0 +1,9 @@
+-- let3_1 --
+// checks if a chain of let statements is correctly resolved.
+x: ({
+	let ia = ib
+	let ib = 1
+	z: ia
+}).z
+-- exp --
+x: 1

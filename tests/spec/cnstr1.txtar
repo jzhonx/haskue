@@ -4,4 +4,4 @@
 // Then validating b finds 300.
 b: 200 & (b + 100)
 -- exp --
-error: values mismatch: 300 != 200
+error: values mismatch: 200 != 300
