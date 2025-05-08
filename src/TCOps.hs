@@ -35,7 +35,7 @@ goDownTAddr addr starT = goDownTCAddr addr (TreeCursor starT [])
 goDownTCAddrMust :: (Env r s m) => TreeAddr -> TrCur -> m TrCur
 goDownTCAddrMust addr tc =
   maybe
-    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcTreeAddr tc))
+    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcCanAddr tc))
     return
     (goDownTCAddr addr tc)
 
@@ -63,7 +63,7 @@ goDownTCSeg seg tc = do
 goDownTCSegMust :: (Env r s m) => TASeg -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
-    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcTreeAddr tc))
+    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcCanAddr tc))
     return
     $ goDownTCSeg seg tc
 
@@ -88,7 +88,7 @@ propUpTC (TreeCursor subT ((seg, parT) : cs)) = do
 -- Propagate the bottom value up until the root and return the updated tree cursor with the original cursor position.
 syncTC :: (Env r s m) => TrCur -> m TrCur
 syncTC tc = do
-  let addr = tcTreeAddr tc
+  let addr = tcCanAddr tc
       addrTillRootM = tailTreeAddr addr
   top <- go tc
   addrTillRoot <- maybe (throwErrSt $ printf "tail tree addr of %s does not exist" (show addr)) return addrTillRootM
@@ -140,3 +140,17 @@ inSubTC seg f tc = do
   subTC <- goDownTCSegMust seg tc
   r <- f subTC
   propUpTC (r `Cursor.setTCFocus` subTC)
+
+snapshotTC :: (Env r s m) => TrCur -> m TrCur
+snapshotTC tc = do
+  let
+    rewrite xtc =
+      let focus = tcFocus xtc
+       in return $ case VT.treeNode focus of
+            VT.TNBlock block
+              | Just ev <- VT.blkNonStructValue block -> ev
+            VT.TNMutable m -> maybe focus id (VT.getMutVal m)
+            VT.TNCnstredVal c -> VT.cnsedVal c
+            _ -> focus
+
+  traverseTCSimple VT.subNodes rewrite tc

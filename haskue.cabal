@@ -41,7 +41,6 @@ library
         Value.Bounds,
         Value.Comprehension,
         Value.Constraint,
-        Value.Cycle,
         Value.Disj,
         Value.DisjoinOp,
         Value.List,

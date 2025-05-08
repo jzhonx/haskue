@@ -48,6 +48,7 @@ data ChromeStartTraceArgs = ChromeStartTraceArgs
   { cstaTraceID :: Int
   , cstaAddr :: String
   , cstaBeforeFocus :: String
+  , cstaBeforeFocusCUEVal :: String
   , cstaCustomVal :: Maybe String
   }
   deriving (Eq, Show)
@@ -55,6 +56,7 @@ data ChromeStartTraceArgs = ChromeStartTraceArgs
 data ChromeEndTraceArgs = ChromeEndTraceArgs
   { cetaResVal :: String
   , cetaFocus :: String
+  , cetaFocusCUEVal :: String
   }
   deriving (Eq, Show)
 
@@ -99,6 +101,7 @@ instance ToJSON ChromeStartTraceArgs where
       ( [ "traceid" .= show (cstaTraceID cta)
         , "addr" .= cstaAddr cta
         , "bfcs" .= cstaBeforeFocus cta
+        , "bfcsCue" .= cstaBeforeFocusCUEVal cta
         ]
           ++ ( if isNothing (cstaCustomVal cta)
                 then []
@@ -111,6 +114,7 @@ instance ToJSON ChromeEndTraceArgs where
     object
       [ "res" .= cetaResVal cta
       , "fcs" .= cetaFocus cta
+      , "fcsCue" .= cetaFocusCUEVal cta
       ]
 
 instance ToJSON ChromeInstantTrace where
@@ -136,36 +140,36 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b, Show c) =>
+  (MonadState s m, MonadLogger m, HasTrace s, Show a) =>
   String ->
   String ->
   Maybe String ->
-  b ->
-  m (a, c) ->
+  (String, String) ->
+  m (a, String, String) ->
   m a
-debugSpan name addr args bTraced f = do
-  start <- debugSpanStart name addr args bTraced
+debugSpan name addr args (bTraced, bTracedCUEVal) f = do
+  start <- debugSpanStart name addr args bTraced bTracedCUEVal
   debugSpanExec start name addr f
 
 debugSpanStart ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a) => String -> String -> Maybe String -> a -> m Int
-debugSpanStart name addr args bTraced = do
+  (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> String -> String -> m Int
+debugSpanStart name addr args bTraced bTracedCUEVal = do
   let msg = printf "%s, at:%s" name addr
   start <- newTraceStamp 1
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr (show bTraced) args)
+            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr bTraced bTracedCUEVal args)
             )
         )
   return start
 
 debugSpanExec ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a, Show b) => Int -> String -> String -> m (a, b) -> m a
+  (MonadState s m, MonadLogger m, HasTrace s, Show a) => Int -> String -> String -> m (a, String, String) -> m a
 debugSpanExec start name addr f = do
   let msg = printf "%s, at:%s" name addr
-  (res, focus) <- f
+  (res, focus, focusCUEVal) <- f
   end <- do
     poEnd <- lastTraceStamp
     if poEnd == start
@@ -176,7 +180,7 @@ debugSpanExec start name addr f = do
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) (show focus))
+            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) focus focusCUEVal)
             )
         )
   return res

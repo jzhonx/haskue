@@ -7,7 +7,7 @@
 
 module Reduce.PostReduce where
 
-import Common (Env, TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), ctxNotifGraph)
+import Common (Env, TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), buildASTExpr, ctxNotifGraph)
 import Control.Monad (when)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
@@ -16,7 +16,6 @@ import Data.Maybe (fromJust, isNothing)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified Path
-import Reduce.Nodes (whenStruct)
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import Reduce.Root (fullReduce)
@@ -40,7 +39,6 @@ postValidation = RM.debugSpanTM "postValidation" $ do
     -- then validate all constraints.
     RM.traverseTM $ RM.withTN $ \case
       VT.TNAtomCnstr c -> validateCnstr c
-      -- VT.TNStruct s -> validateStruct s
       _ -> return ()
 
   unreferred <- RM.getRMUnreferredLets
@@ -65,8 +63,10 @@ embeddings. All the pending values should have been already applied to the stati
 snapshotRM :: (RM.ReduceTCMonad s r m) => m ()
 snapshotRM = RM.debugSpanTM "snapshotRM" $ do
   RM.traverseTM $ RM.withTN $ \case
-    VT.TNMutable m -> maybe (return ()) RM.putTMTree (VT.getMutVal m)
-    VT.TNCnstredVal c -> RM.putTMTree $ VT.cnsedVal c
+    VT.TNBlock block
+      | Just ev <- VT.blkNonStructValue block -> RM.modifyTMNodeWithTree ev
+    VT.TNMutable m -> maybe (return ()) RM.modifyTMNodeWithTree (VT.getMutVal m)
+    VT.TNCnstredVal c -> RM.modifyTMNodeWithTree $ VT.cnsedVal c
     _ -> return ()
 
 {- | Traverse the tree and does the following things with the node:
@@ -76,26 +76,34 @@ embeddings. All the pending values should have been already applied to the stati
 -}
 simplifyRM :: (RM.ReduceTCMonad s r m) => m ()
 simplifyRM = RM.debugSpanTM "simplifyRM" $ do
-  RM.traverseTM $ RM.withTN $ \case
-    VT.TNStruct s -> do
-      validateStructPerm s
-      t <- RM.getTMTree
-      case VT.treeNode t of
-        VT.TNStruct st ->
-          RM.modifyTMTN $
-            VT.TNStruct $
-              st
-                { VT.stcCnstrs = IntMap.empty
-                , VT.stcEmbeds = IntMap.empty
-                , VT.stcDynFields = IntMap.empty
-                , VT.stcPerms = []
-                }
-        _ -> return ()
-    _ -> return ()
+  RM.traverseTM $ do
+    RM.withTN $ \case
+      VT.TNBlock _ -> validateStructPerm
+      _ -> return ()
+
+    RM.withTN $ \case
+      VT.TNBlock block
+        | Just _ <- VT.blkNonStructValue block -> throwErrSt "non struct value exists in block"
+        | otherwise ->
+            RM.modifyTMTN $
+              VT.TNBlock $
+                ( VT.modifyBlockStruct
+                    ( \st ->
+                        st
+                          { VT.stcCnstrs = IntMap.empty
+                          , VT.stcDynFields = IntMap.empty
+                          , VT.stcPerms = []
+                          }
+                    )
+                    block
+                )
+                  { VT.blkEmbeds = IntMap.empty
+                  }
+      _ -> return ()
 
 {- | Validate the constraint.
 
-It creates a validate function, and then evaluates the function. Notice that the validatorß will be assigned to the
+It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
 validateCnstr :: (RM.ReduceTCMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
@@ -131,8 +139,8 @@ validateCnstr c = RM.debugSpanTM "validateCnstr" $ do
 cycle with the constraint's atom.
 -}
 replaceSelfRef :: (RM.ReduceMonad s r m) => VT.Tree -> TCOps.TrCur -> m VT.Tree
-replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" cnstrTC $ do
-  let cnstrAddr = Cursor.tcTreeAddr cnstrTC
+replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" Just cnstrTC $ do
+  let cnstrAddr = Cursor.tcCanAddr cnstrTC
   utc <- TCOps.traverseTCSimple VT.subNodes (replace cnstrAddr) cnstrTC
   return (Cursor.tcFocus utc)
  where
@@ -155,7 +163,7 @@ replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" cnstrTC $ do
                 (return focus)
                 ( \rtc ->
                     return $
-                      if Cursor.tcTreeAddr rtc == cnstrAddr
+                      if Cursor.tcCanAddr rtc == cnstrAddr
                         then atomT
                         else focus
                 )
@@ -163,31 +171,12 @@ replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" cnstrTC $ do
       )
       rfM
 
-{- | Validate the struct for the following cases:
-
-1. If it has any unreferenced let clauses.
-2. If its permission is right.
--}
-validateStruct :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> m ()
-validateStruct s = undefined
-
--- errM <-
---       foldM
---         ( \label acc ->
---             if isNothing acc && not (VT.lbReferred lb)
---               then Just $ VT.mkBottomTree $ printf "unreferenced let clause let %s" label
---               else acc
---         )
---         Nothing
---         (Map.keys $ VT.stcLets s)
-
---  maybe (return ()) RM.putTMTree errM
-
-validateStructPerm :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> m ()
-validateStructPerm struct = RM.debugSpanTM "validateStructPerm" $ do
+validateStructPerm :: (RM.ReduceTCMonad s r m) => m ()
+validateStructPerm = RM.debugSpanTM "validateStructPerm" $ do
   t <- RM.getTMTree
   case VT.treeNode t of
-    VT.TNStruct s -> mapM_ (validatePermItem s) (VT.stcPerms struct)
+    -- After snapsnot, the VT.blkNonStructValue should be None.
+    VT.TNBlock (VT.Block{VT.blkStruct = s}) -> mapM_ (validatePermItem s) (VT.stcPerms s)
     _ -> return ()
 
 {- | Validate the permission item.

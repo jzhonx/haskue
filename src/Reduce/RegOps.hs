@@ -9,59 +9,43 @@ module Reduce.RegOps where
 import qualified AST
 import Control.Monad.Reader (asks)
 import qualified Cursor
-import Data.Maybe (catMaybes, fromJust, isJust)
-import Exception (throwErrSt)
+import Data.Maybe (fromJust, isJust)
 import qualified MutEnv
 import qualified Path
-import qualified Reduce.Mutate as Mutate
 import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
 import qualified TCOps
 import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
-
--- reduceAtomOpArg :: (RM.ReduceMonad s r m) => Path.TASeg -> m (Maybe VT.Tree)
--- reduceAtomOpArg seg = undefined
-
--- reduceAtomOpArg :: (RM.ReduceTCMonad s r m) => Path.TASeg -> m (Maybe VT.Tree)
--- reduceAtomOpArg seg =
---   RM.debugSpanArgsTM "reduceAtomOpArg" (printf "seg: %s" (show seg)) $
---     Mutate.mutValToArgsRM
---       seg
---       ( do
---           MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
---           reduce
---           RM.withTree $ \x -> return $ case VT.treeNode x of
---             VT.TNMutable mut -> do
---               mv <- VT.getMutVal mut
---               -- Make sure the mutval is an atom.
---               _ <- VT.getAtomFromTree mv
---               return mv
---             _ -> Just x
---       )
-
--- handleRefCycle :: VT.RefCycle -> TCOps.TrCur -> Maybe VT.Tree
--- handleRefCycle (VT.RefCycle addr) opTC = Nothing
-
--- if addr == Cursor.tcTreeAddr opTC
---   then Nothing
---   else Just $ VT.mkNewTree $ VT.TNRefCycle (VT.RefCycle addr)
 
 -- * Regular Unary Ops
 
 retVal :: (RM.ReduceMonad s r m) => VT.Tree -> m (Maybe VT.Tree)
 retVal = return . Just
 
+{- | Reduce the tree cursor to concrete.
+
+According to the spec,
+A value is concrete if it is either an atom, or a struct whose field values are all concrete, recursively.
+-}
+reduceToConcrete :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe VT.Tree)
+reduceToConcrete tc = RM.debugSpanArgsRM "reduceToConcrete" (show tc) id tc $ do
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  -- Reduce the argument and get the CUE value.
+  rM <- VT.getCUEValTree <$> reduce tc
+  return $ do
+    cval <- rM
+    case VT.getBottomFromTree cval of
+      Just _ -> return cval
+      _ -> VT.getConcreteValue cval
+
 regUnaryOp :: (RM.ReduceMonad s r m) => AST.UnaryOp -> TCOps.TrCur -> m (Maybe VT.Tree)
 regUnaryOp op opTC = do
   argTC <- TCOps.goDownTCSegMust Path.unaryOpTASeg opTC
-  tM <- Mutate.reduceToConcrete argTC
+  tM <- reduceToConcrete argTC
   case tM of
     Just t -> case VT.treeNode t of
       VT.TNBottom _ -> retVal t
-      VT.TNMutable _ -> return Nothing
-      VT.TNRefCycle -> return Nothing
       _
         | Just ta <- VT.getAtomFromTree t -> case (op, ta) of
             (AST.Plus, VT.Int i) -> ia i id
@@ -111,18 +95,14 @@ regBinDir ::
   (Path.BinOpDirect, TCOps.TrCur) ->
   m (Maybe VT.Tree)
 regBinDir op (d1, _tc1) (d2, _tc2) = do
-  -- RM.withAddrAndFocus $ \addr _ ->
-  --   logDebugStr $
-  --     printf "regBinDir: addr: %s, %s: %s with %s: %s" (show addr) (show d1) (show _t1) (show d2) (show _t2)
-
-  t1M <- Mutate.reduceToConcrete _tc1
-  t2M <- Mutate.reduceToConcrete _tc2
+  t1M <- reduceToConcrete _tc1
+  t2M <- reduceToConcrete _tc2
 
   opTC <- Cursor.parentTCMust _tc1
   RM.debugInstantOpRM
     "regBinDir"
     (printf "reduced args, %s: %s with %s: %s" (show d1) (show t1M) (show d2) (show t2M))
-    (Cursor.tcTreeAddr opTC)
+    (Cursor.tcCanAddr opTC)
 
   case (t1M, t2M) of
     (Just t1, Just t2) ->
@@ -133,21 +113,17 @@ regBinDir op (d1, _tc1) (d2, _tc2) = do
         case (VT.treeNode t1, VT.treeNode t2) of
           (VT.TNBottom _, _) -> retVal t1
           (_, VT.TNBottom _) -> retVal t2
-          (VT.TNRefCycle, _) -> return Nothing
-          (_, VT.TNRefCycle) -> return Nothing
           (VT.TNAtom l1, _) -> regBinLeftAtom op (d1, l1, tc1) (d2, tc2)
           (_, VT.TNAtom l2) -> regBinLeftAtom op (d2, l2, tc2) (d1, tc1)
-          (VT.TNStruct s1, _) -> regBinLeftStruct op (d1, s1, tc1) (d2, tc2)
-          (_, VT.TNStruct s2) -> regBinLeftStruct op (d2, s2, tc2) (d1, tc1)
+          (VT.TNBlock s1, _) -> regBinLeftBlock op (d1, s1, tc1) (d2, tc2)
+          (_, VT.TNBlock s2) -> regBinLeftBlock op (d2, s2, tc2) (d1, tc1)
           (VT.TNDisj dj1, _) -> regBinLeftDisj op (d1, dj1, tc1) (d2, tc2)
           (_, VT.TNDisj dj2) -> regBinLeftDisj op (d2, dj2, tc2) (d1, tc1)
           _ -> regBinLeftOther op (d1, tc1) (d2, tc2)
     (Just t1, _)
       | VT.TNBottom _ <- VT.treeNode t1 -> retVal t1
-      | VT.TNRefCycle <- VT.treeNode t1 -> return Nothing
     (_, Just t2)
       | VT.TNBottom _ <- VT.treeNode t2 -> retVal t2
-      | VT.TNRefCycle <- VT.treeNode t2 -> return Nothing
     _ -> return Nothing
 
 regBinLeftAtom ::
@@ -185,7 +161,7 @@ regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
               Right b -> retVal $ VT.mkAtomTree b
               Left err -> retVal err
         VT.TNDisj dj2 -> regBinLeftDisj op (d2, dj2, tc2) (d1, tc1)
-        VT.TNStruct _ -> retVal $ cmpNull a1 t2
+        VT.TNBlock _ -> retVal $ cmpNull a1 t2
         VT.TNList _ -> retVal $ cmpNull a1 t2
         _ -> regBinLeftOther op (d2, tc2) (d1, tc1)
     -- arithmetic operators
@@ -222,7 +198,7 @@ regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
               Right b -> retVal $ VT.mkAtomTree b
               Left err -> retVal err
         VT.TNDisj dj2 -> regBinLeftDisj op (d2, dj2, tc2) (d1, tc1)
-        VT.TNStruct _ -> retVal $ mismatchArith a1 t2
+        VT.TNBlock _ -> retVal $ mismatchArith a1 t2
         VT.TNList _ -> retVal $ mismatchArith a1 t2
         _ -> regBinLeftOther op (d2, tc2) (d1, tc1)
     | otherwise -> retVal (VT.mkBottomTree $ printf "operator %s is not supported" (show op))
@@ -252,13 +228,13 @@ dirApply f (di1, i1) i2 = if di1 == Path.L then f i1 i2 else f i2 i1
 mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> VT.Tree
 mismatch op x y = VT.mkBottomTree $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
-regBinLeftStruct ::
+regBinLeftBlock ::
   (RM.ReduceMonad s r m) =>
   AST.BinaryOp ->
-  (Path.BinOpDirect, VT.Struct VT.Tree, TCOps.TrCur) ->
+  (Path.BinOpDirect, VT.Block VT.Tree, TCOps.TrCur) ->
   (Path.BinOpDirect, TCOps.TrCur) ->
   m (Maybe VT.Tree)
-regBinLeftStruct op (d1, _, tc1) (d2, tc2) = do
+regBinLeftBlock op (d1, _, tc1) (d2, tc2) = do
   let
     t1 = Cursor.tcFocus tc1
     t2 = Cursor.tcFocus tc2
@@ -292,10 +268,8 @@ regBinLeftOther op (d1, tc1) (d2, tc2) = do
   let
     t1 = Cursor.tcFocus tc1
     t2 = Cursor.tcFocus tc2
-  -- RM.withAddrAndFocus $ \addr _ ->
-  --   logDebugStr $ printf "regBinLeftOther: addr: %s, %s: %s, %s: %s" (show addr) (show d1) (show t1) (show d2) (show t2)
   case (VT.treeNode t1, t2) of
-    (VT.TNRefCycle, _) -> return Nothing
+    (VT.TNRefCycle _, _) -> return Nothing
     (VT.TNAtomCnstr c, _) -> do
       naM <- regBinDir op (d1, VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c) `Cursor.setTCFocus` tc1) (d2, tc2)
       maybe
@@ -309,48 +283,3 @@ regBinLeftOther op (d1, tc1) (d2, tc2) = do
     _ -> retVal (VT.mkBottomTree $ mismatchErr t1 t2)
  where
   mismatchErr t1 t2 = printf "values %s and %s cannot be used for %s" (show t1) (show t2) (show op)
-
--- MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
--- orig <- RM.getTMTree -- save stub
--- RM.putTMTree operand
--- reduce
--- RM.unlessFocusBottom () $ do
--- descendTM can not be used here because it would change the tree cursor.
--- tc <- RM.getTMCursor
--- maybe
--- If the index is not found, the original tree (stub) is restored.
--- (RM.putTMTree orig)
--- (RM.putTMTree . Cursor.tcFocus)
--- (TCOps.goDownTCAddr (Path.valPathToAddr idxRef) tc)
-
--- RM.withAddrAndFocus
--- \$ \_ r -> logDebugStr $ printf "index: the indexed is %s" (show r)
-
--- evalIndexArg :: (RM.ReduceTCMonad s r m) => Int -> m VT.Tree
--- evalIndexArg i =
---   Mutate.mutValToArgsRM
---     (Path.MutableArgTASeg i)
---     ( do
---         MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
---         reduce >> RM.getTMTree
---     )
-
-comprehend :: (RM.ReduceTCMonad s r m) => VT.Comprehension VT.Tree -> m ()
-comprehend c = undefined
-
--- comprehend c = do
---   t <- Mutate.reduceMutableArg (Path.ComprehTASeg Path.ComprehStartTASeg)
---   RM.withAddrAndFocus $ \addr _ ->
---     logDebugStr $ printf "comprehend: addr: %s start reduced to: %s" (show addr) (show t)
---   case VT.treeNode t of
---     VT.TNBottom _ -> RM.putTMTree t
---     VT.TNMutable _ -> return ()
---     _
---       | Just (VT.Bool b) <- VT.getAtomFromTree t ->
---           if b
---             then do
---               RM.putTMTree (VT.cphStruct c)
---               MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
---               reduce
---             else RM.putTMTree $ VT.mkStructTree VT.emptyStruct
---     _ -> RM.putTMTree $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)

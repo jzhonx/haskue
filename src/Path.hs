@@ -2,11 +2,7 @@
 
 module Path where
 
-import Data.Graph (SCC (CyclicSCC), stronglyConnComp)
 import Data.List (intercalate)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isNothing)
-import qualified Data.Set as Set
 
 data Selector = StringSel String | IntSel Int
   deriving (Eq, Ord)
@@ -204,23 +200,18 @@ appendSeg seg (TreeAddr xs) = TreeAddr (seg : xs)
 new and old are reversed, such as [z, y, x] and [b, a]. The appended addr should be [z, y, x, b, a], which is
 a.b.x.y.z.
 -}
-appendTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
+appendTreeAddr ::
+  -- | new addr to be appended to the old addr
+  TreeAddr ->
+  -- | old addr
+  TreeAddr ->
+  TreeAddr
 appendTreeAddr (TreeAddr new) (TreeAddr old) = TreeAddr (new ++ old)
 
 -- | Get the parent addr of a addr by removing the last segment.
 initTreeAddr :: TreeAddr -> Maybe TreeAddr
 initTreeAddr (TreeAddr []) = Nothing
 initTreeAddr (TreeAddr xs) = Just $ TreeAddr (drop 1 xs)
-
--- | Convert the addr to canonical form which only contains string or int segments.
-canonicalizeAddr :: TreeAddr -> TreeAddr
-canonicalizeAddr (TreeAddr xs) = TreeAddr $ filter isKept xs
- where
-  isKept :: TASeg -> Bool
-  isKept (StructTASeg (getStrFromSeg -> Just _)) = True
-  isKept (IndexTASeg _) = True
-  isKept RootTASeg = True
-  isKept _ = False
 
 -- | Get the tail addr of a addr, excluding the head segment.
 tailTreeAddr :: TreeAddr -> Maybe TreeAddr
@@ -242,58 +233,6 @@ headSeg :: TreeAddr -> Maybe TASeg
 headSeg (TreeAddr []) = Nothing
 headSeg (TreeAddr xs) = Just $ last xs
 
-mergeTreeAddrs :: [TreeAddr] -> [TreeAddr] -> [TreeAddr]
-mergeTreeAddrs p1 p2 = Set.toList $ Set.fromList (p1 ++ p2)
-
--- | Get the common prefix of two addrs.
-prefixTreeAddr :: TreeAddr -> TreeAddr -> Maybe TreeAddr
-prefixTreeAddr (TreeAddr pxs) (TreeAddr pys) = TreeAddr . reverse <$> go (reverse pxs) (reverse pys)
- where
-  go :: [TASeg] -> [TASeg] -> Maybe [TASeg]
-  go [] _ = Just []
-  go _ [] = Just []
-  go (x : xs) (y : ys) =
-    if x == y
-      then (x :) <$> go xs ys
-      else Just []
-
-{- | Get the relative addr from the first addr to the second addr.
-
-For example, relTreeAddr (TreeAddr [StringTASeg "a", StringTASeg "b"]) (TreeAddr [StringTASeg "a", StringTASeg "c"])
-returns TreeAddr [ParentTASeg, StringTASeg "c"]
--}
-relTreeAddr ::
-  -- | px, first addr
-  TreeAddr ->
-  -- | py, second addr
-  TreeAddr ->
-  TreeAddr
-relTreeAddr px py =
-  let prefixLen = maybe 0 (\(TreeAddr xs) -> length xs) (prefixTreeAddr px py)
-      upDist = length (getTreeSegs px) - prefixLen
-      pySegsRest = drop prefixLen (reverse (getTreeSegs py))
-   in TreeAddr $ reverse $ replicate upDist ParentTASeg ++ pySegsRest
-
-{- | Trim the address by cutting off the prefix.
-
-If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
-first addr is returned.
--}
-trimPrefixTreeAddr ::
-  -- | address
-  TreeAddr ->
-  -- | prefix address
-  TreeAddr ->
-  TreeAddr
-trimPrefixTreeAddr x pre
-  | not (isPrefix pre x) = x
-  | otherwise =
-      let
-        segs = reverse $ getTreeSegs x
-        prelen = length $ getTreeSegs pre
-       in
-        TreeAddr $ reverse $ drop prelen segs
-
 -- | Check if addr x is a prefix of addr y.
 isPrefix ::
   -- | x
@@ -310,19 +249,25 @@ isPrefix x y =
         then False
         else take (length rxs) rys == rxs
 
-depsHasCycle :: [(TreeAddr, TreeAddr)] -> Bool
-depsHasCycle ps = hasCycle edges
- where
-  depMap = Map.fromListWith (++) (map (\(k, v) -> (k, [v])) ps)
-  edges = Map.toList depMap
+{- | Trim the address by cutting off the prefix.
 
-hasCycle :: [(TreeAddr, [TreeAddr])] -> Bool
-hasCycle edges = any isCycle (stronglyConnComp edgesForGraph)
- where
-  edgesForGraph = map (\(k, vs) -> ((), k, vs)) edges
-
-  isCycle (CyclicSCC _) = True
-  isCycle _ = False
+If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
+first addr is returned.
+-}
+trimPrefixTreeAddr ::
+  -- | prefix address
+  TreeAddr ->
+  -- | address
+  TreeAddr ->
+  TreeAddr
+trimPrefixTreeAddr pre x
+  | not (isPrefix pre x) = x
+  | otherwise =
+      let
+        segs = reverse $ getTreeSegs x
+        prelen = length $ getTreeSegs pre
+       in
+        TreeAddr $ reverse $ drop prelen segs
 
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
@@ -331,35 +276,36 @@ isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
 isInDisj :: Path.TreeAddr -> Bool
 isInDisj (Path.TreeAddr xs) = any Path.isSegDisj xs
 
-{- | Convert the address to referable address.
+-- | Convert the addr to referable form which only contains string, int or root segments.
+trimToReferable :: TreeAddr -> TreeAddr
+trimToReferable (TreeAddr xs) = TreeAddr $ filter isSegReferable xs
 
-Referable address is the address that a value can be referred to in the CUE code.
+-- | Convert the addr to reference source address which contains either referable segments or embed segments.
+trimToRefSrcAddr :: TreeAddr -> TreeAddr
+trimToRefSrcAddr (TreeAddr xs) = TreeAddr $ filter (\x -> isSegReferable x || isSegEmbed x) xs
+ where
+  isSegEmbed (StructTASeg (EmbedTASeg _)) = True
+  isSegEmbed _ = False
 
-SubValSeg will be removed as once the value it points to become concrete, the path to the value will no longer have the
-sub value segment. The referable address must be valid for both cases.
+isSegReferable :: TASeg -> Bool
+isSegReferable (StructTASeg (getStrFromSeg -> Just _)) = True
+isSegReferable (IndexTASeg _) = True
+isSegReferable RootTASeg = True
+isSegReferable _ = False
 
-If the address contains any mutable arg segment, then the address is not referable.
+{- | Get the referable address.
+
+Referable address is the address that a value can be referred to in the CUE code. If the address contains any mutable
+arg segment, then the address is not referable.
 -}
-referableAddr :: TreeAddr -> Maybe TreeAddr
-referableAddr p =
-  let
-    ysM =
-      foldr
-        ( \seg acc ->
-            if isSegArg seg || isNothing acc
-              then Nothing
-              else Just $ seg : fromJust acc
-        )
-        (Just [])
-        (getTreeSegs $ noSubValAddr p)
-   in
-    TreeAddr <$> ysM
- where
-  isSegArg (MutableArgTASeg _) = True
-  isSegArg _ = False
+getReferableAddr :: TreeAddr -> Maybe TreeAddr
+getReferableAddr p =
+  if not (all isSegReferable (getTreeSegs p))
+    then Nothing
+    else Just p
 
-noSubValAddr :: TreeAddr -> TreeAddr
-noSubValAddr (TreeAddr segs) = TreeAddr $ filter (not . isSegSV) segs
- where
-  isSegSV SubValTASeg = True
-  isSegSV _ = False
+-- | A non-canonical segment is a segment that would not have to be existed to access to the value.
+isSegNonCanonical :: TASeg -> Bool
+isSegNonCanonical Path.SubValTASeg = True
+isSegNonCanonical Path.DisjDefaultTASeg = True
+isSegNonCanonical _ = False

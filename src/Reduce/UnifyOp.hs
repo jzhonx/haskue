@@ -21,7 +21,7 @@ import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, isJust, isNothing)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified MutEnv
@@ -34,24 +34,40 @@ import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
 
--- | UTree is a tree with a direction and an embedded flag.
+-- | UTree is a tree with a direction.
 data UTree = UTree
   { utDir :: Path.BinOpDirect
-  , utEmbedID :: Maybe Int
-  -- ^ Whether the tree is embedded in a struct.
   , utTC :: TCOps.TrCur
   -- ^ This tree cursor of the conjunct.
   }
 
 instance Show UTree where
-  show (UTree d e tc) =
+  show (UTree d tc) =
     show d
       <> ","
-      <> show (Cursor.tcTreeAddr tc)
+      <> show (Cursor.tcCanAddr tc)
       <> ","
-      <> maybe "" (\x -> " embed:" <> show x) e
-      <> "\n"
       <> show (Cursor.tcFocus tc)
+
+{- | Get the embedded object ID of the tree. The embedded object ID is the last embedded object ID in the tree address.
+
+Because unification is a top down operation, no nested embedded object ID has been found yet. So we can just return the
+last embedded object ID in the tree address.
+-}
+getEmbeddedOID :: UTree -> Maybe Int
+getEmbeddedOID ut =
+  let Path.TreeAddr segs = Cursor.tcCanAddr (utTC ut)
+      getEID (Path.StructTASeg (Path.EmbedTASeg i)) = Just i
+      getEID _ = Nothing
+   in -- segs are stored in reverse order so we use foldl to get the last embedded object ID.
+      foldl
+        ( \acc x ->
+            case acc of
+              Just _ -> acc
+              Nothing -> getEID x
+        )
+        Nothing
+        segs
 
 showUTreeList :: [UTree] -> String
 showUTreeList [] = "[]"
@@ -64,25 +80,42 @@ showUTreeList (x : xs) =
       ""
       xs
 
-unify :: (RM.ReduceMonad s r m) => [VT.Tree] -> TCOps.TrCur -> m (Maybe VT.Tree)
-unify ts unifyTC = do
-  uts <-
-    mapM
-      ( \(i, _) -> do
-          conjTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg i) unifyTC
-          return $ UTree Path.R Nothing conjTC
+showTCList :: [TCOps.TrCur] -> String
+showTCList [] = "[]"
+showTCList (x : xs) =
+  show x
+    <> "\n"
+    <> foldl
+      ( \acc y -> acc <> show (Cursor.tcFocus y) <> "\n"
       )
+      ""
+      xs
+
+-- | Call the unify operator.
+unify :: (RM.ReduceMonad s r m) => [VT.Tree] -> TCOps.TrCur -> m (Maybe VT.Tree)
+unify ts tc = do
+  tcs <-
+    mapM
+      (\(i, _) -> TCOps.goDownTCSegMust (Path.MutableArgTASeg i) tc)
       (zip [0 ..] ts)
-  unifyUTrees uts (Cursor.tcTreeAddr unifyTC)
+  unifyTCs tcs tc
 
-{- | Unify a list of UTrees.
+{- | Unify a list of trees.
 
-The order of the unification is the same as the order of the UTrees.
+It handles the following cases:
+1. If all trees are structurally cyclic, return a bottom tree.
+2. Reference cycle.
+
+The order of the unification is the same as the order of the trees.
+
+The tree cursor is only used to know where the unification is happening.
 -}
-unifyUTrees :: (RM.ReduceMonad s r m) => [UTree] -> Path.TreeAddr -> m (Maybe VT.Tree)
-unifyUTrees uts unifyAddr = RM.debugSpanArgsOpRM "unifyUTrees" (showUTreeList uts) unifyAddr $ do
-  when (length uts < 2) $ throwErrSt "not enough arguments"
-  let isAllCyclic = all (VT.treeIsCyclic . Cursor.tcFocus . utTC) uts
+unifyTCs :: (RM.ReduceMonad s r m) => [TCOps.TrCur] -> TCOps.TrCur -> m (Maybe VT.Tree)
+unifyTCs tcs unifyTC = RM.debugSpanArgsRM "unifyTCs" (showTCList tcs) id unifyTC $ do
+  let
+    unifyAddr = Cursor.tcCanAddr unifyTC
+    isAllCyclic = all (VT.treeIsCyclic . Cursor.tcFocus) tcs
+
   if isAllCyclic
     then return $ Just $ VT.mkBottomTree "structural cycle"
     else do
@@ -93,77 +126,138 @@ unifyUTrees uts unifyAddr = RM.debugSpanArgsOpRM "unifyUTrees" (showUTreeList ut
               return $ acc ++ r
           )
           []
-          uts
+          tcs
 
       case sequence normalized of
         Nothing -> return Nothing
         Just readies -> do
+          RM.debugInstantRM "unifyTCs" (printf "normalized: %s" (show normalized)) unifyTC
           -- Remove the reference cycle.
-          --
-          -- According to the spec, A field value of the form r & v, where r evaluates to a reference
-          -- cycle and v is a concrete value, evaluates to v. Unification is idempotent and unifying a
-          -- value with itself ad infinitum, which is what the cycle represents, results in this value.
-          -- Implementations should detect cycles of this kind, ignore r, and take v as the result of
-          -- unification.
-          let filtered =
-                filter
-                  ( \ut -> case (VT.treeNode . Cursor.tcFocus . utTC) ut of
-                      VT.TNRefCycle -> False
-                      _ -> True
+          let (regs, rcs, subRCs) =
+                foldr
+                  ( \tc (accRegs, accRCs, accSubRCs) -> case (VT.treeNode . Cursor.tcFocus) tc of
+                      VT.TNRefCycle rcAddr
+                        -- This is the case where the operand is a reference cycle, even though the operand could be a
+                        -- conjunct in a disjunction. For example, x: x&{a:1} | {b:1}
+                        --
+                        -- According to the spec, A field value of the form r & v, where r evaluates to a reference
+                        -- cycle and v is a concrete value, evaluates to v. Unification is idempotent and unifying a
+                        -- value with itself ad infinitum, which is what the cycle represents, results in this value.
+                        -- Implementations should detect cycles of this kind, ignore r, and take v as the result of
+                        -- unification.
+                        | rcAddr == Path.trimToReferable unifyAddr -> (accRegs, tc : accRCs, accSubRCs)
+                        -- This is the case where the conjunct is referecing the sub field value,
+                        -- e.g. x: x.z & {z: a: 1}
+                        -- or
+                        -- x: x.z & {z: a: 1} | {y: 1}
+                        | let rfbUnifyAddr = Path.trimToReferable unifyAddr
+                        , Path.isPrefix rfbUnifyAddr rcAddr
+                        , rfbUnifyAddr /= rcAddr ->
+                            (accRegs, accRCs, Path.trimPrefixTreeAddr rfbUnifyAddr rcAddr : accSubRCs)
+                      _ -> (tc : accRegs, accRCs, accSubRCs)
                   )
+                  ([], [], [])
                   readies
-          mergeUTrees filtered unifyAddr
 
-{- | Unify two UTrees.
+          RM.debugInstantRM "unifyTCs" (printf "regs: %s, subRCs: %s" (show regs) (show subRCs)) unifyTC
 
-It is called in the mergeBin functions so that the order of the operands can be preserved.
--}
-unifyBinUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-unifyBinUTrees ut1@(UTree{utDir = Path.L}) ut2 unifyAddr = unifyUTrees [ut1, ut2] unifyAddr
-unifyBinUTrees ut1@(UTree{utDir = Path.R}) ut2 unifyAddr = unifyUTrees [ut2, ut1] unifyAddr
-
-mergeUTrees :: (RM.ReduceMonad s r m) => [UTree] -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeUTrees uts unifyAddr = RM.debugSpanArgsOpRM "mergeUTrees" (showUTreeList uts) unifyAddr $ do
-  rM <-
-    foldM
-      ( \accM ut -> case accM of
-          Nothing -> return Nothing
-          Just acc -> do
-            rM <- mergeBinUTrees (acc{utDir = Path.L}) (ut{utDir = Path.R}) unifyAddr
-            maybe
-              (return Nothing)
-              (\r -> return $ Just $ acc{utTC = r `Cursor.setTCFocus` utTC acc})
-              rM
-      )
-      (Just $ head uts)
-      (tail uts)
-  maybe (return Nothing) (\r -> return $ Just $ Cursor.tcFocus (utTC r)) rM
+          if
+            | null regs && null rcs && not (null subRCs) -> return Nothing
+            | null regs && null subRCs -> return $ Just $ Cursor.tcFocus (head rcs)
+            | not (null regs) -> do
+                r <- mergeTCs regs unifyTC
+                -- Unify the sub reference cycles.
+                foldM
+                  ( \acc relRCAddr ->
+                      maybe
+                        (return Nothing)
+                        (\(vTC, subVTC) -> unifyBinUTrees (UTree Path.L vTC) (UTree Path.R subVTC) unifyTC)
+                        ( do
+                            v <- acc
+                            let vTC = v `Cursor.setTCFocus` unifyTC
+                            subVTC <- TCOps.goDownTCAddr relRCAddr vTC
+                            return (vTC, subVTC)
+                        )
+                  )
+                  r
+                  subRCs
+            | otherwise -> throwErrSt "unexpected conjuncts"
 
 {- | Normalize the unify operation tree.
 
 It does the following:
 1. Flatten the unify operation tree because unification is associative.
 2. Reduce ref and disjoin mutable to basic form.
+3. For the struct, it ignores the non-struct embedded value and build conjuncts for embeds if they exist.
 -}
-normalizeConjunct :: (RM.ReduceMonad s r m) => UTree -> m [Maybe UTree]
-normalizeConjunct ut@(UTree{utTC = tc}) = RM.debugSpanRM "normalizeConjunct" tc $ do
+normalizeConjunct :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m [Maybe TCOps.TrCur]
+normalizeConjunct tc = RM.debugSpanRM "normalizeConjunct" (const Nothing) tc $ do
   MutEnv.Functions{MutEnv.reduceUnifyConj = reduceUnifyConj} <- asks MutEnv.getFuncs
   conjM <- reduceUnifyConj tc
   case conjM of
     Nothing -> return [Nothing]
-    Just conj ->
+    Just conj -> do
       let conjTC = conj `Cursor.setTCFocus` tc
-       in case VT.treeNode conj of
-            VT.TNMutable (VT.UOp u) -> do
-              foldM
-                ( \acc (i, _) -> do
-                    subConjTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg i) conjTC
-                    subs <- normalizeConjunct (ut{utTC = subConjTC})
-                    return $ acc ++ subs
-                )
-                []
-                (zip [0 ..] (VT.ufConjuncts u))
-            _ -> return [Just ut{utTC = conjTC}]
+      case VT.treeNode conj of
+        VT.TNMutable (VT.UOp u) ->
+          foldM
+            ( \acc (i, _) -> do
+                subConjTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg i) conjTC
+                subs <- normalizeConjunct subConjTC
+                return $ acc ++ subs
+            )
+            []
+            (zip [0 ..] (VT.ufConjuncts u))
+        VT.TNBlock es@(VT.Block{VT.blkStruct = struct}) -> do
+          -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
+          -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b
+          -- If it is not, it can still have embedded values. For example, x: {a: 1, b} & {} -> x: {a:1} & b & {}
+          -- Either way, we try to normalize the embedded values.
+          embeds <-
+            foldM
+              ( \acc i -> do
+                  subConjTC <- TCOps.goDownTCSegMust (Path.StructTASeg (Path.EmbedTASeg i)) conjTC
+                  subs <- normalizeConjunct subConjTC
+                  return $ acc ++ subs
+              )
+              []
+              (IntMap.keys $ VT.blkEmbeds es)
+
+          if VT.hasEmptyFields struct && not (null $ VT.blkEmbeds es)
+            -- If the struct is an empty struct with only embedded values, we can just return the embedded values.
+            then return embeds
+            else do
+              -- Since we have normalized the embedded values, we need to remove them from the struct to prevent
+              -- normalizing them again, causing infinite loop.
+              let pureStructTC = TCOps.setTCFocusTN (VT.TNBlock $ es{VT.blkEmbeds = IntMap.empty}) conjTC
+              return $ Just pureStructTC : embeds
+        _ -> return [Just conjTC]
+
+{- | Unify two UTrees.
+
+It is called in the mergeBin functions so that the order of the operands can be preserved.
+-}
+unifyBinUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+unifyBinUTrees ut1@(UTree{utDir = Path.L}) ut2 tc = unifyTCs (map utTC [ut1, ut2]) tc
+unifyBinUTrees ut1@(UTree{utDir = Path.R}) ut2 tc = unifyTCs (map utTC [ut2, ut1]) tc
+
+mergeTCs :: (RM.ReduceMonad s r m) => [TCOps.TrCur] -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeTCs tcs unifyTC = RM.debugSpanArgsRM "mergeTCs" (showTCList tcs) id unifyTC $ do
+  when (null tcs) $ throwErrSt "not enough arguments"
+  rM <-
+    foldM
+      ( \accM tc -> case accM of
+          Nothing -> return Nothing
+          Just acc -> do
+            rM <- mergeBinUTrees (acc{utDir = Path.L}) (UTree{utDir = Path.R, utTC = tc}) unifyTC
+            maybe
+              (return Nothing)
+              (\r -> return $ Just $ acc{utTC = r `Cursor.setTCFocus` utTC acc})
+              rM
+      )
+      (Just $ UTree{utDir = Path.L, utTC = head tcs})
+      (tail tcs)
+  maybe (return Nothing) (\r -> return $ Just $ Cursor.tcFocus (utTC r)) rM
 
 {- | Merge Two UTrees.
 
@@ -202,11 +296,11 @@ dereferenced. If the reference is evaluated to a struct, the struct will be a ra
 
 opAddr is not necessarily equal to the parent of one of the tree cursors if the function is directly called.
 -}
-mergeBinUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) opAddr = do
+mergeBinUTrees :: (RM.ReduceMonad s r m) => UTree -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = Cursor.tcFocus tc1
       t2 = Cursor.tcFocus tc2
-  RM.debugSpanArgsOpRM
+  RM.debugSpanArgsRM
     "mergeBinUTrees"
     ( printf
         ("merging %s, %s" ++ "\n" ++ "with %s, %s")
@@ -215,27 +309,28 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) opAddr = do
         (show $ utDir ut2)
         (show t2)
     )
-    opAddr
+    id
+    unifyTC
     $ do
       -- Each case should handle embedded case when the left value is embedded.
       rM <- case (VT.treeNode t1, VT.treeNode t2) of
         -- VT.CnstredVal has the highest priority, because the real operand is the value of the VT.CnstredVal.
-        (VT.TNCnstredVal c, _) -> mergeLeftCnstredVal (c, ut1) ut2 opAddr
-        (_, VT.TNCnstredVal c) -> mergeLeftCnstredVal (c, ut2) ut1 opAddr
+        (VT.TNCnstredVal c, _) -> mergeLeftCnstredVal (c, ut1) ut2 unifyTC
+        (_, VT.TNCnstredVal c) -> mergeLeftCnstredVal (c, ut2) ut1 unifyTC
         (VT.TNBottom _, _) -> retTr t1
         (_, VT.TNBottom _) -> retTr t2
         (VT.TNTop, _) -> mergeLeftTop ut1 ut2
         (_, VT.TNTop) -> mergeLeftTop ut2 ut1
-        (VT.TNAtom a1, _) -> mergeLeftAtom (a1, ut1) ut2 opAddr
+        (VT.TNAtom a1, _) -> mergeLeftAtom (a1, ut1) ut2 unifyTC
         -- Below is the earliest time to create a constraint
-        (_, VT.TNAtom a2) -> mergeLeftAtom (a2, ut2) ut1 opAddr
-        (VT.TNDisj dj1, _) -> mergeLeftDisj (dj1, ut1) ut2 opAddr
-        (_, VT.TNDisj dj2) -> mergeLeftDisj (dj2, ut2) ut1 opAddr
-        (VT.TNStruct s1, _) -> mergeLeftStruct (s1, ut1) ut2 opAddr
-        (_, VT.TNStruct s2) -> mergeLeftStruct (s2, ut2) ut1 opAddr
-        (VT.TNBounds b1, _) -> mergeLeftBound (b1, ut1) ut2 opAddr
-        (_, VT.TNBounds b2) -> mergeLeftBound (b2, ut2) ut1 opAddr
-        _ -> mergeLeftOther ut1 ut2 opAddr
+        (_, VT.TNAtom a2) -> mergeLeftAtom (a2, ut2) ut1 unifyTC
+        (VT.TNDisj dj1, _) -> mergeLeftDisj (dj1, ut1) ut2 unifyTC
+        (_, VT.TNDisj dj2) -> mergeLeftDisj (dj2, ut2) ut1 unifyTC
+        (VT.TNBlock es1, _) -> mergeLeftBlock (es1, ut1) ut2 unifyTC
+        (_, VT.TNBlock es2) -> mergeLeftBlock (es2, ut2) ut1 unifyTC
+        (VT.TNBounds b1, _) -> mergeLeftBound (b1, ut1) ut2 unifyTC
+        (_, VT.TNBounds b2) -> mergeLeftBound (b2, ut2) ut1 unifyTC
+        _ -> mergeLeftOther ut1 ut2 unifyTC
 
       -- close the merged tree
       maybe
@@ -247,8 +342,8 @@ retTr :: (RM.ReduceMonad s r m) => VT.Tree -> m (Maybe VT.Tree)
 retTr = return . Just
 
 mergeLeftCnstredVal ::
-  (RM.ReduceMonad s r m) => (VT.CnstredVal VT.Tree, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} opAddr = do
+  (RM.ReduceMonad s r m) => (VT.CnstredVal VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} unifyTC = do
   let t2 = Cursor.tcFocus tc2
   eM2 <- case VT.treeNode t2 of
     -- ut2 is VT.CnstredVal, we need to merge original expressions.
@@ -263,7 +358,7 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} opAddr = do
     [e1, e2] -> return $ AST.binaryOpCons AST.Unify e1 e2
     _ -> throwErrSt "both CnstredVals are empty"
 
-  rM <- unifyBinUTrees (ut1{utTC = VT.cnsedVal c1 `Cursor.setTCFocus` utTC ut1}) ut2 opAddr
+  rM <- unifyBinUTrees (ut1{utTC = VT.cnsedVal c1 `Cursor.setTCFocus` utTC ut1}) ut2 unifyTC
   maybe
     (return Nothing)
     ( \r ->
@@ -285,41 +380,42 @@ mergeLeftTop ut1 ut2 = do
     -- The result of { A } is A for any A (including definitions).
     -- Notice that this is different from the behavior of the latest CUE. The latest CUE would do the following:
     -- {_, _h: int} & {_h: "hidden"} -> _|_.
-    VT.TNStruct _ | isJust (utEmbedID ut1) -> retTr t1
+    -- VT.TNBlock _ | isJust (utEmbedID ut1) -> retTr t1
     _ -> retTr t2
 
-mergeLeftAtom :: (RM.ReduceMonad s r m) => (VT.AtomV, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) opAddr = RM.debugSpanOpRM "mergeLeftAtom" opAddr $ do
-  let t2 = Cursor.tcFocus tc2
-  case (VT.amvAtom v1, VT.treeNode t2) of
-    (VT.String x, VT.TNAtom s)
-      | VT.String y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
-    (VT.Int x, VT.TNAtom s)
-      | VT.Int y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
-    (VT.Float x, VT.TNAtom s)
-      | VT.Float y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
-    (VT.Bool x, VT.TNAtom s)
-      | VT.Bool y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
-    (VT.Null, VT.TNAtom s) | VT.Null <- VT.amvAtom s -> rtn $ VT.TNAtom v1
-    (_, VT.TNBounds b) -> do
-      logDebugStr $ printf "mergeLeftAtom, %s with VT.Bounds: %s" (show v1) (show t2)
-      return $ Just $ mergeAtomBounds (d1, VT.amvAtom v1) (d2, VT.bdsList b)
-    (_, VT.TNAtomCnstr c) ->
-      if v1 == VT.cnsAtom c
-        then retTr t2
-        else retTr $ VT.mkBottomTree $ printf "values mismatch: %s != %s" (show v1) (show $ VT.cnsAtom c)
-    (_, VT.TNDisj dj2) -> do
-      logDebugStr $ printf "mergeLeftAtom: VT.TNDisj %s, %s" (show t2) (show v1)
-      mergeLeftDisj (dj2, ut2) ut1 opAddr
-    (_, VT.TNMutable mut2)
-      -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
-      -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
-      -- marked disjunction.
-      | (VT.DisjOp _) <- mut2 -> mergeLeftOther ut2 ut1 opAddr
-      | otherwise -> mkCnstrOrOther t2
-    (_, VT.TNRefCycle) -> mkCnstrOrOther t2
-    (_, VT.TNStruct s2) -> mergeLeftStruct (s2, ut2) ut1 opAddr
-    _ -> mergeLeftOther ut1 ut2 opAddr
+mergeLeftAtom :: (RM.ReduceMonad s r m) => (VT.AtomV, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) unifyTC =
+  RM.debugSpanRM "mergeLeftAtom" id unifyTC $ do
+    let t2 = Cursor.tcFocus tc2
+    case (VT.amvAtom v1, VT.treeNode t2) of
+      (VT.String x, VT.TNAtom s)
+        | VT.String y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
+      (VT.Int x, VT.TNAtom s)
+        | VT.Int y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
+      (VT.Float x, VT.TNAtom s)
+        | VT.Float y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
+      (VT.Bool x, VT.TNAtom s)
+        | VT.Bool y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
+      (VT.Null, VT.TNAtom s) | VT.Null <- VT.amvAtom s -> rtn $ VT.TNAtom v1
+      (_, VT.TNBounds b) -> do
+        logDebugStr $ printf "mergeLeftAtom, %s with VT.Bounds: %s" (show v1) (show t2)
+        return $ Just $ mergeAtomBounds (d1, VT.amvAtom v1) (d2, VT.bdsList b)
+      (_, VT.TNAtomCnstr c) ->
+        if v1 == VT.cnsAtom c
+          then retTr t2
+          else retTr $ VT.mkBottomTree $ printf "values mismatch: %s != %s" (show v1) (show $ VT.cnsAtom c)
+      (_, VT.TNDisj dj2) -> do
+        logDebugStr $ printf "mergeLeftAtom: VT.TNDisj %s, %s" (show t2) (show v1)
+        mergeLeftDisj (dj2, ut2) ut1 unifyTC
+      (_, VT.TNMutable mut2)
+        -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
+        -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
+        -- marked disjunction.
+        | (VT.DisjOp _) <- mut2 -> mergeLeftOther ut2 ut1 unifyTC
+        | otherwise -> mkCnstrOrOther t2
+      (_, VT.TNRefCycle _) -> mkCnstrOrOther t2
+      (_, VT.TNBlock s2) -> mergeLeftBlock (s2, ut2) ut1 unifyTC
+      _ -> mergeLeftOther ut1 ut2 unifyTC
  where
   rtn :: (RM.ReduceMonad s r m) => VT.TreeNode VT.Tree -> m (Maybe VT.Tree)
   rtn = return . Just . VT.mkNewTree
@@ -336,7 +432,7 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
         c <- mkCnstr v1 t2
         logDebugStr $ printf "mergeLeftAtom: constraint created, %s" (show c)
         retTr c
-      else mergeLeftOther ut2 ut1 opAddr
+      else mergeLeftOther ut2 ut1 unifyTC
 
 mkCnstr :: (RM.ReduceMonad s r m) => VT.AtomV -> VT.Tree -> m VT.Tree
 mkCnstr a cnstr = do
@@ -344,8 +440,8 @@ mkCnstr a cnstr = do
   e <- buildASTExpr False op
   return $ VT.mkCnstrTree a e
 
-mergeLeftBound :: (RM.ReduceMonad s r m) => (VT.Bounds, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftBound (b1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) opAddr = do
+mergeLeftBound :: (RM.ReduceMonad s r m) => (VT.Bounds, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftBound (b1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) unifyTC = do
   let t2 = Cursor.tcFocus tc2
   case VT.treeNode t2 of
     VT.TNAtom ta2 -> do
@@ -368,8 +464,8 @@ mergeLeftBound (b1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2})
             case snd r of
               Just a -> retTr (VT.mkAtomTree a)
               Nothing -> retTr (VT.mkBoundsTree (fst r))
-    VT.TNStruct s2 -> mergeLeftStruct (s2, ut2) ut1 opAddr
-    _ -> mergeLeftOther ut2 ut1 opAddr
+    VT.TNBlock s2 -> mergeLeftBlock (s2, ut2) ut1 unifyTC
+    _ -> mergeLeftOther ut2 ut1 unifyTC
 
 mergeAtomBounds :: (Path.BinOpDirect, VT.Atom) -> (Path.BinOpDirect, [VT.Bound]) -> VT.Tree
 mergeAtomBounds (d1, a1) (d2, bs) =
@@ -572,26 +668,30 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds = if d1 == Path.L then [b1, b2] else [b2, b1]
 
 -- | mergeLeftOther is the sink of the unification process.
-mergeLeftOther :: (RM.ReduceMonad s r m) => UTree -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftOther ut1@(UTree{utTC = tc1, utDir = d1}) ut2@(UTree{utTC = tc2}) opAddr = do
+mergeLeftOther :: (RM.ReduceMonad s r m) => UTree -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
   let t1 = Cursor.tcFocus tc1
-      t2 = Cursor.tcFocus tc2
   case VT.treeNode t1 of
-    VT.TNRefCycle -> throwErrSt "ref cycle should not be used in merge"
+    VT.TNRefCycle _ -> throwErrSt "ref cycle should not be used in merge"
     (VT.TNMutable mut) -> case mut of
       VT.Ref _ -> throwErrSt "ref should not be used in merge"
       VT.DisjOp _ -> throwErrSt "disjoin should not be used in merge"
       _ -> do
-        rM1 <- Mutate.reduceToConcrete tc1
+        case mut of
+          VT.RegOp _ -> return ()
+          VT.Compreh _ -> return ()
+          _ -> throwErrSt (printf "unexpected tree node: %s" (VT.showTreeSymbol t1))
+        -- The tc1 should be be a regular op or comprehension tree. We need to reduce it to get the non-mutable result.
+        r1M <- Mutate.reduceToNonMut tc1
         maybe
           (return Nothing)
-          (\r1 -> unifyBinUTrees (ut1{utTC = r1 `Cursor.setTCFocus` tc1}) ut2 opAddr)
-          rM1
+          (\r1 -> unifyBinUTrees (ut1{utTC = r1 `Cursor.setTCFocus` tc1}) ut2 unifyTC)
+          r1M
 
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
     (VT.TNAtomCnstr c1) -> do
-      naM <- unifyBinUTrees (ut1{utTC = VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c1) `Cursor.setTCFocus` tc1}) ut2 opAddr
+      naM <- unifyBinUTrees (ut1{utTC = VT.mkNewTree (VT.TNAtom $ VT.cnsAtom c1) `Cursor.setTCFocus` tc1}) ut2 unifyTC
       maybe
         (return Nothing)
         ( \na -> case VT.treeNode na of
@@ -614,37 +714,24 @@ returnNotUnifiable (UTree{utTC = tc1, utDir = d1}) (UTree{utTC = tc2}) = do
     ty <- VT.showValueType y
     retTr $ VT.mkBottomTree $ printf "%s can not be unified with %s" tx ty
 
-mergeLeftStruct :: (RM.ReduceMonad s r m) => (VT.Struct VT.Tree, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftStruct (s1, ut1) ut2@(UTree{utTC = tc2}) opAddr = do
+mergeLeftBlock :: (RM.ReduceMonad s r m) => (VT.Block VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftBlock (s1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t2 = Cursor.tcFocus tc2
   if
-    -- When the left struct is an empty struct with embedded fields (an embedded value), we can get the reduced left
-    -- struct and unify the reduced result (which should be the embeded value) with right value.
-    -- For example, {1,1} & 1 -> 1 & 1 & 1
-    | VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) -> do
-        uts <-
-          foldM
-            ( \acc i -> do
-                subTC <- TCOps.goDownTCSegMust (Path.StructTASeg (Path.EmbedTASeg i)) (utTC ut1)
-                return $ ut1{utTC = subTC, utEmbedID = Just i} : acc
-            )
-            []
-            (IntMap.keys $ VT.stcEmbeds s1)
-        unifyUTrees (if utDir ut1 == Path.L then uts ++ [ut2] else ut2 : uts) opAddr
-    -- -- TODO: reduce embedded
-    -- r1 <- reduceUnifyMutTreeArg (Path.toBinOpTASeg (utDir ut1))
-    -- case VT.treeNode r1 of
-    -- VT.TNMutable _ -> return $ VT.mkNewTree VT.TNStub -- No concrete value exists.
-    -- _ -> mergeBinUTrees (ut1{utTC = r1 `Cursor.setTCFocus` utTC ut1}) ut2
-    -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
-    -- using the embedded value to replace the struct.
-    -- For example, the parent struct is {a: 1, b}, and the function is {a: 1} & b.
-    | VT.hasEmptyFields s1 && isJust (utEmbedID ut2) -> case VT.treeNode t2 of
-        VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
-        _ -> retTr t2
+    -- When the left struct is an empty struct with non empty embedded fields, meaning it is an embedded value, we can
+    -- just return the right value because embedded value has been added as conjunct.
+    -- For example, {int} & 1 -> {} & 1 & int
+    -- The 1 and int are re-ordered, but the result should be the same.
+    -- \| VT.hasEmptyFields s1 && not (null $ VT.stcEmbeds s1) -> retTr t2
+    -- -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
+    -- -- using the embedded value to replace the struct.
+    -- -- For example, the parent struct is {a: 1, b}, and the function is {a: 1} & b.
+    -- \| VT.hasEmptyFields s1 && isJust (utEmbedID ut2) -> case VT.treeNode t2 of
+    --     VT.TNBlock s2 -> mergeBlocks (s1, ut1) (s2, ut2)
+    --     _ -> retTr t2
     | otherwise -> case VT.treeNode t2 of
-        VT.TNStruct s2 -> mergeStructs (s1, ut1) (s2, ut2)
-        _ -> mergeLeftOther ut2 ut1 opAddr
+        VT.TNBlock s2 -> mergeBlocks (s1, ut1) (s2, ut2) unifyTC
+        _ -> mergeLeftOther ut2 ut1 unifyTC
 
 {- | unify two structs.
 
@@ -653,23 +740,36 @@ The s1 is made the left struct, and s2 is made the right struct.
 For closedness, unification only generates a closed struct but not a recursively closed struct since to close a struct
 recursively, the only way is to reference the struct via a #ident.
 -}
-mergeStructs ::
+mergeBlocks ::
   (RM.ReduceMonad s r m) =>
-  (VT.Struct VT.Tree, UTree) ->
-  (VT.Struct VT.Tree, UTree) ->
+  (VT.Block VT.Tree, UTree) ->
+  (VT.Block VT.Tree, UTree) ->
+  TCOps.TrCur ->
   m (Maybe VT.Tree)
-mergeStructs (s1, ut1@UTree{utDir = Path.L}) (s2, ut2) = do
-  checkRes <- do
-    rE1 <- _preprocessBlock (utTC ut1) s1
-    rE2 <- _preprocessBlock (utTC ut2) s2
-    return $ do
-      r1 <- rE1
-      r2 <- rE2
-      return (r1, r2)
-  case checkRes of
-    Left err -> retTr err
-    Right (r1, r2) -> mergeStructsInner (utEmbedID ut1, r1) (utEmbedID ut2, r2)
-mergeStructs dt1@(_, UTree{utDir = Path.R}) dt2 = mergeStructs dt2 dt1
+mergeBlocks (s1, ut1@UTree{utDir = Path.L}) (s2, ut2) unifyTC =
+  let
+    eidM1 = getEmbeddedOID ut1
+    utAddr1 = Cursor.tcCanAddr . utTC $ ut1
+    eidM2 = getEmbeddedOID ut2
+    utAddr2 = Cursor.tcCanAddr . utTC $ ut2
+   in
+    RM.debugSpanArgsRM
+      "mergeBlocks"
+      (printf "eidM1: %s, addr1: %s, eidM2: %s, addr2: %s" (show eidM1) (show utAddr1) (show eidM2) (show utAddr2))
+      id
+      unifyTC
+      $ do
+        checkRes <- do
+          rE1 <- _preprocessBlock (utTC ut1) s1
+          rE2 <- _preprocessBlock (utTC ut2) s2
+          return $ do
+            r1 <- rE1
+            r2 <- rE2
+            return (r1, r2)
+        case checkRes of
+          Left err -> retTr err
+          Right (r1, r2) -> mergeStructsInner (eidM1, r1) (eidM2, r2)
+mergeBlocks dt1@(_, UTree{utDir = Path.R}) dt2 unifyTC = mergeBlocks dt2 dt1 unifyTC
 
 mergeStructsInner ::
   (RM.ReduceMonad s r m) =>
@@ -677,7 +777,7 @@ mergeStructsInner ::
   (Maybe Int, VT.Struct VT.Tree) ->
   m (Maybe VT.Tree)
 mergeStructsInner (eidM1, s1) (eidM2, s2) = do
-  when (isJust eidM1 && isJust eidM2) $ throwErrSt "both structs are embedded, not allowed"
+  -- when (isJust eidM1 && isJust eidM2) $ throwErrSt "both structs are embedded, not allowed"
 
   sid <- RM.allocRMObjID
   let merged = fieldsToStruct sid (_unionFields (s1, eidM1) (s2, eidM2)) (s1, eidM1) (s2, eidM2)
@@ -700,11 +800,6 @@ fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
       , VT.stcLets = VT.stcLets st1 `Map.union` VT.stcLets st2
       , VT.stcDynFields = combinedPendSubs
       , VT.stcCnstrs = combinedPatterns
-      , VT.stcEmbeds = case (eidM1, eidM2) of
-          (Nothing, Nothing) -> VT.stcEmbeds st1 `IntMap.union` VT.stcEmbeds st2
-          -- If the any is embedded, we should not add embedings as reducing the merged embeddings would cause infinite
-          -- evaluation.
-          _ -> IntMap.empty
       , VT.stcClosed = VT.stcClosed st1 || VT.stcClosed st2
       , VT.stcPerms =
           let neitherEmbedded = isNothing eidM1 && isNothing eidM2
@@ -749,14 +844,9 @@ _unionFields (st1, eidM1) (st2, eidM2) =
             | label `Set.member` l1Set && label `Set.member` l2Set
             , Just sf1 <- f1M
             , Just sf2 <- f2M ->
-                let x = _mkUnifiedField sf1 sf2
-                    -- If either of the structs is embedded, we need to add the id to the objects set.
-                    ufield = case catMaybes [eidM1, eidM2] of
-                      [i] -> x{VT.ssfObjects = Set.insert i (VT.ssfObjects x)}
-                      _ -> x
-                 in (label, ufield) : acc
-            | label `Set.member` l1Set, Just sf1 <- f1M -> (label, sf1) : acc
-            | label `Set.member` l2Set, Just sf2 <- f2M -> (label, sf2) : acc
+                (label, _mkUnifiedField (sf1, eidM1) (sf2, eidM2)) : acc
+            | label `Set.member` l1Set, Just sf1 <- f1M -> (label, _toDisjoinedField eidM1 sf1) : acc
+            | label `Set.member` l2Set, Just sf2 <- f2M -> (label, _toDisjoinedField eidM2 sf2) : acc
             | otherwise -> acc
     )
     []
@@ -772,13 +862,27 @@ _unionFields (st1, eidM1) (st2, eidM2) =
     VT.stcOrdLabels st1
       ++ foldr (\l acc -> if l `Set.member` l1Set then acc else l : acc) [] (VT.stcOrdLabels st2)
 
+getBaseRaw :: Maybe Int -> VT.Field VT.Tree -> Maybe VT.Tree
+getBaseRaw eidM sf =
+  if isNothing eidM
+    then VT.ssfBaseRaw sf
+    else Nothing
+
+_toDisjoinedField :: Maybe Int -> VT.Field VT.Tree -> VT.Field VT.Tree
+_toDisjoinedField eidM sf =
+  sf
+    { VT.ssfBaseRaw = getBaseRaw eidM sf
+    , VT.ssfObjects = maybe Set.empty (\i -> Set.fromList [i]) eidM `Set.union` VT.ssfObjects sf
+    }
+
 -- | Merge two fields by creating a unify node with merged attributes.
-_mkUnifiedField :: VT.Field VT.Tree -> VT.Field VT.Tree -> VT.Field VT.Tree
-_mkUnifiedField sf1 sf2 =
+_mkUnifiedField :: (VT.Field VT.Tree, Maybe Int) -> (VT.Field VT.Tree, Maybe Int) -> VT.Field VT.Tree
+_mkUnifiedField (sf1, eidM1) (sf2, eidM2) =
   let
     -- No original node exists yet
     unifyValOp = VT.mkUnifyOp [VT.ssfValue sf1, VT.ssfValue sf2]
-    unifiedBaseRaw = case catMaybes [VT.ssfBaseRaw sf1, VT.ssfBaseRaw sf2] of
+    -- The field is raw only if it is not of an embedded struct and it has raw base.
+    unifiedBaseRaw = case catMaybes [getBaseRaw eidM1 sf1, getBaseRaw eidM2 sf2] of
       [br1, br2] -> Just $ VT.mkMutableTree $ VT.mkUnifyOp [br1, br2]
       [br] -> Just br
       _ -> Nothing
@@ -805,21 +909,21 @@ alias, or package.
 _preprocessBlock ::
   (RM.ReduceMonad s r m) =>
   TCOps.TrCur ->
-  VT.Struct VT.Tree ->
+  VT.Block VT.Tree ->
   m (Either VT.Tree (VT.Struct VT.Tree))
 _preprocessBlock blockTC block = do
-  RM.debugSpanRM "_preprocessBlock" blockTC $ do
+  RM.debugSpanRM "_preprocessBlock" (const Nothing) blockTC $ do
     rM <- _validateRefIdents blockTC
     logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
     maybe
       ( do
           let
-            sid = VT.stcID block
-            blockAddr = Cursor.tcTreeAddr blockTC
-          structT <- _appendSIDToLetRef blockAddr sid blockTC
+            sid = VT.stcID . VT.blkStruct $ block
+            blockAddr = Cursor.tcCanAddr blockTC
+          appended <- _appendSIDToLetRef blockAddr sid blockTC
           -- rewrite all ident keys of the let bindings map with the sid.
-          case VT.treeNode structT of
-            VT.TNStruct struct -> do
+          case VT.treeNode appended of
+            VT.TNBlock (VT.Block{VT.blkStruct = struct}) -> do
               let
                 blockIdents =
                   Set.fromList $
@@ -830,7 +934,7 @@ _preprocessBlock blockTC block = do
                 newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
               logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
               return $ Right newStruct
-            _ -> throwErrSt $ printf "tree must be struct, but got %s" (show structT)
+            _ -> throwErrSt $ printf "tree must be struct, but got %s" (show appended)
       )
       (return . Left)
       rM
@@ -890,7 +994,7 @@ _appendSIDToLetRef blockAddr sid _tc =
               )
               ( do
                   (x, y) <- m
-                  return (Cursor.tcTreeAddr x, y)
+                  return (Cursor.tcCanAddr x, y)
               )
           _ -> return focus
 
@@ -905,43 +1009,44 @@ _extAllSubNodes x = VT.subNodes x ++ rawNodes x
  where
   rawNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
   rawNodes t = case VT.treeNode t of
-    VT.TNStruct struct ->
+    VT.TNBlock block@(VT.Block{VT.blkStruct = struct}) ->
       [(Path.StructTASeg $ Path.PatternTASeg i 1, VT.scsValue c) | (i, c) <- IntMap.toList $ VT.stcCnstrs struct]
         ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, VT.dsfValue dsf) | (i, dsf) <- IntMap.toList $ VT.stcDynFields struct]
         ++ [(Path.StructTASeg $ Path.LetTASeg s, VT.lbValue lb) | (s, lb) <- Map.toList $ VT.stcLets struct]
-        ++ [(Path.StructTASeg $ Path.EmbedTASeg i, VT.embValue emb) | (i, emb) <- IntMap.toList $ VT.stcEmbeds struct]
+        ++ [(Path.StructTASeg $ Path.EmbedTASeg i, VT.embValue emb) | (i, emb) <- IntMap.toList $ VT.blkEmbeds block]
     _ -> []
 
-mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) opAddr = do
+mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
   -- RM.withAddrAndFocus $ \addr _ ->
   --   logDebugStr $ printf "mergeLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
   let t2 = Cursor.tcFocus tc2
   case VT.treeNode t2 of
-    VT.TNMutable _ -> mergeLeftOther ut2 ut1 opAddr
-    VT.TNAtomCnstr _ -> mergeLeftOther ut2 ut1 opAddr
-    VT.TNRefCycle -> mergeLeftOther ut2 ut1 opAddr
-    VT.TNDisj dj2 -> mergeDisjWithDisj (dj1, ut1) (dj2, ut2) opAddr
+    VT.TNMutable _ -> mergeLeftOther ut2 ut1 unifyTC
+    VT.TNAtomCnstr _ -> mergeLeftOther ut2 ut1 unifyTC
+    VT.TNRefCycle _ -> mergeLeftOther ut2 ut1 unifyTC
+    VT.TNDisj dj2 -> mergeDisjWithDisj (dj1, ut1) (dj2, ut2) unifyTC
     -- this is the case for a disjunction unified with a value.
-    _ -> mergeDisjWithVal (dj1, ut1) ut2 opAddr
+    _ -> mergeDisjWithVal (dj1, ut1) ut2 unifyTC
 
 -- Note: isEmbedded is still required. Think about the following values,
 -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
-mergeDisjWithVal :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) _ut2 opAddr = RM.debugSpanOpRM "mergeDisjWithVal" opAddr $ do
-  uts1 <- utsFromDisjs (length $ VT.dsjDisjuncts dj1) _ut1
-  let defIdxes1 = VT.dsjDefIndexes dj1
-  if fstDir == Path.L
-    -- uts1 & ut2 generates a m x 1 matrix.
-    then do
-      matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 opAddr) uts1
-      treeFromMatrix (defIdxes1, []) (length uts1, 1) [matrix]
-    -- ut2 & uts1 generates a 1 x m matrix.
-    else do
-      matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 opAddr) uts1
-      treeFromMatrix ([], defIdxes1) (1, length uts1) (map (: []) matrix)
+mergeDisjWithVal :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) _ut2 unifyTC =
+  RM.debugSpanRM "mergeDisjWithVal" id unifyTC $ do
+    uts1 <- utsFromDisjs (length $ VT.dsjDisjuncts dj1) _ut1
+    let defIdxes1 = VT.dsjDefIndexes dj1
+    if fstDir == Path.L
+      -- uts1 & ut2 generates a m x 1 matrix.
+      then do
+        matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 unifyTC) uts1
+        treeFromMatrix (defIdxes1, []) (length uts1, 1) [matrix]
+      -- ut2 & uts1 generates a 1 x m matrix.
+      else do
+        matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 unifyTC) uts1
+        treeFromMatrix ([], defIdxes1) (1, length uts1) (map (: []) matrix)
 
 {- | Unify two disjuncts.
 
@@ -955,9 +1060,9 @@ U1: ⟨v1, d1⟩ & ⟨v2⟩     => ⟨v1&v2, d1&v2⟩
 U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj ::
-  (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> (VT.Disj VT.Tree, UTree) -> Path.TreeAddr -> m (Maybe VT.Tree)
-mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) (dj2, _ut2) opAddr =
-  RM.debugSpanOpRM "mergeDisjWithDisj" opAddr $ do
+  (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> (VT.Disj VT.Tree, UTree) -> TCOps.TrCur -> m (Maybe VT.Tree)
+mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) (dj2, _ut2) unifyTC =
+  RM.debugSpanRM "mergeDisjWithDisj" id unifyTC $ do
     uts1 <- utsFromDisjs (length $ VT.dsjDisjuncts dj1) _ut1
     uts2 <- utsFromDisjs (length $ VT.dsjDisjuncts dj2) _ut2
     let
@@ -967,11 +1072,11 @@ mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) (dj2, _ut2) op
     if fstDir == Path.L
       -- uts1 & uts2 generates a m x n matrix.
       then do
-        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyBinUTrees ut1 ut2 opAddr) uts2) uts1
+        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyBinUTrees ut1 ut2 unifyTC) uts2) uts1
         treeFromMatrix (defIdxes1, defIdxes2) (length uts1, length uts2) matrix
       -- uts2 & uts1 generates a n x m matrix.
       else do
-        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyBinUTrees ut2 ut1 opAddr) uts1) uts2
+        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyBinUTrees ut2 ut1 unifyTC) uts1) uts2
         treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
 
 utsFromDisjs :: (Env r s m) => Int -> UTree -> m [UTree]
@@ -1031,7 +1136,7 @@ checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded labelsSet tc
                 --     (throwErrSt "struct-value is not found")
                 --     return
                 --     (VT.lookupStructField opLabel struct)
-                -- RM.modifyTMTN $ VT.TNStruct $ VT.updateStructField opLabel (btm `VT.updateFieldValue` field) struct
+                -- RM.modifyTMTN $ VT.TNBlock $ VT.updateStructField opLabel (btm `VT.updateFieldValue` field) struct
                 )
     )
     tc
@@ -1057,6 +1162,7 @@ checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
         (show isBaseClosed)
         (show isEitherEmbedded)
     )
+    id
     tc
     $ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
 
@@ -1104,12 +1210,8 @@ patMatchLabel pat name tc = case VT.treeNode pat of
     | Nothing <- VT.getSFuncFromMutable mut ->
         maybe
           (return False)
-          ( -- The lable mutable might be a reference. The pending element should not be marked as deleted.
-            \val -> case VT.treeNode val of
-              -- If the mutable is a reference and it currently has no value.
-              VT.TNStub -> return False
-              _ -> match val
-          )
+          -- The lable mutable might be a reference. The pending element should not be marked as deleted.
+          match
           (VT.getMutVal mut)
   _ -> match pat
  where

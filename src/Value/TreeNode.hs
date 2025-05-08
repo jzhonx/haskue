@@ -23,6 +23,7 @@ import Path (
     StructTASeg,
     SubValTASeg
   ),
+  TreeAddr,
  )
 import Text.Printf (printf)
 import Value.Atom (AtomV)
@@ -30,7 +31,6 @@ import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
 import Value.Comprehension (Comprehension (..), getValFromIterClause)
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
-import Value.Cycle (RefCycle)
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
 import Value.List (List (lstSubs))
@@ -42,11 +42,12 @@ import Value.Mutable (
  )
 import Value.Reference (Reference (refArg), setRefArgs, subRefArgs)
 import Value.Struct (
+  Block (..),
   DynamicField (..),
   Embedding (..),
   Field (ssfValue),
   LetBinding (lbValue),
-  Struct (stcCnstrs, stcDynFields, stcEmbeds),
+  Struct (..),
   StructCnstr (..),
   lookupStructField,
   lookupStructLet,
@@ -54,7 +55,7 @@ import Value.Struct (
   updateStructField,
   updateStructLet,
  )
-import Value.UnifyOp (UnifyOp (ufConjuncts, ufValue))
+import Value.UnifyOp (UnifyOp (ufConjuncts))
 
 class HasTreeNode t where
   getTreeNode :: t -> TreeNode t
@@ -62,23 +63,25 @@ class HasTreeNode t where
 
 -- | TreeNode represents a tree structure that contains values.
 data TreeNode t
-  = -- | TNStruct is a struct that contains a value and a map of segments to Tree.
-    TNStruct (Value.Struct.Struct t)
+  = -- | TNAtom contains an atom value.
+    TNAtom AtomV
+  | TNBottom Bottom
+  | TNBounds Bounds
+  | TNTop
+  | TNBlock (Block t)
   | TNList (List t)
   | TNDisj (Disj t)
-  | -- | TNAtom contains an atom value.
-    TNAtom AtomV
-  | TNBounds Bounds
   | TNAtomCnstr (AtomCnstr t)
-  | TNRefCycle
+  | -- | TNRefCycle represents the result of a field referencing itself or its sub field.
+    -- It also represents recursion, which is mostly disallowed in the CUE.
+    -- If a field references itself, the address is the same as the field reference. For example: x: x.
+    -- If a field references its sub field, the address is the sub field address. For example: x: x.a.
+    TNRefCycle TreeAddr
   | TNMutable (Mutable t)
   | TNCnstredVal (CnstredVal t)
-  | TNTop
-  | TNBottom Bottom
-  | TNStub
 
 instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
-  (==) (TNStruct s1) (TNStruct s2) = s1 == s2
+  (==) (TNBlock s1) (TNBlock s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
@@ -93,8 +96,7 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNCnstredVal v1) (TNCnstredVal v2) = v1 == v2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
-  (==) TNStub TNStub = True
-  (==) TNRefCycle TNRefCycle = True
+  (==) (TNRefCycle a1) (TNRefCycle a2) = a1 == a2
   (==) _ _ = False
 
 {- | descend into the tree with the given segment.
@@ -104,16 +106,17 @@ This should only be used by TreeCursor.
 subTreeTN :: (TreeOp t, HasTreeNode t, Show t, HasCallStack) => TASeg -> t -> Maybe t
 subTreeTN seg t = case (seg, getTreeNode t) of
   (RootTASeg, _) -> Just t
-  (StructTASeg s, TNStruct struct) -> case s of
+  (StructTASeg s, TNBlock estruct@(Block{blkStruct = struct})) -> case s of
     StringTASeg name
-      | Just sf <- Value.Struct.lookupStructField name struct -> Just $ ssfValue sf
+      | Just sf <- lookupStructField name struct -> Just $ ssfValue sf
     PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
     DynFieldTASeg i j ->
       (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
     LetTASeg name
       | Just lb <- Value.Struct.lookupStructLet name struct -> Just (lbValue lb)
-    EmbedTASeg i -> embValue <$> stcEmbeds struct IntMap.!? i
+    EmbedTASeg i -> embValue <$> blkEmbeds estruct IntMap.!? i
     _ -> Nothing
+  (SubValTASeg, TNBlock estruct) -> blkNonStructValue estruct
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | (MutableArgTASeg i, RegOp m) <- (seg, mut) -> ropArgs m `indexList` i
@@ -138,7 +141,8 @@ setSubTreeTN ::
   forall r s t m. (Env r s m, TreeOp t, Show t, HasTreeNode t) => TASeg -> t -> t -> m t
 setSubTreeTN seg subT parT = do
   n <- case (seg, getTreeNode parT) of
-    (StructTASeg s, TNStruct struct) -> updateParStruct struct s
+    (StructTASeg s, TNBlock estruct) -> updateParStruct estruct s
+    (SubValTASeg, TNBlock estruct) -> return $ TNBlock estruct{blkNonStructValue = Just subT}
     (IndexTASeg i, TNList vs) ->
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
@@ -191,31 +195,34 @@ setSubTreeTN seg subT parT = do
     _ -> throwErrSt insertErrMsg
   return $ setTreeNode parT n
  where
-  updateParStruct :: (MonadError String m, HasCallStack) => Value.Struct.Struct t -> StructTASeg -> m (TreeNode t)
-  updateParStruct parStruct labelSeg
+  structToTN :: Struct t -> Block t -> TreeNode t
+  structToTN s est = TNBlock est{blkStruct = s}
+
+  updateParStruct :: (MonadError String m, HasCallStack) => Block t -> StructTASeg -> m (TreeNode t)
+  updateParStruct parEStruct@(Block{blkStruct = parStruct}) labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
-    , Just field <- Value.Struct.lookupStructField name parStruct =
+    , Just field <- lookupStructField name parStruct =
         let
-          newField = subT `Value.Struct.updateFieldValue` field
-          newStruct = Value.Struct.updateStructField name newField parStruct
+          newField = subT `updateFieldValue` field
+          newStruct = updateStructField name newField parStruct
          in
-          return (TNStruct newStruct)
+          return (structToTN newStruct parEStruct)
     | LetTASeg name <- labelSeg
-    , Just oldLet <- Value.Struct.lookupStructLet name parStruct =
+    , Just oldLet <- lookupStructLet name parStruct =
         let
           newLet = subT <$ oldLet
-          newStruct = Value.Struct.updateStructLet name newLet parStruct
+          newStruct = updateStructLet name newLet parStruct
          in
-          return (TNStruct newStruct)
+          return (structToTN newStruct parEStruct)
     | PatternTASeg i j <- labelSeg =
         let
           psf = stcCnstrs parStruct IntMap.! i
           newPSF = if j == 0 then psf{scsPattern = subT} else psf{scsValue = subT}
           newStruct = parStruct{stcCnstrs = IntMap.insert i newPSF (stcCnstrs parStruct)}
          in
-          return (TNStruct newStruct)
+          return (structToTN newStruct parEStruct)
     | DynFieldTASeg i j <- labelSeg =
         let
           pends = stcDynFields parStruct
@@ -223,10 +230,13 @@ setSubTreeTN seg subT parT = do
           newPSF = if j == 0 then psf{dsfLabel = subT} else psf{dsfValue = subT}
           newStruct = parStruct{stcDynFields = IntMap.insert i newPSF pends}
          in
-          return (TNStruct newStruct)
+          return (structToTN newStruct parEStruct)
     | EmbedTASeg i <- labelSeg =
-        let newEmbed = subT <$ stcEmbeds parStruct IntMap.! i
-         in return $ TNStruct parStruct{stcEmbeds = IntMap.insert i newEmbed (stcEmbeds parStruct)}
+        let
+          oldEmbeds = blkEmbeds parEStruct
+          newEmbed = subT <$ oldEmbeds IntMap.! i
+         in
+          return $ TNBlock parEStruct{blkEmbeds = IntMap.insert i newEmbed oldEmbeds}
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String

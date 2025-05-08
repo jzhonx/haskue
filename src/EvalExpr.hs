@@ -34,6 +34,7 @@ import AST (
   StructLit (..),
   UnaryExpr (..),
   UnaryOp (Star),
+  litCons,
  )
 import Common (Env, IDStore (..))
 import Control.Monad (foldM)
@@ -48,7 +49,6 @@ import Reduce.Nodes (
   builtinMutableTable,
   mkVarLinkTree,
  )
-import qualified Reduce.RegOps as RegOps
 import Text.Printf (printf)
 import Util (logDebugStr)
 import qualified Value.Tree as VT
@@ -97,29 +97,29 @@ evalStructLit (StructLit decls) = do
 evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
 evalDecl x decl = case VT.treeNode x of
   VT.TNBottom _ -> return x
-  VT.TNStruct struct -> case decl of
+  VT.TNBlock block -> case decl of
     Embedding ed -> do
       v <- evalEmbedding ed
       oid <- allocOID
       let adder = VT.EmbedSAdder oid v
-      addNewStructElem adder struct
+      addNewBlockElem adder block
     EllipsisDecl (Ellipsis cM) ->
       maybe
-        (return (VT.mkStructTree struct))
+        (return (VT.mkBlockTree block))
         (\_ -> throwError "default constraints are not implemented yet")
         cM
     FieldDecl (AST.Field ls e) -> do
       sfa <- evalFDeclLabels ls e
-      addNewStructElem sfa struct
+      addNewBlockElem sfa block
     DeclLet (LetClause ident binde) -> do
       val <- evalExpr binde
       let adder = VT.LetSAdder ident val
-      addNewStructElem adder struct
+      addNewBlockElem adder block
   _ -> throwErrSt "invalid struct"
 
 evalEmbedding :: (EvalEnv r s m) => Embedding -> m VT.Tree
 evalEmbedding (AliasExpr e) = evalExpr e
-evalEmbedding (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
+evalEmbedding ce@(EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
   gev <- evalExpr ge
   clsv <- mapM evalClause cls
   sv <- evalStructLit lit
@@ -136,7 +136,7 @@ evalClause (ClauseLetClause (LetClause ident le)) = do
 -- evalStartClause :: (EvalEnv r s m) => StartClause -> m VT.Tree
 -- evalStartClause (GuardClause e) = evalExpr e
 
-evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.StructElemAdder VT.Tree)
+evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.BlockElemAdder VT.Tree)
 evalFDeclLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
@@ -152,12 +152,12 @@ evalFDeclLabels lbls e =
         logDebugStr $ printf "evalFDeclLabels, nested: lb1: %s" (show l1)
         sf2 <- evalFDeclLabels (l2 : rs) e
         sid <- allocOID
-        let val = VT.mkNewTree . VT.TNStruct $ VT.mkStructFromAdders sid [sf2]
+        let val = VT.mkStructTree $ VT.mkStructFromAdders sid [sf2]
         adder <- mkAdder l1 val
         logDebugStr $ printf "evalFDeclLabels, nested: adder: %s" (show adder)
         return adder
  where
-  mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.StructElemAdder VT.Tree)
+  mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.BlockElemAdder VT.Tree)
   mkAdder (Label le) val = case le of
     AST.LabelName ln c ->
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
@@ -199,63 +199,71 @@ evalFDeclLabels lbls e =
 {- | Insert a new element into the struct. If the field is already in the struct, then unify the field with the new
 field.
 -}
-addNewStructElem :: (Env r s m) => VT.StructElemAdder VT.Tree -> VT.Struct VT.Tree -> m VT.Tree
-addNewStructElem adder struct = case adder of
+addNewBlockElem :: (Env r s m) => VT.BlockElemAdder VT.Tree -> VT.Block VT.Tree -> m VT.Tree
+addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
   (VT.StaticSAdder name sf) ->
     maybe
-      ( case VT.lookupStructVal name struct of
-          [VT.SField extSF] ->
+      ( case VT.lookupStructStubVal name struct of
+          [VT.SStubField extSF] ->
             let
               unifySFOp =
                 VT.Field
-                  { VT.ssfValue =
-                      VT.mkNewTree
-                        (VT.TNMutable $ VT.mkUnifyOp [VT.ssfValue extSF, VT.ssfValue sf])
+                  { VT.ssfValue = VT.mkMutableTree (VT.mkUnifyOp [VT.ssfValue extSF, VT.ssfValue sf])
                   , VT.ssfBaseRaw =
                       Just $
-                        VT.mkNewTree
-                          ( VT.TNMutable $
-                              VT.mkUnifyOp [fromJust $ VT.ssfBaseRaw extSF, fromJust $ VT.ssfBaseRaw sf]
-                          )
+                        VT.mkMutableTree
+                          (VT.mkUnifyOp [fromJust $ VT.ssfBaseRaw extSF, fromJust $ VT.ssfBaseRaw sf])
                   , VT.ssfAttr = VT.mergeAttrs (VT.ssfAttr extSF) (VT.ssfAttr sf)
                   , VT.ssfObjects = Set.empty
                   }
              in
               do
-                logDebugStr $ printf "addNewStructElem: extSF: %s, sf: %s" (show extSF) (show sf)
-                return $ VT.mkStructTree $ struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}
-          [VT.SLet _] -> return $ aliasErr name
+                logDebugStr $ printf "addNewBlockElem: extSF: %s, sf: %s" (show extSF) (show sf)
+                return $
+                  VT.mkBlockTree $
+                    VT.setBlockStruct (struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}) block
+          [VT.SStubLet _] -> return $ aliasErr name
           -- The label is not seen before in the struct.
           [] ->
             return $
-              VT.mkStructTree $
-                struct
-                  { VT.stcOrdLabels = VT.stcOrdLabels struct ++ [name]
-                  , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
-                  , VT.stcFields = Map.insert name sf (VT.stcFields struct)
-                  }
+              VT.mkBlockTree $
+                VT.setBlockStruct
+                  ( struct
+                      { VT.stcOrdLabels = VT.stcOrdLabels struct ++ [name]
+                      , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
+                      , VT.stcFields = Map.insert name sf (VT.stcFields struct)
+                      }
+                  )
+                  block
           _ -> return $ aliasErr name
       )
       return
       (existCheck name False)
   (VT.DynamicSAdder i dsf) ->
-    return $ VT.mkStructTree $ struct{VT.stcDynFields = IntMap.insert i dsf (VT.stcDynFields struct)}
+    return . VT.mkBlockTree $
+      VT.setBlockStruct (struct{VT.stcDynFields = IntMap.insert i dsf (VT.stcDynFields struct)}) block
   (VT.CnstrSAdder i pattern val) ->
-    return $ VT.mkStructTree $ struct{VT.stcCnstrs = IntMap.insert i (VT.StructCnstr i pattern val) (VT.stcCnstrs struct)}
+    return . VT.mkBlockTree $
+      VT.setBlockStruct
+        (struct{VT.stcCnstrs = IntMap.insert i (VT.StructCnstr i pattern val) (VT.stcCnstrs struct)})
+        block
   (VT.LetSAdder name val) ->
     return $
       fromMaybe
         -- The name is not seen before in the struct.
-        ( VT.mkStructTree $
-            struct
-              { VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)
-              , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
-              }
+        ( VT.mkBlockTree $
+            VT.setBlockStruct
+              ( struct
+                  { VT.stcLets = Map.insert name (VT.LetBinding False val) (VT.stcLets struct)
+                  , VT.stcBlockIdents = Set.insert name (VT.stcBlockIdents struct)
+                  }
+              )
+              block
         )
         (existCheck name True)
   (VT.EmbedSAdder i val) -> do
     let embed = VT.mkEmbedding i val
-    return $ VT.mkStructTree $ struct{VT.stcEmbeds = IntMap.insert i embed (VT.stcEmbeds struct)}
+    return $ VT.mkBlockTree $ block{VT.blkEmbeds = IntMap.insert i embed (VT.blkEmbeds block)}
  where
   aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
@@ -263,11 +271,11 @@ addNewStructElem adder struct = case adder of
   -- Checks if name is already in the struct. If it is, then return an error message.
   existCheck :: String -> Bool -> Maybe VT.Tree
   existCheck name isNameLet =
-    case (VT.lookupStructVal name struct, isNameLet) of
-      ([VT.SField f], True)
+    case (VT.lookupStructStubVal name struct, isNameLet) of
+      ([VT.SStubField f], True)
         | VT.lbAttrIsIdent (VT.ssfAttr f) -> Just $ aliasErr name
-      ([VT.SLet _], True) -> Just $ lbRedeclErr name
-      ([VT.SLet _], False) -> Just $ aliasErr name
+      ([VT.SStubLet _], True) -> Just $ lbRedeclErr name
+      ([VT.SStubLet _], False) -> Just $ aliasErr name
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 

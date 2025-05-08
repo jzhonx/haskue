@@ -41,10 +41,15 @@ showRefArg :: RefArg t -> (t -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (s : map (\x -> maybe "_" id (f x)) xs)
 showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)
 
-isRefRef :: Reference t -> Bool
-isRefRef r = case refArg r of
-  RefPath _ _ -> False
-  RefIndex _ -> True
+refHasRefPath :: Reference t -> Bool
+refHasRefPath r = case refArg r of
+  RefPath _ _ -> True
+  RefIndex _ -> False
+
+getIndexSegs :: Reference t -> Maybe [t]
+getIndexSegs r = case refArg r of
+  RefPath _ _ -> Nothing
+  RefIndex xs -> Just xs
 
 valPathFromRefArg :: (t -> Maybe Atom) -> RefArg t -> Maybe Path.ValPath
 valPathFromRefArg treeToA arg = case arg of

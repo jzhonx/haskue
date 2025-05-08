@@ -2,8 +2,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
--- {-# LANGUAGE FunctionalDependencies #-}
-
 module Cursor where
 
 import Common
@@ -15,74 +13,20 @@ import Data.ByteString.Builder (
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Exception (throwErrSt)
-import Path (TASeg, TreeAddr (TreeAddr))
+import qualified Path
 
 class HasTreeCursor s t where
   getTreeCursor :: s -> TreeCursor t
   setTreeCursor :: s -> TreeCursor t -> s
 
--- class HasCtxVal s t a | s -> a, s -> t where
---   getCtxVal :: s -> CtxVal t a
---   setCtxVal :: s -> CtxVal t a -> s
+type TreeCrumb t = (Path.TASeg, t)
 
--- data CtxVal t a = CtxVal
---   { cvVal :: a
---   , cvCtx :: Context t
---   }
-
--- instance Functor (CtxVal t) where
---   fmap f c = c{cvVal = f (cvVal c)}
-
--- instance HasCtxVal (CtxVal t a) t a where
---   getCtxVal = id
---   setCtxVal _ x = x
-
--- instance HasTrace (CtxVal t a) where
---   getTrace = ctxTrace . cvCtx
---   setTrace cv tr = cv{cvCtx = (cvCtx cv){ctxTrace = tr}}
-
--- instance IDStore (CtxVal t a) where
---   getID cv = ctxObjID (cvCtx cv)
---   setID cv i = cv{cvCtx = (cvCtx cv){ctxObjID = i}}
-
--- mkCtxVal :: TreeCursor t -> Int -> Trace -> CtxVal t a
--- mkCtxVal cur objID trace =
---   CtxVal
---     { cvVal = tcFocus cur
---     , cvCtx = emptyContext{ctxCrumbs = tcCrumbs cur, ctxObjID = objID, ctxTrace = trace}
---     }
-
--- type CtxTree t = CtxVal t t
-
-type TreeCrumb t = (TASeg, t)
-
--- ctxTreeAddr :: Context t -> TreeAddr
--- ctxTreeAddr = addrFromCrumbs . ctxCrumbs
-
-addrFromCrumbs :: [TreeCrumb t] -> TreeAddr
-addrFromCrumbs crumbs = TreeAddr . reverse $ go crumbs []
+addrFromCrumbs :: [TreeCrumb t] -> Path.TreeAddr
+addrFromCrumbs crumbs = Path.TreeAddr . reverse $ go crumbs []
  where
-  go :: [TreeCrumb t] -> [TASeg] -> [TASeg]
+  go :: [TreeCrumb t] -> [Path.TASeg] -> [Path.TASeg]
   go [] acc = acc
   go ((n, _) : cs) acc = go cs (n : acc)
-
--- cvTreeAddr :: CtxVal t a -> TreeAddr
--- cvTreeAddr = ctxTreeAddr . cvCtx
-
--- getCVCursor :: CtxVal t a -> TreeCursor t
--- getCVCursor cv = TreeCursor (cvVal cv) (ctxCrumbs . cvCtx $ cv)
-
--- emptyContext :: Context t
--- emptyContext =
---   Context
---     { ctxCrumbs = []
---     , ctxObjID = 0
---     , ctxReduceStack = []
---     , ctxNotifGraph = Map.empty
---     , ctxNotifQueue = []
---     , ctxNotifEnabled = True
---     , ctxTrace = emptyTrace
---     }
 
 {- | TreeCursor is a pair of a value and a list of crumbs.
 For example,
@@ -102,14 +46,19 @@ data TreeCursor t = TreeCursor
   }
   deriving (Eq)
 
+-- | By default, only show the focus of the cursor.
 instance (Show t) => Show (TreeCursor t) where
-  show = showCursor
+  show = show . tcFocus
 
 setTCFocus :: t -> TreeCursor t -> TreeCursor t
 setTCFocus t (TreeCursor _ cs) = TreeCursor t cs
 
-tcTreeAddr :: TreeCursor t -> TreeAddr
-tcTreeAddr c = addrFromCrumbs (tcCrumbs c)
+-- | Generate canonical form of tree address from the tree cursor.
+tcCanAddr :: TreeCursor t -> Path.TreeAddr
+tcCanAddr c = trim $ addrFromCrumbs (tcCrumbs c)
+ where
+  trim :: Path.TreeAddr -> Path.TreeAddr
+  trim (Path.TreeAddr segs) = Path.TreeAddr $ filter (not . Path.isSegNonCanonical) segs
 
 -- | Get the parent of the cursor without propagating the value up.
 parentTC :: TreeCursor t -> Maybe (TreeCursor t)
@@ -120,7 +69,7 @@ parentTCMust :: (Env r s m) => TreeCursor t -> m (TreeCursor t)
 parentTCMust tc = maybe (throwErrSt "already top") return (parentTC tc)
 
 -- | Get the segment paired with the focus of the cursor.
-focusTCSeg :: (Env r s m) => TreeCursor t -> m TASeg
+focusTCSeg :: (Env r s m) => TreeCursor t -> m Path.TASeg
 focusTCSeg (TreeCursor _ []) = throwErrSt "already at the top"
 focusTCSeg tc = return $ fst . head $ tcCrumbs tc
 
@@ -149,5 +98,5 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-mkSubTC :: TASeg -> t -> TreeCursor t -> TreeCursor t
+mkSubTC :: Path.TASeg -> t -> TreeCursor t -> TreeCursor t
 mkSubTC seg a tc = TreeCursor a ((seg, tcFocus tc) : tcCrumbs tc)

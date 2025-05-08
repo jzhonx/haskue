@@ -12,6 +12,36 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 
+{- | A block is a structure that contains a struct and a set of embeddings.
+
+Reduction of a block is not necessarily a struct.
+-}
+data Block t = Block
+  { blkStruct :: Struct t
+  , blkEmbeds :: IntMap.IntMap (Embedding t)
+  , blkNonStructValue :: Maybe t
+  }
+
+instance (Eq t) => Eq (Block t) where
+  (==) s1 s2 = blkStruct s1 == blkStruct s2 && blkNonStructValue s1 == blkNonStructValue s2
+
+instance (BuildASTExpr t) => BuildASTExpr (Block t) where
+  buildASTExpr _ _ = throwErrSt "not implemented"
+
+emptyBlock :: Block t
+emptyBlock =
+  Block
+    { blkStruct = emptyStruct
+    , blkEmbeds = IntMap.empty
+    , blkNonStructValue = Nothing
+    }
+
+modifyBlockStruct :: (Struct t -> Struct t) -> Block t -> Block t
+modifyBlockStruct f blk = blk{blkStruct = f (blkStruct blk)}
+
+setBlockStruct :: Struct t -> Block t -> Block t
+setBlockStruct s blk = blk{blkStruct = s}
+
 data Struct t = Struct
   { stcID :: Int
   -- ^ The ID is used to identify the struct. It will not be used in the comparison of structs.
@@ -24,18 +54,18 @@ data Struct t = Struct
   -- It is needed because new static fields of embeddings can be merged into the struct.
   -- Once the struct is created, the static identifiers are fixed. The let identifiers can be rewritten with the scope
   -- id.
-  , stcFields :: Map.Map String (Field t)
-  -- ^ It is the fields, excluding the let bindings.
   , stcLets :: Map.Map String (LetBinding t)
   -- ^ Let bindings are read-only. They are not reduced.
   , stcCnstrs :: IntMap.IntMap (StructCnstr t)
   , stcDynFields :: IntMap.IntMap (DynamicField t)
   -- ^ We should not shrink the list as it is a heap list.
-  , stcEmbeds :: IntMap.IntMap (Embedding t)
-  -- ^ The embeddings make the struct like a mutable.
+  -- | == Results start
   , stcClosed :: Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
   , stcPerms :: [PermItem]
+  , stcFields :: Map.Map String (Field t)
+  -- ^ It is the fields, excluding the let bindings.
+  , stcIsConcrete :: Bool
   }
 
 data LabelAttr = LabelAttr
@@ -50,9 +80,9 @@ data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
 data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
-data StructVal t
-  = SField (Field t)
-  | SLet (LetBinding t)
+data StructStubVal t
+  = SStubField (Field t)
+  | SStubLet (LetBinding t)
   deriving (Show, Eq)
 
 data Field t = Field
@@ -104,31 +134,12 @@ data Embedding t = Embedding
   }
   deriving (Show, Functor)
 
-data StructElemAdder t
+data BlockElemAdder t
   = StaticSAdder String (Field t)
   | DynamicSAdder Int (DynamicField t)
   | CnstrSAdder Int t t
   | LetSAdder String t
   | EmbedSAdder Int t
-  deriving (Show)
-
-{- | Permission item stores permission information for the static fields and dynamic fields of a struct.
-
-The permission information is used to check if the opposite labels and dynamic fields are allowed when the base struct
-is closed and neither of the structs is embedded.
-
-Because structs can be merged and constraints can be changed, we need to store the permission information of the
-original struct.
--}
-data PermItem = PermItem
-  { piCnstrs :: Set.Set Int
-  , piLabels :: Set.Set String
-  , piDyns :: Set.Set Int
-  , piOpLabels :: Set.Set String
-  -- ^ The static fields to be checked.
-  , piOpDyns :: Set.Set Int
-  -- ^ The dynamic fields to be checked.
-  }
   deriving (Show)
 
 instance (Eq t) => Eq (Struct t) where
@@ -165,6 +176,39 @@ instance (Eq t) => Eq (DynamicField t) where
 instance (Eq t) => Eq (Field t) where
   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
 
+{- | Permission item stores permission information for the static fields and dynamic fields of a struct.
+
+The permission information is used to check if the opposite labels and dynamic fields are allowed when the base struct
+is closed and neither of the structs is embedded.
+
+Because structs can be merged and constraints can be changed, we need to store the permission information of the
+original struct.
+-}
+data PermItem = PermItem
+  { piCnstrs :: Set.Set Int
+  , piLabels :: Set.Set String
+  , piDyns :: Set.Set Int
+  , piOpLabels :: Set.Set String
+  -- ^ The static fields to be checked.
+  , piOpDyns :: Set.Set Int
+  -- ^ The dynamic fields to be checked.
+  }
+
+instance Show PermItem where
+  show p =
+    "PermItem{"
+      ++ "cnstrs="
+      ++ show (Set.toList $ piCnstrs p)
+      ++ ",labels="
+      ++ show (Set.toList $ piLabels p)
+      ++ ",dyns="
+      ++ show (Set.toList $ piDyns p)
+      ++ ",opLabels="
+      ++ show (Set.toList $ piOpLabels p)
+      ++ ",opDyns="
+      ++ show (Set.toList $ piOpDyns p)
+      ++ "}"
+
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
@@ -172,7 +216,7 @@ mergeAttrs a1 a2 =
     , lbAttrIsIdent = lbAttrIsIdent a1 || lbAttrIsIdent a2
     }
 
-mkStructFromAdders :: Int -> [StructElemAdder t] -> Struct t
+mkStructFromAdders :: Int -> [BlockElemAdder t] -> Struct t
 mkStructFromAdders sid as =
   emptyStruct
     { stcID = sid
@@ -213,14 +257,14 @@ emptyStruct =
   Struct
     { stcID = 0
     , stcOrdLabels = []
-    , stcBlockIdents = Set.empty
     , stcFields = Map.empty
+    , stcBlockIdents = Set.empty
     , stcLets = Map.empty
     , stcDynFields = IntMap.empty
     , stcCnstrs = IntMap.empty
-    , stcEmbeds = IntMap.empty
     , stcClosed = False
     , stcPerms = []
+    , stcIsConcrete = False
     }
 
 updateFieldValue :: t -> Field t -> Field t
@@ -302,16 +346,25 @@ getFieldType ident
   | head ident == '_' = Just SFTHidden
   | otherwise = Just SFTRegular
 
-{- | Look up the struct value in the struct.
+{- | Look up the struct stub value in the struct.
 
 The name could be in both the fields and let bindings, or either.
 -}
-lookupStructVal :: String -> Struct t -> [StructVal t]
-lookupStructVal name struct =
+lookupStructStubVal :: String -> Struct t -> [StructStubVal t]
+lookupStructStubVal name struct =
   catMaybes
-    [ SField <$> Map.lookup name (stcFields struct)
-    , SLet <$> Map.lookup name (stcLets struct)
+    [ SStubField <$> Map.lookup name (stcFields struct)
+    , SStubLet <$> Map.lookup name (stcLets struct)
     ]
+
+lookupStructLet :: String -> Struct t -> Maybe (LetBinding t)
+lookupStructLet name struct = Map.lookup name (stcLets struct)
+
+updateStructLet :: String -> LetBinding t -> Struct t -> Struct t
+updateStructLet name sub struct =
+  struct
+    { stcLets = Map.insert name sub (stcLets struct)
+    }
 
 lookupStructField :: String -> Struct t -> Maybe (Field t)
 lookupStructField name struct = Map.lookup name (stcFields struct)
@@ -325,25 +378,6 @@ lookupStructIdentField name struct =
         else Nothing
     Nothing -> Nothing
 
-lookupStructLet :: String -> Struct t -> Maybe (LetBinding t)
-lookupStructLet name struct = Map.lookup name (stcLets struct)
-
--- | Returns the field value and whether the field is a let binding.
-getSubFromSV :: StructVal t -> Maybe (t, Bool)
-getSubFromSV (SField f) = Just (ssfValue f, False)
-getSubFromSV (SLet lb) = Just (lbValue lb, True)
-
-getFieldFromSV :: StructVal t -> Maybe (Field t)
-getFieldFromSV sv = case sv of
-  SField f -> Just f
-  _ -> Nothing
-
-_appendOrdLabelIfNeeded :: String -> Struct t -> Struct t
-_appendOrdLabelIfNeeded name struct =
-  if name `elem` stcOrdLabels struct
-    then struct
-    else struct{stcOrdLabels = stcOrdLabels struct ++ [name]}
-
 -- | Update the struct with the given label name and field.
 updateStructField :: String -> Field t -> Struct t -> Struct t
 updateStructField name sub struct =
@@ -354,11 +388,11 @@ updateStructField name sub struct =
         }
     )
 
-updateStructLet :: String -> LetBinding t -> Struct t -> Struct t
-updateStructLet name sub struct =
-  struct
-    { stcLets = Map.insert name sub (stcLets struct)
-    }
+_appendOrdLabelIfNeeded :: String -> Struct t -> Struct t
+_appendOrdLabelIfNeeded name struct =
+  if name `elem` stcOrdLabels struct
+    then struct
+    else struct{stcOrdLabels = stcOrdLabels struct ++ [name]}
 
 updateStructWithFields :: [(String, Field t)] -> Struct t -> Struct t
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields

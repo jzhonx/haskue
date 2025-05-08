@@ -179,4 +179,4 @@ mkDisjoinOp :: [DisjTerm t] -> Mutable t
 mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}
 
 mkUnifyOp :: [t] -> Mutable t
-mkUnifyOp ts = UOp $ UnifyOp{ufConjuncts = ts, ufValue = Nothing}
+mkUnifyOp ts = UOp $ emptyUnifyOp{ufConjuncts = ts}

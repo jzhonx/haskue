@@ -1,0 +1,9 @@
+-- cycles_sub_ref1 --
+x: {z: a: 1} & x.z
+-- exp --
+x: {
+    z: {
+        a: 1
+  }
+    a: 1
+}

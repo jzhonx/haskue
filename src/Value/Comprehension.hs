@@ -2,6 +2,9 @@
 
 module Value.Comprehension where
 
+import qualified AST
+import Common (BuildASTExpr (..))
+
 data Comprehension t = Comprehension
   { cphStart :: t
   , cphIterClauses :: [IterClause t]
@@ -9,6 +12,9 @@ data Comprehension t = Comprehension
   , cphValue :: Maybe t
   }
   deriving (Eq, Show)
+
+-- instance BuildASTExpr (Comprehension t) where
+--   buildASTExpr c t =
 
 data IterClause t = IterClauseLet String t | IterClauseIf t
   deriving (Eq, Show, Functor)

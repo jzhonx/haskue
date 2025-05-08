@@ -2,19 +2,25 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.RMonad where
 
+import AST (exprBld)
 import qualified AST
+import Common (buildASTExpr)
 import qualified Common
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify, runStateT)
 import qualified Cursor
+import Data.ByteString.Builder (toLazyByteString)
+import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust, isNothing)
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -165,7 +171,7 @@ evalExprRM e = do
 -}
 
 getTMAbsAddr :: (ReduceTCMonad r s m) => m Path.TreeAddr
-getTMAbsAddr = Cursor.tcTreeAddr <$> getTMCursor
+getTMAbsAddr = Cursor.tcCanAddr <$> getTMCursor
 
 getTMTASeg :: (ReduceTCMonad r s m) => m Path.TASeg
 getTMTASeg = do
@@ -233,7 +239,10 @@ modifyTMNodeWithTree t = modifyTMTN (VT.treeNode t)
 
 {- | Propagate the value up.
 
-It surfaces the bottom only if the bottom is in a disjunction but not an immediate disj.
+For the bottom handling:
+1. It surfaces the bottom only if the bottom is in a disjunction but not a disjunct.
+
+For example, x: (1 & 2) + 1 | 2. The bottom is in the disjunction but not a disjunct.
 -}
 propUpTM :: (ReduceTCMonad r s m) => m ()
 propUpTM = do
@@ -241,6 +250,7 @@ propUpTM = do
   addr <- getTMAbsAddr
   seg <- getTMTASeg
   focus <- getTMTree
+
   -- If the focus is a bottom and the address is not an immediate disj, then we should overwrite the parent with the
   -- bottom.
   if Common.isTreeBottom focus && Path.isInDisj addr && not (Path.isSegDisj seg)
@@ -314,13 +324,6 @@ inSubTM seg f = do
   propUpTM
   return r
 
-inDiscardSubTM :: (ReduceTCMonad r s m) => Path.TASeg -> VT.Tree -> m a -> m a
-inDiscardSubTM seg t f = do
-  _pushTMSub seg t
-  r <- f
-  _discardTMAndPop
-  return r
-
 -- | discard the current focus, pop up and put the original focus in the crumbs back.
 _discardTMAndPop :: (ReduceTCMonad r s m) => m ()
 _discardTMAndPop = do
@@ -361,28 +364,35 @@ mustMutable f = withTree $ \t -> case VT.treeNode t of
   VT.TNMutable fn -> f fn
   _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
 
-mustStruct :: (ReduceMonad r s m) => TCOps.TrCur -> ((VT.Struct VT.Tree, TCOps.TrCur) -> m a) -> m a
-mustStruct tc f =
-  let t = Cursor.tcFocus tc
-   in case VT.treeNode t of
-        VT.TNStruct struct -> f (struct, tc)
-        _ -> throwErrSt $ printf "%s is not a struct" (show t)
-
 {- | Traverse all the one-level sub nodes of the tree.
 
-It surfaces the bottom.
+For the bottom handling:
+1. It surfaces the bottom as field value.
 -}
 traverseSub :: forall s r m. (ReduceTCMonad r s m) => m () -> m ()
-traverseSub f = withTree $ \t -> mapM_ go (VT.subNodes t)
- where
-  go :: (ReduceTCMonad r s m) => (Path.TASeg, VT.Tree) -> m ()
-  go (sel, _) = unlessFocusBottom () $ do
-    res <- inSubTM sel (f >> getTMTree)
-    -- If the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
-    t <- getTMTree
-    case (VT.treeNode t, VT.treeNode res) of
-      (VT.TNStruct _, VT.TNBottom _) -> putTMTree res
-      _ -> return ()
+traverseSub f = withTree $ \_t -> do
+  mapM_ (\(seg, _) -> inSubTM seg f) (VT.subNodes _t)
+
+  t <- getTMTree
+  case VT.treeNode t of
+    -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
+    VT.TNBlock es@(VT.Block{VT.blkStruct = struct})
+      | isNothing (VT.blkNonStructValue es) -> do
+          let errM =
+                foldl
+                  ( \acc field ->
+                      if
+                        | isJust acc -> acc
+                        | Common.isTreeBottom (VT.ssfValue field) -> Just (VT.ssfValue field)
+                        | otherwise -> Nothing
+                  )
+                  Nothing
+                  (VT.stcFields struct)
+          maybe (return ()) putTMTree errM
+    VT.TNDisj dj -> do
+      newDjT <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree dj
+      modifyTMNodeWithTree newDjT
+    _ -> return ()
 
 {- | Traverse the leaves of the tree cursor in the following order
 
@@ -407,36 +417,45 @@ debugSpanTM name = _traceActionTM name Nothing
 debugSpanArgsTM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m a
 debugSpanArgsTM name args = _traceActionTM name (Just args)
 
+canonicalizeTree :: (Common.Env r s m) => VT.Tree -> m VT.Tree
+canonicalizeTree t = Cursor.tcFocus <$> TCOps.snapshotTC (Cursor.TreeCursor t [])
+
+spanTreeMsgs :: (Common.Env r s m) => VT.Tree -> m (String, String)
+spanTreeMsgs t = do
+  return (show t, "")
+
+-- r <- canonicalizeTree t
+-- e <- buildASTExpr False r
+-- return (show r, BS.unpack $ toLazyByteString (exprBld e))
+
 _traceActionTM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
 _traceActionTM name argsM f = withAddrAndFocus $ \addr _ -> do
-  seg <- getTMTASeg
-  bfocus <- getTMTree
-  let bTraced = if seg == Path.RootTASeg then ShowFullTree bfocus else ShowTree bfocus
+  bTraced <- getTMTree >>= spanTreeMsgs
   debugSpan name (show addr) argsM bTraced $ do
     res <- f
-    focus <- getTMTree
-    let traced = if seg == Path.RootTASeg then ShowFullTree focus else ShowTree focus
-    return (res, traced)
+    traced <- getTMTree >>= spanTreeMsgs
+    return (res, fst traced, snd traced)
 
 debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
 debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)
 
-debugSpanRM :: (Common.Env r s m, Show a) => String -> TCOps.TrCur -> m a -> m a
+debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
 debugSpanRM name = _traceActionRM name Nothing
 
-debugSpanArgsRM :: (Common.Env r s m, Show a) => String -> String -> TCOps.TrCur -> m a -> m a
+debugSpanArgsRM :: (Common.Env r s m, Show a) => String -> String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
 debugSpanArgsRM name args = _traceActionRM name (Just args)
 
-_traceActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> TCOps.TrCur -> m a -> m a
-_traceActionRM name argsM tc f = do
-  seg <- TCOps.getTCFocusSeg tc
+_traceActionRM ::
+  (Common.Env r s m, Show a) => String -> Maybe String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
+_traceActionRM name argsM g tc f = do
   let
-    addr = Cursor.tcTreeAddr tc
+    addr = Cursor.tcCanAddr tc
     bfocus = Cursor.tcFocus tc
-    bTraced = if seg == Path.RootTASeg then ShowFullTree bfocus else ShowTree bfocus
+  bTraced <- spanTreeMsgs bfocus
   debugSpan name (show addr) argsM bTraced $ do
     res <- f
-    return (res, ())
+    traced <- maybe (return ("", "")) spanTreeMsgs (g res)
+    return (res, fst traced, snd traced)
 
 -- | Trace the operation.
 debugSpanOpRM :: (Common.Env r s m, Show a) => String -> Path.TreeAddr -> m a -> m a
@@ -450,13 +469,13 @@ debugSpanArgsOpRM name args addr f = do
 
 _traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> Path.TreeAddr -> m a -> m a
 _traceOpActionRM name argsM addr f = do
-  debugSpan name (show addr) argsM () $ do
+  debugSpan name (show addr) argsM ("", "") $ do
     res <- f
-    return (res, ())
+    return (res, "", "")
 
 debugInstantRM :: (Common.Env r s m) => String -> String -> TCOps.TrCur -> m ()
 debugInstantRM name args tc = do
-  let addr = Cursor.tcTreeAddr tc
+  let addr = Cursor.tcCanAddr tc
   debugInstant name (show addr) (Just args)
 
 debugInstantOpRM :: (Common.Env r s m) => String -> String -> Path.TreeAddr -> m ()

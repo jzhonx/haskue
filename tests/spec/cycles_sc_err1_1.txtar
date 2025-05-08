@@ -1,0 +1,5 @@
+-- cycles_sc_err1_1 --
+f: h: g
+g: f
+-- exp --
+error: structural cycle

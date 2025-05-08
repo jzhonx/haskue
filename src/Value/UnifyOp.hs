@@ -31,3 +31,6 @@ instance (BuildASTExpr t) => BuildASTExpr (UnifyOp t) where
       )
       leftMost
       (tail (ufConjuncts op))
+
+emptyUnifyOp :: UnifyOp t
+emptyUnifyOp = UnifyOp [] Nothing

@@ -10,15 +10,12 @@ import Common (
   hasCtxNotifSender,
  )
 import qualified Common
-import Control.Monad (when)
-import Control.Monad.Reader (local)
 import qualified Cursor
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Exception (throwErrSt)
-import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
-import Reduce.Nodes (close, reduceCnstredVal, reduceDisj, reduceList, reduceStruct)
+import Reduce.Nodes (close, comprehend, reduceBlock, reduceCnstredVal, reduceDisj, reduceList, reduceeDisjOp)
 import qualified Reduce.Notif as Notif
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
@@ -38,14 +35,14 @@ fullReduce = RM.debugSpanTM "fullReduce" $ do
 
 -- | Reduce the tree to the lowest form.
 reduce :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m VT.Tree
-reduce tc = RM.debugSpanRM "reduce" tc $ do
-  let addr = Cursor.tcTreeAddr tc
+reduce tc = RM.debugSpanRM "reduce" Just tc $ do
+  let addr = Cursor.tcCanAddr tc
   result <- reduceTCFocus tc
 
   notifyEnabled <- RM.getRMNotifEnabled
   isSender <- hasCtxNotifSender addr <$> RM.getRMContext
   -- Only notify dependents when we are not in a temporary node.
-  let refAddrM = Path.referableAddr addr
+  let refAddrM = Path.getReferableAddr addr
   if isSender && Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM
     then do
       let refAddr = fromJust refAddrM
@@ -57,7 +54,7 @@ reduce tc = RM.debugSpanRM "reduce" tc $ do
 
 withTreeDepthLimit :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m a -> m a
 withTreeDepthLimit tc f = do
-  let addr = Cursor.tcTreeAddr tc
+  let addr = Cursor.tcCanAddr tc
   RM.treeDepthCheck tc
   push addr
   r <- f
@@ -77,7 +74,7 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
     VT.TNMutable mut -> do
       r <- case mut of
         VT.Ref ref -> do
-          rM <- RefSys.index (VT.refOrigAddrs ref) (VT.refArg ref) tc
+          rM <- RefSys.index ref tc
           maybe
             (return Nothing)
             ( \r -> do
@@ -100,9 +97,9 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
             rTC <- TCOps.goDownTCSegMust Path.binOpRightTASeg tc
             RegOps.regBin op lTC rTC
           VT.CloseFunc -> close (VT.ropArgs rop) tc
-        VT.Compreh compreh -> undefined
+        VT.Compreh compreh -> comprehend compreh tc
         VT.DisjOp disjOp -> do
-          rM <- Mutate.mutateDisjOp False disjOp tc
+          rM <- reduceeDisjOp False disjOp tc
           maybe
             (return Nothing)
             (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
@@ -114,11 +111,10 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
             (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
             rM
       setMutRes mut r tc
-    VT.TNStruct _ -> reduceStruct tc
+    VT.TNBlock _ -> reduceBlock tc
     VT.TNList l -> reduceList l tc
     VT.TNDisj d -> reduceDisj d tc
     VT.TNCnstredVal cv -> reduceCnstredVal cv tc
-    VT.TNStub -> throwErrSt "stub node should not be reduced"
     _ -> return orig
 
   -- Overwrite the treenode of the raw with the reduced tree's VT.TreeNode to preserve tree attributes.
@@ -128,7 +124,7 @@ setMutRes :: (RM.ReduceMonad s r m) => VT.Mutable VT.Tree -> Maybe VT.Tree -> TC
 setMutRes mut rM tc = do
   let
     mutT = Cursor.tcFocus tc
-    addr = Cursor.tcTreeAddr tc
+    addr = Cursor.tcCanAddr tc
 
   -- If the rM is another mutable tree, we need to check if the mutval exists by trying to get it.
   r <- case listToMaybe (catMaybes [rM >>= VT.getMutableFromTree >>= VT.getMutVal, rM]) of
@@ -137,7 +133,7 @@ setMutRes mut rM tc = do
       Mutate.delMutValRecvs addr
       return $ updateMutVal Nothing mutT
     Just r
-      | isMutableTreeReducible mutT -> do
+      | isMutableReducible mut -> do
           -- TODO: change receivers
           return r
       | otherwise -> do
@@ -150,28 +146,40 @@ setMutRes mut rM tc = do
 
 {- | Check whether the mutator is reducible.
 
-The first argument is a mutable node, and the second argument is the mutval.
+If the mutible tree is a reference or any of recursively true for its args, then it is not reducible.
 
-If the mutible tree does not have any references, then we can safely replace the mutible with the result.
+For example, if the argument of the unify is a struct which has references as its fields, then it is reducible because
+the holding block of the reference is not going to be changed.
 -}
-isMutableTreeReducible :: VT.Tree -> Bool
-isMutableTreeReducible mut = not (Common.treeHasRef mut)
+isMutableReducible :: VT.Mutable VT.Tree -> Bool
+isMutableReducible mut = not $ mutHasRefAsImChild mut
+
+{- | Check whether the mutable tree has a reference as its immediate child, which means it is not a child of a container
+node, such as a struct or a list.
+-}
+mutHasRefAsImChild :: VT.Mutable VT.Tree -> Bool
+mutHasRefAsImChild (VT.Ref _) = True
+mutHasRefAsImChild mut = any go (VT.getMutArgs mut)
+ where
+  go argT = case VT.treeNode argT of
+    VT.TNMutable mutArg -> mutHasRefAsImChild mutArg
+    _ -> False
 
 {- | Reduce the conjunct for unification.
 
 It only returns Nothing if the ref does not locate the reference.
 -}
 reduceUnifyConj :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe VT.Tree)
-reduceUnifyConj tc = RM.debugSpanRM "reduceUnifyConj" tc $ withTreeDepthLimit tc $ do
+reduceUnifyConj tc = RM.debugSpanRM "reduceUnifyConj" id tc $ withTreeDepthLimit tc $ do
   let orig = Cursor.tcFocus tc
   case VT.treeNode orig of
     VT.TNMutable mut
       | VT.Ref ref <- mut -> do
-          rM <- RefSys.index (VT.refOrigAddrs ref) (VT.refArg ref) tc
+          rM <- RefSys.index ref tc
           -- If the ref is reduced to another mutable tree, we further reduce it.
           maybe
             (return Nothing)
             (\r -> reduceUnifyConj (r `Cursor.setTCFocus` tc))
             rM
-      | VT.DisjOp disjOp <- mut -> Mutate.mutateDisjOp True disjOp tc
+      | VT.DisjOp disjOp <- mut -> reduceeDisjOp True disjOp tc
     _ -> return $ Just $ Cursor.tcFocus tc

@@ -10,7 +10,6 @@ module Value.Tree (
   module Value.Bottom,
   module Value.Bounds,
   module Value.Constraint,
-  module Value.Cycle,
   module Value.Disj,
   module Value.List,
   module Value.Struct,
@@ -41,12 +40,11 @@ import Path (
     DisjDisjunctTASeg,
     IndexTASeg,
     MutableArgTASeg,
-    RootTASeg,
     StructTASeg,
     SubValTASeg,
     TempTASeg
   ),
-  TreeAddr (TreeAddr),
+  TreeAddr,
   ValPath (ValPath),
   addrToNormOrdList,
  )
@@ -56,7 +54,6 @@ import Value.Bottom
 import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
-import Value.Cycle
 import Value.Disj
 import Value.DisjoinOp
 import Value.List
@@ -127,15 +124,8 @@ instance TreeOp Tree where
   isTreeBottom = isJust . getBottomFromTree
   isTreeCnstr = isJust . getCnstrFromTree
 
-  -- isTreeRefCycle = isJust . getRefCycleFromTree
   isTreeMutable = isJust . getMutableFromTree
-  isTreeValue t = case treeNode t of
-    TNRefCycle -> False
-    TNMutable _ -> False
-    _ -> True
-  treeHasRef t = case treeNode t of
-    TNMutable fn -> mutHasRef fn
-    _ -> False
+
   treeHasAtom t = case treeNode t of
     TNAtom _ -> True
     TNAtomCnstr _ -> True
@@ -173,7 +163,7 @@ buildRepTreeTN t tn opt = case tn of
       , []
       , []
       )
-  TNStruct s ->
+  TNBlock es@(Block{blkStruct = s}) ->
     let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
         attr :: LabelAttr -> String
         attr a = case lbAttrCnstr a of
@@ -217,7 +207,7 @@ buildRepTreeTN t tn opt = case tn of
               )
               (Map.toList (stcLets s))
             ++ map
-              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j 0), ",cns_val:" ++ escapedTreeSymbol (scsValue k), scsPattern k)
+              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j 0), ",cns_val:" ++ showTreeSymbol (scsValue k), scsPattern k)
               )
               (IntMap.toList $ stcCnstrs s)
             ++ foldr
@@ -233,13 +223,18 @@ buildRepTreeTN t tn opt = case tn of
                   , embValue v
                   )
               )
-              (IntMap.toList $ stcEmbeds s)
+              (IntMap.toList $ blkEmbeds es)
+            ++ maybe [] (\ev -> [(show SubValTASeg, mempty, ev)]) (blkNonStructValue es)
 
         metas :: [(String, String)]
-        metas = [("idents", show $ Set.toList $ stcBlockIdents s)]
+        metas =
+          [ ("idents", show $ Set.toList $ stcBlockIdents s)
+          , ("perms", show $ stcPerms s)
+          , ("isConcrete", show $ stcIsConcrete s)
+          ]
      in consRep
           ( (if stcClosed s then "#" else mempty) <> symbol
-          , ordLabels <> ", sid:" <> show (stcID s)
+          , ordLabels <> ",sid:" <> show (stcID s)
           , consFields fields
           , consMetas metas
           )
@@ -260,7 +255,7 @@ buildRepTreeTN t tn opt = case tn of
           ]
       , []
       )
-  TNRefCycle -> consRep (symbol, "ref-cycle", [], [])
+  TNRefCycle p -> consRep (symbol, printf "ref-cycle %s" (show p), [], [])
   TNMutable m -> case m of
     RegOp mut ->
       let
@@ -274,7 +269,6 @@ buildRepTreeTN t tn opt = case tn of
           ( symbol
           , ropName mut
               <> ( printf ", args:%s" (show . length $ ropArgs mut)
-                    <> (if mutHasRef m then ", hasRef" else mempty)
                  )
           , consFields (args ++ val)
           , []
@@ -323,11 +317,10 @@ buildRepTreeTN t tn opt = case tn of
             else []
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ufValue u)
        in
-        consRep (symbol, mempty, consFields (conjuncts ++ val), [])
+        consRep (symbol, "", consFields (conjuncts ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
-  TNStub -> consRep (symbol, mempty, [], [])
  where
   symbol :: String
   symbol = showTreeSymbol t
@@ -350,7 +343,14 @@ instance BuildASTExpr Tree where
     TNBottom _ -> return $ AST.litCons AST.BottomLit
     TNAtom s -> buildASTExpr cr s
     TNBounds b -> buildASTExpr cr b
-    TNStruct s -> buildStructASTExpr cr s
+    TNBlock es@(Block{blkStruct = s})
+      | Just ev <- blkNonStructValue es -> buildASTExpr cr ev
+      | let dynsReady = all (isJust . getNonMutFromTree . dsfLabel) (IntMap.elems $ stcDynFields s)
+      , let embedsReady = all (isJust . getNonMutFromTree . embValue) (IntMap.elems $ blkEmbeds es)
+      , dynsReady && embedsReady ->
+          buildStructASTExpr cr s
+      -- If dynamic fields or embedded values are not ready, then we need to use the original expression.
+      | otherwise -> maybe (throwErrSt "expression not found for struct") return (treeExpr t)
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
     TNMutable mut -> case mut of
@@ -360,9 +360,8 @@ instance BuildASTExpr Tree where
       DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
       UOp _ -> maybe (buildASTExpr cr mut) return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
-    TNRefCycle -> return $ AST.litCons AST.TopLit
+    TNRefCycle _ -> return $ AST.litCons AST.TopLit
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
-    TNStub -> throwErrSt "no expression for stub"
 
 -- | Patterns are not included in the AST.
 buildStructASTExpr :: (Env r s m) => Bool -> Struct Tree -> m AST.Expression
@@ -484,61 +483,6 @@ treeFullStr toff t =
            )
         <> ")"
 
--- addrToMermaidNodeID :: TreeAddr -> String
--- addrToMermaidNodeID (TreeAddr sels) = go (reverse sels)
---  where
---   mapSel :: TASeg -> String
---   mapSel RootTASeg = "root"
---   mapSel sel = show sel
-
---   go :: [TASeg] -> String
---   go [sel] = mapSel sel
---   go (sel : xs) = mapSel sel ++ "_" ++ go xs
---   go [] = "nil"
-
--- treeToMermaid :: (MonadState Int m) => TreeRepBuildOption -> String -> TreeAddr -> Tree -> m String
--- treeToMermaid opt msg evalTreeAddr root = do
---   let w = printf "---\ntitle: %s, addr %s\n---\n" msg (show evalTreeAddr) <> "flowchart TD"
---   rest <- subgraph 0 root "root"
---   return $
---     w <> "\n" <> rest <> printf "style %s fill:#56e,stroke:#333,stroke-width:4px" (addrToMermaidNodeID evalTreeAddr)
---  where
---   indent :: Int -> String
---   indent n = replicate n ' '
-
---   subgraph :: (MonadState Int m) => Int -> Tree -> String -> m String
---   subgraph toff t treeID = do
---     let
---       (TreeRep symbol meta subReps _) = iterRepTree t opt
-
---       writeLine :: String -> String
---       writeLine content = indent toff <> content <> "\n"
-
---       curTreeRepStr =
---         writeLine
---           ( printf
---               "%s[\"`%s`\"]"
---               treeID
---               $ escape
---                 ( symbol
---                     <> (if null meta then mempty else ", " <> meta)
---                     -- <> (if isJust $ treeExpr t then mempty else ",N")
---                     -- <> (if treeRecurClosed t then ",#" else mempty)
---                 )
---           )
-
---     foldM
---       ( \acc (TreeRepField label attr sub) -> do
---           let subTreeID = treeID ++ "_" ++ label
---           rest <- subgraph (toff + 2) sub subTreeID
---           return $
---             acc
---               <> writeLine (printf "%s -->|%s| %s" treeID (label <> escape attr) subTreeID)
---               <> rest
---       )
---       curTreeRepStr
---       subReps
-
 escape :: String -> String
 escape = concatMap $ \case
   '"' -> "#quot;"
@@ -549,11 +493,11 @@ showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
   TNAtom _ -> "a"
   TNBounds _ -> "bds"
-  TNStruct{} -> "{}"
+  TNBlock{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
-  TNRefCycle -> "RC"
+  TNRefCycle _ -> "RC"
   TNMutable m -> case m of
     RegOp _ -> "fn"
     Ref _ -> "ref"
@@ -563,21 +507,6 @@ showTreeSymbol t = case treeNode t of
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
-  TNStub -> "stub"
-
-escapedTreeSymbol :: Tree -> String
-escapedTreeSymbol t = case treeNode t of
-  TNStruct{} -> "struct"
-  TNList{} -> "list"
-  TNBottom _ -> "btm"
-  TNTop -> "top"
-  _ -> showTreeSymbol t
-
-escapedSimpleTreeStr :: Tree -> String
-escapedSimpleTreeStr t = case treeNode t of
-  TNStruct s -> escape $ "struct:" <> intercalate "," (map show $ stcOrdLabels s)
-  TNAtom _ -> "a"
-  _ -> escapedTreeSymbol t
 
 showValueType :: (Env r s m) => Tree -> m String
 showValueType t = case treeNode t of
@@ -589,7 +518,7 @@ showValueType t = case treeNode t of
     Null -> return "null"
   TNBounds b -> return $ show b
   TNBottom _ -> return "_|_"
-  TNStruct _ -> return "struct"
+  TNBlock _ -> return "struct"
   TNList _ -> return "list"
   TNTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ show t
@@ -654,10 +583,10 @@ treeToSubStr toff moreSub t =
            )
         <> ")"
 
--- | Generate a list of sub-trees.
+-- | Generate a list of sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
-  TNStruct struct ->
+  TNBlock (Block{blkStruct = struct}) ->
     [(StructTASeg $ StringTASeg s, ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
       ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
       ++ [(StructTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
@@ -667,13 +596,6 @@ subNodes t = case treeNode t of
     maybe [] (\x -> [(DisjDefaultTASeg, x)]) (dsjDefault d)
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
-
-mutHasRef :: Mutable Tree -> Bool
-mutHasRef (Ref _) = True
-mutHasRef (RegOp fn) = any treeHasRef (ropArgs fn)
-mutHasRef (Compreh c) = any treeHasRef (cphStart c : cphStruct c : [getValFromIterClause x | x <- cphIterClauses c])
-mutHasRef (DisjOp d) = any treeHasRef [dstValue x | x <- djoTerms d]
-mutHasRef (UOp u) = any treeHasRef (ufConjuncts u)
 
 -- Helpers
 
@@ -693,6 +615,38 @@ setTN t n = t{treeNode = n}
 
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
+
+getCUEValTree :: Tree -> Maybe Tree
+getCUEValTree t = case treeNode t of
+  TNAtom _ -> Just t
+  TNBottom _ -> Just t
+  TNTop -> Just t
+  TNBounds _ -> Just t
+  TNList _ -> Just t
+  TNDisj _ -> Just t
+  TNBlock block
+    | let v = blkNonStructValue block
+    , Just ev <- v ->
+        getCUEValTree ev
+    | otherwise -> Just t
+  TNRefCycle _ -> Nothing
+  TNAtomCnstr c -> Just $ mkAtomVTree (cnsAtom c)
+  TNCnstredVal c -> getCUEValTree $ cnsedVal c
+  TNMutable mut -> getMutVal mut >>= getCUEValTree
+
+getConcreteValue :: Tree -> Maybe Tree
+getConcreteValue t = case treeNode t of
+  TNAtom _ -> Just t
+  TNAtomCnstr _ -> Just t
+  TNDisj dj -> dsjDefault dj >>= getConcreteValue
+  TNMutable mut -> getMutVal mut >>= getConcreteValue
+  TNCnstredVal c -> getConcreteValue $ cnsedVal c
+  TNBlock block@(Block{blkStruct = s})
+    | let v = blkNonStructValue block
+    , Just ev <- v ->
+        getConcreteValue ev
+    | otherwise -> if stcIsConcrete s then Just t else Nothing
+  _ -> Nothing
 
 getNonMutFromTree :: Tree -> Maybe Tree
 getNonMutFromTree t = case treeNode t of
@@ -742,14 +696,14 @@ getMutableFromTree t = case treeNode t of
   TNMutable f -> Just f
   _ -> Nothing
 
--- getRefCycleFromTree :: Tree -> Maybe RefCycle
--- getRefCycleFromTree t = case treeNode t of
---   TNRefCycle c -> Just c
---   _ -> Nothing
+getRefFromTree :: Tree -> Maybe (Reference Tree)
+getRefFromTree t = case treeNode t of
+  TNMutable (Ref r) -> Just r
+  _ -> Nothing
 
-getStructFromTree :: Tree -> Maybe (Struct Tree)
-getStructFromTree t = case treeNode t of
-  TNStruct s -> Just s
+getBlockFromTree :: Tree -> Maybe (Block Tree)
+getBlockFromTree t = case treeNode t of
+  TNBlock e -> Just e
   _ -> Nothing
 
 getCnstredValFromTree :: Tree -> Maybe Tree
@@ -767,13 +721,6 @@ getIntFromTree :: Tree -> Maybe Int
 getIntFromTree t = case treeNode t of
   (TNMutable mut) -> getMutVal mut >>= getIntFromTree
   _ -> getAtomVFromTree t >>= getIntFromAtomV
-
--- -- | Check if the node is a reducible ref cycle.
--- isTreeRefCycleTail :: Tree -> Bool
--- isTreeRefCycleTail t = case treeNode t of
---   TNRefCycle (RefCycleVertMerger _) -> True
---   -- TNRefCycle (RefCycleHori _) -> True
---   _ -> False
 
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = emptyTree{treeNode = n}
@@ -802,8 +749,11 @@ mkMutableTree fn = mkNewTree (TNMutable fn)
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
+mkBlockTree :: Block Tree -> Tree
+mkBlockTree b = mkNewTree (TNBlock b)
+
 mkStructTree :: Struct Tree -> Tree
-mkStructTree s = mkNewTree (TNStruct s)
+mkStructTree s = mkNewTree (TNBlock (emptyBlock{blkStruct = s}))
 
 mkCnstredValTree :: Tree -> Maybe AST.Expression -> Tree
 mkCnstredValTree v m = mkNewTree (TNCnstredVal $ CnstredVal v m)
@@ -815,9 +765,6 @@ appendSelToRefTree oprnd selArg = case treeNode oprnd of
     | Just ref <- getRefFromMutable m ->
         mkMutableTree $ Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
   _ -> mkMutableTree $ Ref $ mkIndexRef [oprnd, selArg]
-
-stubTree :: Tree
-stubTree = mkNewTree TNStub
 
 treesToValPath :: [Tree] -> Maybe Path.ValPath
 treesToValPath ts = Path.ValPath <$> mapM treeToSel ts

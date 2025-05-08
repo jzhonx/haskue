@@ -81,12 +81,8 @@ emptyRunner =
     , rcFuncs =
         MutEnv.emptyFunctions
           { MutEnv.fnEvalExpr = evalExpr
-          , -- , MutEnv.fnClose = Reduce.close
-            MutEnv.fnReduce = Reduce.reduce
+          , MutEnv.fnReduce = Reduce.reduce
           , MutEnv.reduceUnifyConj = Reduce.reduceUnifyConj
-          , -- , MutEnv.fnIndex = Reduce.index
-            MutEnv.fnPropUpStructPost = Reduce.propUpStructPost
-            -- MutEnv.fnComprehend = Reduce.comprehend
           }
     }
 

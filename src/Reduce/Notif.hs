@@ -1,27 +1,29 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.Notif where
 
 import qualified Common
-import Control.Monad (unless, when)
+import Control.Monad (foldM, unless, when)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (StateT, evalStateT, get, modify, put)
-import Control.Monad.Trans (lift)
+import Control.Monad.State.Strict (execStateT, get, gets, modify, put)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
+import qualified Reduce.Nodes as Nodes
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import Text.Printf (printf)
 import Util (
-  getTraceID,
+  HasTrace (..),
   logDebugStr,
  )
 import qualified Value.Tree as VT
@@ -43,53 +45,79 @@ notify = RM.withAddrAndFocus $ \addr _ -> RM.debugSpanTM "notify" $ do
     -- The initial node has already been reduced.
     q = [(addr, False)]
 
-  tid <- getTraceID
-  evalStateT (bfsLoopQ tid) (BFSState visiting q)
+  s <- get
+  ns <- execStateT bfsLoopQ (WithBFSState (BFSState visiting q) s)
+  put (wbOther ns)
   RM.setRMNotifEnabled origRefSysEnabled
+
+class HasBFSState s where
+  getBFSState :: s -> BFSState
+  setBFSState :: s -> BFSState -> s
 
 data BFSState = BFSState
   { _bfsVisiting :: [Path.TreeAddr]
   , bfsQueue :: [(Path.TreeAddr, Bool)]
   }
 
-type BFSMonad m a = StateT BFSState m a
+data WithBFSState s = WithBFSState
+  { wbState :: BFSState
+  , wbOther :: s
+  }
 
-bfsLoopQ :: (RM.ReduceTCMonad s r m) => Int -> BFSMonad m ()
-bfsLoopQ tid = do
-  state@(BFSState{bfsQueue = q}) <- get
-  case q of
-    [] -> return ()
-    ((addr, toReduce) : xs) -> do
-      put state{bfsQueue = xs}
+instance HasBFSState (WithBFSState s) where
+  getBFSState = wbState
+  setBFSState s bfs = s{wbState = bfs}
 
-      origAddr <- lift RM.getTMAbsAddr
-      -- First try to go to the addr.
-      found <- lift $ RefSys.goRMAbsAddr addr
-      if found
-        then do
-          when toReduce (lift reduceImParMut)
-          -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
-          addDepsUntilRoot
-        else
-          -- Remove the notification if the receiver is not found. The receiver might be relocated. For
-          -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
-          -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
-          lift $ Mutate.delRefSysRecvPrefix addr
+instance (HasTrace s) => HasTrace (WithBFSState s) where
+  getTrace s = getTrace (wbOther s)
+  setTrace s trace = s{wbOther = setTrace (wbOther s) trace}
 
-      -- We must go back to the original addr even when the addr is not found, because that would lead to unexpected
-      -- address.
-      lift $ RefSys.goRMAbsAddrMust origAddr
-      logDebugStr $ printf "id=%s, bfsLoopQ: visiting addr: %s, found: %s" (show tid) (show addr) (show found)
-      bfsLoopQ tid
+instance (Cursor.HasTreeCursor s VT.Tree) => Cursor.HasTreeCursor (WithBFSState s) VT.Tree where
+  getTreeCursor s = Cursor.getTreeCursor (wbOther s)
+  setTreeCursor s cursor = s{wbOther = Cursor.setTreeCursor (wbOther s) cursor}
+
+instance (Common.HasContext s) => Common.HasContext (WithBFSState s) where
+  getContext s = Common.getContext (wbOther s)
+  setContext s ctx = s{wbOther = Common.setContext (wbOther s) ctx}
+  modifyContext s f = s{wbOther = Common.modifyContext (wbOther s) f}
+
+bfsLoopQ :: (RM.ReduceTCMonad r s m, HasBFSState s) => m ()
+bfsLoopQ = do
+  state@(BFSState{bfsQueue = q}) <- gets getBFSState
+  RM.debugSpanArgsTM "bfsLoopQ" (printf "q:%s" (show q)) $ do
+    case q of
+      [] -> return ()
+      ((addr, toReduce) : xs) -> do
+        -- pop the first element of the queue.
+        modify $ \s -> setBFSState s state{bfsQueue = xs}
+
+        origAddr <- RM.getTMAbsAddr
+        -- First try to go to the addr.
+        found <- RefSys.goRMAbsAddr addr
+        if found
+          then do
+            when toReduce reduceImParMut
+            -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
+            addDepsUntilRoot
+          else
+            -- Remove the notification if the receiver is not found. The receiver might be relocated. For
+            -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
+            -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
+            Mutate.delRefSysRecvPrefix addr
+
+        -- We must go back to the original addr even when the addr is not found, because that would lead to unexpected
+        -- address.
+        RefSys.goRMAbsAddrMust origAddr
+        bfsLoopQ
  where
   -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-  addDepsUntilRoot :: (RM.ReduceTCMonad s r m) => BFSMonad m ()
+  addDepsUntilRoot :: (RM.ReduceTCMonad r s m, HasBFSState s) => m ()
   addDepsUntilRoot = do
-    cs <- lift RM.getTMCrumbs
+    cs <- RM.getTMCrumbs
     -- We should not use root value to notify.
     when (length cs > 1) $ do
-      recvs <- lift $ do
+      recvs <- do
         notifyG <- Common.ctxNotifGraph <$> RM.getRMContext
         addr <- RM.getTMAbsAddr
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
@@ -100,30 +128,33 @@ bfsLoopQ tid = do
           fromMaybe
             []
             ( do
-                srcFinalizedAddr <- Path.referableAddr addr
+                srcFinalizedAddr <- Path.getReferableAddr addr
                 Map.lookup srcFinalizedAddr notifyG
             )
 
       -- Add the receivers to the visited list and the queue.
-      modify $ \state ->
-        foldr
-          ( \recv s@(BFSState v q) ->
-              if recv `notElem` v
-                then BFSState (recv : v) (q ++ [(recv, True)])
-                else s
-          )
-          state
-          recvs
+      modify $ \st ->
+        let bfsState = getBFSState st
+            newBFSState =
+              foldr
+                ( \recv s@(BFSState v q) ->
+                    if recv `notElem` v
+                      then BFSState (recv : v) (q ++ [(recv, True)])
+                      else s
+                )
+                bfsState
+                recvs
+         in setBFSState st newBFSState
 
-      inReducing <- lift $ do
+      inReducing <- do
         ptc <- RM.getTMCursor
         -- We must check if the parent is reducing. If the parent is reducing, we should not go up and keep
         -- notifying the dependents.
         -- Because once parent is done with reducing, it will notify its dependents.
-        parentIsReducing $ Cursor.tcTreeAddr ptc
+        parentIsReducing $ Cursor.tcCanAddr ptc
 
       unless inReducing $ do
-        lift propFocusUpWithPostHandling
+        propFocusUpWithPostHandling
         addDepsUntilRoot
 
   parentIsReducing parTreeAddr = do
@@ -132,16 +163,20 @@ bfsLoopQ tid = do
 
 propFocusUpWithPostHandling :: (RM.ReduceTCMonad s r m) => m ()
 propFocusUpWithPostHandling = do
-  tc <- RM.getTMCursor
-  seg <- Cursor.focusTCSeg tc
+  subTC <- RM.getTMCursor
+  seg <- Cursor.focusTCSeg subTC
   p <- RM.getTMParent
   RM.debugSpanArgsTM "propFocusUpWithPostHandling" (printf "bpar: %s" (show p)) $ do
     RM.propUpTM
-    RM.withTree $ \t -> case (seg, VT.getStructFromTree t) of
-      (Path.StructTASeg sseg, Just struct) -> do
-        MutEnv.Functions{MutEnv.fnPropUpStructPost = propUpStructPost} <- asks MutEnv.getFuncs
-        RM.runTMTCAction $ propUpStructPost (sseg, struct)
-      -- invalid combination should have been ruled out by the propUpTC
+    RM.withTree $ \t -> case (seg, VT.getBlockFromTree t) of
+      (Path.StructTASeg sseg, Just _) -> do
+        tc <- RM.getTMCursor
+        (utc, affected) <- Nodes.updateStructTCWithObj sseg tc
+        final <-
+          if null affected
+            then return utc
+            else foldM (flip Nodes.reduceStructField) utc affected
+        RM.putTMCursor final
       _ -> return ()
 
 drainRefSysQueue :: (RM.ReduceTCMonad s r m) => m ()
@@ -164,12 +199,12 @@ drainRefSysQueue = do
 
 -- | Reduce the immediate parent mutable.
 reduceImParMut :: (RM.ReduceTCMonad s r m) => m ()
-reduceImParMut = do
+reduceImParMut = RM.debugSpanTM "reduceImParMut" $ do
   -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
   -- Notice the tree focus now changes to the Im mutable.
   locateImMutable
   addr <- RM.getTMAbsAddr
-  -- MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  RM.debugInstantTM "reduceImParMut" (printf "addr: %s" (show addr))
   RM.withTree $ \t -> case VT.treeNode t of
     VT.TNMutable mut
       | Just _ <- VT.getRefFromMutable mut -> do

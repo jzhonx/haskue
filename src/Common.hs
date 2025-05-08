@@ -60,11 +60,7 @@ class TreeOp a where
   isTreeBottom :: a -> Bool
   isTreeCnstr :: a -> Bool
 
-  -- isTreeRefCycle :: a -> Bool
   isTreeMutable :: a -> Bool
-  isTreeValue :: a -> Bool
-
-  treeHasRef :: a -> Bool
 
   -- TODO: rename
   treeHasAtom :: a -> Bool
