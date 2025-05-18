@@ -206,10 +206,6 @@ validateLetName name =
         -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
         -- in the parent scope that there is no field with the same name.
         parResM <- RefSys.searchTCIdentInPar name tc
-        -- RM.withAddrAndFocus $ \addr _ ->
-        --   logDebugStr $
-        --     printf "validateLetName: addr: %s, var %s in parent: %s" (show addr) name (show parResM)
-
         return $ case parResM of
           -- If the let binding with the name is found in the scope.
           Just (_, True) -> lbRedeclErr name `Cursor.setTCFocus` tc
@@ -613,11 +609,23 @@ reduceDisj d tc = do
 reduceList :: (RM.ReduceMonad s r m) => VT.List VT.Tree -> TCOps.TrCur -> m VT.Tree
 reduceList l tc = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-  Cursor.tcFocus
-    <$> foldM
-      (\acc (i, _) -> TCOps.inSubTC (Path.IndexTASeg i) reduce acc)
-      tc
+  r <-
+    foldM
+      ( \acc (i, origElem) -> do
+          let elemTC = Cursor.mkSubTC (Path.IndexTASeg i) origElem tc
+          r <- reduce elemTC
+          case VT.treeNode origElem of
+            -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
+            -- the elements of the list into the list at the current index.
+            VT.TNMutable (VT.Compreh cph)
+              | VT.cphIsListCompreh cph
+              , Just rList <- VT.getListFromTree r ->
+                  return $ acc ++ VT.lstSubs rList
+            _ -> return $ acc ++ [r]
+      )
+      []
       (zip [0 ..] (VT.lstSubs l))
+  return $ VT.mkListTree r
 
 -- built-in functions
 builtinMutableTable :: [(String, VT.Tree)]
@@ -728,21 +736,192 @@ procMarkedTerms asConj terms tc = do
       []
       reducedTerms
 
-comprehend :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
-comprehend c tc = do
-  startTC <- TCOps.goDownTCSegMust (Path.ComprehTASeg Path.ComprehStartTASeg) tc
-  tM <- Mutate.reduceToNonMut startTC
-  maybe
-    (return Nothing)
-    ( \t -> case VT.treeNode t of
-        VT.TNBottom _ -> return $ Just t
-        _
-          | Just (VT.Bool b) <- VT.getAtomFromTree t ->
-              if b
-                then do
-                  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-                  Just <$> reduce (VT.cphStruct c `Cursor.setTCFocus` tc)
-                else return $ Just $ VT.mkStructTree VT.emptyStruct
-        _ -> return $ Just $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)
-    )
-    tM
+reduceCompreh :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
+reduceCompreh cph tc = RM.debugSpanRM "reduceCompreh" id tc $ do
+  r <- reduceClause 0 cph tc (IterCtx 0 (Right []))
+  case icRes r of
+    Left Nothing -> return Nothing
+    Left (Just t) -> return $ Just t
+    Right vs ->
+      if VT.cphIsListCompreh cph
+        then return $ Just $ VT.mkListTree vs
+        else return $ Just $ case vs of
+          [] -> VT.mkBlockTree VT.emptyBlock
+          [x] -> x
+          _ -> VT.mkMutableTree $ VT.mkUnifyOp vs
+
+data IterCtx = IterCtx
+  { icCnt :: Int
+  , icRes :: Either (Maybe VT.Tree) [VT.Tree]
+  }
+  deriving (Show)
+
+reduceClause ::
+  (RM.ReduceMonad s r m) =>
+  Int ->
+  VT.Comprehension VT.Tree ->
+  TCOps.TrCur ->
+  IterCtx ->
+  m IterCtx
+reduceClause i cph tc iterCtx
+  | i == length (VT.cphIterClauses cph) = RM.debugSpanArgsRM
+      (printf "reduceIterVal iter:%s" (show $ icCnt iterCtx))
+      (printf "bindings: %s" (show $ VT.cphIterBindings cph))
+      ( \x -> case icRes x of
+          Left v -> v
+          Right [] -> Nothing
+          Right vs -> Just $ last vs
+      )
+      tc
+      $ do
+        let s = VT.cphStruct cph
+        r <- newIterStruct (VT.cphIterBindings cph) s tc
+        case icRes iterCtx of
+          Left _ -> throwErrSt "should not reach the leaf node"
+          Right vs -> return $ iterCtx{icRes = Right (vs ++ [r]), icCnt = icCnt iterCtx + 1}
+  | otherwise = do
+      clauseTC <- TCOps.goDownTCSegMust (Path.ComprehTASeg $ Path.ComprehIterClauseValTASeg i) tc
+      tM <- Mutate.reduceToNonMut clauseTC
+      case tM of
+        -- Incomplete clause.
+        Nothing -> return $ iterCtx{icRes = Left Nothing}
+        Just t
+          | VT.TNBottom _ <- VT.treeNode t -> return $ iterCtx{icRes = Left (Just t)}
+          | otherwise -> case VT.cphIterClauses cph !! i of
+              VT.IterClauseIf{} -> case VT.getAtomFromTree t of
+                Just (VT.Bool True) -> reduceClause (i + 1) cph tc iterCtx
+                -- Do not go to next clause if the condition is false.
+                Just (VT.Bool False) -> return iterCtx
+                _ ->
+                  return $
+                    iterCtx
+                      { icRes = Left $ Just $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)
+                      }
+              VT.IterClauseLet letName _ -> do
+                let
+                  newBind = VT.ComprehIterBinding letName t
+                  newCompreh =
+                    cph
+                      { VT.cphIterBindings = VT.cphIterBindings cph ++ [newBind]
+                      }
+                  newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+                reduceClause (i + 1) newCompreh newTC iterCtx
+              VT.IterClauseFor k vM _ ->
+                if
+                  -- TODO: only iterate optional fields
+                  | Just (VT.Block{VT.blkStruct = struct}) <- VT.getBlockFromTree t -> do
+                      foldM
+                        ( \acc (label, field) -> do
+                            let
+                              newBinds =
+                                maybe
+                                  [VT.ComprehIterBinding k (VT.ssfValue field)]
+                                  ( \v ->
+                                      [ VT.ComprehIterBinding k (VT.mkAtomTree (VT.String label))
+                                      , VT.ComprehIterBinding v (VT.ssfValue field)
+                                      ]
+                                  )
+                                  vM
+                              newCompreh =
+                                cph
+                                  { VT.cphIterBindings = VT.cphIterBindings cph ++ newBinds
+                                  }
+                              newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+
+                            reduceClause (i + 1) newCompreh newTC acc
+                        )
+                        iterCtx
+                        (Map.toList $ VT.stcFields struct)
+                  | Just (VT.List{VT.lstSubs = list}) <- VT.getListFromTree t -> do
+                      foldM
+                        ( \acc (index, element) -> do
+                            let
+                              newBinds =
+                                maybe
+                                  [VT.ComprehIterBinding k element]
+                                  ( \v ->
+                                      [ VT.ComprehIterBinding k (VT.mkAtomTree (VT.Int index))
+                                      , VT.ComprehIterBinding v element
+                                      ]
+                                  )
+                                  vM
+                              newCompreh =
+                                cph
+                                  { VT.cphIterBindings = VT.cphIterBindings cph ++ newBinds
+                                  }
+                              newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+
+                            reduceClause (i + 1) newCompreh newTC acc
+                        )
+                        iterCtx
+                        (zip [0 ..] list)
+                  | otherwise ->
+                      return $
+                        iterCtx
+                          { icRes = Left $ Just $ VT.mkBottomTree $ printf "%s is not iterable" (VT.showTreeSymbol t)
+                          }
+
+{- | Create a new struct with the given bindings.
+
+The generated struct will not have comoprehensions, otherwise it will be reduced again, and the bindings will be lost.
+-}
+newIterStruct ::
+  (RM.ReduceMonad s r m) => [VT.ComprehIterBinding VT.Tree] -> VT.Tree -> TCOps.TrCur -> m VT.Tree
+newIterStruct bindings rawStruct _tc =
+  RM.debugSpanArgsRM
+    "newIterStruct"
+    (printf "bindings: %s" (show bindings))
+    Just
+    _tc
+    $ do
+      se <- Common.buildASTExpr False rawStruct
+      structT <- RM.evalExprRM se
+      MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+      let sTC = Cursor.mkSubTC (Path.ComprehTASeg Path.ComprehIterValTASeg) structT _tc
+      r <- reduce sTC
+      ripped <- case VT.treeNode r of
+        VT.TNBlock block -> do
+          let
+            newBlock = block{VT.blkEmbeds = IntMap.filter (not . isComprehension) (VT.blkEmbeds block)}
+          return $ VT.setTN r (VT.TNBlock newBlock)
+        _ -> return r
+
+      -- replace the refs that are found in the bindings with the binding values. This includes all references in all
+      -- possible trees.
+      x <-
+        TCOps.traverseTCSimple
+          (\x -> VT.subNodes x ++ VT.rawNodes x)
+          ( \tc -> do
+              let focus = Cursor.tcFocus tc
+              case VT.treeNode focus of
+                VT.TNMutable (VT.Ref ref)
+                  -- oirgAddrs should be empty because the reference should not be copied from other places.
+                  | Nothing <- VT.refOrigAddrs ref
+                  , VT.RefPath var rest <- VT.refArg ref -> do
+                      rM <-
+                        foldM
+                          ( \acc bind ->
+                              if
+                                | isJust acc -> return acc
+                                | VT.cphBindName bind == var
+                                , null rest ->
+                                    return $ Just (VT.cphBindValue bind)
+                                | VT.cphBindName bind == var ->
+                                    return $
+                                      Just $
+                                        VT.setTN
+                                          focus
+                                          (VT.TNMutable $ VT.Ref $ VT.mkIndexRef (VT.cphBindValue bind : rest))
+                                | otherwise -> return acc
+                          )
+                          Nothing
+                          (reverse bindings)
+                      maybe (return focus) return rM
+                _ -> return focus
+          )
+          (Cursor.TreeCursor ripped [])
+      return $ Cursor.tcFocus x
+ where
+  isComprehension emb = case VT.treeNode (VT.embValue emb) of
+    VT.TNMutable (VT.Compreh _) -> True
+    _ -> False

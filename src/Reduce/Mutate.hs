@@ -70,7 +70,7 @@ delMutValRecvs mutAddr = do
 
 -- | Reduce the tree cursor to non-mutable.
 reduceToNonMut :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe VT.Tree)
-reduceToNonMut tc = RM.debugSpanArgsRM "reduceToConcrete" (show tc) id tc $ do
+reduceToNonMut tc = RM.debugSpanArgsRM "reduceToNonMut" (show tc) id tc $ do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   r <- reduce tc
   return $ VT.getNonMutFromTree r

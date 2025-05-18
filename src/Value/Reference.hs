@@ -37,6 +37,10 @@ instance (Eq t) => Eq (RefArg t) where
 instance (Eq t) => Eq (Reference t) where
   (==) r1 r2 = refArg r1 == refArg r2 && refOrigAddrs r1 == refOrigAddrs r2
 
+-- instance (Common.BuildASTExpr t) => Common.BuildASTExpr (Reference t) where
+--   buildASTExpr c r = case refArg r of
+--     RefPath var xs ->
+
 showRefArg :: RefArg t -> (t -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (s : map (\x -> maybe "_" id (f x)) xs)
 showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)

@@ -8,9 +8,9 @@
 module Reduce.RefSys where
 
 import qualified Common
-import Control.Monad (unless, when)
+import Control.Monad (foldM, unless, when)
 import qualified Cursor
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified Path
@@ -22,13 +22,27 @@ import Text.Printf (printf)
 import Util (debugInstant, debugSpan, logDebugStr)
 import qualified Value.Tree as VT
 
+data DerefResult = DerefResult
+  { drValue :: Maybe VT.Tree
+  , drIsComprehBinding :: Bool
+  }
+  deriving (Show)
+
+notFound :: DerefResult
+notFound = DerefResult Nothing False
+
+derefResFromValue :: VT.Tree -> DerefResult
+derefResFromValue v = DerefResult (Just v) False
+
 -- | Resolve the reference value.
-resolveTCIfRef :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe VT.Tree)
+resolveTCIfRef :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m DerefResult
 resolveTCIfRef tc = case VT.treeNode (Cursor.tcFocus tc) of
   VT.TNMutable (VT.Ref ref) -> index ref tc
-  _ -> return $ Just (Cursor.tcFocus tc)
+  _ -> return $ derefResFromValue (Cursor.tcFocus tc)
 
 {- | Index the tree with the segments.
+
+Index has the form of either "a" or "a.b.c" or "{}.b".
 
 If the index operand is a tree node, the tc is used as the environment to evaluate the tree node.
 
@@ -38,9 +52,9 @@ The index should have a list of arguments where the first argument is the tree t
 arguments are the segments.
 -}
 index ::
-  (RM.ReduceMonad s r m) => VT.Reference VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
+  (RM.ReduceMonad s r m) => VT.Reference VT.Tree -> TCOps.TrCur -> m DerefResult
 index argRef@VT.Reference{VT.refArg = (VT.RefPath var sels), VT.refOrigAddrs = origAddrsM} tc =
-  RM.debugSpanRM (printf "index: var: %s" var) id tc $ do
+  RM.debugSpanRM (printf "index: var: %s" var) drValue tc $ do
     lbM <- searchLetBindValue var tc
     case lbM of
       Just lb
@@ -53,26 +67,34 @@ index argRef@VT.Reference{VT.refArg = (VT.RefPath var sels), VT.refOrigAddrs = o
               -- build the new reference tree.
               refTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef) tc
             resolveTCIfRef refTC
-        -- For example, let x = ({a:1}).a
+        -- Let value is an index. For example, let x = ({a:1}).a
         | Just rf <- VT.getRefFromTree lb
         , Just segs <- VT.getIndexSegs rf -> do
             let newRef = (VT.mkIndexRef (segs ++ sels)){VT.refOrigAddrs = origAddrsM}
                 -- build the new reference tree.
                 refTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef) tc
             resolveTCIfRef refTC
-      -- For cases such as { let x = a.b, a: b: {}, c: x }, it can be handled.
+      -- Rest of the cases. For cases such as { let x = a.b, a: b: {}, c: x } can be handled.
       _ -> do
         refTCM <- refTCFromRef argRef tc
         maybe
-          (return Nothing)
+          (return notFound)
           ( \(refTC, newRefValPath) -> do
               rTCM <- getDstTC newRefValPath origAddrsM refTC
-              maybe (return Nothing) resolveTCIfRef rTCM
+              return $
+                maybe
+                  notFound
+                  ( \tarTC ->
+                      DerefResult
+                        (Just $ Cursor.tcFocus tarTC)
+                        (Path.isPathIterBinding (Cursor.tcCanAddr tarTC))
+                  )
+                  rTCM
           )
           refTCM
 
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index VT.Reference{VT.refArg = arg@(VT.RefIndex _)} tc = RM.debugSpanRM "index" id tc $ do
+index VT.Reference{VT.refArg = arg@(VT.RefIndex _)} tc = RM.debugSpanRM "index" drValue tc $ do
   operandTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg 0) tc
   reducedOperandM <- Mutate.reduceToNonMut operandTC
 
@@ -89,7 +111,7 @@ index VT.Reference{VT.refArg = arg@(VT.RefIndex _)} tc = RM.debugSpanRM "index" 
         VT.TNBottom _ -> return reducedTC
         _ -> TCOps.goDownTCAddr (Path.valPathToAddr idxValPath) reducedTC
 
-  maybe (return Nothing) resolveTCIfRef tarTCM
+  maybe (return notFound) resolveTCIfRef tarTCM
 
 -- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
 refTCFromRef :: (RM.ReduceMonad s r m) => VT.Reference VT.Tree -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Path.ValPath))
@@ -128,10 +150,6 @@ resolveRefValPath arg tc = do
       )
       l
   return $ VT.treesToValPath . Data.Maybe.catMaybes $ m
-
-selToTree :: Path.Selector -> VT.Tree
-selToTree (Path.StringSel s) = VT.mkAtomTree $ VT.String s
-selToTree (Path.IntSel i) = VT.mkAtomTree $ VT.Int (fromIntegral i)
 
 {- | Get the value pointed by the value path and the original addresses.
 
@@ -352,21 +370,16 @@ detectCycle ::
   Path.TreeAddr ->
   m CycleDetection
 detectCycle valPath srcAddr trail tarAddr = do
-  let
-    -- Both addresses can start with a mutable argument segment as the search happens in a mutable argument.
-    rfbTarAddr = Path.trimToReferable tarAddr
-    -- If srcAddr is an embedded address, we can remove the embedded segment because the embedded value will be unified
-    -- with the containing struct, which has the same trimmed address.
-    rfbSrcAddr = Path.trimToReferable srcAddr
+  let rfbTarAddr = Path.trimToReferable tarAddr
   RM.debugInstantOpRM
     "detectCycle"
     ( printf
-        "valPath: %s, trail: %s, tarAddr: %s, rfbSrcAddr: %s, rfbTarAddr: %s"
+        "valPath: %s, trail: %s, tarAddr: %s, rfbTarAddr: %s, srcAddr: %s"
         (show valPath)
         (show $ Set.toList trail)
         (show tarAddr)
-        (show rfbSrcAddr)
         (show rfbTarAddr)
+        (show srcAddr)
     )
     srcAddr
   if
@@ -397,31 +410,63 @@ detectCycle valPath srcAddr trail tarAddr = do
     -- ref_a
     -- Notice that for self-cycle, the srcTreeAddr could be /addr/sv, and the dstTreeAddr could be /addr. They
     -- are the same in the refNode form.
-    | rfbTarAddr == rfbSrcAddr
-    , -- They both must end with a same string segment.
-      Path.lastSeg rfbTarAddr == Path.lastSeg rfbSrcAddr
-    , Just (Path.StructTASeg (Path.StringTASeg _)) <- Path.lastSeg rfbSrcAddr -> do
+    | tarAddr `Path.isPrefix` srcAddr
+    , let diff = Path.trimPrefixTreeAddr tarAddr srcAddr
+          rfbDiff = Path.trimToReferable diff
+    , -- The diff should not have any meaningful segments.
+      Path.isTreeAddrEmpty rfbDiff
+    , -- The last segment of the tar address should be a struct string segment.
+      Just (Path.StructTASeg (Path.StringTASeg _)) <- Path.lastSeg rfbTarAddr -> do
         RM.debugInstantOpRM
           "detectCycle"
           (printf "vertical reference cycle detected: %s == %s." (show tarAddr) (show srcAddr))
           srcAddr
         return (RCDetected rfbTarAddr)
-    -- The target is a sub field of the current field. This is a child reference cycle. For example, x: x.c.
-    | Path.isPrefix rfbSrcAddr rfbTarAddr
-    , rfbSrcAddr /= rfbTarAddr
-    , Just (Path.StructTASeg (Path.StringTASeg _)) <- Path.lastSeg rfbSrcAddr
-    , Just (Path.StructTASeg (Path.StringTASeg _)) <- Path.lastSeg rfbTarAddr -> do
-        RM.debugInstantOpRM
-          "detectCycle"
-          (printf "child reference cycle detected: src: %s, tar: %s." (show srcAddr) (show tarAddr))
-          srcAddr
-        return (RCDetected rfbTarAddr)
 
+    -- This handles the case when the reference in a sub structure refers to an ancestor.
+    -- For example,
+    -- x: y: x
+    -- x: [{y: x}], where x is at /x, y is at /x/0/y.
+    -- or:
+    -- x: [x], where x is at /x, y is at /x/0.
+    --
     -- According to spec,
     -- If a node "a" references an ancestor node, we call it and any of its field values a.f cyclic. So if "a" is
     -- cyclic, all of its descendants are also regarded as cyclic.
-    | Path.isPrefix rfbTarAddr rfbSrcAddr && rfbSrcAddr /= rfbTarAddr ->
+    | tarAddr `Path.isPrefix` srcAddr
+    , let diff = Path.trimPrefixTreeAddr tarAddr srcAddr
+          rfbDiff = Path.trimToReferable diff
+    , -- The diff should have some meaningful segments.
+      not (Path.isTreeAddrEmpty rfbDiff) -> do
+        RM.debugInstantOpRM
+          "detectCycle"
+          ( printf
+              "ancestor reference cycle detected: %s == %s."
+              (show valPath)
+              (show tarAddr)
+          )
+          srcAddr
         return SCDetected
+    -- This handles the case when the reference in a sub structure refers to a child.
+    -- The target is a sub field of the current field. This is a child reference cycle.
+    -- The diff should have some meaningful segments.
+    -- For example, x: x.c <> some_op.
+    | let opReducedSrcAddr = Path.trimToSingleValueTA srcAddr
+    , opReducedSrcAddr `Path.isPrefix` rfbTarAddr
+    , let diff = Path.trimPrefixTreeAddr opReducedSrcAddr rfbTarAddr
+          rfbDiff = diff
+    , not (Path.isTreeAddrEmpty rfbDiff) ->
+        do
+          RM.debugInstantOpRM
+            "detectCycle"
+            ( printf
+                "child reference cycle detected: src: %s, tar: %s, diff: %s"
+                (show srcAddr)
+                (show tarAddr)
+                (show diff)
+            )
+            srcAddr
+          return (RCDetected rfbTarAddr)
     | otherwise -> return NoCycleDetected
 
 {- | Copy the value of the reference.
@@ -767,8 +812,9 @@ already exist.
 The tree cursor must at least have the root segment.
 -}
 searchTCIdent :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
-searchTCIdent name tc = RM.debugSpanRM "searchTCIdent" (fmap (Cursor.tcFocus . fst)) tc $ do
-  subM <- findSubInBlock name tc
+-- searchTCIdent name tc = RM.debugSpanRM "searchTCIdent" (fmap (Cursor.tcFocus . fst)) tc $ do
+searchTCIdent name tc = do
+  subM <- findIdent name tc
   r <-
     maybe
       (goUp tc)
@@ -796,9 +842,9 @@ searchTCIdent name tc = RM.debugSpanRM "searchTCIdent" (fmap (Cursor.tcFocus . f
     ptc <- maybe (throwErrSt "already on the top") return $ Cursor.parentTC utc
     searchTCIdent name ptc
 
-  -- TODO: findSub for default disjunct
-  findSubInBlock :: (Common.Env r s m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
-  findSubInBlock ident blockTC = do
+  -- TODO: findIdent for default disjunct?
+  findIdent :: (Common.Env r s m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
+  findIdent ident blockTC = do
     case VT.treeNode (Cursor.tcFocus blockTC) of
       VT.TNBlock blk@(VT.Block{VT.blkStruct = struct})
         -- If the block reduces to non-struct, then the fields are not searchable in the block. The fields have
@@ -829,7 +875,68 @@ searchTCIdent name tc = RM.debugSpanRM "searchTCIdent" (fmap (Cursor.tcFocus . f
                       , False
                       )
               else return Nothing
-      VT.TNMutable (VT.Compreh c) -> return Nothing
+      VT.TNMutable (VT.Compreh c) -> do
+        let binds = VT.cphIterBindings c
+        RM.debugInstantRM
+          "searchTCIdent"
+          (printf "binds: %s" (show binds))
+          blockTC
+        foldM
+          ( \acc (i, bind) ->
+              if isJust acc
+                then return acc
+                else
+                  let bindName = VT.cphBindName bind
+                   in if bindName == ident
+                        then do
+                          RM.debugInstantRM
+                            "searchTCIdent"
+                            (printf "found in comprehension binding: %s" (show bindName))
+                            blockTC
+                          -- Since the bindName is an identifier and watchRefRM only watches referable identifiers, we
+                          -- do not need to worry that the bindValTC will be accessed.
+                          -- The ComprehIterBindingTASeg is used to make sure the address passes the cycle detection.
+                          let bindValTC =
+                                Cursor.mkSubTC
+                                  (Path.ComprehTASeg (Path.ComprehIterBindingTASeg i))
+                                  (VT.cphBindValue bind)
+                                  blockTC
+                          return $ Just (bindValTC, False)
+                        else return acc
+          )
+          Nothing
+          (reverse (zip [0 ..] binds))
+      -- VT.TNComprehIterVal c -> do
+      --   let binds = VT.citIterBindings c
+      --   RM.debugInstantRM
+      --     "searchTCIdent"
+      --     (printf "binds: %s" (show binds))
+      --     blockTC
+      --   foldM
+      --     ( \acc (i, bind) ->
+      --         if isJust acc
+      --           then return acc
+      --           else
+      --             let bindName = VT.cphBindName bind
+      --              in if bindName == ident
+      --                   then do
+      --                     RM.debugInstantRM
+      --                       "searchTCIdent"
+      --                       (printf "found in comprehension binding: %s" (show bindName))
+      --                       blockTC
+      --                     -- Since the bindName is an identifier and watchRefRM only watches referable identifiers, we
+      --                     -- do not need to worry that the bindValTC will be accessed.
+      --                     -- The ComprehIterBindingTASeg is used to make sure the address passes the cycle detection.
+      --                     let bindValTC =
+      --                           Cursor.mkSubTC
+      --                             (Path.ComprehTASeg (Path.ComprehIterBindingTASeg i))
+      --                             (VT.cphBindValue bind)
+      --                             blockTC
+      --                     return $ Just (bindValTC, False)
+      --                   else return acc
+      --     )
+      --     Nothing
+      --     (reverse (zip [0 ..] binds))
       _ -> return Nothing
 
 searchLetBindValue :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe VT.Tree)
@@ -865,8 +972,8 @@ inAbsAddrTCMust p tc f = do
   tarM <- goTCAbsAddr p tc
   maybe (throwErrSt $ printf "%s is not found" (show p)) f tarM
 
-mustReferableAddr :: (Common.Env r s m) => Path.TreeAddr -> m Path.TreeAddr
-mustReferableAddr addr = do
-  let r = Path.getReferableAddr addr
-  when (isNothing r) $ throwErrSt $ printf "the addr %s is not referable" (show addr)
-  return $ fromJust r
+-- mustReferableAddr :: (Common.Env r s m) => Path.TreeAddr -> m Path.TreeAddr
+-- mustReferableAddr addr = do
+--   let r = Path.getReferableAddr addr
+--   when (isNothing r) $ throwErrSt $ printf "the addr %s is not referable" (show addr)
+--   return $ fromJust r

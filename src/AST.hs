@@ -121,6 +121,8 @@ data Clauses = Clauses StartClause [Clause] deriving (Eq, Show)
 data StartClause
   = -- | GuardClause is an "if" expression
     GuardClause Expression
+  | -- | ForClause is a "for" expression
+    ForClause Identifer (Maybe Identifer) Expression
   deriving (Eq, Show)
 
 data Clause
@@ -296,7 +298,7 @@ fieldDeclBld ident e = case e of
 
 embeddingBld :: Int -> Embedding -> Builder
 embeddingBld ident e = case e of
-  EmbedComprehension c -> undefined
+  EmbedComprehension _ -> string7 "<undefined>"
   AliasExpr ex -> exprBldIdent ident ex
 
 listBld :: ElementList -> Builder

@@ -49,7 +49,7 @@ import qualified Value.Tree as VT
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
-  , ecMermaidGraph :: Bool
+  , ecTraceExec :: Bool
   , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
   , ecFileTreeAddr :: String
@@ -59,7 +59,7 @@ emptyEvalConfig :: EvalConfig
 emptyEvalConfig =
   EvalConfig
     { ecDebugLogging = False
-    , ecMermaidGraph = False
+    , ecTraceExec = False
     , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
     , ecFileTreeAddr = ""
@@ -137,7 +137,7 @@ evalFile sf conf = do
           ( Common.Config
               { Common.cfSettings =
                   (Common.cfSettings . rcConfig $ emptyRunner)
-                    { Common.stMermaid = ecMermaidGraph conf
+                    { Common.stTraceExec = ecTraceExec conf
                     , Common.stShowMutArgs = ecShowMutArgs conf
                     , Common.stMaxTreeDepth = ecMaxTreeDepth conf
                     }

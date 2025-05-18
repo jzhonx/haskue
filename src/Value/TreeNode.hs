@@ -29,7 +29,7 @@ import Text.Printf (printf)
 import Value.Atom (AtomV)
 import Value.Bottom (Bottom)
 import Value.Bounds (Bounds)
-import Value.Comprehension (Comprehension (..), getValFromIterClause)
+import Value.Comprehension
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
@@ -123,10 +123,10 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
     | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
-    | (ComprehTASeg ComprehStartTASeg, Compreh c) <- (seg, mut) -> return $ cphStart c
-    | (ComprehTASeg (ComprehIterClauseTASeg i), Compreh c) <- (seg, mut) ->
+    -- \| (ComprehTASeg ComprehStartValTASeg, Compreh c) <- (seg, mut) -> return $ getValFromStartClause (cphStart c)
+    | (ComprehTASeg (ComprehIterClauseValTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
-    | (ComprehTASeg ComprehStructTASeg, Compreh c) <- (seg, mut) -> return $ cphStruct c
+    | (ComprehTASeg ComprehIterValTASeg, Compreh c) <- (seg, mut) -> cphIterVal c
     | SubValTASeg <- seg -> getMutVal mut
   (_, TNDisj d)
     | DisjDefaultTASeg <- seg -> dsjDefault d
@@ -172,17 +172,14 @@ setSubTreeTN seg subT parT = do
             conjuncts = ufConjuncts u
             l = TNMutable . UOp $ u{ufConjuncts = take i conjuncts ++ [subT] ++ drop (i + 1) conjuncts}
           return l
-      | ComprehTASeg ComprehStartTASeg <- seg
+      | ComprehTASeg ComprehIterValTASeg <- seg
       , Compreh c <- mut ->
-          return $ TNMutable $ Compreh c{cphStart = subT}
-      | ComprehTASeg (ComprehIterClauseTASeg i) <- seg
+          return $ TNMutable $ Compreh c{cphIterVal = Just subT}
+      | ComprehTASeg (ComprehIterClauseValTASeg i) <- seg
       , Compreh c <- mut -> do
           let clauses = cphIterClauses c
               clause = subT <$ (clauses !! i)
           return $ TNMutable $ Compreh c{cphIterClauses = take i clauses ++ [clause] ++ drop (i + 1) clauses}
-      | ComprehTASeg ComprehStructTASeg <- seg
-      , Compreh c <- mut ->
-          return $ TNMutable $ Compreh c{cphStruct = subT}
       | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
     (_, TNDisj d)
       | DisjDefaultTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})

@@ -72,7 +72,7 @@ data Config = Config
   deriving (Show)
 
 data Settings = Settings
-  { stMermaid :: Bool
+  { stTraceExec :: Bool
   , stShowMutArgs :: Bool
   , stMaxTreeDepth :: Int
   }
@@ -93,7 +93,7 @@ emptyConfig =
 emptySettings :: Settings
 emptySettings =
   Settings
-    { stMermaid = False
+    { stTraceExec = False
     , stShowMutArgs = False
     , stMaxTreeDepth = 0
     }

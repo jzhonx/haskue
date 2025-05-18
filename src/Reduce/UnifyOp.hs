@@ -21,7 +21,7 @@ import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, isNothing)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified MutEnv
@@ -161,27 +161,26 @@ unifyTCs tcs unifyTC = RM.debugSpanArgsRM "unifyTCs" (showTCList tcs) id unifyTC
 
           RM.debugInstantRM "unifyTCs" (printf "regs: %s, subRCs: %s" (show regs) (show subRCs)) unifyTC
 
-          if
-            | null regs && null rcs && not (null subRCs) -> return Nothing
-            | null regs && null subRCs -> return $ Just $ Cursor.tcFocus (head rcs)
-            | not (null regs) -> do
-                r <- mergeTCs regs unifyTC
-                -- Unify the sub reference cycles.
-                foldM
-                  ( \acc relRCAddr ->
-                      maybe
-                        (return Nothing)
-                        (\(vTC, subVTC) -> unifyBinUTrees (UTree Path.L vTC) (UTree Path.R subVTC) unifyTC)
-                        ( do
-                            v <- acc
-                            let vTC = v `Cursor.setTCFocus` unifyTC
-                            subVTC <- TCOps.goDownTCAddr relRCAddr vTC
-                            return (vTC, subVTC)
-                        )
-                  )
-                  r
-                  subRCs
-            | otherwise -> throwErrSt "unexpected conjuncts"
+          case (regs, rcs, subRCs) of
+            ([], _, _ : _) -> return Nothing
+            ([], _, []) -> return $ Just $ Cursor.tcFocus (head rcs)
+            _ -> do
+              r <- mergeTCs regs unifyTC
+              -- Unify the sub reference cycles.
+              foldM
+                ( \acc relRCAddr ->
+                    maybe
+                      (return Nothing)
+                      (\(vTC, subVTC) -> unifyBinUTrees (UTree Path.L vTC) (UTree Path.R subVTC) unifyTC)
+                      ( do
+                          v <- acc
+                          let vTC = v `Cursor.setTCFocus` unifyTC
+                          subVTC <- TCOps.goDownTCAddr relRCAddr vTC
+                          return (vTC, subVTC)
+                      )
+                )
+                r
+                subRCs
 
 {- | Normalize the unify operation tree.
 
@@ -1005,16 +1004,7 @@ _appendSIDToLetRef blockAddr sid _tc =
 
 -- | Extended version of all sub nodes of the tree, including patterns, dynamic fields and let bindings.
 _extAllSubNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
-_extAllSubNodes x = VT.subNodes x ++ rawNodes x
- where
-  rawNodes :: VT.Tree -> [(Path.TASeg, VT.Tree)]
-  rawNodes t = case VT.treeNode t of
-    VT.TNBlock block@(VT.Block{VT.blkStruct = struct}) ->
-      [(Path.StructTASeg $ Path.PatternTASeg i 1, VT.scsValue c) | (i, c) <- IntMap.toList $ VT.stcCnstrs struct]
-        ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, VT.dsfValue dsf) | (i, dsf) <- IntMap.toList $ VT.stcDynFields struct]
-        ++ [(Path.StructTASeg $ Path.LetTASeg s, VT.lbValue lb) | (s, lb) <- Map.toList $ VT.stcLets struct]
-        ++ [(Path.StructTASeg $ Path.EmbedTASeg i, VT.embValue emb) | (i, emb) <- IntMap.toList $ VT.blkEmbeds block]
-    _ -> []
+_extAllSubNodes x = VT.subNodes x ++ VT.rawNodes x
 
 mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
 mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do

@@ -104,7 +104,7 @@ setMutVal m (UOp u) = UOp $ u{ufValue = m}
 getMutArgs :: Mutable t -> [t]
 getMutArgs (RegOp rop) = ropArgs rop
 getMutArgs (Ref ref) = subRefArgs $ refArg ref
-getMutArgs (Compreh c) = []
+getMutArgs (Compreh _) = []
 getMutArgs (DisjOp d) = map dstValue (djoTerms d)
 getMutArgs (UOp u) = ufConjuncts u
 
@@ -180,3 +180,11 @@ mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}
 
 mkUnifyOp :: [t] -> Mutable t
 mkUnifyOp ts = UOp $ emptyUnifyOp{ufConjuncts = ts}
+
+buildArgsExpr :: (Env r s m, BuildASTExpr t) => String -> [t] -> m AST.Expression
+buildArgsExpr func ts = do
+  ets <- mapM (buildASTExpr False) ts
+  return $
+    AST.ExprUnaryExpr $
+      AST.UnaryExprPrimaryExpr $
+        AST.PrimExprArguments (AST.PrimExprOperand $ AST.OpLiteral $ AST.StringLit $ AST.SimpleStringLit func) ets

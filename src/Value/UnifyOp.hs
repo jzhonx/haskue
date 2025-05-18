@@ -1,7 +1,7 @@
 module Value.UnifyOp where
 
 import qualified AST
-import Common (BuildASTExpr (..), Env)
+import Common (BuildASTExpr (..))
 import Control.Monad (foldM, when)
 import Exception (throwErrSt)
 

@@ -34,7 +34,6 @@ import AST (
   StructLit (..),
   UnaryExpr (..),
   UnaryOp (Star),
-  litCons,
  )
 import Common (Env, IDStore (..))
 import Control.Monad (foldM)
@@ -99,7 +98,7 @@ evalDecl x decl = case VT.treeNode x of
   VT.TNBottom _ -> return x
   VT.TNBlock block -> case decl of
     Embedding ed -> do
-      v <- evalEmbedding ed
+      v <- evalEmbedding False ed
       oid <- allocOID
       let adder = VT.EmbedSAdder oid v
       addNewBlockElem adder block
@@ -117,24 +116,29 @@ evalDecl x decl = case VT.treeNode x of
       addNewBlockElem adder block
   _ -> throwErrSt "invalid struct"
 
-evalEmbedding :: (EvalEnv r s m) => Embedding -> m VT.Tree
-evalEmbedding (AliasExpr e) = evalExpr e
-evalEmbedding ce@(EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
+evalEmbedding :: (EvalEnv r s m) => Bool -> Embedding -> m VT.Tree
+evalEmbedding _ (AliasExpr e) = evalExpr e
+evalEmbedding isListCompreh (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
   gev <- evalExpr ge
   clsv <- mapM evalClause cls
   sv <- evalStructLit lit
-  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension gev clsv sv
+  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension isListCompreh (VT.IterClauseIf gev : clsv) sv
+evalEmbedding isListCompreh (EmbedComprehension (Comprehension (Clauses (ForClause i jM fe) cls) lit)) = do
+  fev <- evalExpr fe
+  clsv <- mapM evalClause cls
+  sv <- evalStructLit lit
+  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension isListCompreh (VT.IterClauseFor i jM fev : clsv) sv
 
 evalClause :: (EvalEnv r s m) => Clause -> m (VT.IterClause VT.Tree)
 evalClause (ClauseStartClause (GuardClause e)) = do
   t <- evalExpr e
   return $ VT.IterClauseIf t
+evalClause (ClauseStartClause (ForClause i jM e)) = do
+  t <- evalExpr e
+  return $ VT.IterClauseFor i jM t
 evalClause (ClauseLetClause (LetClause ident le)) = do
   lt <- evalExpr le
   return $ VT.IterClauseLet ident lt
-
--- evalStartClause :: (EvalEnv r s m) => StartClause -> m VT.Tree
--- evalStartClause (GuardClause e) = evalExpr e
 
 evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.BlockElemAdder VT.Tree)
 evalFDeclLabels lbls e =
@@ -281,12 +285,16 @@ addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
 
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m VT.Tree
 evalListLit (AST.EmbeddingList es) = do
-  xs <- mapM evalEmbedding es
+  xs <- mapM (evalEmbedding True) es
   return $ VT.mkListTree xs
 
 evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m VT.Tree
-evalUnaryExpr (UnaryExprPrimaryExpr primExpr) = evalPrimExpr primExpr
-evalUnaryExpr (UnaryExprUnaryOp op e) = evalUnaryOp op e
+evalUnaryExpr ue@(UnaryExprPrimaryExpr primExpr) = do
+  t <- evalPrimExpr primExpr
+  return $ VT.setExpr t (Just (AST.ExprUnaryExpr ue))
+evalUnaryExpr ue@(UnaryExprUnaryOp op e) = do
+  t <- evalUnaryOp op e
+  return $ VT.setExpr t (Just (AST.ExprUnaryExpr ue))
 
 builtinOpNameTable :: [(String, VT.Tree)]
 builtinOpNameTable =
@@ -320,7 +328,13 @@ evalPrimExpr (PrimExprArguments primExpr aes) = do
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
 replaceFuncArgs t args = case VT.getMutableFromTree t of
-  Just (VT.RegOp fn) -> return . VT.setTN t $ VT.TNMutable . VT.RegOp $ fn{VT.ropArgs = args}
+  Just (VT.RegOp fn) ->
+    return . VT.setTN t $
+      VT.TNMutable . VT.RegOp $
+        fn
+          { VT.ropArgs = args
+          , VT.ropExpr = VT.buildArgsExpr (VT.ropName fn) args
+          }
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
@@ -353,7 +367,8 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m VT.Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op t)
+  let tWithE = VT.setExpr t (Just (AST.ExprUnaryExpr e))
+  return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op tWithE)
 
 {- | order of arguments is important for disjunctions.
 

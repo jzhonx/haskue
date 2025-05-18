@@ -1,0 +1,23 @@
+-- cp_for_nested1 --
+for k, v in x {
+	for k2, _ in v {
+		(k): _
+	}
+}
+
+x: {
+	a: {i1: 1, i2: 2}
+	b: {j1: 3}
+}
+-- exp --
+x: {
+    a: {
+        i1: 1
+        i2: 2
+  }
+    b: {
+        j1: 3
+  }
+}
+a: _
+b: _

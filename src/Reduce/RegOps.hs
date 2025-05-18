@@ -101,7 +101,7 @@ regBinDir op (d1, _tc1) (d2, _tc2) = do
   opTC <- Cursor.parentTCMust _tc1
   RM.debugInstantOpRM
     "regBinDir"
-    (printf "reduced args, %s: %s with %s: %s" (show d1) (show t1M) (show d2) (show t2M))
+    (printf "reduced args,op: %s, %s: %s with %s: %s" (show op) (show d1) (show t1M) (show d2) (show t2M))
     (Cursor.tcCanAddr opTC)
 
   case (t1M, t2M) of
@@ -111,8 +111,8 @@ regBinDir op (d1, _tc1) (d2, _tc2) = do
         tc2 = t2 `Cursor.setTCFocus` _tc2
        in
         case (VT.treeNode t1, VT.treeNode t2) of
-          (VT.TNBottom _, _) -> retVal t1
-          (_, VT.TNBottom _) -> retVal t2
+          (VT.TNBottom _, _) -> retVal $ regBinLeftBottom op t1 t2M
+          (_, VT.TNBottom _) -> retVal $ regBinLeftBottom op t2 t1M
           (VT.TNAtom l1, _) -> regBinLeftAtom op (d1, l1, tc1) (d2, tc2)
           (_, VT.TNAtom l2) -> regBinLeftAtom op (d2, l2, tc2) (d1, tc1)
           (VT.TNBlock s1, _) -> regBinLeftBlock op (d1, s1, tc1) (d2, tc2)
@@ -121,10 +121,29 @@ regBinDir op (d1, _tc1) (d2, _tc2) = do
           (_, VT.TNDisj dj2) -> regBinLeftDisj op (d2, dj2, tc2) (d1, tc1)
           _ -> regBinLeftOther op (d1, tc1) (d2, tc2)
     (Just t1, _)
-      | VT.TNBottom _ <- VT.treeNode t1 -> retVal t1
+      | VT.TNBottom _ <- VT.treeNode t1 -> retVal $ regBinLeftBottom op t1 t2M
     (_, Just t2)
-      | VT.TNBottom _ <- VT.treeNode t2 -> retVal t2
+      | VT.TNBottom _ <- VT.treeNode t2 -> retVal $ regBinLeftBottom op t2 t1M
     _ -> return Nothing
+
+regBinLeftBottom ::
+  AST.BinaryOp ->
+  VT.Tree ->
+  Maybe VT.Tree ->
+  VT.Tree
+regBinLeftBottom AST.Equ _ t2M = case t2M of
+  -- If the second argument is a bottom, then the result is True.
+  Just t2
+    | VT.TNBottom _ <- VT.treeNode t2 -> VT.mkAtomTree (VT.Bool True)
+  -- If the second argument is incomplete which is treated as bottom, then the result is True.
+  Nothing -> VT.mkAtomTree (VT.Bool True)
+  _ -> VT.mkAtomTree (VT.Bool False)
+regBinLeftBottom (AST.BinRelOp AST.NE) b1 t2M = do
+  let r = regBinLeftBottom AST.Equ b1 t2M
+  case VT.getAtomFromTree r of
+    Just (VT.Bool b) -> VT.mkAtomTree (VT.Bool (not b))
+    _ -> r
+regBinLeftBottom _ b1 _ = b1
 
 regBinLeftAtom ::
   (RM.ReduceMonad s r m) =>
@@ -134,7 +153,6 @@ regBinLeftAtom ::
   m (Maybe VT.Tree)
 regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
   let
-    t1 = Cursor.tcFocus tc1
     t2 = Cursor.tcFocus tc2
   logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
   if

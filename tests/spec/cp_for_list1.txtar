@@ -1,0 +1,14 @@
+-- cp_for_list1 --
+data: {
+  a: 1
+  b: 2
+}
+x: [for k, _ in data {k}]
+y: [for _, v in data {v}]
+-- exp --
+data: {
+    a: 1
+    b: 2
+}
+x: ["a", "b"]
+y: [1, 2]

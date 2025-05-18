@@ -5,9 +5,9 @@
 module Parser where
 
 import AST
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Control.Monad.Except (MonadError, throwError)
-import Data.Maybe (fromJust, isJust)
+import Data.Maybe (fromJust, isJust, isNothing)
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -21,6 +21,7 @@ import Text.Parsec (
   oneOf,
   option,
   optionMaybe,
+  optional,
   -- parserTrace,
   runParser,
   satisfy,
@@ -28,7 +29,6 @@ import Text.Parsec (
   skipMany,
   string,
   try,
-  unexpected,
   (<?>),
   (<|>),
  )
@@ -64,6 +64,7 @@ data TokenType
 
 type TokAttr a = (a, TokenType)
 
+-- | Lexeme is a sequence of tokens ending with a sequence of whitespace.
 data Lexeme a = Lexeme
   { lex :: a
   , lexType :: TokenType
@@ -133,10 +134,7 @@ unaryOpTable =
 
 sourceFile :: Parser (Lexeme SourceFile)
 sourceFile = do
-  declLexes <- many $ do
-    dLex <- decl
-    _ <- comma dLex
-    return dLex
+  declLexes <- manyEndByComma decl Nothing
   -- null was hidden, so use the dumb way to check if the declLexes is empty.
   if length declLexes == 0
     then return $ SourceFile [] <$ emptyLexeme
@@ -148,7 +146,9 @@ entry p = do
   p
 
 expr :: Parser (Lexeme Expression)
-expr = prec1
+expr = do
+  r <- prec1
+  return r
  where
   binOp ::
     Parser (Lexeme Expression) ->
@@ -221,7 +221,7 @@ primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
       case rparenMaybe of
         Just _ -> return eLex
         Nothing -> do
-          _ <- comma eLex
+          _ <- comma
           return eLex
     rLex <- rparen
     let es :: [Expression]
@@ -263,7 +263,7 @@ rparen :: Parser (Lexeme Char)
 rparen = lexeme $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parenthesis")
 
 literal :: Parser (Lexeme Literal)
-literal =
+literal = do
   try (litLexeme TokenFloat floatLit)
     <|> litLexeme TokenInt intLit
     <|> try (litLexeme TokenBool bool)
@@ -275,31 +275,42 @@ literal =
     <|> list
 
 identifier :: Parser (Lexeme String)
-identifier = lexeme $ do
-  prefix <- option "" (string "#" <|> string "_#")
-  firstChar <- letter
-  rest <- many (letter <|> digit)
-  return (prefix ++ (firstChar : rest), TokenIdentifier)
+identifier =
+  lexeme $
+    ( do
+        prefix <- string "#"
+        part <- identPart
+        return (prefix ++ fst part, TokenIdentifier)
+    )
+      <|> try
+        ( do
+            -- "_" is a valid identPart letter as well, so we use try to first match the identifier with a prefix.
+            prefix <- string "_#"
+            part <- identPart
+            return (prefix ++ fst part, TokenIdentifier)
+        )
+      <|> identPart
+ where
+  identPart = do
+    firstChar <- letter
+    rest <- many (letter <|> digit)
+    return (firstChar : rest, TokenIdentifier)
 
 letter :: Parser Char
 letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
 
 structLit :: Parser (Lexeme StructLit)
 structLit = do
-  _ <- lexeme $ (,TokenLBrace) <$> char '{'
-  decls <- many $ do
-    dLex <- decl
-    rbraceMaybe <- lookAhead $ optionMaybe rbrace
-    case rbraceMaybe of
-      Just _ -> return dLex
-      Nothing -> do
-        _ <- comma dLex
-        return dLex
+  _ <- lbrace
+  decls <- manyEndByComma decl (Just rbrace)
   rLex <- rbrace
   let
     ds :: [Declaration]
     ds = map lex decls
   return $ StructLit ds <$ rLex
+
+lbrace :: Parser (Lexeme Char)
+lbrace = lexeme $ (,TokenLBrace) <$> (char '{' <?> "failed to parse left brace")
 
 rbrace :: Parser (Lexeme Char)
 rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace")
@@ -313,7 +324,7 @@ list = do
     case rsquareMaybe of
       Just _ -> return eLex
       Nothing -> do
-        _ <- comma eLex
+        _ <- comma
         return eLex
   rLex <- rsquare
   let es :: [Embedding]
@@ -326,12 +337,8 @@ lsquare = lexeme $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left squar
 rsquare :: Parser (Lexeme Char)
 rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
 
-comma :: Lexeme a -> Parser (Lexeme ())
-comma l = do
-  commaMaybe <- optionMaybe $ lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
-  if isJust commaMaybe
-    then return (Lexeme () (lexType l) (lexNewLine l))
-    else unexpected "failed to parse comma"
+comma :: Parser (Lexeme Char)
+comma = lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
 
 decl :: Parser (Lexeme Declaration)
 decl =
@@ -406,20 +413,44 @@ embedding = try (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
 comprehension :: Parser (Lexeme Comprehension)
 comprehension = do
   stLex <- startClause
+  -- If start clause may have newline, or a real comma followed
+  _ <- optional comma
+  restClauses <- many $ do
+    r <- clause
+    _ <- optional comma
+    return r
+
   structLex <- structLit
   let
-    cls = Clauses (lex stLex) []
+    cls = Clauses (lex stLex) (map lex restClauses)
     c = Comprehension cls (lex structLex)
   return $ c <$ structLex
 
+clause :: Parser (Lexeme Clause)
+clause =
+  try (fmap ClauseStartClause <$> startClause)
+    <|> (fmap ClauseLetClause <$> letClause)
+    <?> "failed to parse clause"
+
 startClause :: Parser (Lexeme StartClause)
-startClause = do
+startClause = try guardClause <|> forClause <?> "failed to parse start clause"
+
+guardClause :: Parser (Lexeme StartClause)
+guardClause = do
   _ <- lexeme $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
   eLex <- expr
   return $ GuardClause (lex eLex) <$ eLex
 
-clause :: Parser (Lexeme Clause)
-clause = try (fmap ClauseStartClause <$> startClause) <|> (fmap ClauseLetClause <$> letClause)
+forClause :: Parser (Lexeme StartClause)
+forClause = do
+  _ <- lexeme $ (,TokenString) <$> (string "for" <?> "failed to parse keyword for")
+  identLex <- identifier
+  secIdentLexM <- optionMaybe $ do
+    _ <- comma
+    identifier
+  _ <- lexeme $ (,TokenString) <$> (string "in" <?> "failed to parse keyword in")
+  eLex <- expr
+  return $ ForClause (lex identLex) (lex <$> secIdentLexM) (lex eLex) <$ eLex
 
 letClause :: Parser (Lexeme LetClause)
 letClause = do
@@ -533,3 +564,14 @@ lexeme p = do
     s <- getInput
     setInput $ "," ++ s
   return $ Lexeme x ltok hasnl
+
+-- | Match the grammar {p ","} but loose restriction on the last comma if the enclosing element is matched.
+manyEndByComma :: Parser (Lexeme a) -> Maybe (Parser (Lexeme b)) -> Parser [Lexeme a]
+manyEndByComma p enclosingM = do
+  many $ do
+    x <- p
+
+    rM <- maybe (return Nothing) (lookAhead . optionMaybe) enclosingM
+    -- If the enclosing element is not found, we need to consume the comma.
+    when (isNothing rM) $ void comma
+    return x

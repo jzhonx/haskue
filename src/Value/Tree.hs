@@ -33,17 +33,10 @@ import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Path (
+  ComprehTASeg (..),
   Selector (..),
   StructTASeg (..),
-  TASeg (
-    DisjDefaultTASeg,
-    DisjDisjunctTASeg,
-    IndexTASeg,
-    MutableArgTASeg,
-    StructTASeg,
-    SubValTASeg,
-    TempTASeg
-  ),
+  TASeg (..),
   TreeAddr,
   ValPath (ValPath),
   addrToNormOrdList,
@@ -284,7 +277,25 @@ buildRepTreeTN t tn opt = case tn of
           , consFields val
           , []
           )
-    Compreh _ -> consRep (symbol, "", [], [])
+    Compreh cph ->
+      let
+        clauses =
+          map
+            ( \(i, cl) ->
+                ( show (ComprehTASeg (ComprehIterClauseValTASeg i))
+                , mempty
+                , getValFromIterClause cl
+                )
+            )
+            (zip [0 ..] (cphIterClauses cph))
+        struct = [(show "struct", mempty, cphStruct cph)]
+       in
+        consRep
+          ( symbol
+          , ""
+          , consFields (clauses ++ struct)
+          , []
+          )
     DisjOp d ->
       let
         terms =
@@ -343,20 +354,22 @@ instance BuildASTExpr Tree where
     TNBottom _ -> return $ AST.litCons AST.BottomLit
     TNAtom s -> buildASTExpr cr s
     TNBounds b -> buildASTExpr cr b
-    TNBlock es@(Block{blkStruct = s})
-      | Just ev <- blkNonStructValue es -> buildASTExpr cr ev
+    TNBlock block@(Block{blkStruct = s})
+      | Just ev <- blkNonStructValue block -> buildASTExpr cr ev
       | let dynsReady = all (isJust . getNonMutFromTree . dsfLabel) (IntMap.elems $ stcDynFields s)
-      , let embedsReady = all (isJust . getNonMutFromTree . embValue) (IntMap.elems $ blkEmbeds es)
+      , let embedsReady = all (isJust . getNonMutFromTree . embValue) (IntMap.elems $ blkEmbeds block)
       , dynsReady && embedsReady ->
-          buildStructASTExpr cr s
+          buildStructASTExpr cr block
       -- If dynamic fields or embedded values are not ready, then we need to use the original expression.
-      | otherwise -> maybe (throwErrSt "expression not found for struct") return (treeExpr t)
+      | otherwise -> maybe (buildStructASTExpr cr block) return (treeExpr t)
     TNList l -> buildASTExpr cr l
     TNDisj d -> buildASTExpr cr d
     TNMutable mut -> case mut of
       RegOp _ -> buildASTExpr cr mut
-      Ref _ -> maybe (throwErrSt "expression not found for reference") return (treeExpr t)
-      Compreh _ -> maybe (throwErrSt "expression not found for comprehension") return (treeExpr t)
+      Ref _ -> maybe (throwErrSt $ printf "expression not found for reference: %s" (show t)) return (treeExpr t)
+      Compreh cph -> do
+        ce <- buildComprehASTExpr cr cph
+        return $ AST.litCons $ AST.LitStructLit $ AST.StructLit [AST.Embedding $ AST.EmbedComprehension ce]
       DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
       UOp _ -> maybe (buildASTExpr cr mut) return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
@@ -364,10 +377,10 @@ instance BuildASTExpr Tree where
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
 
 -- | Patterns are not included in the AST.
-buildStructASTExpr :: (Env r s m) => Bool -> Struct Tree -> m AST.Expression
-buildStructASTExpr concrete s =
+buildStructASTExpr :: (Env r s m) => Bool -> Block Tree -> m AST.Expression
+buildStructASTExpr concrete block@(Block{blkStruct = s}) =
   let
-    processSField :: (Env r s m, BuildASTExpr t) => (String, Field t) -> m AST.Declaration
+    processSField :: (Env r s m) => (String, Field Tree) -> m AST.Declaration
     processSField (sel, sf) = do
       e <- buildASTExpr concrete (ssfValue sf)
       return $
@@ -380,7 +393,7 @@ buildStructASTExpr concrete s =
             ]
             e
 
-    processDynField :: (Env r s m, BuildASTExpr t) => DynamicField t -> m AST.Declaration
+    processDynField :: (Env r s m) => DynamicField Tree -> m AST.Declaration
     processDynField sf = do
       e <- buildASTExpr concrete (dsfValue sf)
       return $
@@ -389,6 +402,15 @@ buildStructASTExpr concrete s =
             [ labelCons (dsfAttr sf) $ AST.LabelNameExpr (dsfLabelExpr sf)
             ]
             e
+
+    processEmbed :: (Env r s m) => Embedding Tree -> m AST.Declaration
+    processEmbed embed = case treeNode (embValue embed) of
+      TNMutable (Compreh c) -> do
+        ce <- buildComprehASTExpr concrete c
+        return $ AST.Embedding $ AST.EmbedComprehension ce
+      _ -> do
+        e <- buildASTExpr concrete (embValue embed)
+        return $ AST.Embedding $ AST.AliasExpr e
 
     labelCons :: LabelAttr -> AST.LabelName -> AST.Label
     labelCons attr ln =
@@ -428,7 +450,9 @@ buildStructASTExpr concrete s =
           )
           []
           (IntMap.elems $ stcDynFields s)
-      return $ AST.litCons $ AST.LitStructLit $ AST.StructLit (stcs ++ dyns)
+      embeds <- mapM processEmbed (IntMap.elems $ blkEmbeds block)
+
+      return $ AST.litCons $ AST.LitStructLit $ AST.StructLit (stcs ++ dyns ++ embeds)
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
@@ -597,6 +621,20 @@ subNodes t = case treeNode t of
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
+-- | TODO: comprehension struct
+rawNodes :: Tree -> [(Path.TASeg, Tree)]
+rawNodes t = case treeNode t of
+  TNBlock block@(Block{blkStruct = struct}) ->
+    [(Path.StructTASeg $ Path.PatternTASeg i 1, scsValue c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
+      ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
+      ++ [(Path.StructTASeg $ Path.LetTASeg s, lbValue lb) | (s, lb) <- Map.toList $ stcLets struct]
+      ++ [(Path.StructTASeg $ Path.EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
+  TNMutable (Compreh c) ->
+    [ (Path.ComprehTASeg (Path.ComprehIterClauseValTASeg i), getValFromIterClause v)
+    | (i, v) <- zip [0 ..] (cphIterClauses c)
+    ]
+  _ -> []
+
 -- Helpers
 
 emptyTree :: Tree
@@ -703,7 +741,12 @@ getRefFromTree t = case treeNode t of
 
 getBlockFromTree :: Tree -> Maybe (Block Tree)
 getBlockFromTree t = case treeNode t of
-  TNBlock e -> Just e
+  TNBlock b -> Just b
+  _ -> Nothing
+
+getListFromTree :: Tree -> Maybe (List Tree)
+getListFromTree t = case treeNode t of
+  TNList l -> Just l
   _ -> Nothing
 
 getCnstredValFromTree :: Tree -> Maybe Tree

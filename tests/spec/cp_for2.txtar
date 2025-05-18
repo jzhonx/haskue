@@ -1,0 +1,16 @@
+-- cp_for2 --
+data: {
+  a: 1
+  b: 2
+}
+for k, v in data
+let is2 = v == 2 
+if is2 {
+	(k): is2
+}
+-- exp --
+data: {
+    a: 1
+    b: 2
+}
+b: true

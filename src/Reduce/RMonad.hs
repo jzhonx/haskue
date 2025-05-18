@@ -8,9 +8,7 @@
 
 module Reduce.RMonad where
 
-import AST (exprBld)
 import qualified AST
-import Common (buildASTExpr)
 import qualified Common
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
@@ -411,25 +409,30 @@ instance Show ShowTree where
   show (ShowFullTree t) = VT.treeFullStr 0 t
   show (ShowTree t) = VT.treeToSubStr 0 True t
 
-debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
-debugSpanTM name = _traceActionTM name Nothing
-
-debugSpanArgsTM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m a
-debugSpanArgsTM name args = _traceActionTM name (Just args)
+whenTraceEnabled :: (Common.Env r s m) => m a -> m a -> m a
+whenTraceEnabled f traced = do
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  if not traceExec
+    then f
+    else traced
 
 canonicalizeTree :: (Common.Env r s m) => VT.Tree -> m VT.Tree
 canonicalizeTree t = Cursor.tcFocus <$> TCOps.snapshotTC (Cursor.TreeCursor t [])
 
 spanTreeMsgs :: (Common.Env r s m) => VT.Tree -> m (String, String)
 spanTreeMsgs t = do
-  return (show t, "")
+  r <- canonicalizeTree t
+  e <- Common.buildASTExpr False r
+  return (show r, BS.unpack $ toLazyByteString (AST.exprBld e))
 
--- r <- canonicalizeTree t
--- e <- buildASTExpr False r
--- return (show r, BS.unpack $ toLazyByteString (exprBld e))
+debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
+debugSpanTM name = _traceActionTM name Nothing
+
+debugSpanArgsTM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m a
+debugSpanArgsTM name args = _traceActionTM name (Just args)
 
 _traceActionTM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
-_traceActionTM name argsM f = withAddrAndFocus $ \addr _ -> do
+_traceActionTM name argsM f = whenTraceEnabled f $ withAddrAndFocus $ \addr _ -> do
   bTraced <- getTMTree >>= spanTreeMsgs
   debugSpan name (show addr) argsM bTraced $ do
     res <- f
@@ -437,7 +440,9 @@ _traceActionTM name argsM f = withAddrAndFocus $ \addr _ -> do
     return (res, fst traced, snd traced)
 
 debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
-debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInstant name (show addr) (Just args)
+debugInstantTM name args = whenTraceEnabled (return ()) $
+  withAddrAndFocus $
+    \addr _ -> debugInstant name (show addr) (Just args)
 
 debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
 debugSpanRM name = _traceActionRM name Nothing
@@ -447,7 +452,7 @@ debugSpanArgsRM name args = _traceActionRM name (Just args)
 
 _traceActionRM ::
   (Common.Env r s m, Show a) => String -> Maybe String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
-_traceActionRM name argsM g tc f = do
+_traceActionRM name argsM g tc f = whenTraceEnabled f $ do
   let
     addr = Cursor.tcCanAddr tc
     bfocus = Cursor.tcFocus tc
@@ -459,25 +464,23 @@ _traceActionRM name argsM g tc f = do
 
 -- | Trace the operation.
 debugSpanOpRM :: (Common.Env r s m, Show a) => String -> Path.TreeAddr -> m a -> m a
-debugSpanOpRM name addr f = do
-  _traceOpActionRM name Nothing addr f
+debugSpanOpRM name = _traceOpActionRM name Nothing
 
 -- | Trace the operation.
 debugSpanArgsOpRM :: (Common.Env r s m, Show a) => String -> String -> Path.TreeAddr -> m a -> m a
-debugSpanArgsOpRM name args addr f = do
-  _traceOpActionRM name (Just args) addr f
+debugSpanArgsOpRM name args = _traceOpActionRM name (Just args)
 
 _traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> Path.TreeAddr -> m a -> m a
-_traceOpActionRM name argsM addr f = do
+_traceOpActionRM name argsM addr f = whenTraceEnabled f $ do
   debugSpan name (show addr) argsM ("", "") $ do
     res <- f
     return (res, "", "")
 
 debugInstantRM :: (Common.Env r s m) => String -> String -> TCOps.TrCur -> m ()
-debugInstantRM name args tc = do
+debugInstantRM name args tc = whenTraceEnabled (return ()) $ do
   let addr = Cursor.tcCanAddr tc
   debugInstant name (show addr) (Just args)
 
 debugInstantOpRM :: (Common.Env r s m) => String -> String -> Path.TreeAddr -> m ()
-debugInstantOpRM name args addr = do
+debugInstantOpRM name args addr = whenTraceEnabled (return ()) $ do
   debugInstant name (show addr) (Just args)

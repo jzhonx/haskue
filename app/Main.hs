@@ -16,9 +16,8 @@ options =
           <> help "Enable debug logging"
       )
     <*> switch
-      ( long "mermaid"
-          <> short 'm'
-          <> help "Output mermaid graph"
+      ( long "trace"
+          <> help "trace execution"
       )
     <*> switch
       ( long "show-mutable-args"

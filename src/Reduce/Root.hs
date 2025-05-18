@@ -9,13 +9,12 @@ import Common (
   Context (Context, ctxReduceStack),
   hasCtxNotifSender,
  )
-import qualified Common
 import qualified Cursor
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.Mutate as Mutate
-import Reduce.Nodes (close, comprehend, reduceBlock, reduceCnstredVal, reduceDisj, reduceList, reduceeDisjOp)
+import Reduce.Nodes (close, reduceBlock, reduceCnstredVal, reduceCompreh, reduceDisj, reduceList, reduceeDisjOp)
 import qualified Reduce.Notif as Notif
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
@@ -72,11 +71,11 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
 
   r <- case VT.treeNode orig of
     VT.TNMutable mut -> do
-      r <- case mut of
+      (r, isIterBinding) <- case mut of
         VT.Ref ref -> do
-          rM <- RefSys.index ref tc
+          (RefSys.DerefResult rM isIterBinding) <- RefSys.index ref tc
           maybe
-            (return Nothing)
+            (return (Nothing, False))
             ( \r -> do
                 -- If the target is cyclic, and it is not used to only reduce mutable, we should return structural
                 -- cycle.
@@ -85,32 +84,43 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
                 -- 2. The ref had been marked as cyclic. For example, reducing f when reducing the y.
                 -- { f: {out: null | f },  y: f }
                 if VT.treeIsCyclic r
-                  then return $ Just $ VT.mkBottomTree "structural cycle"
-                  else Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc)
+                  then return (Just $ VT.mkBottomTree "structural cycle", False)
+                  else do
+                    res <- reduceTCFocus (r `Cursor.setTCFocus` tc)
+                    return (Just res, isIterBinding)
             )
             rM
-        VT.RegOp rop -> case VT.ropOpType rop of
-          VT.InvalidOpType -> throwErrSt "invalid op type"
-          VT.UnaryOpType op -> RegOps.regUnaryOp op tc
-          VT.BinOpType op -> do
-            lTC <- TCOps.goDownTCSegMust Path.binOpLeftTASeg tc
-            rTC <- TCOps.goDownTCSegMust Path.binOpRightTASeg tc
-            RegOps.regBin op lTC rTC
-          VT.CloseFunc -> close (VT.ropArgs rop) tc
-        VT.Compreh compreh -> comprehend compreh tc
-        VT.DisjOp disjOp -> do
-          rM <- reduceeDisjOp False disjOp tc
-          maybe
-            (return Nothing)
-            (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
-            rM
-        VT.UOp u -> do
-          rM <- UnifyOp.unify (VT.ufConjuncts u) tc
-          maybe
-            (return Nothing)
-            (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
-            rM
-      setMutRes mut r tc
+        _ -> do
+          r <- case mut of
+            VT.RegOp rop -> case VT.ropOpType rop of
+              VT.InvalidOpType -> throwErrSt "invalid op type"
+              VT.UnaryOpType op -> RegOps.regUnaryOp op tc
+              VT.BinOpType op -> do
+                lTC <- TCOps.goDownTCSegMust Path.binOpLeftTASeg tc
+                rTC <- TCOps.goDownTCSegMust Path.binOpRightTASeg tc
+                RegOps.regBin op lTC rTC
+              VT.CloseFunc -> close (VT.ropArgs rop) tc
+            VT.Compreh compreh -> do
+              rM <- reduceCompreh compreh tc
+              -- the result of the comprehension could be an un-reduced tree or a unification op tree.
+              maybe
+                (return Nothing)
+                (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
+                rM
+            VT.DisjOp disjOp -> do
+              rM <- reduceeDisjOp False disjOp tc
+              maybe
+                (return Nothing)
+                (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
+                rM
+            VT.UOp u -> do
+              rM <- UnifyOp.unify (VT.ufConjuncts u) tc
+              maybe
+                (return Nothing)
+                (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
+                rM
+          return (r, False)
+      setMutRes isIterBinding mut r tc
     VT.TNBlock _ -> reduceBlock tc
     VT.TNList l -> reduceList l tc
     VT.TNDisj d -> reduceDisj d tc
@@ -120,8 +130,8 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
   -- Overwrite the treenode of the raw with the reduced tree's VT.TreeNode to preserve tree attributes.
   return $ VT.setTN orig (VT.treeNode r)
 
-setMutRes :: (RM.ReduceMonad s r m) => VT.Mutable VT.Tree -> Maybe VT.Tree -> TCOps.TrCur -> m VT.Tree
-setMutRes mut rM tc = do
+setMutRes :: (RM.ReduceMonad s r m) => Bool -> VT.Mutable VT.Tree -> Maybe VT.Tree -> TCOps.TrCur -> m VT.Tree
+setMutRes isIterBinding mut rM tc = do
   let
     mutT = Cursor.tcFocus tc
     addr = Cursor.tcCanAddr tc
@@ -133,7 +143,8 @@ setMutRes mut rM tc = do
       Mutate.delMutValRecvs addr
       return $ updateMutVal Nothing mutT
     Just r
-      | isMutableReducible mut -> do
+      -- If the value does not have immediate references or it is an iter binding, we can just return the reduced value.
+      | isMutableReducible mut || isIterBinding -> do
           -- TODO: change receivers
           return r
       | otherwise -> do
@@ -175,7 +186,7 @@ reduceUnifyConj tc = RM.debugSpanRM "reduceUnifyConj" id tc $ withTreeDepthLimit
   case VT.treeNode orig of
     VT.TNMutable mut
       | VT.Ref ref <- mut -> do
-          rM <- RefSys.index ref tc
+          (RefSys.DerefResult rM _) <- RefSys.index ref tc
           -- If the ref is reduced to another mutable tree, we further reduce it.
           maybe
             (return Nothing)

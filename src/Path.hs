@@ -106,15 +106,16 @@ instance Show StructTASeg where
   show (EmbedTASeg i) = "emb_" ++ show i
 
 data ComprehTASeg
-  = ComprehStartTASeg
-  | ComprehIterClauseTASeg Int
-  | ComprehStructTASeg
+  = ComprehIterClauseValTASeg Int
+  | -- | Binding can not be accessed through addressing.
+    ComprehIterBindingTASeg Int
+  | ComprehIterValTASeg
   deriving (Eq, Ord)
 
 instance Show ComprehTASeg where
-  show ComprehStartTASeg = "cph_start"
-  show (ComprehIterClauseTASeg i) = "cph_iter" ++ show i
-  show ComprehStructTASeg = "cph_val"
+  show (ComprehIterClauseValTASeg i) = "cph_cl" ++ show i
+  show (ComprehIterBindingTASeg i) = "cph_b" ++ show i
+  show ComprehIterValTASeg = "cph_v"
 
 getStrFromSeg :: StructTASeg -> Maybe String
 getStrFromSeg (StringTASeg s) = Just s
@@ -280,17 +281,11 @@ isInDisj (Path.TreeAddr xs) = any Path.isSegDisj xs
 trimToReferable :: TreeAddr -> TreeAddr
 trimToReferable (TreeAddr xs) = TreeAddr $ filter isSegReferable xs
 
--- | Convert the addr to reference source address which contains either referable segments or embed segments.
-trimToRefSrcAddr :: TreeAddr -> TreeAddr
-trimToRefSrcAddr (TreeAddr xs) = TreeAddr $ filter (\x -> isSegReferable x || isSegEmbed x) xs
- where
-  isSegEmbed (StructTASeg (EmbedTASeg _)) = True
-  isSegEmbed _ = False
-
 isSegReferable :: TASeg -> Bool
 isSegReferable (StructTASeg (getStrFromSeg -> Just _)) = True
 isSegReferable (IndexTASeg _) = True
 isSegReferable RootTASeg = True
+-- isSegReferable (ComprehTASeg (ComprehIterBindingTASeg _)) = True
 isSegReferable _ = False
 
 {- | Get the referable address.
@@ -309,3 +304,24 @@ isSegNonCanonical :: TASeg -> Bool
 isSegNonCanonical Path.SubValTASeg = True
 isSegNonCanonical Path.DisjDefaultTASeg = True
 isSegNonCanonical _ = False
+
+{- | Trim the addr to a single value form.
+
+Single value form is the addr that only contains a single value.
+-}
+trimToSingleValueTA :: TreeAddr -> TreeAddr
+trimToSingleValueTA (TreeAddr xs) = TreeAddr $ filter isSingleVal xs
+ where
+  isSingleVal (MutableArgTASeg _) = False
+  isSingleVal SubValTASeg = False
+  isSingleVal (StructTASeg (EmbedTASeg _)) = False
+  isSingleVal (DisjDisjunctTASeg _) = False
+  -- \^ embed segment is a conjunct.
+  isSingleVal _ = True
+
+isSegIterBinding :: TASeg -> Bool
+isSegIterBinding (ComprehTASeg (ComprehIterBindingTASeg _)) = True
+isSegIterBinding _ = False
+
+isPathIterBinding :: TreeAddr -> Bool
+isPathIterBinding (TreeAddr xs) = any isSegIterBinding xs
