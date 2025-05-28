@@ -56,8 +56,6 @@ class TreeOp a where
   -- sub tree, and the third argument is the tree to be updated.
   setSubTree :: (Env r s m) => TASeg -> a -> a -> m a
 
-  delTemp :: a -> a
-
   isTreeAtom :: a -> Bool
   isTreeBottom :: a -> Bool
   isTreeCnstr :: a -> Bool

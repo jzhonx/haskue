@@ -331,13 +331,6 @@ _discardTMAndPop = do
     headC = head crumbs
   putTMCursor (Cursor.TreeCursor (snd headC) (tail crumbs))
 
-inTempSubTM :: (ReduceTCMonad r s m) => VT.Tree -> m a -> m a
-inTempSubTM sub f = do
-  _pushTMSub Path.TempTASeg sub
-  r <- f
-  propUpTM
-  return r
-
 treeDepthCheck :: (ReduceMonad r s m) => TCOps.TrCur -> m ()
 treeDepthCheck tc = do
   let

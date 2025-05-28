@@ -18,7 +18,7 @@ import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
-import Reduce.Root (fullReduce)
+import Reduce.Root (fullReduce, reduce)
 import qualified Reduce.UnifyOp as UnifyOp
 import qualified TCOps
 import Text.Printf (printf)
@@ -120,10 +120,7 @@ validateCnstr c = RM.debugSpanTM "validateCnstr" $ do
 
   -- Run the validator in a sub context of an atom value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- RM.inTempSubTM validator $ do
-    -- TODO: replace all refs that refer to the cnstr with the atom
-    fullReduce >> RM.getTMTree
-
+  res <- reduce (validator `Cursor.setTCFocus` tc)
   RM.putTMTree $
     if
       | isTreeBottom res -> res

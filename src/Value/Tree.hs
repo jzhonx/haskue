@@ -67,8 +67,6 @@ data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeExpr :: Maybe AST.Expression
   -- ^ treeExpr is the parsed expression.
-  , treeTemp :: Maybe Tree
-  -- ^ treeTemp is used to store the temporary tree node that is created during the evaluation process.
   , treeRecurClosed :: Bool
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
   , treeIsRootOfSubTree :: Bool
@@ -105,14 +103,9 @@ instance HasTreeNode Tree where
   setTreeNode = setTN
 
 instance TreeOp Tree where
-  subTree seg t = case seg of
-    TempTASeg -> treeTemp t
-    _ -> subTreeTN seg t
-  setSubTree sel sub t = case sel of
-    TempTASeg -> return $ t{treeTemp = Just sub}
-    _ -> setSubTreeTN sel sub t
+  subTree = subTreeTN
+  setSubTree = setSubTreeTN
 
-  delTemp t = t{treeTemp = Nothing}
   isTreeAtom = isJust . getAtomVFromTree
   isTreeBottom = isJust . getBottomFromTree
   isTreeCnstr = isJust . getCnstrFromTree
@@ -642,7 +635,6 @@ emptyTree =
   Tree
     { treeNode = TNTop
     , treeExpr = Nothing
-    , treeTemp = Nothing
     , treeRecurClosed = False
     , treeIsRootOfSubTree = False
     , treeIsCyclic = False

@@ -66,7 +66,6 @@ data TASeg
     MutableArgTASeg Int
   | ComprehTASeg ComprehTASeg
   | ParentTASeg
-  | TempTASeg
   deriving (Eq, Ord)
 
 instance Show TASeg where
@@ -78,7 +77,6 @@ instance Show TASeg where
   show (MutableArgTASeg i) = "fa" ++ show i
   show SubValTASeg = "sv"
   show ParentTASeg = ".."
-  show TempTASeg = "tmp"
   show (ComprehTASeg s) = show s
 
 data StructTASeg
