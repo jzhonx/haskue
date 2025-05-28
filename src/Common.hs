@@ -6,6 +6,7 @@ module Common where
 
 import qualified AST
 import Control.Monad.Except (MonadError)
+import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
@@ -23,6 +24,7 @@ type Env r s m =
   , HasConfig r
   , MonadState s m
   , HasTrace s
+  , MonadIO m
   )
 
 class HasConfig r where
@@ -73,6 +75,7 @@ data Config = Config
 
 data Settings = Settings
   { stTraceExec :: Bool
+  , stTracePrintTree :: Bool
   , stShowMutArgs :: Bool
   , stMaxTreeDepth :: Int
   }
@@ -94,6 +97,7 @@ emptySettings :: Settings
 emptySettings =
   Settings
     { stTraceExec = False
+    , stTracePrintTree = False
     , stShowMutArgs = False
     , stMaxTreeDepth = 0
     }

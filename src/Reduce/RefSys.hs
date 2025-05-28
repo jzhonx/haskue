@@ -19,7 +19,7 @@ import qualified Reduce.RMonad as RM
 import TCOps (goDownTCAddr, topTC)
 import qualified TCOps
 import Text.Printf (printf)
-import Util (debugInstant, debugSpan, logDebugStr)
+import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 data DerefResult = DerefResult
@@ -279,12 +279,14 @@ getDstRawOrErr ::
   TCOps.TrCur ->
   m DstTC
 getDstRawOrErr valPath origAddrsM trail refEnv =
-  debugSpan
+  RM.debugSpanArgsRM
     "getDstRawOrErr"
-    (show $ Cursor.tcCanAddr refEnv)
-    (Just $ printf "valPath: %s, origAddrsM: %s, trail: %s" (show valPath) (show origAddrsM) (show $ Set.toList trail))
-    ("", "")
-    $ traceAdapt
+    (printf "valPath: %s, origAddrsM: %s, trail: %s" (show valPath) (show origAddrsM) (show $ Set.toList trail))
+    ( \x -> case x of
+        Left err -> Just err
+        Right v -> fmap Cursor.tcFocus v
+    )
+    refEnv
     $ do
       let
         -- srcAddr is the starting address of searching for the reference.
@@ -303,14 +305,14 @@ getDstRawOrErr valPath origAddrsM trail refEnv =
         )
         origAddrsM
 
-traceAdapt ::
-  (RM.ReduceMonad s r m) => m DstTC -> m (DstTC, String, String)
-traceAdapt f = do
-  r <- f
-  let after = case r of
-        Left err -> err
-        Right m -> maybe (VT.mkBottomTree "Healthy Not found") Cursor.tcFocus m
-  return (r, "", show after)
+-- traceAdapt ::
+--   (RM.ReduceMonad s r m) => m DstTC -> m (DstTC, String, String)
+-- traceAdapt f = do
+--   r <- f
+--   let after = case r of
+--         Left err -> err
+--         Right m -> maybe (VT.mkBottomTree "Healthy Not found") Cursor.tcFocus m
+--   return (r, "", show after)
 
 -- | Locate the reference.
 locateRef ::
@@ -319,12 +321,14 @@ locateRef ::
   Set.Set Path.TreeAddr ->
   TCOps.TrCur ->
   m DstTC
-locateRef valPath trail refEnv = debugSpan
+locateRef valPath trail refEnv = RM.debugSpanArgsRM
   "locateRef"
-  (show $ Cursor.tcCanAddr refEnv)
-  (Just $ printf "valPath: %s, trail: %s" (show valPath) (show $ Set.toList trail))
-  ("", "")
-  $ traceAdapt
+  (printf "valPath: %s, trail: %s" (show valPath) (show $ Set.toList trail))
+  ( \x -> case x of
+      Left err -> Just err
+      Right v -> fmap Cursor.tcFocus v
+  )
+  refEnv
   $ do
     rE <- goTCLAAddr valPath refEnv
     case rE of
@@ -604,10 +608,10 @@ markOuterIdents ::
 markOuterIdents srcAddr ptc = RM.debugSpanRM "markOuterIdents" Just ptc $ do
   let blockAddr = Cursor.tcCanAddr ptc
   utc <- TCOps.traverseTCSimple VT.subNodes (mark blockAddr) ptc
-  debugInstant
+  RM.debugInstantRM
     "markOuterIdents"
-    (show blockAddr)
-    (Just $ printf "blockAddr: %s, result: %s" (show blockAddr) (VT.treeFullStr 0 $ Cursor.tcFocus utc))
+    (printf "blockAddr: %s, result: %s" (show blockAddr) (VT.treeFullStr 0 $ Cursor.tcFocus utc))
+    ptc
   return $ Cursor.tcFocus utc
  where
   -- Mark the outer references with the original value address.
@@ -650,15 +654,17 @@ isOuterScope valPath srcAddr blockAddr tc = do
           return $ not (tarIdentAccessible || tarIdentInBlock)
       )
       tarIdentAddrM
-  debugInstant "isOuterScope" (show $ Cursor.tcCanAddr tc) $
-    Just $
-      printf
+  RM.debugInstantRM
+    "isOuterScope"
+    ( printf
         "valPath: %s, srcAddr: %s, blockAddr: %s, tarIdentAddrM: %s, isOuterScope: %s"
         (show valPath)
         (show srcAddr)
         (show blockAddr)
         (show tarIdentAddrM)
         (show isOuter)
+    )
+    tc
   return isOuter
  where
   -- Search the first identifier of the reference and convert it to absolute tree addr if it exists.

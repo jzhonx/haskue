@@ -20,6 +20,10 @@ options =
           <> help "trace execution"
       )
     <*> switch
+      ( long "trace-print-tree"
+          <> help "trace execution"
+      )
+    <*> switch
       ( long "show-mutable-args"
           <> help "Show mutable args in the mermaid graph"
       )

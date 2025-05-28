@@ -421,9 +421,13 @@ canonicalizeTree t = Cursor.tcFocus <$> TCOps.snapshotTC (Cursor.TreeCursor t []
 
 spanTreeMsgs :: (Common.Env r s m) => VT.Tree -> m (String, String)
 spanTreeMsgs t = do
-  r <- canonicalizeTree t
-  e <- Common.buildASTExpr False r
-  return (show r, BS.unpack $ toLazyByteString (AST.exprBld e))
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTracePrintTree = tracePrintTree}} <- asks Common.getConfig
+  if not tracePrintTree
+    then return ("", "")
+    else do
+      r <- canonicalizeTree t
+      e <- Common.buildASTExpr False r
+      return (show r, BS.unpack $ toLazyByteString (AST.exprBld e))
 
 debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
 debugSpanTM name = _traceActionTM name Nothing

@@ -2,6 +2,7 @@
 
 module Util where
 
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Logger (
   MonadLogger,
   logDebugN,
@@ -12,23 +13,27 @@ import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
 import Data.Text (pack)
 import Data.Text.Lazy (unpack)
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Text.Printf (printf)
 
 class HasTrace a where
   getTrace :: a -> Trace
   setTrace :: a -> Trace -> a
 
-newtype Trace = Trace
-  { traceStamp :: Int
+data Trace = Trace
+  { traceID :: Int
+  , traceTime :: UTCTime
   }
   deriving (Eq)
 
 instance Show Trace where
-  show t = printf "id=%s" (show $ traceStamp t)
+  show t = printf "id=%s" (show $ traceID t)
 
 instance HasTrace Trace where
   getTrace = id
-  setTrace s t = t{traceStamp = traceStamp s}
+  setTrace s t = t{traceID = traceID s}
 
 data ChromeStartTrace = ChromeStartTrace
   { cstrName :: String
@@ -140,7 +145,7 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a) =>
+  (MonadState s m, MonadLogger m, MonadIO m, HasTrace s, Show a) =>
   String ->
   String ->
   Maybe String ->
@@ -148,75 +153,83 @@ debugSpan ::
   m (a, String, String) ->
   m a
 debugSpan name addr args (bTraced, bTracedCUEVal) f = do
-  start <- debugSpanStart name addr args bTraced bTracedCUEVal
-  debugSpanExec start name addr f
+  _ <- debugSpanStart name addr args bTraced bTracedCUEVal
+  debugSpanExec name addr f
 
 debugSpanStart ::
-  (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> String -> String -> m Int
+  (MonadState s m, MonadLogger m, HasTrace s, MonadIO m) =>
+  String ->
+  String ->
+  Maybe String ->
+  String ->
+  String ->
+  m Trace
 debugSpanStart name addr args bTraced bTracedCUEVal = do
   let msg = printf "%s, at:%s" name addr
-  start <- newTraceStamp 1
+  tr <- newTrace
+  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeStartTrace msg start (ChromeStartTraceArgs start addr bTraced bTracedCUEVal args)
+            ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced bTracedCUEVal args)
             )
         )
-  return start
+  return tr
 
 debugSpanExec ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a) => Int -> String -> String -> m (a, String, String) -> m a
-debugSpanExec start name addr f = do
+  (MonadState s m, MonadLogger m, HasTrace s, Show a, MonadIO m) =>
+  String ->
+  String ->
+  m (a, String, String) ->
+  m a
+debugSpanExec name addr f = do
   let msg = printf "%s, at:%s" name addr
   (res, focus, focusCUEVal) <- f
-  end <- do
-    poEnd <- lastTraceStamp
-    if poEnd == start
-      -- This is the leaf duration. Make sure its duration is not 0.
-      then newTraceStamp 5
-      else newTraceStamp 1
+  tr <- newTrace
+  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeEndTrace msg end (ChromeEndTraceArgs (show res) focus focusCUEVal)
+            ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus focusCUEVal)
             )
         )
   return res
 
 debugInstant ::
-  (MonadState s m, MonadLogger m, HasTrace s) => String -> String -> Maybe String -> m ()
+  (MonadState s m, MonadLogger m, HasTrace s, MonadIO m) => String -> String -> Maybe String -> m ()
 debugInstant name addr args = do
-  start <- lastTraceStamp
+  start <- lastTraceID
+  tr <- gets getTrace
   let msg = printf "%s, at:%s" name addr
+  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   logDebugStr $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
-            ( ChromeInstantTrace msg start (ChromeInstantTraceArgs start addr args)
+            ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr args)
             )
         )
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
-getTraceID = gets $ traceStamp . getTrace
+getTraceID = gets $ traceID . getTrace
 
-newTraceStamp :: (MonadState s m, HasTrace s) => Int -> m Int
-newTraceStamp delta = do
+newTrace :: (MonadState s m, HasTrace s, MonadIO m) => m Trace
+newTrace = do
   tr <- gets getTrace
-  let
-    newStamp = traceStamp tr + delta
-    ntr = tr{traceStamp = newStamp}
+  currentTime <- liftIO getCurrentTime
+  let ntr = Trace{traceTime = currentTime, traceID = traceID tr + 1}
   modify $ \s -> setTrace s ntr
-  return newStamp
+  return ntr
 
-lastTraceStamp :: (MonadState s m, HasTrace s) => m Int
-lastTraceStamp = do
+lastTraceID :: (MonadState s m, HasTrace s) => m Int
+lastTraceID = do
   tr <- gets getTrace
-  return $ traceStamp tr
-
-emptyTrace :: Trace
-emptyTrace = Trace 0
+  return $ traceID tr
 
 logDebugStr :: (MonadLogger m) => String -> m ()
 logDebugStr = logDebugN . pack
+
+emptyTrace :: Trace
+emptyTrace = Trace{traceID = 0, traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}}

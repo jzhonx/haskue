@@ -50,6 +50,7 @@ import qualified Value.Tree as VT
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecTraceExec :: Bool
+  , ecTracePrintTree :: Bool
   , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
   , ecFileTreeAddr :: String
@@ -60,6 +61,7 @@ emptyEvalConfig =
   EvalConfig
     { ecDebugLogging = False
     , ecTraceExec = False
+    , ecTracePrintTree = False
     , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
     , ecFileTreeAddr = ""
@@ -103,7 +105,7 @@ runIO s conf =
     then runStderrLoggingT res
     else runNoLoggingT res
  where
-  res :: (MonadError String m, MonadLogger m) => m Builder
+  res :: (MonadError String m, MonadLogger m, MonadIO m) => m Builder
   res = do
     r <- runStr s conf
     case r of
@@ -118,7 +120,7 @@ runIO s conf =
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m VT.Tree
 runTreeIO s = runNoLoggingT $ runTreeStr s emptyEvalConfig
 
-runStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m (Either String AST.Expression)
+runStr :: (MonadError String m, MonadLogger m, MonadIO m) => String -> EvalConfig -> m (Either String AST.Expression)
 runStr s conf = do
   t <- runTreeStr s conf
   case VT.treeNode t of
@@ -126,10 +128,10 @@ runStr s conf = do
     VT.TNBottom (VT.Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ -> Right <$> evalStateT (runReaderT (Common.buildASTExpr False t) emptyRunner) emptyTrace
 
-runTreeStr :: (MonadError String m, MonadLogger m) => String -> EvalConfig -> m VT.Tree
+runTreeStr :: (MonadError String m, MonadLogger m, MonadIO m) => String -> EvalConfig -> m VT.Tree
 runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
 
-evalFile :: (MonadError String m, MonadLogger m) => SourceFile -> EvalConfig -> m VT.Tree
+evalFile :: (MonadError String m, MonadLogger m, MonadIO m) => SourceFile -> EvalConfig -> m VT.Tree
 evalFile sf conf = do
   let runner =
         updateConfig
@@ -138,6 +140,7 @@ evalFile sf conf = do
               { Common.cfSettings =
                   (Common.cfSettings . rcConfig $ emptyRunner)
                     { Common.stTraceExec = ecTraceExec conf
+                    , Common.stTracePrintTree = ecTracePrintTree conf
                     , Common.stShowMutArgs = ecShowMutArgs conf
                     , Common.stMaxTreeDepth = ecMaxTreeDepth conf
                     }
