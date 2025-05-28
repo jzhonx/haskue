@@ -10,5 +10,5 @@ nameMap: {
     hank: {
         firstName: "Hank"
         nickName: "Hank"
-  }
+    }
 }

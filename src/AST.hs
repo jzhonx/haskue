@@ -269,7 +269,7 @@ structLitBld ident (StructLit decls) =
     else
       string7 "{\n"
         <> declsBld (ident + 1) decls
-        <> string7 (replicate (ident * 2) ' ')
+        <> string7 (replicate (ident * tabSize) ' ')
         <> char7 '}'
 
 tabSize :: Int

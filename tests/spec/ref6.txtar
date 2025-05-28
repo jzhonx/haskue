@@ -20,5 +20,5 @@ A: {
     b: {
         c: int
         d: string
-  }
+    }
 }

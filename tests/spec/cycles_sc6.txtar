@@ -4,5 +4,5 @@ f: {out: null | f & {}}
 f: {
     out: null | {
         out: null
-  }
+    }
 }

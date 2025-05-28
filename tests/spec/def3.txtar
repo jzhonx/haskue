@@ -17,7 +17,7 @@ y: d: 3 // allowed as nothing closes b
 B: {
     b: {
         c: int
-  }
+    }
     a: int
 }
 y: {
