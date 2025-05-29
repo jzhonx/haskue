@@ -13,16 +13,18 @@ import Text.Parsec (
   chainl1,
   char,
   digit,
+  eof,
   getInput,
+  getState,
   lookAhead,
   many,
   many1,
   noneOf,
   oneOf,
-  option,
   optionMaybe,
   optional,
-  -- parserTrace,
+  parserTrace,
+  parserTraced,
   runParser,
   satisfy,
   setInput,
@@ -32,9 +34,10 @@ import Text.Parsec (
   (<?>),
   (<|>),
  )
+import Text.Printf (printf)
 import Prelude hiding (GT, LT, lex, null)
 
-type Parser a = Parsec String () a
+type Parser a = Parsec String Int a
 
 data TokenType
   = TokenNone
@@ -79,12 +82,12 @@ emptyLexeme :: Lexeme ()
 emptyLexeme = Lexeme () TokenNone False
 
 parseExpr :: (MonadError String m) => String -> m Expression
-parseExpr s = case runParser (entry expr) () "" s of
+parseExpr s = case runParser (entry expr) 0 "" s of
   Left err -> throwError $ show err
   Right res -> return $ lex res
 
 parseSourceFile :: (MonadError String m) => String -> m SourceFile
-parseSourceFile s = case runParser (entry sourceFile) () "" s of
+parseSourceFile s = case runParser (entry sourceFile) 0 "" s of
   Left err -> throwError $ show err
   Right res -> return $ lex res
 
@@ -102,7 +105,7 @@ binopTable =
 
 unaryOp :: Parser (Lexeme String)
 unaryOp =
-  lexeme $
+  lexeme "unaryOp" $
     (,TokenUnaryOp)
       <$> ( try (string "!=")
               <|> try (string "!~")
@@ -158,7 +161,7 @@ expr = do
 
   precedence :: Parser String -> Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression)
   precedence op = do
-    opLex <- lexeme (binOpAdapt op)
+    opLex <- lexeme "binOp" (binOpAdapt op)
     let _op = fromJust $ lookup (lex opLex) binopTable
     -- return the rightmost token type and newline status.
     return $ \l r -> r{lex = ExprBinaryOp _op (lex l) (lex r)}
@@ -199,7 +202,7 @@ primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
 
   segment :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
   segment = do
-    _ <- lexeme $ (,TokenDot) <$> char '.'
+    _ <- lexeme "." $ (,TokenDot) <$> char '.'
     selLex <-
       (fmap IDSelector <$> identifier)
         <|> (fmap StringSelector <$> litLexeme TokenString simpleStringLit)
@@ -207,14 +210,14 @@ primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
 
   index :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
   index = do
-    _ <- lexeme $ (,TokenLSquare) <$> char '['
+    _ <- lexeme "[" $ (,TokenLSquare) <$> char '['
     selLex <- expr
-    rLex <- lexeme $ (,TokenRSquare) <$> char ']'
+    rLex <- lexeme "]" $ (,TokenRSquare) <$> char ']'
     return $ \pLex -> PrimExprIndex (lex pLex) (Index (lex selLex)) <$ rLex
 
   arguments :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
   arguments = do
-    _ <- lexeme $ (,TokenLParen) <$> char '('
+    _ <- lexeme "(" $ (,TokenLParen) <$> char '('
     args <- many $ do
       eLex <- expr
       rparenMaybe <- lookAhead $ optionMaybe rparen
@@ -257,10 +260,10 @@ operand =
     <?> "failed to parse operand"
 
 lparen :: Parser (Lexeme Char)
-lparen = lexeme $ (,TokenLParen) <$> (char '(' <?> "failed to parse left parenthesis")
+lparen = lexeme "(" $ (,TokenLParen) <$> (char '(' <?> "failed to parse left parenthesis")
 
 rparen :: Parser (Lexeme Char)
-rparen = lexeme $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parenthesis")
+rparen = lexeme ")" $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parenthesis")
 
 literal :: Parser (Lexeme Literal)
 literal = do
@@ -276,7 +279,7 @@ literal = do
 
 identifier :: Parser (Lexeme String)
 identifier =
-  lexeme $
+  lexeme "ident" $
     ( do
         prefix <- string "#"
         part <- identPart
@@ -310,10 +313,12 @@ structLit = do
   return $ StructLit ds <$ rLex
 
 lbrace :: Parser (Lexeme Char)
-lbrace = lexeme $ (,TokenLBrace) <$> (char '{' <?> "failed to parse left brace")
+lbrace = lexeme "{" $ (,TokenLBrace) <$> (char '{' <?> "failed to parse left brace")
 
 rbrace :: Parser (Lexeme Char)
-rbrace = lexeme $ (,TokenRBrace) <$> (char '}' <?> "failed to parse right brace")
+rbrace = lexeme "}" $ do
+  c <- char '}' <?> "failed to parse right brace"
+  return (c, TokenRBrace)
 
 list :: Parser (Lexeme Literal)
 list = do
@@ -332,13 +337,13 @@ list = do
   return $ ListLit (EmbeddingList es) <$ rLex
 
 lsquare :: Parser (Lexeme Char)
-lsquare = lexeme $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left square")
+lsquare = lexeme "[" $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left square")
 
 rsquare :: Parser (Lexeme Char)
-rsquare = lexeme $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
+rsquare = lexeme "]" $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
 
 comma :: Parser (Lexeme Char)
-comma = lexeme $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
+comma = lexeme "," $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
 
 decl :: Parser (Lexeme Declaration)
 decl =
@@ -347,6 +352,7 @@ decl =
     <|> try (fmap DeclLet <$> letClause)
     <|> (fmap EllipsisDecl <$> ellipsisDecl)
     <|> (fmap Embedding <$> embedding)
+    <?> "failed to parse declaration"
 
 field :: Parser (Lexeme FieldDecl)
 field = do
@@ -362,7 +368,7 @@ field = do
   label :: Parser (Lexeme Label)
   label = do
     lLex <- labelExpr
-    rLex <- lexeme $ (,TokenColon) <$> char ':'
+    rLex <- lexeme ":" $ (,TokenColon) <$> char ':'
     return $ Label (lex lLex) <$ rLex
 
 labelExpr :: Parser (Lexeme LabelExpr)
@@ -386,13 +392,13 @@ labelPattern = do
   return $ LabelPattern (lex e) <$ r
 
 questionMark :: Parser (Lexeme Char)
-questionMark = lexeme $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
+questionMark = lexeme "?" $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
 
 exclamation :: Parser (Lexeme Char)
-exclamation = lexeme $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !")
+exclamation = lexeme "!" $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !")
 
 ellipsis :: Parser (Lexeme String)
-ellipsis = lexeme $ (,TokenEllipsis) <$> (string "..." <?> "failed to parse ...")
+ellipsis = lexeme "..." $ (,TokenEllipsis) <$> (string "..." <?> "failed to parse ...")
 
 ellipsisDecl :: Parser (Lexeme EllipsisDecl)
 ellipsisDecl = do
@@ -404,7 +410,7 @@ ellipsisDecl = do
     eLexM
 
 embedding :: Parser (Lexeme Embedding)
-embedding = try (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
+embedding = (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
  where
   aliasExpr = do
     eLex <- expr
@@ -428,35 +434,35 @@ comprehension = do
 
 clause :: Parser (Lexeme Clause)
 clause =
-  try (fmap ClauseStartClause <$> startClause)
+  (fmap ClauseStartClause <$> startClause)
     <|> (fmap ClauseLetClause <$> letClause)
     <?> "failed to parse clause"
 
 startClause :: Parser (Lexeme StartClause)
-startClause = try guardClause <|> forClause <?> "failed to parse start clause"
+startClause = guardClause <|> forClause <?> "failed to parse start clause"
 
 guardClause :: Parser (Lexeme StartClause)
 guardClause = do
-  _ <- lexeme $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
+  _ <- lexeme "if" $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
   eLex <- expr
   return $ GuardClause (lex eLex) <$ eLex
 
 forClause :: Parser (Lexeme StartClause)
 forClause = do
-  _ <- lexeme $ (,TokenString) <$> (string "for" <?> "failed to parse keyword for")
+  _ <- lexeme "for" $ (,TokenString) <$> (string "for" <?> "failed to parse keyword for")
   identLex <- identifier
   secIdentLexM <- optionMaybe $ do
     _ <- comma
     identifier
-  _ <- lexeme $ (,TokenString) <$> (string "in" <?> "failed to parse keyword in")
+  _ <- lexeme "in" $ (,TokenString) <$> (string "in" <?> "failed to parse keyword in")
   eLex <- expr
   return $ ForClause (lex identLex) (lex <$> secIdentLexM) (lex eLex) <$ eLex
 
 letClause :: Parser (Lexeme LetClause)
 letClause = do
-  _ <- lexeme $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
+  _ <- lexeme "let" $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
   identLex <- identifier
-  _ <- lexeme $ (,TokenBinOp) <$> (char '=' <?> "failed to parse =")
+  _ <- lexeme "=" $ (,TokenBinOp) <$> (char '=' <?> "failed to parse =")
   eLex <- expr
   return $ LetClause (lex identLex) (lex eLex) <$ eLex
 
@@ -474,7 +480,7 @@ labelNameExpr = do
   return $ LabelNameExpr (lex e) <$ r
 
 litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
-litLexeme t p = lexeme $ do
+litLexeme t p = lexeme "literal" $ do
   lit <- p
   return (lit, t)
 
@@ -524,20 +530,28 @@ spaces = do
       )
   return $ or nls
 
-lineComment :: Parser ()
+-- | lineComment matches a line comment starting with "//" until the newline character.
+lineComment :: Parser Bool
 lineComment = do
   _ <- try $ string "//"
   skipMany (satisfy (/= '\n'))
+  void (char '\n') <|> eof <?> "failed to parse line comment's newline or eof"
+  return True
 
 skippable :: Parser Bool
 skippable = do
-  hasnls <- many (spaces <|> (lineComment >> return False))
+  -- line skippable is of the form, "{space}[//comment<end>]"
+  -- first try the composite parser, then try each part separately.
+  let lineSkippable = try (spaces >> lineComment) <|> lineComment <|> spaces
+  hasnls <- many lineSkippable
   return $ or hasnls
 
-lexeme :: Parser (TokAttr a) -> Parser (Lexeme a)
-lexeme p = do
+-- | Parse a text that starts with a lexeme and ends with skippable.
+lexeme :: String -> Parser (TokAttr a) -> Parser (Lexeme a)
+lexeme _ p = do
   (x, ltok) <- p
-  hasnl <- skippable <?> "failed to parse white spaces and comments"
+
+  hasnl <- (eof >> return True) <|> skippable <?> "failed to parse skippable"
   -- According to the cuelang spec, a comma is added to the last token of a line if the token is
   -- - an identifier, keyword, or bottom
   -- - a number or string literal, including an interpolation
@@ -573,5 +587,17 @@ manyEndByComma p enclosingM = do
 
     rM <- maybe (return Nothing) (lookAhead . optionMaybe) enclosingM
     -- If the enclosing element is not found, we need to consume the comma.
-    when (isNothing rM) $ void comma
+    when (isNothing rM) $ do
+      void comma
     return x
+
+ptrace :: String -> Parser ()
+ptrace s = do
+  i <- getState
+  parserTrace $ printf "id=%s, %s" (show i) s
+  return ()
+
+ptraced :: String -> Parser a -> Parser a
+ptraced s p = do
+  i <- getState
+  parserTraced (printf "id=%s, %s" (show i) s) p
