@@ -4,6 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Eval (
   EvalConfig (..),
@@ -14,16 +15,7 @@ module Eval (
 )
 where
 
-import AST (
-  Expression (ExprUnaryExpr),
-  Literal (LitStructLit),
-  Operand (OpLiteral),
-  PrimaryExpr (PrimExprOperand),
-  SourceFile,
-  StructLit (StructLit),
-  UnaryExpr (UnaryExprPrimaryExpr),
-  declsBld,
- )
+import AST
 import qualified Common
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
@@ -111,8 +103,21 @@ runIO s conf =
     case r of
       Left err -> return $ string7 err
       Right
-        ( AST.ExprUnaryExpr
-            (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.LitStructLit (AST.StructLit decls)))))
+        ( wpVal ->
+            AST.ExprUnaryExpr
+              ( wpVal ->
+                  AST.UnaryExprPrimaryExpr
+                    ( wpVal ->
+                        AST.PrimExprOperand
+                          ( wpVal ->
+                              AST.OpLiteral
+                                ( wpVal ->
+                                    AST.LitStructLit
+                                      (wpVal -> AST.StructLit decls)
+                                  )
+                            )
+                      )
+                )
           ) ->
           return (declsBld 0 decls)
       _ -> throwErrSt "Expected a struct literal"

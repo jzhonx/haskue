@@ -37,7 +37,7 @@ instance BuildASTExpr Atom where
   buildASTExpr _ a = return $ (AST.litCons . aToLiteral) a
 
 aToLiteral :: Atom -> AST.Literal
-aToLiteral a = case a of
+aToLiteral a = pure $ case a of
   String s -> AST.StringLit $ AST.SimpleStringLit s
   Int i -> AST.IntLit i
   Float f -> AST.FloatLit f

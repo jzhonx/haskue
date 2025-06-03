@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
@@ -7,7 +8,7 @@ module Parser where
 import AST
 import Control.Monad (void, when)
 import Control.Monad.Except (MonadError, throwError)
-import Data.Maybe (fromJust, isJust, isNothing)
+import Data.Maybe (fromJust, isNothing)
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -15,6 +16,7 @@ import Text.Parsec (
   digit,
   eof,
   getInput,
+  getPosition,
   getState,
   lookAhead,
   many,
@@ -29,13 +31,16 @@ import Text.Parsec (
   satisfy,
   setInput,
   skipMany,
+  sourceColumn,
+  sourceLine,
+  sourceName,
   string,
   try,
   (<?>),
   (<|>),
  )
 import Text.Printf (printf)
-import Prelude hiding (GT, LT, lex, null)
+import Prelude hiding (GT, LT, null)
 
 type Parser a = Parsec String Int a
 
@@ -67,31 +72,29 @@ data TokenType
 
 type TokAttr a = (a, TokenType)
 
--- | Lexeme is a sequence of tokens ending with a sequence of whitespace.
-data Lexeme a = Lexeme
-  { lex :: a
-  , lexType :: TokenType
-  , lexNewLine :: Bool
+data WithTokenInfo a = WithTokenInfo
+  { wtVal :: a
+  , wtLastToken :: TokenType
+  , wtNewLine :: Bool
   }
-  deriving (Show)
+  deriving (Show, Functor)
 
-instance Functor Lexeme where
-  fmap f (Lexeme a t nl) = Lexeme (f a) t nl
+type WithTokenPos a = WithTokenInfo (WithPos a)
 
-emptyLexeme :: Lexeme ()
-emptyLexeme = Lexeme () TokenNone False
+emptyLexeme :: WithTokenInfo ()
+emptyLexeme = WithTokenInfo () TokenNone False
 
 parseExpr :: (MonadError String m) => String -> m Expression
 parseExpr s = case runParser (entry expr) 0 "" s of
   Left err -> throwError $ show err
-  Right res -> return $ lex res
+  Right res -> return $ wtVal res
 
 parseSourceFile :: (MonadError String m) => String -> m SourceFile
 parseSourceFile s = case runParser (entry sourceFile) 0 "" s of
   Left err -> throwError $ show err
-  Right res -> return $ lex res
+  Right res -> return $ wtVal res
 
-binopTable :: [(String, BinaryOp)]
+binopTable :: [(String, BinaryOpNode)]
 binopTable =
   [ ("&", Unify)
   , ("|", Disjoin)
@@ -103,7 +106,7 @@ binopTable =
   , ("!=", BinRelOp NE)
   ]
 
-unaryOp :: Parser (Lexeme String)
+unaryOp :: Parser (WithTokenPos String)
 unaryOp =
   lexeme "unaryOp" $
     (,TokenUnaryOp)
@@ -120,7 +123,7 @@ unaryOp =
               <|> string "*"
           )
 
-unaryOpTable :: [(String, UnaryOp)]
+unaryOpTable :: [(String, UnaryOpNode)]
 unaryOpTable =
   [ ("+", Plus)
   , ("-", Minus)
@@ -135,89 +138,100 @@ unaryOpTable =
   , ("!~", UnaRelOp ReNotMatch)
   ]
 
-sourceFile :: Parser (Lexeme SourceFile)
+sourceFile :: Parser (WithTokenInfo SourceFile)
 sourceFile = do
   declLexes <- manyEndByComma decl Nothing
   -- null was hidden, so use the dumb way to check if the declLexes is empty.
   if length declLexes == 0
     then return $ SourceFile [] <$ emptyLexeme
-    else return $ SourceFile (map lex declLexes) <$ last declLexes
+    else return $ SourceFile (map wtVal declLexes) <$ last declLexes
 
-entry :: Parser (Lexeme a) -> Parser (Lexeme a)
+entry :: Parser (WithTokenInfo a) -> Parser (WithTokenInfo a)
 entry p = do
   _ <- skippable
   p
 
-expr :: Parser (Lexeme Expression)
+expr :: Parser (WithTokenInfo Expression)
 expr = do
   r <- prec1
   return r
  where
   binOp ::
-    Parser (Lexeme Expression) ->
-    Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression) ->
-    Parser (Lexeme Expression)
+    Parser (WithTokenInfo Expression) ->
+    Parser (WithTokenInfo Expression -> WithTokenInfo Expression -> WithTokenInfo Expression) ->
+    Parser (WithTokenInfo Expression)
   binOp = chainl1
 
-  precedence :: Parser String -> Parser (Lexeme Expression -> Lexeme Expression -> Lexeme Expression)
+  precedence ::
+    Parser String ->
+    Parser (WithTokenInfo Expression -> WithTokenInfo Expression -> WithTokenInfo Expression)
   precedence op = do
-    opLex <- lexeme "binOp" (binOpAdapt op)
-    let _op = fromJust $ lookup (lex opLex) binopTable
+    opTp@WithTokenInfo{wtVal = opWp} <- lexeme "binOp" (binOpAdapt op)
+    let _op = fmap (fromJust (lookup (wpVal opWp) binopTable) <$) opTp
     -- return the rightmost token type and newline status.
-    return $ \l r -> r{lex = ExprBinaryOp _op (lex l) (lex r)}
+    return $ \l r -> betweenTokenInfos l (ExprBinaryOp (wtVal _op) (wtVal l) (wtVal r)) r
 
   binOpAdapt :: Parser String -> Parser (TokAttr String)
   binOpAdapt op = (,TokenBinOp) <$> op
 
-  prec7 :: Parser (Lexeme Expression)
-  prec7 = binOp (fmap ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
+  prec7 :: Parser (WithTokenInfo Expression)
+  prec7 = binOp (fmapSingleNode ExprUnaryExpr <$> unaryExpr) (precedence (string "*" <|> string "/"))
 
-  prec6 :: Parser (Lexeme Expression)
+  prec6 :: Parser (WithTokenInfo Expression)
   prec6 = binOp prec7 (precedence (string "+" <|> string "-"))
 
-  prec5 :: Parser (Lexeme Expression)
+  prec5 :: Parser (WithTokenInfo Expression)
   prec5 = binOp prec6 (precedence (string "==" <|> string "!="))
 
-  prec2 :: Parser (Lexeme Expression)
+  prec2 :: Parser (WithTokenInfo Expression)
   prec2 = binOp prec5 (precedence (string "&"))
 
-  prec1 :: Parser (Lexeme Expression)
+  prec1 :: Parser (WithTokenInfo Expression)
   prec1 = binOp prec2 (precedence (string "|"))
 
-unaryExpr :: Parser (Lexeme UnaryExpr)
+unaryExpr :: Parser (WithTokenInfo UnaryExpr)
 unaryExpr = do
-  opM <- optionMaybe unaryOp
-  case opM of
-    Nothing -> fmap UnaryExprPrimaryExpr <$> primaryExpr
-    Just Lexeme{lex = op} -> do
+  opStrM <- optionMaybe unaryOp
+  case opStrM of
+    Nothing -> fmapSingleNode UnaryExprPrimaryExpr <$> primaryExpr
+    Just opStrTp@WithTokenInfo{wtVal = op} -> do
       ul <- unaryExpr
-      let ue = UnaryExprUnaryOp (fromJust $ lookup op unaryOpTable) (lex ul)
-      return $ ue <$ ul
+      let
+        opTp = fmap (fromJust (lookup (wpVal op) unaryOpTable) <$) opStrTp
+        ue = UnaryExprUnaryOp (wtVal opTp) (wtVal ul)
+      return $ betweenTokenInfos opTp ue ul
 
-primaryExpr :: Parser (Lexeme PrimaryExpr)
+primaryExpr :: Parser (WithTokenInfo PrimaryExpr)
 primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
  where
-  primOperand :: Parser (Lexeme PrimaryExpr)
-  primOperand = fmap PrimExprOperand <$> operand
+  primOperand :: Parser (WithTokenInfo PrimaryExpr)
+  primOperand = fmapSingleNode PrimExprOperand <$> operand
 
-  segment :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
+  segment :: Parser (WithTokenInfo PrimaryExpr -> WithTokenInfo PrimaryExpr)
   segment = do
-    _ <- lexeme "." $ (,TokenDot) <$> char '.'
-    selLex <-
-      (fmap IDSelector <$> identifier)
-        <|> (fmap StringSelector <$> litLexeme TokenString simpleStringLit)
-    return $ \pLex -> PrimExprSelector (lex pLex) (lex selLex) <$ selLex
+    l <- lexeme "." $ (,TokenDot) <$> char '.'
+    sel <-
+      (fmapSingleNode IDSelector <$> identifier)
+        <|> ( do
+                x <- litLexeme TokenString simpleStringLit
+                return $ fmap (fmap StringSelector) x
+            )
+    return $ \p -> betweenTokenInfos l (PrimExprSelector (wtVal p) (wtVal sel)) sel
 
-  index :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
+  index :: Parser (WithTokenInfo PrimaryExpr -> WithTokenInfo PrimaryExpr)
   index = do
-    _ <- lexeme "[" $ (,TokenLSquare) <$> char '['
-    selLex <- expr
-    rLex <- lexeme "]" $ (,TokenRSquare) <$> char ']'
-    return $ \pLex -> PrimExprIndex (lex pLex) (Index (lex selLex)) <$ rLex
+    l <- lexeme "[" $ (,TokenLSquare) <$> char '['
+    sel <- expr
+    r <- lexeme "]" $ (,TokenRSquare) <$> char ']'
+    return $ \p ->
+      betweenTokenInfos
+        l
+        (PrimExprIndex (wtVal p) (wtVal $ fmapSingleNode Index sel))
+        r
 
-  arguments :: Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr)
+  arguments :: Parser (WithTokenInfo PrimaryExpr -> WithTokenInfo PrimaryExpr)
   arguments = do
-    _ <- lexeme "(" $ (,TokenLParen) <$> char '('
+    l <- lexeme "(" $ (,TokenLParen) <$> char '('
     args <- many $ do
       eLex <- expr
       rparenMaybe <- lookAhead $ optionMaybe rparen
@@ -226,15 +240,15 @@ primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
         Nothing -> do
           _ <- comma
           return eLex
-    rLex <- rparen
+    r <- rparen
     let es :: [Expression]
-        es = map lex args
-    return $ \pLex -> PrimExprArguments (lex pLex) es <$ rLex
+        es = map wtVal args
+    return $ \p -> betweenTokenInfos l (PrimExprArguments (wtVal p) es) r
 
 chainPrimExpr ::
-  Parser (Lexeme PrimaryExpr) ->
-  Parser (Lexeme PrimaryExpr -> Lexeme PrimaryExpr) ->
-  Parser (Lexeme PrimaryExpr)
+  Parser (WithTokenInfo PrimaryExpr) ->
+  Parser (WithTokenInfo PrimaryExpr -> WithTokenInfo PrimaryExpr) ->
+  Parser (WithTokenInfo PrimaryExpr)
 chainPrimExpr p op = do
   x <- p
   rest x
@@ -247,37 +261,45 @@ chainPrimExpr p op = do
       <|> return x
       <?> "failed to parse chainPrimExpr"
 
-operand :: Parser (Lexeme Operand)
+operand :: Parser (WithTokenInfo Operand)
 operand =
-  (fmap OpLiteral <$> literal)
-    <|> (fmap (OperandName . Identifier) <$> identifier)
+  (fmapSingleNode OpLiteral <$> literal)
     <|> ( do
-            _ <- lparen
-            eLex <- expr
-            rLex <- rparen
-            return $ OpExpression (lex eLex) <$ rLex
+            x <- identifier
+            return $ fmapSingleNode OperandName (fmapSingleNode Identifier x)
+        )
+    -- <|> (fmapSingleNode OperandName <$> (composeNoPos Identifier <$> identifier))
+    <|> ( do
+            l <- lparen
+            e <- expr
+            r <- rparen
+            return $ betweenTokenInfos l (OpExpression (wtVal e)) r
         )
     <?> "failed to parse operand"
 
-lparen :: Parser (Lexeme Char)
+lparen :: Parser (WithTokenPos Char)
 lparen = lexeme "(" $ (,TokenLParen) <$> (char '(' <?> "failed to parse left parenthesis")
 
-rparen :: Parser (Lexeme Char)
+rparen :: Parser (WithTokenPos Char)
 rparen = lexeme ")" $ (,TokenRParen) <$> (char ')' <?> "failed to parse right parenthesis")
 
-literal :: Parser (Lexeme Literal)
+literal :: Parser (WithTokenInfo Literal)
 literal = do
   try (litLexeme TokenFloat floatLit)
     <|> litLexeme TokenInt intLit
     <|> try (litLexeme TokenBool bool)
-    <|> try (fmap (StringLit . SimpleStringLit) <$> litLexeme TokenString simpleStringLit)
+    <|> try
+      ( do
+          x <- litLexeme TokenString simpleStringLit
+          return $ fmap (fmap (StringLit . SimpleStringLit)) x
+      )
     <|> try (litLexeme TokenBottom bottom)
     <|> try (litLexeme TokenTop top)
     <|> try (litLexeme TokenNull null)
-    <|> (fmap LitStructLit <$> structLit)
-    <|> list
+    <|> (fmapSingleNode LitStructLit <$> structLit)
+    <|> (fmapSingleNode ListLit <$> list)
 
-identifier :: Parser (Lexeme String)
+identifier :: Parser (WithTokenInfo Identifier)
 identifier =
   lexeme "ident" $
     ( do
@@ -302,27 +324,30 @@ identifier =
 letter :: Parser Char
 letter = oneOf ['a' .. 'z'] <|> oneOf ['A' .. 'Z'] <|> char '_' <|> char '$'
 
-structLit :: Parser (Lexeme StructLit)
+structLit :: Parser (WithTokenInfo StructLit)
 structLit = do
-  _ <- lbrace
-  decls <- manyEndByComma decl (Just rbrace)
-  rLex <- rbrace
+  st <- lbrace
+  decls <-
+    manyEndByComma
+      decl
+      (Just rbrace)
+  r <- rbrace
   let
     ds :: [Declaration]
-    ds = map lex decls
-  return $ StructLit ds <$ rLex
+    ds = map wtVal decls
+  return $ betweenTokenInfos st (StructLit ds) r
 
-lbrace :: Parser (Lexeme Char)
+lbrace :: Parser (WithTokenPos Char)
 lbrace = lexeme "{" $ (,TokenLBrace) <$> (char '{' <?> "failed to parse left brace")
 
-rbrace :: Parser (Lexeme Char)
+rbrace :: Parser (WithTokenPos Char)
 rbrace = lexeme "}" $ do
   c <- char '}' <?> "failed to parse right brace"
   return (c, TokenRBrace)
 
-list :: Parser (Lexeme Literal)
+list :: Parser (WithTokenInfo ElementList)
 list = do
-  _ <- lsquare
+  st <- lsquare
   elements <- many $ do
     eLex <- embedding
     rsquareMaybe <- lookAhead $ optionMaybe rsquare
@@ -331,94 +356,93 @@ list = do
       Nothing -> do
         _ <- comma
         return eLex
-  rLex <- rsquare
+  r <- rsquare
   let es :: [Embedding]
-      es = map lex elements
-  return $ ListLit (EmbeddingList es) <$ rLex
+      es = map wtVal elements
 
-lsquare :: Parser (Lexeme Char)
+  return $ betweenTokenInfos st (EmbeddingList es) r
+
+lsquare :: Parser (WithTokenPos Char)
 lsquare = lexeme "[" $ (,TokenLSquare) <$> (char '[' <?> "failed to parse left square")
 
-rsquare :: Parser (Lexeme Char)
+rsquare :: Parser (WithTokenPos Char)
 rsquare = lexeme "]" $ (,TokenRSquare) <$> (char ']' <?> "failed to parse right square")
 
-comma :: Parser (Lexeme Char)
+comma :: Parser (WithTokenPos Char)
 comma = lexeme "," $ (,TokenComma) <$> (char ',' <?> "failed to parse comma")
 
-decl :: Parser (Lexeme Declaration)
+decl :: Parser (WithTokenInfo Declaration)
 decl =
-  try (fmap FieldDecl <$> field)
+  try (fmapSingleNode FieldDecl <$> field)
     -- let would not consume EllipsisDecl. But it could consume Embedding. So it needs "try".
-    <|> try (fmap DeclLet <$> letClause)
-    <|> (fmap EllipsisDecl <$> ellipsisDecl)
-    <|> (fmap Embedding <$> embedding)
+    <|> try (fmapSingleNode DeclLet <$> letClause)
+    <|> (fmapSingleNode EllipsisDecl <$> ellipsisDecl)
+    <|> (fmapSingleNode Embedding <$> embedding)
     <?> "failed to parse declaration"
 
-field :: Parser (Lexeme FieldDecl)
+field :: Parser (WithTokenInfo FieldDecl)
 field = do
   lnx <- label
   -- labels might be in the form of "a: b: c: val". We need to try to match the b and c.
   otherxs <- many (try label)
-  eLex <- expr
+  e <- expr
   let
-    ln = lex lnx
-    otherLns = map lex otherxs
-  return $ Field (ln : otherLns) (lex eLex) <$ eLex
+    ln = wtVal lnx
+    otherLns = map wtVal otherxs
+  return $ fmap (Field (ln : otherLns) (wtVal e) <$) e
  where
-  label :: Parser (Lexeme Label)
+  label :: Parser (WithTokenInfo Label)
   label = do
-    lLex <- labelExpr
-    rLex <- lexeme ":" $ (,TokenColon) <$> char ':'
-    return $ Label (lex lLex) <$ rLex
+    lb <- labelExpr
+    r <- lexeme ":" $ (,TokenColon) <$> char ':'
+    return $ fmap (Label (wtVal lb) <$) r
 
-labelExpr :: Parser (Lexeme LabelExpr)
+labelExpr :: Parser (WithTokenInfo LabelExpr)
 labelExpr = labelPattern <|> labelNameConstraint
 
-labelNameConstraint :: Parser (Lexeme LabelExpr)
+labelNameConstraint :: Parser (WithTokenInfo LabelExpr)
 labelNameConstraint = do
   lnlem <- labelName
   optionMaybe (questionMark <|> exclamation) >>= \case
     Just x ->
-      if lexType x == TokenQuestionMark
-        then return $ LabelName (lex lnlem) OptionalLabel <$ x
-        else return $ LabelName (lex lnlem) RequiredLabel <$ x
-    Nothing -> return $ fmap (`LabelName` RegularLabel) lnlem
+      if wtLastToken x == TokenQuestionMark
+        then return $ fmapSingleNode (const $ LabelName (wtVal lnlem) OptionalLabel) x
+        else return $ fmapSingleNode (const $ LabelName (wtVal lnlem) RequiredLabel) x
+    Nothing -> return $ fmapSingleNode (const $ LabelName (wtVal lnlem) RegularLabel) lnlem
 
-labelPattern :: Parser (Lexeme LabelExpr)
+labelPattern :: Parser (WithTokenInfo LabelExpr)
 labelPattern = do
-  _ <- lsquare
+  l <- lsquare
   e <- expr
   r <- rsquare
-  return $ LabelPattern (lex e) <$ r
+  return $ betweenTokenInfos l (LabelPattern (wtVal e)) r
 
-questionMark :: Parser (Lexeme Char)
+questionMark :: Parser (WithTokenPos Char)
 questionMark = lexeme "?" $ (,TokenQuestionMark) <$> (char '?' <?> "failed to parse ?")
 
-exclamation :: Parser (Lexeme Char)
+exclamation :: Parser (WithTokenPos Char)
 exclamation = lexeme "!" $ (,TokenExclamation) <$> (char '!' <?> "failed to parse !")
 
-ellipsis :: Parser (Lexeme String)
+ellipsis :: Parser (WithTokenPos String)
 ellipsis = lexeme "..." $ (,TokenEllipsis) <$> (string "..." <?> "failed to parse ...")
 
-ellipsisDecl :: Parser (Lexeme EllipsisDecl)
+ellipsisDecl :: Parser (WithTokenInfo EllipsisDecl)
 ellipsisDecl = do
-  lLex <- ellipsis
-  eLexM <- optionMaybe expr
+  el <- ellipsis
+  eNodeM <- optionMaybe expr
   maybe
-    (return $ Ellipsis Nothing <$ lLex)
-    (\eLex -> return $ Ellipsis (Just $ lex eLex) <$ eLex)
-    eLexM
+    (return $ fmap (fmap (const $ Ellipsis Nothing)) el)
+    (\eNode -> return $ fmapSingleNode (const $ Ellipsis (Just $ wtVal eNode)) eNode)
+    eNodeM
 
-embedding :: Parser (Lexeme Embedding)
-embedding = (fmap EmbedComprehension <$> comprehension) <|> aliasExpr
- where
-  aliasExpr = do
-    eLex <- expr
-    return $ AliasExpr (lex eLex) <$ eLex
+embedding :: Parser (WithTokenInfo Embedding)
+embedding =
+  (fmapSingleNode EmbedComprehension <$> comprehension)
+    <|> (fmapSingleNode AliasExpr <$> expr)
 
-comprehension :: Parser (Lexeme Comprehension)
+comprehension :: Parser (WithTokenInfo Comprehension)
 comprehension = do
-  stLex <- startClause
+  stNode <- startClause
   -- If start clause may have newline, or a real comma followed
   _ <- optional comma
   restClauses <- many $ do
@@ -426,60 +450,87 @@ comprehension = do
     _ <- optional comma
     return r
 
-  structLex <- structLit
+  structNode <- structLit
   let
-    cls = Clauses (lex stLex) (map lex restClauses)
-    c = Comprehension cls (lex structLex)
-  return $ c <$ structLex
+    cls =
+      if length restClauses == 0
+        then
+          WithPos
+            { wpVal = Clauses (wtVal stNode) []
+            , wpPos = wpPos $ wtVal stNode
+            }
+        else
+          WithPos
+            { wpVal = Clauses (wtVal stNode) (map wtVal restClauses)
+            , wpPos =
+                Just
+                  ( Position
+                      (posStart $ fromJust $ wpPos $ wtVal stNode)
+                      (posEnd $ fromJust $ wpPos $ wtVal (last restClauses))
+                      (posFile $ fromJust $ wpPos $ wtVal stNode)
+                  )
+            }
+    c = Comprehension cls (wtVal structNode)
 
-clause :: Parser (Lexeme Clause)
+  return $ betweenTokenInfos stNode c structNode
+
+clause :: Parser (WithTokenInfo Clause)
 clause =
-  (fmap ClauseStartClause <$> startClause)
-    <|> (fmap ClauseLetClause <$> letClause)
+  (fmapSingleNode ClauseStartClause <$> startClause)
+    <|> (fmapSingleNode ClauseLetClause <$> letClause)
     <?> "failed to parse clause"
 
-startClause :: Parser (Lexeme StartClause)
+startClause :: Parser (WithTokenInfo StartClause)
 startClause = guardClause <|> forClause <?> "failed to parse start clause"
 
-guardClause :: Parser (Lexeme StartClause)
+guardClause :: Parser (WithTokenInfo StartClause)
 guardClause = do
-  _ <- lexeme "if" $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
-  eLex <- expr
-  return $ GuardClause (lex eLex) <$ eLex
+  st <- lexeme "if" $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
+  end <- expr
+  return $ betweenTokenInfos st (GuardClause (wtVal end)) end
 
-forClause :: Parser (Lexeme StartClause)
+-- return $ GuardClause (wtVal eLex) <$ eLex
+
+forClause :: Parser (WithTokenInfo StartClause)
 forClause = do
-  _ <- lexeme "for" $ (,TokenString) <$> (string "for" <?> "failed to parse keyword for")
-  identLex <- identifier
-  secIdentLexM <- optionMaybe $ do
+  st <- lexeme "for" $ (,TokenString) <$> (string "for" <?> "failed to parse keyword for")
+  ident <- identifier
+  secIdentM <- optionMaybe $ do
     _ <- comma
     identifier
   _ <- lexeme "in" $ (,TokenString) <$> (string "in" <?> "failed to parse keyword in")
-  eLex <- expr
-  return $ ForClause (lex identLex) (lex <$> secIdentLexM) (lex eLex) <$ eLex
+  end <- expr
+  return $ betweenTokenInfos st (ForClause (wtVal ident) (wtVal <$> secIdentM) (wtVal end)) end
 
-letClause :: Parser (Lexeme LetClause)
+-- return $ ForClause (wtVal identLex) (wtVal <$> secIdentLexM) (wtVal eLex) <$ eLex
+
+letClause :: Parser (WithTokenInfo LetClause)
 letClause = do
-  _ <- lexeme "let" $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
-  identLex <- identifier
+  st <- lexeme "let" $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
+  identNode <- identifier
   _ <- lexeme "=" $ (,TokenBinOp) <$> (char '=' <?> "failed to parse =")
-  eLex <- expr
-  return $ LetClause (lex identLex) (lex eLex) <$ eLex
+  end <- expr
+  return $ betweenTokenInfos st (LetClause (wtVal identNode) (wtVal end)) end
 
-labelName :: Parser (Lexeme LabelName)
+-- return $ LetClause (wtVal identLex) (wtVal eLex) <$ eLex
+
+labelName :: Parser (WithTokenInfo LabelName)
 labelName =
-  (fmap LabelID <$> identifier)
-    <|> (fmap LabelString <$> litLexeme TokenString simpleStringLit)
+  (fmapSingleNode LabelID <$> identifier)
+    <|> ( do
+            s <- litLexeme TokenString simpleStringLit
+            return $ fmap (fmap LabelString) s
+        )
     <|> labelNameExpr
 
-labelNameExpr :: Parser (Lexeme LabelName)
+labelNameExpr :: Parser (WithTokenInfo LabelName)
 labelNameExpr = do
-  _ <- lparen
+  st <- lparen
   e <- expr
   r <- rparen
-  return $ LabelNameExpr (lex e) <$ r
+  return $ betweenTokenInfos st (LabelNameExpr (wtVal e)) r
 
-litLexeme :: TokenType -> Parser a -> Parser (Lexeme a)
+litLexeme :: TokenType -> Parser a -> Parser (WithTokenPos a)
 litLexeme t p = lexeme "literal" $ do
   lit <- p
   return (lit, t)
@@ -491,12 +542,12 @@ simpleStringLit = do
   _ <- char '"'
   return s
 
-intLit :: Parser Literal
+intLit :: Parser LiteralNode
 intLit = do
   s <- many1 digit
   return $ IntLit (read s :: Integer)
 
-floatLit :: Parser Literal
+floatLit :: Parser LiteralNode
 floatLit = do
   i <- many1 digit
   _ <- char '.'
@@ -505,18 +556,18 @@ floatLit = do
 
 -- Predeclared identifiers
 
-bool :: Parser Literal
+bool :: Parser LiteralNode
 bool = do
   b <- string "true" <|> string "false"
   return $ BoolLit (b == "true")
 
-top :: Parser Literal
+top :: Parser LiteralNode
 top = string "_" >> return TopLit
 
-bottom :: Parser Literal
+bottom :: Parser LiteralNode
 bottom = string "_|_" >> return BottomLit
 
-null :: Parser Literal
+null :: Parser LiteralNode
 null = string "null" >> return NullLit
 
 -- Match white spaces. Return True if a newline is matched.
@@ -547,9 +598,9 @@ skippable = do
   return $ or hasnls
 
 -- | Parse a text that starts with a lexeme and ends with skippable.
-lexeme :: String -> Parser (TokAttr a) -> Parser (Lexeme a)
+lexeme :: String -> Parser (TokAttr a) -> Parser (WithTokenPos a)
 lexeme _ p = do
-  (x, ltok) <- p
+  WithPos{wpVal = (x, ltok), wpPos = posM} <- annotateLexemePos p
 
   hasnl <- (eof >> return True) <|> skippable <?> "failed to parse skippable"
   -- According to the cuelang spec, a comma is added to the last token of a line if the token is
@@ -577,10 +628,10 @@ lexeme _ p = do
   when commaFound $ do
     s <- getInput
     setInput $ "," ++ s
-  return $ Lexeme x ltok hasnl
+  return $ annotatePos (fromJust posM) (WithTokenInfo x ltok hasnl)
 
 -- | Match the grammar {p ","} but loose restriction on the last comma if the enclosing element is matched.
-manyEndByComma :: Parser (Lexeme a) -> Maybe (Parser (Lexeme b)) -> Parser [Lexeme a]
+manyEndByComma :: Parser (WithTokenInfo a) -> Maybe (Parser (WithTokenInfo b)) -> Parser [WithTokenInfo a]
 manyEndByComma p enclosingM = do
   many $ do
     x <- p
@@ -601,3 +652,51 @@ ptraced :: String -> Parser a -> Parser a
 ptraced s p = do
   i <- getState
   parserTraced (printf "id=%s, %s" (show i) s) p
+
+annotateLexemePos :: Parser a -> Parser (WithPos a)
+annotateLexemePos p = do
+  startPos <- getPosition
+  x <- p
+  endPos <- getPosition
+  return $
+    WithPos
+      { wpPos =
+          Just
+            ( Position
+                ( SourcePos
+                    (sourceLine startPos)
+                    (sourceColumn startPos)
+                )
+                ( SourcePos
+                    (sourceLine endPos)
+                    (sourceColumn endPos)
+                )
+                (Just (sourceName startPos))
+            )
+      , wpVal = x
+      }
+
+-- | Attach a position to WithTokenInfo.
+annotatePos :: Position -> WithTokenInfo a -> WithTokenInfo (WithPos a)
+annotatePos pos = fmap (withPos pos)
+
+-- | fmap a function over a node that only has one sub-node and turns it into a WithPos node of new type.
+fmapSingleNode :: (WithPos a -> b) -> WithTokenInfo (WithPos a) -> WithTokenInfo (WithPos b)
+fmapSingleNode f = fmap (\x -> withPos (fromJust $ wpPos x) (f x))
+
+betweenTokenInfos :: WithTokenInfo (WithPos a) -> b -> WithTokenInfo (WithPos c) -> WithTokenInfo (WithPos b)
+betweenTokenInfos startTokInfo v endTokInfo =
+  fmap
+    ( const $
+        withPos
+          ( Position
+              (posStart $ getPos startTokInfo)
+              (posEnd $ getPos endTokInfo)
+              (posFile $ getPos startTokInfo)
+          )
+          v
+    )
+    endTokInfo
+
+getPos :: WithTokenInfo (WithPos a) -> Position
+getPos WithTokenInfo{wtVal = WithPos{wpPos = pos}} = fromJust pos

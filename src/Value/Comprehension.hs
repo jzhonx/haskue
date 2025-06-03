@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Value.Comprehension where
 
@@ -24,10 +25,22 @@ buildComprehASTExpr c cph = do
   rest <- mapM buildIterClause (tail (cphIterClauses cph))
 
   e <- Common.buildASTExpr c (cphStruct cph)
-  sl <- case e of
-    AST.ExprUnaryExpr (AST.UnaryExprPrimaryExpr (AST.PrimExprOperand (AST.OpLiteral (AST.LitStructLit l)))) -> return l
+  sl <- case AST.wpVal e of
+    AST.ExprUnaryExpr
+      ( AST.wpVal ->
+          AST.UnaryExprPrimaryExpr
+            ( AST.wpVal ->
+                AST.PrimExprOperand
+                  ( AST.wpVal ->
+                      AST.OpLiteral
+                        (AST.wpVal -> AST.LitStructLit l)
+                    )
+              )
+        ) -> return l
     _ -> throwErrSt "struct lit is not found"
-  return $ AST.Comprehension (AST.Clauses start rest) sl
+  return $
+    pure $
+      AST.Comprehension (pure $ AST.Clauses (pure start) (map pure rest)) sl
  where
   buildStartClause clause = case clause of
     IterClauseIf val -> do
@@ -35,16 +48,16 @@ buildComprehASTExpr c cph = do
       return (AST.GuardClause ve)
     IterClauseFor varName secVarM val -> do
       ve <- Common.buildASTExpr c val
-      return (AST.ForClause varName secVarM ve)
+      return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
     _ -> throwErrSt "start clause should not be let clause"
 
   buildIterClause clause = case clause of
     IterClauseLet varName val -> do
       ve <- Common.buildASTExpr c val
-      return $ AST.ClauseLetClause (AST.LetClause varName ve)
+      return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
     _ -> do
       start <- buildStartClause clause
-      return $ AST.ClauseStartClause start
+      return $ AST.ClauseStartClause (pure start)
 
 data IterClause t = IterClauseLet String t | IterClauseIf t | IterClauseFor String (Maybe String) t
   deriving (Eq, Show, Functor)

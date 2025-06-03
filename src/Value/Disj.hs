@@ -35,7 +35,7 @@ disjunctsToAST c ds = do
   xs <- mapM (buildASTExpr c) ds
   return $
     foldr1
-      (AST.ExprBinaryOp AST.Disjoin)
+      (\x acc -> pure $ AST.ExprBinaryOp (pure AST.Disjoin) x acc)
       xs
 
 instance (BuildASTExpr t) => BuildASTExpr (Disj t) where

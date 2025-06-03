@@ -138,14 +138,16 @@ buildUnaryExpr :: (Env r s m, BuildASTExpr t) => AST.UnaryOp -> t -> m AST.Expre
 buildUnaryExpr op t = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   te <- buildASTExpr c t
-  case te of
-    (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr $ AST.UnaryExprUnaryOp op ue
-    e ->
+  case AST.wpVal te of
+    (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr AST.<<^>> AST.UnaryExprUnaryOp op AST.<^> ue
+    _ ->
       return $
-        AST.ExprUnaryExpr $
-          AST.UnaryExprUnaryOp
-            op
-            (AST.UnaryExprPrimaryExpr . AST.PrimExprOperand $ AST.OpExpression e)
+        AST.ExprUnaryExpr
+          AST.<<^>> AST.UnaryExprUnaryOp op
+          AST.<<^>> AST.UnaryExprPrimaryExpr
+          AST.<<^>> AST.PrimExprOperand
+          AST.<<^>> AST.OpExpression
+          AST.<^> te
 
 mkBinaryOp ::
   forall t. (BuildASTExpr t) => AST.BinaryOp -> t -> t -> Mutable t
@@ -164,7 +166,7 @@ buildBinaryExpr op l r = do
   let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   xe <- buildASTExpr c l
   ye <- buildASTExpr c r
-  return $ AST.ExprBinaryOp op xe ye
+  return $ pure $ AST.ExprBinaryOp op xe ye
 
 mkRefMutable :: String -> [t] -> Mutable t
 mkRefMutable var ts =
@@ -185,6 +187,13 @@ buildArgsExpr :: (Env r s m, BuildASTExpr t) => String -> [t] -> m AST.Expressio
 buildArgsExpr func ts = do
   ets <- mapM (buildASTExpr False) ts
   return $
-    AST.ExprUnaryExpr $
-      AST.UnaryExprPrimaryExpr $
-        AST.PrimExprArguments (AST.PrimExprOperand $ AST.OpLiteral $ AST.StringLit $ AST.SimpleStringLit func) ets
+    AST.ExprUnaryExpr
+      AST.<<^>> AST.UnaryExprPrimaryExpr
+      AST.<^> pure
+        ( AST.PrimExprArguments
+            ( AST.PrimExprOperand
+                AST.<<^>> AST.OpLiteral
+                AST.<^> pure (AST.StringLit (AST.SimpleStringLit func))
+            )
+            ets
+        )

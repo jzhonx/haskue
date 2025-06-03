@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+
 module AST where
 
 import Data.ByteString.Builder (
@@ -9,42 +11,96 @@ import Data.ByteString.Builder (
  )
 import Prelude hiding (GT, LT)
 
+-- | Source position with line and column information
+data SourcePos = SourcePos
+  { posLine :: Int
+  , posColumn :: Int
+  }
+  deriving (Eq, Show)
+
+-- | Position range with start and end positions, and optional file path
+data Position = Position
+  { posStart :: SourcePos
+  , posEnd :: SourcePos
+  , posFile :: Maybe FilePath
+  }
+  deriving (Eq, Show)
+
+-- | Create a default position with no information
+noPosition :: Position
+noPosition = Position (SourcePos 0 0) (SourcePos 0 0) Nothing
+
+-- | Annotate an AST node with position information
+data WithPos a = WithPos
+  { wpPos :: Maybe Position
+  , wpVal :: a
+  }
+  deriving (Eq, Show, Functor)
+
+instance (Ord a) => Ord (WithPos a) where
+  WithPos _ v1 `compare` WithPos _ v2 = v1 `compare` v2
+
+instance Applicative WithPos where
+  pure = WithPos Nothing
+  WithPos _ f <*> WithPos pos x = WithPos pos (f x)
+
+withPos :: Position -> a -> WithPos a
+withPos pos = WithPos (Just pos)
+
+(<^>) :: (WithPos a -> b) -> WithPos a -> WithPos b
+(<^>) f a@(WithPos pos _) = WithPos pos (f a)
+
+(<<^>>) :: (WithPos b -> c) -> (WithPos a -> b) -> WithPos a -> c
+(<<^>>) f g a = wpVal $ f <^> (g <^> a)
+
 newtype SourceFile = SourceFile
   { sfDecls :: [Declaration]
   }
   deriving (Eq, Show)
 
-data Expression
+data ExprNode
   = ExprUnaryExpr UnaryExpr
   | ExprBinaryOp BinaryOp Expression Expression
   deriving (Eq, Show)
 
-data UnaryExpr
+type Expression = WithPos ExprNode
+
+data UnaryExprNode
   = UnaryExprPrimaryExpr PrimaryExpr
   | UnaryExprUnaryOp UnaryOp UnaryExpr
   deriving (Eq, Show)
 
-data PrimaryExpr
+type UnaryExpr = WithPos UnaryExprNode
+
+data PrimaryExprNode
   = PrimExprOperand Operand
   | PrimExprSelector PrimaryExpr Selector
   | PrimExprIndex PrimaryExpr Index
   | PrimExprArguments PrimaryExpr [Expression]
   deriving (Eq, Show)
 
-data Selector
-  = IDSelector Identifer
+type PrimaryExpr = WithPos PrimaryExprNode
+
+data SelectorNode
+  = IDSelector Identifier
   | StringSelector SimpleStringLit
   deriving (Eq, Show)
 
-newtype Index = Index Expression deriving (Eq, Show)
+type Selector = WithPos SelectorNode
 
-data Operand
+newtype IndexNode = Index Expression deriving (Eq, Show)
+
+type Index = WithPos IndexNode
+
+data OperandNode
   = OpLiteral Literal
   | OpExpression Expression
   | OperandName OperandName
   deriving (Eq, Show)
 
-data Literal
+type Operand = WithPos OperandNode
+
+data LiteralNode
   = StringLit StringLit
   | IntLit Integer
   | FloatLit Double
@@ -56,35 +112,53 @@ data Literal
   | ListLit ElementList
   deriving (Eq, Show)
 
-newtype StructLit = StructLit [Declaration] deriving (Eq, Show)
+type Literal = WithPos LiteralNode
 
-data Declaration
+newtype StructLitNode = StructLit [Declaration] deriving (Eq, Show)
+
+type StructLit = WithPos StructLitNode
+
+data DeclarationNode
   = FieldDecl FieldDecl
   | EllipsisDecl EllipsisDecl
   | Embedding Embedding
   | DeclLet LetClause
   deriving (Eq, Show)
 
-data FieldDecl
+type Declaration = WithPos DeclarationNode
+
+data FieldDeclNode
   = Field [Label] Expression
   deriving (Eq, Show)
 
-newtype EllipsisDecl = Ellipsis (Maybe Expression) deriving (Eq, Show)
+type FieldDecl = WithPos FieldDeclNode
 
-newtype ElementList = EmbeddingList [Embedding] deriving (Eq, Show)
+newtype EllipsisDeclNode = Ellipsis (Maybe Expression) deriving (Eq, Show)
 
-newtype OperandName = Identifier Identifer deriving (Eq, Show)
+type EllipsisDecl = WithPos EllipsisDeclNode
+
+newtype ElementListNode = EmbeddingList [Embedding] deriving (Eq, Show)
+
+type ElementList = WithPos ElementListNode
+
+newtype OperandNameNode = Identifier Identifier deriving (Eq, Show)
+
+type OperandName = WithPos OperandNameNode
 
 newtype StringLit = SimpleStringLit SimpleStringLit deriving (Eq, Show)
 
 type SimpleStringLit = String
 
-newtype Label = Label LabelExpr deriving (Eq, Show)
+newtype LabelNode = Label LabelExpr deriving (Eq, Show)
 
-data LabelExpr
+type Label = WithPos LabelNode
+
+data LabelExprNode
   = LabelName LabelName LabelConstraint
   | LabelPattern Expression
   deriving (Eq, Show)
+
+type LabelExpr = WithPos LabelExprNode
 
 data LabelConstraint
   = RegularLabel
@@ -92,15 +166,19 @@ data LabelConstraint
   | RequiredLabel
   deriving (Eq, Show)
 
-data LabelName
-  = LabelID Identifer
+data LabelNameNode
+  = LabelID Identifier
   | LabelString String
   | LabelNameExpr Expression
   deriving (Eq, Show)
 
-type Identifer = String
+type LabelName = WithPos LabelNameNode
 
-data RelOp
+type IdentifierNode = String
+
+type Identifier = WithPos IdentifierNode
+
+data RelOpNode
   = NE
   | LT
   | LE
@@ -110,51 +188,7 @@ data RelOp
   | ReNotMatch
   deriving (Eq, Ord)
 
-data Embedding = EmbedComprehension Comprehension | AliasExpr Expression
-  deriving (Eq, Show)
-
-data Comprehension = Comprehension Clauses StructLit
-  deriving (Eq, Show)
-
-data Clauses = Clauses StartClause [Clause] deriving (Eq, Show)
-
-data StartClause
-  = -- | GuardClause is an "if" expression
-    GuardClause Expression
-  | -- | ForClause is a "for" expression
-    ForClause Identifer (Maybe Identifer) Expression
-  deriving (Eq, Show)
-
-data Clause
-  = ClauseStartClause StartClause
-  | ClauseLetClause LetClause
-  deriving (Eq, Show)
-
-data LetClause = LetClause Identifer Expression
-  deriving (Eq, Show)
-
-data BinaryOp
-  = Unify
-  | Disjoin
-  | Add
-  | Sub
-  | Mul
-  | Div
-  | Equ
-  | BinRelOp RelOp
-  deriving (Eq, Ord)
-
-data UnaryOp
-  = Plus
-  | Minus
-  | Not
-  | Star
-  | UnaRelOp RelOp
-  deriving (Eq, Ord)
-
-data Quote = SingleQuote | DoubleQuote deriving (Eq)
-
-instance Show RelOp where
+instance Show RelOpNode where
   show NE = "!="
   show LT = "<"
   show LE = "<="
@@ -163,7 +197,57 @@ instance Show RelOp where
   show ReMatch = "=~"
   show ReNotMatch = "!~"
 
-instance Show BinaryOp where
+type RelOp = WithPos RelOpNode
+
+data EmbeddingNode = EmbedComprehension Comprehension | AliasExpr Expression
+  deriving (Eq, Show)
+
+type Embedding = WithPos EmbeddingNode
+
+data ComprehensionNode = Comprehension Clauses StructLit
+  deriving (Eq, Show)
+
+type Comprehension = WithPos ComprehensionNode
+
+data ClausesNode = Clauses StartClause [Clause] deriving (Eq, Show)
+
+type Clauses = WithPos ClausesNode
+
+data StartClauseNode
+  = -- | GuardClause is an "if" expression
+    GuardClause Expression
+  | -- | ForClause is a "for" expression
+    ForClause Identifier (Maybe Identifier) Expression
+  deriving (Eq, Show)
+
+type StartClause = WithPos StartClauseNode
+
+data ClauseNode
+  = ClauseStartClause StartClause
+  | ClauseLetClause LetClause
+  deriving (Eq, Show)
+
+type Clause = WithPos ClauseNode
+
+data LetClauseNode = LetClause Identifier Expression
+  deriving (Eq, Show)
+
+type LetClause = WithPos LetClauseNode
+
+data BinaryOpNode
+  = Unify
+  | Disjoin
+  | Add
+  | Sub
+  | Mul
+  | Div
+  | Equ
+  | BinRelOp RelOpNode
+  deriving (Eq, Ord)
+
+type BinaryOp = WithPos BinaryOpNode
+
+instance Show BinaryOpNode where
   show Unify = "&"
   show Disjoin = "|"
   show Add = "+"
@@ -173,31 +257,49 @@ instance Show BinaryOp where
   show Equ = "=="
   show (BinRelOp op) = show op
 
-instance Show UnaryOp where
+data UnaryOpNode
+  = Plus
+  | Minus
+  | Not
+  | Star
+  | UnaRelOp RelOpNode
+  deriving (Eq, Ord)
+
+type UnaryOp = WithPos UnaryOpNode
+
+instance Show UnaryOpNode where
   show Plus = "+"
   show Minus = "-"
   show Not = "!"
   show Star = "*"
   show (UnaRelOp op) = show op
 
+data Quote = SingleQuote | DoubleQuote deriving (Eq)
+
 instance Show Quote where
   show SingleQuote = "'"
   show DoubleQuote = "\""
 
 litCons :: Literal -> Expression
-litCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OpLiteral
+litCons x =
+  ExprUnaryExpr
+    <<^>> UnaryExprPrimaryExpr
+    <<^>> PrimExprOperand
+    <<^>> OpLiteral
+    <^> x
 
-idCons :: Identifer -> Expression
-idCons = ExprUnaryExpr . UnaryExprPrimaryExpr . PrimExprOperand . OperandName . Identifier
+idCons :: Identifier -> Expression
+idCons x = ExprUnaryExpr <<^>> UnaryExprPrimaryExpr <<^>> PrimExprOperand <<^>> OperandName <<^>> Identifier <^> x
 
 unaryOpCons :: UnaryOp -> Expression -> Maybe Expression
-unaryOpCons op (ExprUnaryExpr e) = Just $ ExprUnaryExpr $ UnaryExprUnaryOp op e
+unaryOpCons op (WithPos{wpVal = ExprUnaryExpr e}) =
+  Just $ pure . ExprUnaryExpr . pure $ UnaryExprUnaryOp op e
 unaryOpCons _ _ = Nothing
 
 binaryOpCons :: BinaryOp -> Expression -> Expression -> Expression
-binaryOpCons = ExprBinaryOp
+binaryOpCons op e1 e2 = pure $ ExprBinaryOp op e1 e2
 
--- Below are functions for pretty printing the AST.
+-- == Below are functions for pretty printing the AST ==
 
 exprStr :: Expression -> String
 exprStr e = show $ toLazyByteString $ exprBldIdent 0 e
@@ -207,25 +309,31 @@ exprBld = exprBldIdent 0
 
 exprBldIdent :: Int -> Expression -> Builder
 exprBldIdent ident e =
-  case e of
+  case wpVal e of
     ExprUnaryExpr ue -> unaryBld ident ue
     ExprBinaryOp op e1 e2 ->
       exprBldIdent ident e1
         <> char7 ' '
-        <> string7 (show op)
+        <> binopBld op
         <> char7 ' '
         <> exprBldIdent ident e2
 
+binopBld :: BinaryOp -> Builder
+binopBld op = string7 (show (wpVal op :: BinaryOpNode))
+
 unaryBld :: Int -> UnaryExpr -> Builder
-unaryBld ident e = case e of
+unaryBld ident e = case wpVal e of
   UnaryExprPrimaryExpr pe -> primBld ident pe
-  UnaryExprUnaryOp op ue -> string7 (show op) <> unaryBld ident ue
+  UnaryExprUnaryOp op ue -> unaryOpBld op <> unaryBld ident ue
+
+unaryOpBld :: UnaryOp -> Builder
+unaryOpBld op = string7 (show (wpVal op :: UnaryOpNode))
 
 primBld :: Int -> PrimaryExpr -> Builder
-primBld ident e = case e of
-  PrimExprOperand op -> opBld ident op
+primBld ident e = case wpVal e of
+  PrimExprOperand op -> opndBld ident op
   PrimExprSelector pe sel -> primBld ident pe <> string7 "." <> selBld sel
-  PrimExprIndex pe (Index ie) -> primBld ident pe <> string7 "[" <> exprBldIdent ident ie <> string7 "]"
+  PrimExprIndex pe (WithPos{wpVal = Index ie}) -> primBld ident pe <> string7 "[" <> exprBldIdent ident ie <> string7 "]"
   PrimExprArguments pe es ->
     primBld ident pe
       <> string7 "("
@@ -233,22 +341,22 @@ primBld ident e = case e of
       <> string7 ")"
 
 selBld :: Selector -> Builder
-selBld e = case e of
-  IDSelector is -> string7 is
+selBld e = case wpVal e of
+  IDSelector is -> string7 (wpVal is)
   StringSelector s -> string7 s
 
-opBld :: Int -> Operand -> Builder
-opBld ident op = case op of
+opndBld :: Int -> Operand -> Builder
+opndBld ident op = case wpVal op of
   OpLiteral lit -> litBld ident lit
   OperandName on -> opNameBld ident on
   OpExpression e -> exprBldIdent ident e
 
 opNameBld :: Int -> OperandName -> Builder
-opNameBld _ e = case e of
-  Identifier i -> string7 i
+opNameBld _ e = case wpVal e of
+  Identifier i -> string7 (wpVal i)
 
 litBld :: Int -> Literal -> Builder
-litBld ident e = case e of
+litBld ident e = case wpVal e of
   StringLit s -> strLitBld s
   IntLit i -> integerDec i
   FloatLit f -> string7 (show f)
@@ -263,7 +371,7 @@ strLitBld :: StringLit -> Builder
 strLitBld (SimpleStringLit s) = char7 '"' <> string7 s <> char7 '"'
 
 structLitBld :: Int -> StructLit -> Builder
-structLitBld ident (StructLit decls) =
+structLitBld ident (WithPos{wpVal = StructLit decls}) =
   if null decls
     then string7 "{}"
     else
@@ -284,25 +392,26 @@ declsBld ident (x : xs) =
     <> declsBld ident xs
 
 declBld :: Int -> Declaration -> Builder
-declBld i e = case e of
+declBld i e = case wpVal e of
   FieldDecl f -> fieldDeclBld i f
-  EllipsisDecl (Ellipsis _) -> string7 "..."
+  EllipsisDecl (WithPos{wpVal = Ellipsis _}) -> string7 "..."
   Embedding eb -> embeddingBld i eb
-  DeclLet (LetClause ident binde) -> string7 "let" <> string7 ident <> string7 " = " <> exprBldIdent 0 binde
+  DeclLet (WithPos{wpVal = LetClause ident binde}) ->
+    string7 "let" <> string7 (wpVal ident) <> string7 " = " <> exprBldIdent 0 binde
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
-fieldDeclBld ident e = case e of
+fieldDeclBld ident e = case wpVal e of
   Field ls fe ->
     foldr (\l acc -> labelBld l <> string7 ": " <> acc) mempty ls
       <> exprBldIdent ident fe
 
 embeddingBld :: Int -> Embedding -> Builder
-embeddingBld ident e = case e of
+embeddingBld ident e = case wpVal e of
   EmbedComprehension _ -> string7 "<undefined>"
   AliasExpr ex -> exprBldIdent ident ex
 
 listBld :: ElementList -> Builder
-listBld (EmbeddingList l) = string7 "[" <> goList l
+listBld (WithPos{wpVal = EmbeddingList l}) = string7 "[" <> goList l
  where
   goList :: [Embedding] -> Builder
   goList [] = string7 "]"
@@ -310,10 +419,10 @@ listBld (EmbeddingList l) = string7 "[" <> goList l
   goList (x : xs) = embeddingBld 0 x <> string7 ", " <> goList xs
 
 labelBld :: Label -> Builder
-labelBld (Label e) = labelExprBld e
+labelBld (WithPos{wpVal = Label e}) = labelExprBld e
 
 labelExprBld :: LabelExpr -> Builder
-labelExprBld e = case e of
+labelExprBld e = case wpVal e of
   LabelName ln cnstr -> case cnstr of
     RegularLabel -> labelNameBld ln
     OptionalLabel -> labelNameBld ln <> string7 "?"
@@ -322,7 +431,7 @@ labelExprBld e = case e of
   LabelPattern le -> string7 "[" <> exprBldIdent 0 le <> string7 "]"
 
 labelNameBld :: LabelName -> Builder
-labelNameBld e = case e of
-  LabelID i -> string7 i
+labelNameBld e = case wpVal e of
+  LabelID i -> string7 (wpVal i)
   LabelString s -> string7 s
   LabelNameExpr ex -> char7 '(' <> exprBldIdent 0 ex <> char7 ')'

@@ -27,7 +27,7 @@ instance (BuildASTExpr t) => BuildASTExpr (UnifyOp t) where
     foldM
       ( \acc x -> do
           right <- buildASTExpr c x
-          return $ AST.ExprBinaryOp AST.Unify acc right
+          return $ pure $ AST.ExprBinaryOp (pure AST.Unify) acc right
       )
       leftMost
       (tail (ufConjuncts op))

@@ -6,35 +6,7 @@
 
 module EvalExpr where
 
-import AST (
-  BinaryOp (Disjoin, Unify),
-  Clause (..),
-  Clauses (..),
-  Comprehension (..),
-  Declaration (..),
-  ElementList (..),
-  EllipsisDecl (Ellipsis),
-  Embedding (..),
-  Expression (..),
-  FieldDecl (Field),
-  Index (..),
-  Label (..),
-  LabelConstraint (..),
-  LabelExpr (LabelName, LabelPattern),
-  LabelName (..),
-  LetClause (LetClause),
-  Literal (..),
-  Operand (OpExpression, OpLiteral, OperandName),
-  OperandName (Identifier),
-  PrimaryExpr (..),
-  Selector (..),
-  SourceFile (SourceFile),
-  StartClause (..),
-  StringLit (SimpleStringLit),
-  StructLit (..),
-  UnaryExpr (..),
-  UnaryOp (Star),
- )
+import AST
 import Common (Env, IDStore (..))
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
@@ -57,7 +29,7 @@ type EvalEnv r s m = (Env r s m, IDStore s)
 evalSourceFile :: (EvalEnv r s m) => SourceFile -> m VT.Tree
 evalSourceFile (SourceFile decls) = do
   logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
-  evalStructLit (StructLit decls)
+  evalStructLit (pure $ StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -68,17 +40,17 @@ tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
 evalExpr :: (EvalEnv r s m) => Expression -> m VT.Tree
 evalExpr e = do
-  t <- case e of
+  t <- case wpVal e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
   return $ VT.setExpr t (Just e)
 
 evalLiteral :: (EvalEnv r s m) => Literal -> m VT.Tree
-evalLiteral (LitStructLit s) = evalStructLit s
-evalLiteral (ListLit l) = evalListLit l
+evalLiteral (wpVal -> LitStructLit s) = evalStructLit s
+evalLiteral (wpVal -> ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
-  v = case lit of
+  v = case wpVal lit of
     StringLit (SimpleStringLit s) -> VT.mkAtomTree $ VT.String s
     IntLit i -> VT.mkAtomTree $ VT.Int i
     FloatLit a -> VT.mkAtomTree $ VT.Float a
@@ -86,9 +58,10 @@ evalLiteral lit = return v
     NullLit -> VT.mkAtomTree VT.Null
     TopLit -> VT.mkNewTree VT.TNTop
     BottomLit -> VT.mkBottomTree ""
+    _ -> error "evalLiteral: invalid literal"
 
 evalStructLit :: (EvalEnv r s m) => StructLit -> m VT.Tree
-evalStructLit (StructLit decls) = do
+evalStructLit (wpVal -> StructLit decls) = do
   sid <- allocOID
   foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
 
@@ -96,49 +69,64 @@ evalStructLit (StructLit decls) = do
 evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
 evalDecl x decl = case VT.treeNode x of
   VT.TNBottom _ -> return x
-  VT.TNBlock block -> case decl of
+  VT.TNBlock block -> case wpVal decl of
     Embedding ed -> do
       v <- evalEmbedding False ed
       oid <- allocOID
       let adder = VT.EmbedSAdder oid v
       addNewBlockElem adder block
-    EllipsisDecl (Ellipsis cM) ->
+    EllipsisDecl (wpVal -> Ellipsis cM) ->
       maybe
         (return (VT.mkBlockTree block))
         (\_ -> throwError "default constraints are not implemented yet")
         cM
-    FieldDecl (AST.Field ls e) -> do
+    FieldDecl (wpVal -> AST.Field ls e) -> do
       sfa <- evalFDeclLabels ls e
       addNewBlockElem sfa block
-    DeclLet (LetClause ident binde) -> do
+    DeclLet (wpVal -> LetClause ident binde) -> do
       val <- evalExpr binde
-      let adder = VT.LetSAdder ident val
+      let adder = VT.LetSAdder (wpVal ident) val
       addNewBlockElem adder block
   _ -> throwErrSt "invalid struct"
 
 evalEmbedding :: (EvalEnv r s m) => Bool -> Embedding -> m VT.Tree
-evalEmbedding _ (AliasExpr e) = evalExpr e
-evalEmbedding isListCompreh (EmbedComprehension (Comprehension (Clauses (GuardClause ge) cls) lit)) = do
-  gev <- evalExpr ge
-  clsv <- mapM evalClause cls
-  sv <- evalStructLit lit
-  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension isListCompreh (VT.IterClauseIf gev : clsv) sv
-evalEmbedding isListCompreh (EmbedComprehension (Comprehension (Clauses (ForClause i jM fe) cls) lit)) = do
-  fev <- evalExpr fe
-  clsv <- mapM evalClause cls
-  sv <- evalStructLit lit
-  return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension isListCompreh (VT.IterClauseFor i jM fev : clsv) sv
+evalEmbedding _ (wpVal -> AliasExpr e) = evalExpr e
+evalEmbedding
+  isListCompreh
+  ( wpVal ->
+      EmbedComprehension
+        (wpVal -> Comprehension (wpVal -> Clauses (wpVal -> GuardClause ge) cls) lit)
+    ) = do
+    gev <- evalExpr ge
+    clsv <- mapM evalClause cls
+    sv <- evalStructLit lit
+    return $ VT.mkMutableTree $ VT.Compreh $ VT.mkComprehension isListCompreh (VT.IterClauseIf gev : clsv) sv
+evalEmbedding
+  isListCompreh
+  ( wpVal ->
+      EmbedComprehension (wpVal -> Comprehension (wpVal -> Clauses (wpVal -> ForClause i jM fe) cls) lit)
+    ) = do
+    fev <- evalExpr fe
+    clsv <- mapM evalClause cls
+    sv <- evalStructLit lit
+    return $
+      VT.mkMutableTree $
+        VT.Compreh $
+          VT.mkComprehension isListCompreh (VT.IterClauseFor (wpVal i) (wpVal <$> jM) fev : clsv) sv
+evalEmbedding _ _ = throwErrSt "invalid embedding"
 
 evalClause :: (EvalEnv r s m) => Clause -> m (VT.IterClause VT.Tree)
-evalClause (ClauseStartClause (GuardClause e)) = do
-  t <- evalExpr e
-  return $ VT.IterClauseIf t
-evalClause (ClauseStartClause (ForClause i jM e)) = do
-  t <- evalExpr e
-  return $ VT.IterClauseFor i jM t
-evalClause (ClauseLetClause (LetClause ident le)) = do
-  lt <- evalExpr le
-  return $ VT.IterClauseLet ident lt
+evalClause c = case wpVal c of
+  ClauseStartClause (wpVal -> GuardClause e) -> do
+    t <- evalExpr e
+    return $ VT.IterClauseIf t
+  ClauseStartClause (wpVal -> ForClause (wpVal -> i) jM e) -> do
+    t <- evalExpr e
+    return $ VT.IterClauseFor i (wpVal <$> jM) t
+  ClauseLetClause (wpVal -> LetClause (wpVal -> ident) le) -> do
+    lt <- evalExpr le
+    return $ VT.IterClauseLet ident lt
+  _ -> throwErrSt $ printf "invalid clause: %s" (show c)
 
 evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m (VT.BlockElemAdder VT.Tree)
 evalFDeclLabels lbls e =
@@ -162,7 +150,7 @@ evalFDeclLabels lbls e =
         return adder
  where
   mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.BlockElemAdder VT.Tree)
-  mkAdder (Label le) val = case le of
+  mkAdder (wpVal -> Label le) val = case wpVal le of
     AST.LabelName ln c ->
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
        in case ln of
@@ -181,12 +169,12 @@ evalFDeclLabels lbls e =
 
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe String
-  sselFrom (LabelID ident) = Just ident
-  sselFrom (LabelString ls) = Just ls
+  sselFrom (wpVal -> LabelID (wpVal -> ident)) = Just ident
+  sselFrom (wpVal -> LabelString ls) = Just ls
   sselFrom _ = Nothing
 
   dselFrom :: LabelName -> Maybe AST.Expression
-  dselFrom (LabelNameExpr lne) = Just lne
+  dselFrom (wpVal -> LabelNameExpr lne) = Just lne
   dselFrom _ = Nothing
 
   cnstrFrom :: AST.LabelConstraint -> VT.StructFieldCnstr
@@ -196,7 +184,7 @@ evalFDeclLabels lbls e =
     RequiredLabel -> VT.SFCRequired
 
   isVar :: LabelName -> Bool
-  isVar (LabelID _) = True
+  isVar (wpVal -> LabelID _) = True
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
@@ -284,17 +272,16 @@ addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
       _ -> Nothing
 
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m VT.Tree
-evalListLit (AST.EmbeddingList es) = do
+evalListLit (wpVal -> AST.EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
   return $ VT.mkListTree xs
 
 evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m VT.Tree
-evalUnaryExpr ue@(UnaryExprPrimaryExpr primExpr) = do
-  t <- evalPrimExpr primExpr
-  return $ VT.setExpr t (Just (AST.ExprUnaryExpr ue))
-evalUnaryExpr ue@(UnaryExprUnaryOp op e) = do
-  t <- evalUnaryOp op e
-  return $ VT.setExpr t (Just (AST.ExprUnaryExpr ue))
+evalUnaryExpr ue = do
+  t <- case wpVal ue of
+    UnaryExprPrimaryExpr primExpr -> evalPrimExpr primExpr
+    UnaryExprUnaryOp op e -> evalUnaryOp op e
+  return $ VT.setExpr t (Just (AST.ExprUnaryExpr ue <$ ue))
 
 builtinOpNameTable :: [(String, VT.Tree)]
 builtinOpNameTable =
@@ -305,25 +292,26 @@ builtinOpNameTable =
     ++ builtinMutableTable
 
 evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m VT.Tree
-evalPrimExpr (PrimExprOperand op) = case op of
-  OpLiteral lit -> evalLiteral lit
-  OperandName (Identifier ident) -> case lookup ident builtinOpNameTable of
-    Just v -> return v
-    Nothing -> mkVarLinkTree ident
-  OpExpression expr -> do
-    x <- evalExpr expr
-    logDebugStr $ printf "evalPrimExpr: new root: %s" (show x)
-    return $ x{VT.treeIsRootOfSubTree = True}
-evalPrimExpr e@(PrimExprSelector primExpr sel) = do
-  p <- evalPrimExpr primExpr
-  evalSelector e sel p
-evalPrimExpr e@(PrimExprIndex primExpr idx) = do
-  p <- evalPrimExpr primExpr
-  evalIndex e idx p
-evalPrimExpr (PrimExprArguments primExpr aes) = do
-  p <- evalPrimExpr primExpr
-  args <- mapM evalExpr aes
-  replaceFuncArgs p args
+evalPrimExpr e = case wpVal e of
+  (PrimExprOperand op) -> case wpVal op of
+    OpLiteral lit -> evalLiteral lit
+    OperandName (wpVal -> Identifier (wpVal -> ident)) -> case lookup ident builtinOpNameTable of
+      Just v -> return v
+      Nothing -> mkVarLinkTree ident
+    OpExpression expr -> do
+      x <- evalExpr expr
+      logDebugStr $ printf "evalPrimExpr: new root: %s" (show x)
+      return $ x{VT.treeIsRootOfSubTree = True}
+  (PrimExprSelector primExpr sel) -> do
+    p <- evalPrimExpr primExpr
+    evalSelector e sel p
+  (PrimExprIndex primExpr idx) -> do
+    p <- evalPrimExpr primExpr
+    evalIndex e idx p
+  (PrimExprArguments primExpr aes) -> do
+    p <- evalPrimExpr primExpr
+    args <- mapM evalExpr aes
+    replaceFuncArgs p args
 
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
@@ -350,13 +338,13 @@ evalSelector ::
 evalSelector _ astSel oprnd =
   return $ VT.appendSelToRefTree oprnd (VT.mkAtomTree (VT.String sel))
  where
-  sel = case astSel of
-    IDSelector ident -> ident
+  sel = case wpVal astSel of
+    IDSelector ident -> wpVal ident
     AST.StringSelector str -> str
 
 evalIndex ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree
-evalIndex _ (AST.Index e) oprnd = do
+evalIndex _ (wpVal -> AST.Index e) oprnd = do
   sel <- evalExpr e
   return $ VT.appendSelToRefTree oprnd sel
 
@@ -367,7 +355,7 @@ unary operator should only be applied to atoms.
 evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m VT.Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  let tWithE = VT.setExpr t (Just (AST.ExprUnaryExpr e))
+  let tWithE = VT.setExpr t (Just (AST.ExprUnaryExpr e <$ e))
   return $ VT.mkNewTree (VT.TNMutable $ VT.mkUnaryOp op tWithE)
 
 {- | order of arguments is important for disjunctions.
@@ -376,12 +364,12 @@ left is always before right.
 -}
 evalBinary :: (EvalEnv r s m) => BinaryOp -> Expression -> Expression -> m VT.Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-evalBinary AST.Disjoin e1 e2 = evalDisj e1 e2
+evalBinary (wpVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
   case op of
-    AST.Unify -> return $ flattenUnify lt rt
+    (wpVal -> AST.Unify) -> return $ flattenUnify lt rt
     _ -> return $ VT.mkNewTree (VT.TNMutable $ VT.mkBinaryOp op lt rt)
 
 flattenUnify :: VT.Tree -> VT.Tree -> VT.Tree
@@ -396,16 +384,18 @@ flattenUnify l r = case getLeftAcc of
 
 evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m VT.Tree
 evalDisj e1 e2 = do
-  ((isLStar, lt), (isRStar, rt)) <- case (e1, e2) of
-    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
-      l <- evalUnaryExpr se1
-      r <- evalUnaryExpr se2
-      return ((,) True l, (,) True r)
-    (ExprUnaryExpr (UnaryExprUnaryOp Star se1), _) -> do
+  ((isLStar, lt), (isRStar, rt)) <- case (wpVal e1, wpVal e2) of
+    ( ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se1)
+      , ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se2)
+      ) -> do
+        l <- evalUnaryExpr se1
+        r <- evalUnaryExpr se2
+        return ((,) True l, (,) True r)
+    (ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se1), _) -> do
       l <- evalUnaryExpr se1
       r <- evalExpr e2
       return ((,) True l, (,) False r)
-    (_, ExprUnaryExpr (UnaryExprUnaryOp Star se2)) -> do
+    (_, ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se2)) -> do
       l <- evalExpr e1
       r <- evalUnaryExpr se2
       return ((,) False l, (,) True r)

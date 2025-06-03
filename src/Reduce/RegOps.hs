@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Reduce.RegOps where
 
@@ -47,7 +48,7 @@ regUnaryOp op opTC = do
     Just t -> case VT.treeNode t of
       VT.TNBottom _ -> retVal t
       _
-        | Just ta <- VT.getAtomFromTree t -> case (op, ta) of
+        | Just ta <- VT.getAtomFromTree t -> case (AST.wpVal op, ta) of
             (AST.Plus, VT.Int i) -> ia i id
             (AST.Plus, VT.Float i) -> fa i id
             (AST.Minus, VT.Int i) -> ia i negate
@@ -131,15 +132,15 @@ regBinLeftBottom ::
   VT.Tree ->
   Maybe VT.Tree ->
   VT.Tree
-regBinLeftBottom AST.Equ _ t2M = case t2M of
+regBinLeftBottom (AST.wpVal -> AST.Equ) _ t2M = case t2M of
   -- If the second argument is a bottom, then the result is True.
   Just t2
     | VT.TNBottom _ <- VT.treeNode t2 -> VT.mkAtomTree (VT.Bool True)
   -- If the second argument is incomplete which is treated as bottom, then the result is True.
   Nothing -> VT.mkAtomTree (VT.Bool True)
   _ -> VT.mkAtomTree (VT.Bool False)
-regBinLeftBottom (AST.BinRelOp AST.NE) b1 t2M = do
-  let r = regBinLeftBottom AST.Equ b1 t2M
+regBinLeftBottom (AST.wpVal -> AST.BinRelOp AST.NE) b1 t2M = do
+  let r = regBinLeftBottom (pure AST.Equ) b1 t2M
   case VT.getAtomFromTree r of
     Just (VT.Bool b) -> VT.mkAtomTree (VT.Bool (not b))
     _ -> r
@@ -151,18 +152,18 @@ regBinLeftAtom ::
   (Path.BinOpDirect, VT.AtomV, TCOps.TrCur) ->
   (Path.BinOpDirect, TCOps.TrCur) ->
   m (Maybe VT.Tree)
-regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
+regBinLeftAtom op@(AST.wpVal -> opv) (d1, ta1, tc1) (d2, tc2) = do
   let
     t2 = Cursor.tcFocus tc2
-  logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show op) (show d1) (show ta1) (show d2) (show t2)
+  logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show opv) (show d1) (show ta1) (show d2) (show t2)
   if
     -- comparison operators
-    | isJust (lookup op cmpOps) -> case VT.treeNode t2 of
+    | isJust (lookup opv cmpOps) -> case VT.treeNode t2 of
         VT.TNAtom ta2 ->
           let
             a2 = VT.amvAtom ta2
             f :: (VT.Atom -> VT.Atom -> Bool)
-            f = fromJust (lookup op cmpOps)
+            f = fromJust (lookup opv cmpOps)
             rb = Right . VT.Bool
             r = case (a1, a2) of
               (VT.String _, VT.String _) -> rb $ dirApply f (d1, a1) a2
@@ -183,12 +184,12 @@ regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
         VT.TNList _ -> retVal $ cmpNull a1 t2
         _ -> regBinLeftOther op (d2, tc2) (d1, tc1)
     -- arithmetic operators
-    | op `elem` arithOps -> case VT.treeNode t2 of
+    | opv `elem` arithOps -> case VT.treeNode t2 of
         VT.TNAtom ta2 ->
           let
             ri = Right . VT.Int
             rf = Right . VT.Float
-            r = case op of
+            r = case opv of
               AST.Add -> case (a1, VT.amvAtom ta2) of
                 (VT.Int i1, VT.Int i2) -> ri $ dirApply (+) (d1, i1) i2
                 (VT.Int i1, VT.Float i2) -> rf $ dirApply (+) (d1, fromIntegral i1) i2
@@ -233,8 +234,8 @@ regBinLeftAtom op (d1, ta1, tc1) (d2, tc2) = do
     if
       -- There is no way for a non-atom to be compared with a non-null atom.
       | a /= VT.Null -> mismatch op a t
-      | op == AST.Equ -> VT.mkAtomTree (VT.Bool False)
-      | op == AST.BinRelOp AST.NE -> VT.mkAtomTree (VT.Bool True)
+      | opv == AST.Equ -> VT.mkAtomTree (VT.Bool False)
+      | opv == AST.BinRelOp AST.NE -> VT.mkAtomTree (VT.Bool True)
       | otherwise -> VT.mkBottomTree $ printf "operator %s is not supported" (show op)
 
   mismatchArith :: (Show a, Show b) => a -> b -> VT.Tree

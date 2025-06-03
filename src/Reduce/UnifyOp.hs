@@ -354,7 +354,7 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} unifyTC = do
     -- If only one side has an original expression, we can use it directly.
     [e] -> return e
     -- If both sides have original expressions, we need to unify them.
-    [e1, e2] -> return $ AST.binaryOpCons AST.Unify e1 e2
+    [e1, e2] -> return $ AST.binaryOpCons (pure AST.Unify) e1 e2
     _ -> throwErrSt "both CnstredVals are empty"
 
   rM <- unifyBinUTrees (ut1{utTC = VT.cnsedVal c1 `Cursor.setTCFocus` utTC ut1}) ut2 unifyTC

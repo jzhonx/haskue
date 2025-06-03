@@ -343,8 +343,8 @@ instance Show Tree where
 
 instance BuildASTExpr Tree where
   buildASTExpr cr t = case treeNode t of
-    TNTop -> return $ AST.litCons AST.TopLit
-    TNBottom _ -> return $ AST.litCons AST.BottomLit
+    TNTop -> return $ AST.litCons (pure AST.TopLit)
+    TNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
     TNAtom s -> buildASTExpr cr s
     TNBounds b -> buildASTExpr cr b
     TNBlock block@(Block{blkStruct = s})
@@ -362,11 +362,13 @@ instance BuildASTExpr Tree where
       Ref _ -> maybe (throwErrSt $ printf "expression not found for reference: %s" (show t)) return (treeExpr t)
       Compreh cph -> do
         ce <- buildComprehASTExpr cr cph
-        return $ AST.litCons $ AST.LitStructLit $ AST.StructLit [AST.Embedding $ AST.EmbedComprehension ce]
+        return $
+          AST.litCons $
+            AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
       DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
       UOp _ -> maybe (buildASTExpr cr mut) return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
-    TNRefCycle _ -> return $ AST.litCons AST.TopLit
+    TNRefCycle _ -> return $ AST.litCons (pure AST.TopLit)
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
 
 -- | Patterns are not included in the AST.
@@ -377,43 +379,49 @@ buildStructASTExpr concrete block@(Block{blkStruct = s}) =
     processSField (sel, sf) = do
       e <- buildASTExpr concrete (ssfValue sf)
       return $
-        AST.FieldDecl $
-          AST.Field
-            [ labelCons (ssfAttr sf) $
-                if lbAttrIsIdent (ssfAttr sf)
-                  then AST.LabelID sel
-                  else AST.LabelString sel
-            ]
-            e
+        AST.FieldDecl
+          AST.<^> pure
+            ( AST.Field
+                [ labelCons (ssfAttr sf) $
+                    if lbAttrIsIdent (ssfAttr sf)
+                      then AST.LabelID AST.<^> (pure sel)
+                      else pure $ AST.LabelString sel
+                ]
+                e
+            )
 
     processDynField :: (Env r s m) => DynamicField Tree -> m AST.Declaration
     processDynField sf = do
       e <- buildASTExpr concrete (dsfValue sf)
       return $
-        AST.FieldDecl $
-          AST.Field
-            [ labelCons (dsfAttr sf) $ AST.LabelNameExpr (dsfLabelExpr sf)
-            ]
-            e
+        AST.FieldDecl
+          AST.<^> pure
+            ( AST.Field
+                [ labelCons (dsfAttr sf) (pure $ AST.LabelNameExpr (dsfLabelExpr sf))
+                ]
+                e
+            )
 
     processEmbed :: (Env r s m) => Embedding Tree -> m AST.Declaration
     processEmbed embed = case treeNode (embValue embed) of
       TNMutable (Compreh c) -> do
         ce <- buildComprehASTExpr concrete c
-        return $ AST.Embedding $ AST.EmbedComprehension ce
+        return $ AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce
       _ -> do
         e <- buildASTExpr concrete (embValue embed)
-        return $ AST.Embedding $ AST.AliasExpr e
+        return $ AST.Embedding AST.<<^>> AST.AliasExpr AST.<^> e
 
     labelCons :: LabelAttr -> AST.LabelName -> AST.Label
     labelCons attr ln =
-      AST.Label $
-        AST.LabelName
-          ln
-          ( case lbAttrCnstr attr of
-              SFCRegular -> AST.RegularLabel
-              SFCRequired -> AST.RequiredLabel
-              SFCOptional -> AST.OptionalLabel
+      AST.Label
+        AST.<^> pure
+          ( AST.LabelName
+              ln
+              ( case lbAttrCnstr attr of
+                  SFCRegular -> AST.RegularLabel
+                  SFCRequired -> AST.RequiredLabel
+                  SFCOptional -> AST.OptionalLabel
+              )
           )
    in
     do
@@ -445,7 +453,7 @@ buildStructASTExpr concrete block@(Block{blkStruct = s}) =
           (IntMap.elems $ stcDynFields s)
       embeds <- mapM processEmbed (IntMap.elems $ blkEmbeds block)
 
-      return $ AST.litCons $ AST.LitStructLit $ AST.StructLit (stcs ++ dyns ++ embeds)
+      return $ AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit (stcs ++ dyns ++ embeds))
 
 instance Eq Tree where
   (==) t1 t2 = treeNode t1 == treeNode t2
