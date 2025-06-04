@@ -89,8 +89,8 @@ parseExpr s = case runParser (entry expr) 0 "" s of
   Left err -> throwError $ show err
   Right res -> return $ wtVal res
 
-parseSourceFile :: (MonadError String m) => String -> m SourceFile
-parseSourceFile s = case runParser (entry sourceFile) 0 "" s of
+parseSourceFile :: (MonadError String m) => String -> String -> m SourceFile
+parseSourceFile filename s = case runParser (entry sourceFile) 0 filename s of
   Left err -> throwError $ show err
   Right res -> return $ wtVal res
 
@@ -671,7 +671,7 @@ annotateLexemePos p = do
                     (sourceLine endPos)
                     (sourceColumn endPos)
                 )
-                (Just (sourceName startPos))
+                (let n = sourceName startPos in if length n == 0 then Nothing else Just n)
             )
       , wpVal = x
       }

@@ -45,7 +45,7 @@ data EvalConfig = EvalConfig
   , ecTracePrintTree :: Bool
   , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
-  , ecFileTreeAddr :: String
+  , ecFilePath :: String
   }
 
 emptyEvalConfig :: EvalConfig
@@ -56,7 +56,7 @@ emptyEvalConfig =
     , ecTracePrintTree = False
     , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
-    , ecFileTreeAddr = ""
+    , ecFilePath = ""
     }
 
 -- | Runner holds the configuration and functions for evaluation.
@@ -92,14 +92,14 @@ instance Common.HasConfig Runner where
   setConfig r c = r{rcConfig = c}
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
-runIO s conf =
+runIO eStr conf =
   if ecDebugLogging conf
     then runStderrLoggingT res
     else runNoLoggingT res
  where
   res :: (MonadError String m, MonadLogger m, MonadIO m) => m Builder
   res = do
-    r <- runStr s conf
+    r <- runStr eStr conf
     case r of
       Left err -> return $ string7 err
       Right
@@ -134,7 +134,7 @@ runStr s conf = do
     _ -> Right <$> evalStateT (runReaderT (Common.buildASTExpr False t) emptyRunner) emptyTrace
 
 runTreeStr :: (MonadError String m, MonadLogger m, MonadIO m) => String -> EvalConfig -> m VT.Tree
-runTreeStr s conf = parseSourceFile s >>= flip evalFile conf
+runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 
 evalFile :: (MonadError String m, MonadLogger m, MonadIO m) => SourceFile -> EvalConfig -> m VT.Tree
 evalFile sf conf = do

@@ -6,4 +6,5 @@ let z = 1
 	x: y
 }
 -- exp --
-error: identifier z is not found
+error: reference "z" is not found:
+	-:2:10

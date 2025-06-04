@@ -7,6 +7,7 @@
 
 module Reduce.RefSys where
 
+import qualified AST
 import qualified Common
 import Control.Monad (foldM, unless, when)
 import qualified Cursor
@@ -304,15 +305,6 @@ getDstRawOrErr valPath origAddrsM trail refEnv =
             f origValTC
         )
         origAddrsM
-
--- traceAdapt ::
---   (RM.ReduceMonad s r m) => m DstTC -> m (DstTC, String, String)
--- traceAdapt f = do
---   r <- f
---   let after = case r of
---         Left err -> err
---         Right m -> maybe (VT.mkBottomTree "Healthy Not found") Cursor.tcFocus m
---   return (r, "", show after)
 
 -- | Locate the reference.
 locateRef ::
@@ -719,6 +711,17 @@ getRefIdentAddr valPath origAddrsM tc = do
     )
     origAddrsM
 
+notFoundMsg :: (Common.Env r s m) => String -> Maybe AST.Position -> m String
+notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
+  return $
+    printf
+      "reference %s is not found:\n\t%s:%s:%s"
+      (show ident)
+      (fromMaybe "-" fM)
+      (show $ AST.posLine pos)
+      (show $ AST.posColumn pos)
+notFoundMsg ident pinfo = throwErrSt $ printf "position %s is not enough for identifier %s" (show pinfo) (show ident)
+
 -- | Locate the node in the lowest ancestor tree by given reference path. The path must start with a locatable ident.
 goTCLAAddr ::
   (RM.ReduceMonad s r m) => Path.ValPath -> TCOps.TrCur -> m DstTC
@@ -727,7 +730,10 @@ goTCLAAddr valPath tc = do
   let fstSel = fromJust $ Path.headSel valPath
   ident <- selToIdent fstSel
   searchTCIdent ident tc >>= \case
-    Nothing -> return . Left $ VT.mkBottomTree $ printf "identifier %s is not found" (show fstSel)
+    Nothing -> do
+      errMsg <- notFoundMsg ident (VT.treeExpr (Cursor.tcFocus tc) >>= AST.wpPos)
+      return . Left $
+        VT.mkBottomTree errMsg
     Just (identTC, _) -> do
       -- The ref is non-empty, so the rest must be a valid addr.
       let rest = fromJust $ Path.tailValPath valPath

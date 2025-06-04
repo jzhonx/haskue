@@ -1,4 +1,5 @@
 -- ref_err1 --
 a: b
 -- exp --
-error: identifier b is not found
+error: reference "b" is not found:
+	-:1:4

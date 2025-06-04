@@ -57,6 +57,8 @@ if [[ "$1" == "run" ]]; then
     cabal run haskue -- -d --trace --show-mutable-args --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
   fi
 
+  echo ""
+
   go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
 
   # show the size of the log file
