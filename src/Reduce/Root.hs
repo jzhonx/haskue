@@ -14,7 +14,16 @@ import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.Mutate as Mutate
-import Reduce.Nodes (close, reduceBlock, reduceCnstredVal, reduceCompreh, reduceDisj, reduceList, reduceeDisjOp)
+import Reduce.Nodes (
+  close,
+  reduceBlock,
+  reduceCnstredVal,
+  reduceCompreh,
+  reduceDisj,
+  reduceInterpolation,
+  reduceList,
+  reduceeDisjOp,
+ )
 import qualified Reduce.Notif as Notif
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
@@ -119,6 +128,8 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
                 (return Nothing)
                 (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
                 rM
+            VT.Itp itp -> do
+              reduceInterpolation itp tc
           return (r, False)
       setMutRes isIterBinding mut r tc
     VT.TNBlock _ -> reduceBlock tc

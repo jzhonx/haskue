@@ -20,6 +20,7 @@ module Value.Tree (
   module Value.Comprehension,
   module Value.DisjoinOp,
   module Value.UnifyOp,
+  module Value.Interpolation,
 )
 where
 
@@ -49,6 +50,7 @@ import Value.Comprehension
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Interpolation
 import Value.List
 import Value.Mutable
 import Value.Reference
@@ -322,6 +324,19 @@ buildRepTreeTN t tn opt = case tn of
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ufValue u)
        in
         consRep (symbol, "", consFields (conjuncts ++ val), [])
+    Itp itp ->
+      let
+        exprs =
+          if trboShowMutArgs opt
+            then
+              zipWith
+                (\j v -> (show (MutableArgTASeg j), mempty, v))
+                [0 ..]
+                (itpExprs itp)
+            else []
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (itpValue itp)
+       in
+        consRep (symbol, "", consFields (exprs ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
@@ -367,6 +382,7 @@ instance BuildASTExpr Tree where
             AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
       DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
       UOp _ -> maybe (buildASTExpr cr mut) return (treeExpr t)
+      Itp _ -> maybe (throwErrSt "expression not found for interpolation") return (treeExpr t)
     TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
     TNRefCycle _ -> return $ AST.litCons (pure AST.TopLit)
     TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
@@ -529,6 +545,7 @@ showTreeSymbol t = case treeNode t of
     Compreh _ -> "compreh"
     DisjOp _ -> "disjoin"
     UOp _ -> "unify"
+    Itp _ -> "inter"
   TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
@@ -749,6 +766,11 @@ getListFromTree t = case treeNode t of
   TNList l -> Just l
   _ -> Nothing
 
+getStructFromTree :: Tree -> Maybe (Struct Tree)
+getStructFromTree t = case treeNode t of
+  TNBlock Block{blkStruct = struct} -> Just struct
+  _ -> Nothing
+
 getCnstredValFromTree :: Tree -> Maybe Tree
 getCnstredValFromTree t = case treeNode t of
   TNCnstredVal c -> Just $ cnsedVal c
@@ -764,6 +786,16 @@ getIntFromTree :: Tree -> Maybe Int
 getIntFromTree t = case treeNode t of
   (TNMutable mut) -> getMutVal mut >>= getIntFromTree
   _ -> getAtomVFromTree t >>= getIntFromAtomV
+
+getBoolFromTree :: Tree -> Maybe Bool
+getBoolFromTree t = case treeNode t of
+  (TNMutable mut) -> getMutVal mut >>= getBoolFromTree
+  _ -> getAtomVFromTree t >>= getBoolFromAtomV
+
+getFloatFromTree :: Tree -> Maybe Float
+getFloatFromTree t = case treeNode t of
+  (TNMutable mut) -> getMutVal mut >>= getFloatFromTree
+  _ -> getAtomVFromTree t >>= getFloatFromAtomV
 
 mkNewTree :: TreeNode Tree -> Tree
 mkNewTree n = emptyTree{treeNode = n}

@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -48,10 +49,14 @@ evalExpr e = do
 evalLiteral :: (EvalEnv r s m) => Literal -> m VT.Tree
 evalLiteral (wpVal -> LitStructLit s) = evalStructLit s
 evalLiteral (wpVal -> ListLit l) = evalListLit l
+evalLiteral (wpVal -> StringLit (wpVal -> SimpleStringL s)) = do
+  rE <- simpleStringLitToStr s
+  return $ case rE of
+    Left t -> t
+    Right str -> VT.mkAtomTree $ VT.String str
 evalLiteral lit = return v
  where
   v = case wpVal lit of
-    StringLit (wpVal -> SimpleStringL s) -> VT.mkAtomTree $ VT.String $ simpleStringLitToStr s
     IntLit i -> VT.mkAtomTree $ VT.Int i
     FloatLit a -> VT.mkAtomTree $ VT.Float a
     BoolLit b -> VT.mkAtomTree $ VT.Bool b
@@ -65,15 +70,31 @@ evalStructLit (wpVal -> StructLit decls) = do
   sid <- allocOID
   foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
 
-simpleStringLitToStr :: SimpleStringLit -> String
-simpleStringLitToStr (wpVal -> SimpleStringLit segs) =
-  foldr
-    ( \seg acc -> case seg of
-        UnicodeVal x -> x : acc
-        _ -> acc
-    )
-    ""
-    segs
+simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either VT.Tree String)
+simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
+  (asM, aSegs, aExprs) <-
+    foldM
+      ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
+          UnicodeVal x -> return (maybe (Just [x]) (\y -> Just $ y ++ [x]) accCurStrM, accItpSegs, accItpExprs)
+          InterpolationStr (wpVal -> Interpolation e) -> do
+            t <- evalExpr e
+            -- First append the current string segment to the accumulator if the current string segment exists, then
+            -- append the interpolation segment. Finally reset the current string segment to Nothing.
+            return
+              ( Nothing
+              , accItpSegs ++ (maybe [] (\y -> [VT.IplSegStr y]) accCurStrM ++ [VT.IplSegExpr $ length accItpExprs])
+              , accItpExprs ++ [t]
+              )
+      )
+      (Nothing, [], [])
+      segs
+  let rSegs = maybe aSegs (\x -> aSegs ++ [VT.IplSegStr x]) asM
+  if
+    | null rSegs -> return $ Right ""
+    | not (null aExprs) ->
+        return $ Left $ VT.mkMutableTree $ VT.mkItpMutable rSegs aExprs
+    | length rSegs == 1, VT.IplSegStr s <- head rSegs -> return $ Right s
+    | otherwise -> throwErrSt $ printf "invalid simple string literal: %s" (show segs)
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree.
 evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
@@ -164,13 +185,20 @@ evalFDeclLabels lbls e =
     AST.LabelName ln c ->
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
        in case ln of
-            (sselFrom -> Just key) -> do
+            (toIDentLabel -> Just key) -> do
               logDebugStr $ printf "evalFDeclLabels: key: %s, mkAdder, val: %s" key (show val)
               return $ VT.StaticSAdder key (VT.staticFieldMker val attr)
-            (dselFrom -> Just se) -> do
+            (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
               oid <- allocOID
               return $ VT.DynamicSAdder oid (VT.DynamicField oid attr selTree se val)
+            (toSStrLabel -> Just ss) -> do
+              rE <- simpleStringLitToStr ss
+              case rE of
+                Right str -> return $ VT.StaticSAdder str (VT.staticFieldMker val attr)
+                Left t -> do
+                  oid <- allocOID
+                  return $ VT.DynamicSAdder oid (VT.DynamicField oid attr t undefined val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
@@ -178,14 +206,17 @@ evalFDeclLabels lbls e =
       return (VT.CnstrSAdder oid pat val)
 
   -- Returns the label name and the whether the label is static.
-  sselFrom :: LabelName -> Maybe String
-  sselFrom (wpVal -> LabelID (wpVal -> ident)) = Just ident
-  sselFrom (wpVal -> LabelString ls) = Just (simpleStringLitToStr ls)
-  sselFrom _ = Nothing
+  toIDentLabel :: LabelName -> Maybe String
+  toIDentLabel (wpVal -> LabelID (wpVal -> ident)) = Just ident
+  toIDentLabel _ = Nothing
 
-  dselFrom :: LabelName -> Maybe AST.Expression
-  dselFrom (wpVal -> LabelNameExpr lne) = Just lne
-  dselFrom _ = Nothing
+  toDynLabel :: LabelName -> Maybe AST.Expression
+  toDynLabel (wpVal -> LabelNameExpr lne) = Just lne
+  toDynLabel _ = Nothing
+
+  toSStrLabel :: LabelName -> Maybe AST.SimpleStringLit
+  toSStrLabel (wpVal -> LabelString ls) = Just ls
+  toSStrLabel _ = Nothing
 
   cnstrFrom :: AST.LabelConstraint -> VT.StructFieldCnstr
   cnstrFrom c = case c of
@@ -345,12 +376,15 @@ If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is
 -}
 evalSelector ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Selector -> VT.Tree -> m VT.Tree
-evalSelector _ astSel oprnd =
-  return $ VT.appendSelToRefTree oprnd (VT.mkAtomTree (VT.String sel))
- where
-  sel = case wpVal astSel of
-    IDSelector ident -> wpVal ident
-    AST.StringSelector s -> simpleStringLitToStr s
+evalSelector _ astSel oprnd = do
+  let f sel = VT.appendSelToRefTree oprnd (VT.mkAtomTree (VT.String sel))
+  case wpVal astSel of
+    IDSelector ident -> return $ f (wpVal ident)
+    AST.StringSelector s -> do
+      rE <- simpleStringLitToStr s
+      case rE of
+        Left _ -> return $ VT.mkBottomTree $ printf "selector should not have interpolation"
+        Right str -> return $ f str
 
 evalIndex ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree

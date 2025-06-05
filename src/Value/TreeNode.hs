@@ -33,6 +33,7 @@ import Value.Comprehension
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
 import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
+import Value.Interpolation
 import Value.List (List (lstSubs))
 import Value.Mutable (
   Mutable (..),
@@ -123,7 +124,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
     | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
     | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
     | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
-    -- \| (ComprehTASeg ComprehStartValTASeg, Compreh c) <- (seg, mut) -> return $ getValFromStartClause (cphStart c)
+    | (MutableArgTASeg i, Itp itp) <- (seg, mut) -> itpExprs itp `indexList` i
     | (ComprehTASeg (ComprehIterClauseValTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
     | (ComprehTASeg ComprehIterValTASeg, Compreh c) <- (seg, mut) -> cphIterVal c
@@ -171,6 +172,12 @@ setSubTreeTN seg subT parT = do
           let
             conjuncts = ufConjuncts u
             l = TNMutable . UOp $ u{ufConjuncts = take i conjuncts ++ [subT] ++ drop (i + 1) conjuncts}
+          return l
+      | MutableArgTASeg i <- seg
+      , Itp p <- mut -> do
+          let
+            exprs = itpExprs p
+            l = TNMutable . Itp $ p{itpExprs = take i exprs ++ [subT] ++ drop (i + 1) exprs}
           return l
       | ComprehTASeg ComprehIterValTASeg <- seg
       , Compreh c <- mut ->

@@ -43,6 +43,7 @@ library
         Value.Constraint,
         Value.Disj,
         Value.DisjoinOp,
+        Value.Interpolation,
         Value.List,
         Value.Mutable,
         Value.Reference,

@@ -70,5 +70,21 @@ getIntFromAtom a = case a of
   Int i -> Just (fromIntegral i)
   _ -> Nothing
 
+getBoolFromAtom :: Atom -> Maybe Bool
+getBoolFromAtom a = case a of
+  Bool b -> Just b
+  _ -> Nothing
+
+getFloatFromAtom :: Atom -> Maybe Float
+getFloatFromAtom a = case a of
+  Float f -> Just (fromRational (toRational f))
+  _ -> Nothing
+
 getIntFromAtomV :: AtomV -> Maybe Int
 getIntFromAtomV (AtomV a) = getIntFromAtom a
+
+getBoolFromAtomV :: AtomV -> Maybe Bool
+getBoolFromAtomV (AtomV a) = getBoolFromAtom a
+
+getFloatFromAtomV :: AtomV -> Maybe Float
+getFloatFromAtomV (AtomV a) = getFloatFromAtom a

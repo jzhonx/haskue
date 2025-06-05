@@ -10,6 +10,7 @@ import Common (BuildASTExpr (..), Env)
 import Exception (throwErrSt)
 import Value.Comprehension
 import Value.DisjoinOp
+import Value.Interpolation
 import Value.Reference
 import Value.UnifyOp
 
@@ -20,6 +21,7 @@ data Mutable t
   | Compreh (Comprehension t)
   | DisjOp (DisjoinOp t)
   | UOp (UnifyOp t)
+  | Itp (Interpolation t)
 
 instance (Eq t) => Eq (Mutable t) where
   (==) (RegOp m1) (RegOp m2) = m1 == m2
@@ -27,6 +29,7 @@ instance (Eq t) => Eq (Mutable t) where
   (==) (Compreh c1) (Compreh c2) = c1 == c2
   (==) (DisjOp d1) (DisjOp d2) = d1 == d2
   (==) (UOp u1) (UOp u2) = u1 == u2
+  (==) (Itp i1) (Itp i2) = i1 == i2
   (==) _ _ = False
 
 instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
@@ -35,6 +38,7 @@ instance (BuildASTExpr t) => BuildASTExpr (Mutable t) where
   buildASTExpr _ (Compreh _) = throwErrSt "AST should not be built from Comprehension"
   buildASTExpr _ (DisjOp _) = throwErrSt "AST should not be built from DisjoinOp"
   buildASTExpr c (UOp u) = buildASTExpr c u
+  buildASTExpr _ (Itp _) = throwErrSt "AST should not be built from Interpolation"
 
 data OpType
   = UnaryOpType AST.UnaryOp
@@ -86,6 +90,7 @@ getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
 getMutName (Compreh _) _ = "comprehend"
 getMutName (DisjOp _) _ = "disjoin"
 getMutName (UOp _) _ = "unify"
+getMutName (Itp _) _ = "inter"
 
 getMutVal :: Mutable t -> Maybe t
 getMutVal (RegOp mut) = ropValue mut
@@ -93,6 +98,7 @@ getMutVal (Ref ref) = refValue ref
 getMutVal (Compreh c) = cphValue c
 getMutVal (DisjOp d) = djoValue d
 getMutVal (UOp u) = ufValue u
+getMutVal (Itp i) = itpValue i
 
 setMutVal :: Maybe t -> Mutable t -> Mutable t
 setMutVal m (RegOp mut) = RegOp $ mut{ropValue = m}
@@ -100,6 +106,7 @@ setMutVal m (Ref ref) = Ref $ ref{refValue = m}
 setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
 setMutVal m (DisjOp d) = DisjOp $ d{djoValue = m}
 setMutVal m (UOp u) = UOp $ u{ufValue = m}
+setMutVal m (Itp i) = Itp $ i{itpValue = m}
 
 getMutArgs :: Mutable t -> [t]
 getMutArgs (RegOp rop) = ropArgs rop
@@ -107,6 +114,7 @@ getMutArgs (Ref ref) = subRefArgs $ refArg ref
 getMutArgs (Compreh _) = []
 getMutArgs (DisjOp d) = map dstValue (djoTerms d)
 getMutArgs (UOp u) = ufConjuncts u
+getMutArgs (Itp itp) = itpExprs itp
 
 modifyRegMut :: (RegularOp t -> RegularOp t) -> Mutable t -> Mutable t
 modifyRegMut f (RegOp m) = RegOp $ f m
@@ -197,3 +205,6 @@ buildArgsExpr func ts = do
             )
             ets
         )
+
+mkItpMutable :: [IplSeg] -> [t] -> Mutable t
+mkItpMutable segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = exprs}

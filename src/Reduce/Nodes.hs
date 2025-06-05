@@ -925,3 +925,36 @@ newIterStruct bindings rawStruct _tc =
   isComprehension emb = case VT.treeNode (VT.embValue emb) of
     VT.TNMutable (VT.Compreh _) -> True
     _ -> False
+
+reduceInterpolation :: (RM.ReduceMonad s r m) => VT.Interpolation VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
+reduceInterpolation l tc = do
+  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+  r <-
+    foldM
+      ( \accRes seg -> case seg of
+          VT.IplSegExpr j -> do
+            argTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg j) tc
+            r <- reduce argTC
+            if
+              | Just s <- VT.getStringFromTree r -> return $ (++ s) <$> accRes
+              | Just i <- VT.getIntFromTree r -> return $ (++ show i) <$> accRes
+              | Just b <- VT.getBoolFromTree r -> return $ (++ show b) <$> accRes
+              | Just f <- VT.getFloatFromTree r -> return $ (++ show f) <$> accRes
+              | Just _ <- VT.getStructFromTree r ->
+                  return $
+                    Left $
+                      VT.mkBottomTree $
+                        printf "can not use struct in interpolation: %s" (VT.showTreeSymbol r)
+              | Just _ <- VT.getListFromTree r ->
+                  return $
+                    Left $
+                      VT.mkBottomTree $
+                        printf "can not use list in interpolation: %s" (VT.showTreeSymbol r)
+              | otherwise -> return undefined
+          VT.IplSegStr s -> return $ (++ s) <$> accRes
+      )
+      (Right "")
+      (VT.itpSegs l)
+  case r of
+    Left err -> return $ Just err
+    Right res -> return $ Just $ VT.mkAtomTree (VT.String res)
