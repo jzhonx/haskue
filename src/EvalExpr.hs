@@ -191,14 +191,14 @@ evalFDeclLabels lbls e =
             (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
               oid <- allocOID
-              return $ VT.DynamicSAdder oid (VT.DynamicField oid attr selTree se val)
+              return $ VT.DynamicSAdder oid (VT.DynamicField oid attr selTree False val)
             (toSStrLabel -> Just ss) -> do
               rE <- simpleStringLitToStr ss
               case rE of
                 Right str -> return $ VT.StaticSAdder str (VT.staticFieldMker val attr)
                 Left t -> do
                   oid <- allocOID
-                  return $ VT.DynamicSAdder oid (VT.DynamicField oid attr t undefined val)
+                  return $ VT.DynamicSAdder oid (VT.DynamicField oid attr t True val)
             _ -> throwErrSt "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe

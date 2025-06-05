@@ -110,7 +110,8 @@ data DynamicField t = DynamicField
   { dsfID :: Int
   , dsfAttr :: LabelAttr
   , dsfLabel :: t
-  , dsfLabelExpr :: AST.Expression
+  , dsfLabelIsInterp :: Bool
+  -- ^ Whether the label is an interpolated label.
   , dsfValue :: t
   -- ^ The value is only for the storage purpose. It will not be reduced during reducing dynamic fields.
   }
@@ -171,7 +172,7 @@ instance (Eq t) => Eq (DynamicField t) where
     dsfValue f1 == dsfValue f2
       && dsfAttr f1 == dsfAttr f2
       && dsfLabel f1 == dsfLabel f2
-      && dsfLabelExpr f1 == dsfLabelExpr f2
+      && dsfLabelIsInterp f1 == dsfLabelIsInterp f2
 
 instance (Eq t) => Eq (Field t) where
   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2

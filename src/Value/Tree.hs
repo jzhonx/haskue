@@ -408,14 +408,20 @@ buildStructASTExpr concrete block@(Block{blkStruct = s}) =
 
     processDynField :: (Env r s m) => DynamicField Tree -> m AST.Declaration
     processDynField sf = do
-      e <- buildASTExpr concrete (dsfValue sf)
+      le <- buildASTExpr concrete (dsfLabel sf)
+      ve <- buildASTExpr concrete (dsfValue sf)
       return $
         AST.FieldDecl
           AST.<^> pure
             ( AST.Field
-                [ labelCons (dsfAttr sf) (pure $ AST.LabelNameExpr (dsfLabelExpr sf))
+                [ labelCons
+                    (dsfAttr sf)
+                    ( if dsfLabelIsInterp sf
+                        then undefined
+                        else pure $ AST.LabelNameExpr le
+                    )
                 ]
-                e
+                ve
             )
 
     processEmbed :: (Env r s m) => Embedding Tree -> m AST.Declaration
