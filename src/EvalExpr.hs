@@ -51,7 +51,7 @@ evalLiteral (wpVal -> ListLit l) = evalListLit l
 evalLiteral lit = return v
  where
   v = case wpVal lit of
-    StringLit (SimpleStringLit s) -> VT.mkAtomTree $ VT.String s
+    StringLit (wpVal -> SimpleStringL s) -> VT.mkAtomTree $ VT.String $ simpleStringLitToStr s
     IntLit i -> VT.mkAtomTree $ VT.Int i
     FloatLit a -> VT.mkAtomTree $ VT.Float a
     BoolLit b -> VT.mkAtomTree $ VT.Bool b
@@ -64,6 +64,16 @@ evalStructLit :: (EvalEnv r s m) => StructLit -> m VT.Tree
 evalStructLit (wpVal -> StructLit decls) = do
   sid <- allocOID
   foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
+
+simpleStringLitToStr :: SimpleStringLit -> String
+simpleStringLitToStr (wpVal -> SimpleStringLit segs) =
+  foldr
+    ( \seg acc -> case seg of
+        UnicodeVal x -> x : acc
+        _ -> acc
+    )
+    ""
+    segs
 
 -- | Evaluates a declaration in a struct. It returns the updated struct tree.
 evalDecl :: (EvalEnv r s m) => VT.Tree -> Declaration -> m VT.Tree
@@ -170,7 +180,7 @@ evalFDeclLabels lbls e =
   -- Returns the label name and the whether the label is static.
   sselFrom :: LabelName -> Maybe String
   sselFrom (wpVal -> LabelID (wpVal -> ident)) = Just ident
-  sselFrom (wpVal -> LabelString ls) = Just ls
+  sselFrom (wpVal -> LabelString ls) = Just (simpleStringLitToStr ls)
   sselFrom _ = Nothing
 
   dselFrom :: LabelName -> Maybe AST.Expression
@@ -340,7 +350,7 @@ evalSelector _ astSel oprnd =
  where
   sel = case wpVal astSel of
     IDSelector ident -> wpVal ident
-    AST.StringSelector str -> str
+    AST.StringSelector s -> simpleStringLitToStr s
 
 evalIndex ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Index -> VT.Tree -> m VT.Tree

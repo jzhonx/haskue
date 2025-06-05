@@ -68,6 +68,7 @@ data TokenType
   | TokenExclamation
   | TokenQuestionMark
   | TokenEllipsis
+  | TokenBackslash
   deriving (Show, Eq, Enum)
 
 type TokAttr a = (a, TokenType)
@@ -213,8 +214,8 @@ primaryExpr = chainPrimExpr primOperand (segment <|> index <|> arguments)
     sel <-
       (fmapSingleNode IDSelector <$> identifier)
         <|> ( do
-                x <- litLexeme TokenString simpleStringLit
-                return $ fmap (fmap StringSelector) x
+                x <- simpleStringLit
+                return $ fmapSingleNode StringSelector x
             )
     return $ \p -> betweenTokenInfos l (PrimExprSelector (wtVal p) (wtVal sel)) sel
 
@@ -290,8 +291,9 @@ literal = do
     <|> try (litLexeme TokenBool bool)
     <|> try
       ( do
-          x <- litLexeme TokenString simpleStringLit
-          return $ fmap (fmap (StringLit . SimpleStringLit)) x
+          x <- simpleStringLit
+          let v = fmapSingleNode SimpleStringL x
+          return $ fmapSingleNode StringLit v
       )
     <|> try (litLexeme TokenBottom bottom)
     <|> try (litLexeme TokenTop top)
@@ -502,8 +504,6 @@ forClause = do
   end <- expr
   return $ betweenTokenInfos st (ForClause (wtVal ident) (wtVal <$> secIdentM) (wtVal end)) end
 
--- return $ ForClause (wtVal identLex) (wtVal <$> secIdentLexM) (wtVal eLex) <$ eLex
-
 letClause :: Parser (WithTokenInfo LetClause)
 letClause = do
   st <- lexeme "let" $ (,TokenString) <$> (string "let" <?> "failed to parse keyword let")
@@ -512,14 +512,12 @@ letClause = do
   end <- expr
   return $ betweenTokenInfos st (LetClause (wtVal identNode) (wtVal end)) end
 
--- return $ LetClause (wtVal identLex) (wtVal eLex) <$ eLex
-
 labelName :: Parser (WithTokenInfo LabelName)
 labelName =
   (fmapSingleNode LabelID <$> identifier)
     <|> ( do
-            s <- litLexeme TokenString simpleStringLit
-            return $ fmap (fmap LabelString) s
+            s <- simpleStringLit
+            return $ fmapSingleNode LabelString s
         )
     <|> labelNameExpr
 
@@ -535,12 +533,38 @@ litLexeme t p = lexeme "literal" $ do
   lit <- p
   return (lit, t)
 
-simpleStringLit :: Parser SimpleStringLit
+-- | Match a double quote without using the lexeme combinator.
+doublequote :: Parser (WithTokenPos Char)
+doublequote = do
+  x <- wrapPos (char '"')
+  return $ WithTokenInfo x TokenString False
+
+simpleStringLit :: Parser (WithTokenInfo SimpleStringLit)
 simpleStringLit = do
-  _ <- char '"'
-  s <- many (noneOf "\"")
-  _ <- char '"'
-  return s
+  -- Any spaces after the opening doublequote should not be ignored so we do not use lexeme here.
+  st <- doublequote
+  xs <-
+    many
+      ( ( interpolation <|> do
+            x <- UnicodeVal <$> noneOf "\""
+            return $ WithTokenInfo x TokenString False
+        )
+      )
+  end <- lexeme "\"" $ (,TokenString) <$> (char '"' <?> "failed to parse doublequote character")
+
+  return $ betweenTokenInfos st (SimpleStringLit (map wtVal xs)) end
+
+backslash :: Parser (WithTokenPos Char)
+backslash = lexeme "\\" $ (,TokenBackslash) <$> (char '\\' <?> "failed to parse backslash character")
+
+interpolation :: Parser (WithTokenInfo SimpleStringLitSeg)
+interpolation = do
+  st <- backslash
+  _ <- lparen
+  e <- expr
+  r <- rparen
+  let v = betweenTokenInfos st (Interpolation (wtVal e)) r
+  return $ fmap InterpolationStr v
 
 intLit :: Parser LiteralNode
 intLit = do
@@ -599,9 +623,12 @@ skippable = do
 
 -- | Parse a text that starts with a lexeme and ends with skippable.
 lexeme :: String -> Parser (TokAttr a) -> Parser (WithTokenPos a)
-lexeme _ p = do
-  WithPos{wpVal = (x, ltok), wpPos = posM} <- annotateLexemePos p
+lexeme name p = do
+  wp <- wrapPos p
+  skip name wp
 
+skip :: String -> WithPos (TokAttr a) -> Parser (WithTokenPos a)
+skip _ (WithPos{wpVal = (x, ltok), wpPos = posM}) = do
   hasnl <- (eof >> return True) <|> skippable <?> "failed to parse skippable"
   -- According to the cuelang spec, a comma is added to the last token of a line if the token is
   -- - an identifier, keyword, or bottom
@@ -653,8 +680,8 @@ ptraced s p = do
   i <- getState
   parserTraced (printf "id=%s, %s" (show i) s) p
 
-annotateLexemePos :: Parser a -> Parser (WithPos a)
-annotateLexemePos p = do
+wrapPos :: Parser a -> Parser (WithPos a)
+wrapPos p = do
   startPos <- getPosition
   x <- p
   endPos <- getPosition

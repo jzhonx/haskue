@@ -193,7 +193,7 @@ buildArgsExpr func ts = do
         ( AST.PrimExprArguments
             ( AST.PrimExprOperand
                 AST.<<^>> AST.OpLiteral
-                AST.<^> pure (AST.StringLit (AST.SimpleStringLit func))
+                AST.<^> AST.strToLit func
             )
             ets
         )

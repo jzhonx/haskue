@@ -384,8 +384,8 @@ buildStructASTExpr concrete block@(Block{blkStruct = s}) =
             ( AST.Field
                 [ labelCons (ssfAttr sf) $
                     if lbAttrIsIdent (ssfAttr sf)
-                      then AST.LabelID AST.<^> (pure sel)
-                      else pure $ AST.LabelString sel
+                      then AST.LabelID AST.<^> pure sel
+                      else AST.LabelString AST.<^> AST.strToSimpleStrLit sel
                 ]
                 e
             )

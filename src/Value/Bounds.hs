@@ -70,8 +70,8 @@ buildBoundASTExpr b = case b of
     BdGT -> numOp AST.GT n
     BdGE -> numOp AST.GE n
   BdStrMatch m -> case m of
-    BdReMatch s -> litOp AST.ReMatch (AST.StringLit $ AST.SimpleStringLit s)
-    BdReNotMatch s -> litOp AST.ReNotMatch (AST.StringLit $ AST.SimpleStringLit s)
+    BdReMatch s -> litOp AST.ReMatch (AST.wpVal $ AST.strToLit s)
+    BdReNotMatch s -> litOp AST.ReNotMatch (AST.wpVal $ AST.strToLit s)
   BdType t -> AST.idCons (pure $ show t)
   BdIsAtom a -> AST.litCons (aToLiteral a)
  where

@@ -38,7 +38,7 @@ instance BuildASTExpr Atom where
 
 aToLiteral :: Atom -> AST.Literal
 aToLiteral a = pure $ case a of
-  String s -> AST.StringLit $ AST.SimpleStringLit s
+  String s -> AST.wpVal $ AST.strToLit s
   Int i -> AST.IntLit i
   Float f -> AST.FloatLit f
   Bool b -> AST.BoolLit b

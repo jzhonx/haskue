@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module AST where
 
@@ -145,9 +146,23 @@ newtype OperandNameNode = Identifier Identifier deriving (Eq, Show)
 
 type OperandName = WithPos OperandNameNode
 
-newtype StringLit = SimpleStringLit SimpleStringLit deriving (Eq, Show)
+newtype StringLitNode = SimpleStringL SimpleStringLit deriving (Eq, Show)
 
-type SimpleStringLit = String
+type StringLit = WithPos StringLitNode
+
+type SimpleStringLit = WithPos SimpleStringLitNode
+
+newtype SimpleStringLitNode = SimpleStringLit [SimpleStringLitSeg]
+  deriving (Eq, Show)
+
+data SimpleStringLitSeg
+  = UnicodeVal Char
+  | InterpolationStr Interpolation
+  deriving (Eq, Show)
+
+newtype InterpolationNode = Interpolation Expression deriving (Eq, Show)
+
+type Interpolation = WithPos InterpolationNode
 
 newtype LabelNode = Label LabelExpr deriving (Eq, Show)
 
@@ -168,7 +183,7 @@ data LabelConstraint
 
 data LabelNameNode
   = LabelID Identifier
-  | LabelString String
+  | LabelString SimpleStringLit
   | LabelNameExpr Expression
   deriving (Eq, Show)
 
@@ -280,6 +295,12 @@ instance Show Quote where
   show SingleQuote = "'"
   show DoubleQuote = "\""
 
+strToLit :: String -> Literal
+strToLit s = StringLit <<^>> SimpleStringL <^> strToSimpleStrLit s
+
+strToSimpleStrLit :: String -> SimpleStringLit
+strToSimpleStrLit s = pure (SimpleStringLit (map UnicodeVal s))
+
 litCons :: Literal -> Expression
 litCons x =
   ExprUnaryExpr
@@ -343,7 +364,7 @@ primBld ident e = case wpVal e of
 selBld :: Selector -> Builder
 selBld e = case wpVal e of
   IDSelector is -> string7 (wpVal is)
-  StringSelector s -> string7 s
+  StringSelector s -> simpleStrLitBld s
 
 opndBld :: Int -> Operand -> Builder
 opndBld ident op = case wpVal op of
@@ -368,7 +389,16 @@ litBld ident e = case wpVal e of
   ListLit l -> listBld l
 
 strLitBld :: StringLit -> Builder
-strLitBld (SimpleStringLit s) = char7 '"' <> string7 s <> char7 '"'
+strLitBld (wpVal -> SimpleStringL s) = char7 '"' <> simpleStrLitBld s <> char7 '"'
+
+simpleStrLitBld :: SimpleStringLit -> Builder
+simpleStrLitBld (WithPos{wpVal = SimpleStringLit segs}) =
+  foldr (\seg acc -> simpleStrLitSegBld seg <> acc) mempty segs
+
+simpleStrLitSegBld :: SimpleStringLitSeg -> Builder
+simpleStrLitSegBld (UnicodeVal s) = char7 s
+simpleStrLitSegBld (InterpolationStr (wpVal -> Interpolation e)) =
+  string7 "\\(" <> exprBldIdent 0 e <> char7 ')'
 
 structLitBld :: Int -> StructLit -> Builder
 structLitBld ident (WithPos{wpVal = StructLit decls}) =
@@ -433,5 +463,5 @@ labelExprBld e = case wpVal e of
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case wpVal e of
   LabelID i -> string7 (wpVal i)
-  LabelString s -> string7 s
+  LabelString s -> simpleStrLitBld s
   LabelNameExpr ex -> char7 '(' <> exprBldIdent 0 ex <> char7 ')'
