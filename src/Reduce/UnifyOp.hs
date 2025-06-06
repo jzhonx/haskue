@@ -911,32 +911,31 @@ _preprocessBlock ::
   VT.Block VT.Tree ->
   m (Either VT.Tree (VT.Struct VT.Tree))
 _preprocessBlock blockTC block = do
-  RM.debugSpanRM "_preprocessBlock" (const Nothing) blockTC $ do
-    rM <- _validateRefIdents blockTC
-    logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
-    maybe
-      ( do
-          let
-            sid = VT.stcID . VT.blkStruct $ block
-            blockAddr = Cursor.tcCanAddr blockTC
-          appended <- _appendSIDToLetRef blockAddr sid blockTC
-          -- rewrite all ident keys of the let bindings map with the sid.
-          case VT.treeNode appended of
-            VT.TNBlock (VT.Block{VT.blkStruct = struct}) -> do
-              let
-                blockIdents =
-                  Set.fromList $
-                    map
-                      (\k -> if k `Map.member` VT.stcLets struct then k ++ "_" ++ show sid else k)
-                      (Set.toList $ VT.stcBlockIdents struct)
-                lets = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
-                newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
-              logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
-              return $ Right newStruct
-            _ -> throwErrSt $ printf "tree must be struct, but got %s" (show appended)
-      )
-      (return . Left)
-      rM
+  rM <- _validateRefIdents blockTC
+  logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
+  maybe
+    ( do
+        let
+          sid = VT.stcID . VT.blkStruct $ block
+          blockAddr = Cursor.tcCanAddr blockTC
+        appended <- _appendSIDToLetRef blockAddr sid blockTC
+        -- rewrite all ident keys of the let bindings map with the sid.
+        case VT.treeNode appended of
+          VT.TNBlock (VT.Block{VT.blkStruct = struct}) -> do
+            let
+              blockIdents =
+                Set.fromList $
+                  map
+                    (\k -> if k `Map.member` VT.stcLets struct then k ++ "_" ++ show sid else k)
+                    (Set.toList $ VT.stcBlockIdents struct)
+              lets = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
+              newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
+            logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
+            return $ Right newStruct
+          _ -> throwErrSt $ printf "tree must be struct, but got %s" (show appended)
+    )
+    (return . Left)
+    rM
 
 {- | Validate if the identifier of the any reference in the sub tree is in the scope.
 

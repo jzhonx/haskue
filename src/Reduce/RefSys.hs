@@ -210,23 +210,18 @@ getDstTCInner ::
   Set.Set Path.TreeAddr ->
   TCOps.TrCur ->
   m (Maybe TCOps.TrCur)
-getDstTCInner isRefCyclic ref origAddrsM trail refEnv = RM.debugSpanArgsRM
-  (printf "getDstTCInner: ref: %s" (show ref))
-  (printf "trail: %s" (show $ Set.toList trail))
-  (fmap Cursor.tcFocus)
-  refEnv
-  $ do
-    rE <- getDstRawOrErr ref origAddrsM trail refEnv
-    case rE of
-      Left err -> return $ Just $ err `Cursor.setTCFocus` refEnv
-      Right Nothing -> return Nothing
-      Right (Just tarTC) -> do
-        newVal <- copyValFromTarTC isRefCyclic refEnv trail tarTC
-        RM.debugInstantRM
-          "getDstTCInner"
-          (printf "ref: %s, dstVal: %s, newVal: %s" (show ref) (show $ Cursor.tcFocus tarTC) (show newVal))
-          refEnv
-        tryFollow trail (newVal `Cursor.setTCFocus` tarTC) refEnv
+getDstTCInner isRefCyclic ref origAddrsM trail refEnv = do
+  rE <- getDstRawOrErr ref origAddrsM trail refEnv
+  case rE of
+    Left err -> return $ Just $ err `Cursor.setTCFocus` refEnv
+    Right Nothing -> return Nothing
+    Right (Just tarTC) -> do
+      newVal <- copyValFromTarTC isRefCyclic refEnv trail tarTC
+      RM.debugInstantRM
+        "getDstTCInner"
+        (printf "ref: %s, dstVal: %s, newVal: %s" (show ref) (show $ Cursor.tcFocus tarTC) (show newVal))
+        refEnv
+      tryFollow trail (newVal `Cursor.setTCFocus` tarTC) refEnv
 
 {- | Try to follow the reference.
 
@@ -279,32 +274,23 @@ getDstRawOrErr ::
   -- | The cursor should be the reference.
   TCOps.TrCur ->
   m DstTC
-getDstRawOrErr valPath origAddrsM trail refEnv =
-  RM.debugSpanArgsRM
-    "getDstRawOrErr"
-    (printf "valPath: %s, origAddrsM: %s, trail: %s" (show valPath) (show origAddrsM) (show $ Set.toList trail))
-    ( \x -> case x of
-        Left err -> Just err
-        Right v -> fmap Cursor.tcFocus v
-    )
-    refEnv
-    $ do
-      let
-        -- srcAddr is the starting address of searching for the reference.
-        f = locateRef valPath trail
+getDstRawOrErr valPath origAddrsM trail refEnv = do
+  let
+    -- srcAddr is the starting address of searching for the reference.
+    f = locateRef valPath trail
 
-      maybe
-        (f refEnv)
-        -- If the ref is an outer reference, we should first go to the original value address.
-        ( \origValAddr -> inAbsAddrTCMust origValAddr refEnv $ \origValTC ->
-            -- If the ref is an outer reference inside the referenced value, we should check if the ref leads to
-            -- infinite structure (structural cycle).
-            -- For example, { x: a, y: 1, a: {b: y} }, where /a is the address of the subt value.
-            -- The "y" in the struct {b: y} is an outer reference.
-            -- We should first go to the original value address, which is /a/b.
-            f origValTC
-        )
-        origAddrsM
+  maybe
+    (f refEnv)
+    -- If the ref is an outer reference, we should first go to the original value address.
+    ( \origValAddr -> inAbsAddrTCMust origValAddr refEnv $ \origValTC ->
+        -- If the ref is an outer reference inside the referenced value, we should check if the ref leads to
+        -- infinite structure (structural cycle).
+        -- For example, { x: a, y: 1, a: {b: y} }, where /a is the address of the subt value.
+        -- The "y" in the struct {b: y} is an outer reference.
+        -- We should first go to the original value address, which is /a/b.
+        f origValTC
+    )
+    origAddrsM
 
 -- | Locate the reference.
 locateRef ::
@@ -313,44 +299,36 @@ locateRef ::
   Set.Set Path.TreeAddr ->
   TCOps.TrCur ->
   m DstTC
-locateRef valPath trail refEnv = RM.debugSpanArgsRM
-  "locateRef"
-  (printf "valPath: %s, trail: %s" (show valPath) (show $ Set.toList trail))
-  ( \x -> case x of
-      Left err -> Just err
-      Right v -> fmap Cursor.tcFocus v
-  )
-  refEnv
-  $ do
-    rE <- goTCLAAddr valPath refEnv
-    case rE of
-      Left err -> return $ Left err
-      Right Nothing -> do
-        -- If the target is not found, we still need to check if the reference leads to a sub field reference cycle.
-        identAddrM <- getRefIdentAddr valPath Nothing refEnv
-        cycleDetection <-
-          maybe
-            (return NoCycleDetected)
-            ( \identAddr -> do
-                -- The ref is non-empty, so the rest must be a valid addr.
-                let rest = fromJust $ Path.tailValPath valPath
-                    potentialTarAddr = Path.appendTreeAddr (Path.valPathToAddr rest) identAddr
-                detectCycle valPath (Cursor.tcCanAddr refEnv) Set.empty potentialTarAddr
-            )
-            identAddrM
-        case cycleDetection of
-          -- If the reference is a reference cycle referencing the sub field, return the cycle.
-          RCDetected tarAddr -> return $ Right $ Just $ TCOps.setTCFocusTN (VT.TNRefCycle tarAddr) refEnv
-          SCDetected -> throwErrSt "should not detect structural cycle here"
-          _ -> return $ Right Nothing
-      Right (Just tarTC) -> do
-        cycleDetection <- detectCycle valPath (Cursor.tcCanAddr refEnv) trail (Cursor.tcCanAddr tarTC)
-        case cycleDetection of
-          RCDetected rfbTarAddr -> return . Right . Just $ TCOps.setTCFocusTN (VT.TNRefCycle rfbTarAddr) tarTC
-          SCDetected ->
-            return . Right . Just $
-              ((Cursor.tcFocus tarTC){VT.treeIsCyclic = True}) `Cursor.setTCFocus` tarTC
-          _ -> return . Right $ Just tarTC
+locateRef valPath trail refEnv = do
+  rE <- goTCLAAddr valPath refEnv
+  case rE of
+    Left err -> return $ Left err
+    Right Nothing -> do
+      -- If the target is not found, we still need to check if the reference leads to a sub field reference cycle.
+      identAddrM <- getRefIdentAddr valPath Nothing refEnv
+      cycleDetection <-
+        maybe
+          (return NoCycleDetected)
+          ( \identAddr -> do
+              -- The ref is non-empty, so the rest must be a valid addr.
+              let rest = fromJust $ Path.tailValPath valPath
+                  potentialTarAddr = Path.appendTreeAddr (Path.valPathToAddr rest) identAddr
+              detectCycle valPath (Cursor.tcCanAddr refEnv) Set.empty potentialTarAddr
+          )
+          identAddrM
+      case cycleDetection of
+        -- If the reference is a reference cycle referencing the sub field, return the cycle.
+        RCDetected tarAddr -> return $ Right $ Just $ TCOps.setTCFocusTN (VT.TNRefCycle tarAddr) refEnv
+        SCDetected -> throwErrSt "should not detect structural cycle here"
+        _ -> return $ Right Nothing
+    Right (Just tarTC) -> do
+      cycleDetection <- detectCycle valPath (Cursor.tcCanAddr refEnv) trail (Cursor.tcCanAddr tarTC)
+      case cycleDetection of
+        RCDetected rfbTarAddr -> return . Right . Just $ TCOps.setTCFocusTN (VT.TNRefCycle rfbTarAddr) tarTC
+        SCDetected ->
+          return . Right . Just $
+            ((Cursor.tcFocus tarTC){VT.treeIsCyclic = True}) `Cursor.setTCFocus` tarTC
+        _ -> return . Right $ Just tarTC
 
 data CycleDetection = RCDetected Path.TreeAddr | SCDetected | NoCycleDetected deriving (Show)
 
@@ -489,7 +467,7 @@ The tree cursor is the target cursor without the copied raw value.
 -}
 copyValFromTarTC ::
   (RM.ReduceMonad s r m) => Bool -> TCOps.TrCur -> Set.Set Path.TreeAddr -> TCOps.TrCur -> m VT.Tree
-copyValFromTarTC isRefCyclic srcTC trail tarTC = RM.debugSpanRM "copyValFromTarTC" Just tarTC $ do
+copyValFromTarTC isRefCyclic srcTC trail tarTC = do
   raw <- copyRefVal (Cursor.tcFocus tarTC)
   let dstAddr = Cursor.tcCanAddr tarTC
   -- evaluate the original expression.
@@ -497,22 +475,13 @@ copyValFromTarTC isRefCyclic srcTC trail tarTC = RM.debugSpanRM "copyValFromTarT
   let visited = Set.insert dstAddr trail
   closeMarked <- checkRefDef marked visited
 
-  val <-
-    -- If the target is ancestor or the source reference is a cyclic reference, we should mark the value as cyclic.
-    -- For example, x: y: x.
-    -- Or, {f: h: g, g: f} -> {f: h: g, g: h: g}, the nested g would find the ancestor g's value "f" because of
-    -- expression copying. Then it becomes {f: h: g, g: h: f(Cyclic)}. So here, we should mark f's value as cyclic.
-    if VT.treeIsCyclic (Cursor.tcFocus tarTC) || isRefCyclic
-      then markCyclic closeMarked
-      else return closeMarked
-
-  logDebugStr $
-    printf
-      "copyValFromTarTC: deref's copy is: %s, visited: %s, raw: %s"
-      (show val)
-      (show $ Set.toList visited)
-      (show raw)
-  return val
+  -- If the target is ancestor or the source reference is a cyclic reference, we should mark the value as cyclic.
+  -- For example, x: y: x.
+  -- Or, {f: h: g, g: f} -> {f: h: g, g: h: g}, the nested g would find the ancestor g's value "f" because of
+  -- expression copying. Then it becomes {f: h: g, g: h: f(Cyclic)}. So here, we should mark f's value as cyclic.
+  if VT.treeIsCyclic (Cursor.tcFocus tarTC) || isRefCyclic
+    then markCyclic closeMarked
+    else return closeMarked
  where
   checkRefDef val visited = do
     -- Check if the referenced value has recurClose.
@@ -520,14 +489,7 @@ copyValFromTarTC isRefCyclic srcTC trail tarTC = RM.debugSpanRM "copyValFromTarT
       recurClose = VT.treeRecurClosed (Cursor.tcFocus tarTC)
       shouldClose = any addrHasDef visited
     if shouldClose || recurClose
-      then do
-        logDebugStr $
-          printf
-            "copyValFromTarTC: visitedRefs: %s, has definition or recurClose: %s is set, recursively close the value. %s"
-            (show $ Set.toList visited)
-            (show recurClose)
-            (show val)
-        markRecurClosed val
+      then markRecurClosed val
       else return val
 
 markCyclic :: (Common.Env r s m) => VT.Tree -> m VT.Tree
@@ -597,13 +559,9 @@ markOuterIdents ::
   Path.TreeAddr ->
   TCOps.TrCur ->
   m VT.Tree
-markOuterIdents srcAddr ptc = RM.debugSpanRM "markOuterIdents" Just ptc $ do
+markOuterIdents srcAddr ptc = do
   let blockAddr = Cursor.tcCanAddr ptc
   utc <- TCOps.traverseTCSimple VT.subNodes (mark blockAddr) ptc
-  RM.debugInstantRM
-    "markOuterIdents"
-    (printf "blockAddr: %s, result: %s" (show blockAddr) (VT.treeFullStr 0 $ Cursor.tcFocus utc))
-    ptc
   return $ Cursor.tcFocus utc
  where
   -- Mark the outer references with the original value address.
