@@ -24,7 +24,7 @@ import qualified MutEnv
 import qualified Path
 import qualified TCOps
 import Text.Printf (printf)
-import Util (HasTrace (..), Trace, debugInstant, debugSpan, logDebugStr)
+import Util (HasTrace (..), Trace, debugInstant, debugSpan)
 import qualified Value.Tree as VT
 
 -- ReduceMonad is the environment for reducing the tree.
@@ -101,6 +101,20 @@ getRMObjID = Common.getID <$> getRMContext
 setRMObjID :: (ReduceMonad r s m) => Int -> m ()
 setRMObjID newID = modifyRMContext (\ctx -> Common.setID ctx newID)
 
+-- Global version
+
+getRMGlobalVers :: (ReduceMonad r s m) => m Int
+getRMGlobalVers = Common.ctxGlobalVers <$> getRMContext
+
+setRMGlobalVers :: (ReduceMonad r s m) => Int -> m ()
+setRMGlobalVers newVers = modifyRMContext (\ctx -> ctx{Common.ctxGlobalVers = newVers})
+
+increaseRMGlobalVers :: (ReduceMonad r s m) => m Int
+increaseRMGlobalVers = do
+  vers <- getRMGlobalVers
+  setRMGlobalVers (vers + 1)
+  return (vers + 1)
+
 -- Trace
 
 getRMTrace :: (ReduceMonad r s m) => m Trace
@@ -111,21 +125,21 @@ setRMTrace trace = modifyRMContext (\ctx -> setTrace ctx trace)
 
 -- Notif
 
-getRMNotifQ :: (ReduceMonad r s m) => m [Path.TreeAddr]
-getRMNotifQ = Common.ctxNotifQueue <$> getRMContext
+getRMReadyQ :: (ReduceMonad r s m) => m [Path.TreeAddr]
+getRMReadyQ = Common.ctxReadyQueue <$> getRMContext
 
-addToRMNotifQ :: (ReduceMonad r s m) => Path.TreeAddr -> m ()
-addToRMNotifQ addr = modifyRMContext (\ctx -> ctx{Common.ctxNotifQueue = addr : Common.ctxNotifQueue ctx})
+addToRMReadyQ :: (ReduceMonad r s m) => Path.TreeAddr -> m ()
+addToRMReadyQ addr = modifyRMContext (\ctx -> ctx{Common.ctxReadyQueue = addr : Common.ctxReadyQueue ctx})
 
-popRMNotifQ :: (ReduceMonad r s m) => m (Maybe Path.TreeAddr)
-popRMNotifQ = do
+popRMReadyQ :: (ReduceMonad r s m) => m (Maybe Path.TreeAddr)
+popRMReadyQ = do
   ctx <- getRMContext
-  case Common.ctxNotifQueue ctx of
+  case Common.ctxReadyQueue ctx of
     [] -> return Nothing
     _ -> do
       -- TODO: efficiency
-      let addr = last (Common.ctxNotifQueue ctx)
-      putRMContext ctx{Common.ctxNotifQueue = init (Common.ctxNotifQueue ctx)}
+      let addr = last (Common.ctxReadyQueue ctx)
+      putRMContext ctx{Common.ctxReadyQueue = init (Common.ctxReadyQueue ctx)}
       return (Just addr)
 
 getRMNotifEnabled :: (ReduceMonad r s m) => m Bool
@@ -393,9 +407,6 @@ traverseSub f = withTree $ \_t -> do
 traverseTM :: (ReduceTCMonad r s m) => m () -> m ()
 traverseTM f = f >> traverseSub (traverseTM f)
 
-logDebugStrRM :: (ReduceTCMonad r s m) => String -> String -> m ()
-logDebugStrRM hdr msg = withAddrAndFocus $ \addr _ -> logDebugStr $ printf "%s: addr: %s, %s" hdr (show addr) msg
-
 data ShowTree = ShowFullTree VT.Tree | ShowTree VT.Tree
 
 instance Show ShowTree where
@@ -431,7 +442,8 @@ debugSpanArgsTM name args = _traceActionTM name (Just args)
 _traceActionTM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
 _traceActionTM name argsM f = whenTraceEnabled f $ withAddrAndFocus $ \addr _ -> do
   bTraced <- getTMTree >>= spanTreeMsgs
-  debugSpan name (show addr) argsM bTraced $ do
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  debugSpan traceExec name (show addr) argsM bTraced $ do
     res <- f
     traced <- getTMTree >>= spanTreeMsgs
     return (res, fst traced, snd traced)
@@ -439,7 +451,9 @@ _traceActionTM name argsM f = whenTraceEnabled f $ withAddrAndFocus $ \addr _ ->
 debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
 debugInstantTM name args = whenTraceEnabled (return ()) $
   withAddrAndFocus $
-    \addr _ -> debugInstant name (show addr) (Just args)
+    \addr _ -> do
+      Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+      debugInstant traceExec name (show addr) (Just args)
 
 debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
 debugSpanRM name = _traceActionRM name Nothing
@@ -454,7 +468,8 @@ _traceActionRM name argsM g tc f = whenTraceEnabled f $ do
     addr = Cursor.tcCanAddr tc
     bfocus = Cursor.tcFocus tc
   bTraced <- spanTreeMsgs bfocus
-  debugSpan name (show addr) argsM bTraced $ do
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  debugSpan traceExec name (show addr) argsM bTraced $ do
     res <- f
     traced <- maybe (return ("", "")) spanTreeMsgs (g res)
     return (res, fst traced, snd traced)
@@ -469,15 +484,18 @@ debugSpanArgsOpRM name args = _traceOpActionRM name (Just args)
 
 _traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> Path.TreeAddr -> m a -> m a
 _traceOpActionRM name argsM addr f = whenTraceEnabled f $ do
-  debugSpan name (show addr) argsM ("", "") $ do
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  debugSpan traceExec name (show addr) argsM ("", "") $ do
     res <- f
     return (res, "", "")
 
 debugInstantRM :: (Common.Env r s m) => String -> String -> TCOps.TrCur -> m ()
 debugInstantRM name args tc = whenTraceEnabled (return ()) $ do
   let addr = Cursor.tcCanAddr tc
-  debugInstant name (show addr) (Just args)
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  debugInstant traceExec name (show addr) (Just args)
 
 debugInstantOpRM :: (Common.Env r s m) => String -> String -> Path.TreeAddr -> m ()
 debugInstantOpRM name args addr = whenTraceEnabled (return ()) $ do
-  debugInstant name (show addr) (Just args)
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
+  debugInstant traceExec name (show addr) (Just args)

@@ -31,7 +31,6 @@ import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
 import qualified TCOps
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 -- | UTree is a tree with a direction.
@@ -369,18 +368,9 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} unifyTC = do
     rM
 
 mergeLeftTop :: (RM.ReduceMonad s r m) => UTree -> UTree -> m (Maybe VT.Tree)
-mergeLeftTop ut1 ut2 = do
-  let t1 = Cursor.tcFocus (utTC ut1)
-      t2 = Cursor.tcFocus (utTC ut2)
-  case VT.treeNode t2 of
-    -- If the left top is embedded in the right struct, we can immediately put the top into the tree without worrying
-    -- any future existing/new fields. Because for example {_, a: 1} is equivalent to _ & {a: 1}. This follows the
-    -- behavior of the spec:
-    -- The result of { A } is A for any A (including definitions).
-    -- Notice that this is different from the behavior of the latest CUE. The latest CUE would do the following:
-    -- {_, _h: int} & {_h: "hidden"} -> _|_.
-    -- VT.TNBlock _ | isJust (utEmbedID ut1) -> retTr t1
-    _ -> retTr t2
+mergeLeftTop _ ut2 = do
+  let t2 = Cursor.tcFocus (utTC ut2)
+  retTr t2
 
 mergeLeftAtom :: (RM.ReduceMonad s r m) => (VT.AtomV, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
 mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) unifyTC =
@@ -397,14 +387,14 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
         | VT.Bool y <- VT.amvAtom s -> rtn $ if x == y then VT.TNAtom v1 else amismatch x y
       (VT.Null, VT.TNAtom s) | VT.Null <- VT.amvAtom s -> rtn $ VT.TNAtom v1
       (_, VT.TNBounds b) -> do
-        logDebugStr $ printf "mergeLeftAtom, %s with VT.Bounds: %s" (show v1) (show t2)
+        -- RM.logDebugStrRM $ printf "mergeLeftAtom, %s with VT.Bounds: %s" (show v1) (show t2)
         return $ Just $ mergeAtomBounds (d1, VT.amvAtom v1) (d2, VT.bdsList b)
       (_, VT.TNAtomCnstr c) ->
         if v1 == VT.cnsAtom c
           then retTr t2
           else retTr $ VT.mkBottomTree $ printf "values mismatch: %s != %s" (show v1) (show $ VT.cnsAtom c)
       (_, VT.TNDisj dj2) -> do
-        logDebugStr $ printf "mergeLeftAtom: VT.TNDisj %s, %s" (show t2) (show v1)
+        -- RM.logDebugStrRM $ printf "mergeLeftAtom: VT.TNDisj %s, %s" (show t2) (show v1)
         mergeLeftDisj (dj2, ut2) ut1 unifyTC
       (_, VT.TNMutable mut2)
         -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
@@ -425,11 +415,11 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
   mkCnstrOrOther :: (RM.ReduceMonad s r m) => VT.Tree -> m (Maybe VT.Tree)
   mkCnstrOrOther t2 = do
     RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
-    logDebugStr $ printf "mergeLeftAtom: cc: %s, procOther: %s, %s" (show cc) (show ut1) (show ut2)
+    -- RM.logDebugStrRM $ printf "mergeLeftAtom: cc: %s, procOther: %s, %s" (show cc) (show ut1) (show ut2)
     if cc
       then do
         c <- mkCnstr v1 t2
-        logDebugStr $ printf "mergeLeftAtom: constraint created, %s" (show c)
+        -- RM.logDebugStrRM $ printf "mergeLeftAtom: constraint created, %s" (show c)
         retTr c
       else mergeLeftOther ut2 ut1 unifyTC
 
@@ -912,7 +902,7 @@ _preprocessBlock ::
   m (Either VT.Tree (VT.Struct VT.Tree))
 _preprocessBlock blockTC block = do
   rM <- _validateRefIdents blockTC
-  logDebugStr $ printf "_preprocessBlock: rM: %s" (show rM)
+  -- RM.logDebugStrRM $ printf "_preprocessBlock: rM: %s" (show rM)
   maybe
     ( do
         let
@@ -930,7 +920,7 @@ _preprocessBlock blockTC block = do
                     (Set.toList $ VT.stcBlockIdents struct)
               lets = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
               newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
-            logDebugStr $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
+            -- RM.logDebugStrRM $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
             return $ Right newStruct
           _ -> throwErrSt $ printf "tree must be struct, but got %s" (show appended)
     )
@@ -951,7 +941,7 @@ _validateRefIdents _tc =
     case VT.treeNode (Cursor.tcFocus tc) of
       VT.TNMutable (VT.Ref (VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
         m <- RefSys.searchTCIdent ident tc
-        logDebugStr $ printf "_validateRefIdents: ident: %s, m: %s" ident (show m)
+        -- RM.logDebugStrRM $ printf "_validateRefIdents: ident: %s, m: %s" ident (show m)
         maybe
           (return (tc, Just $ VT.mkBottomTree $ printf "identifier %s is not found" ident))
           (const $ return (tc, acc))
@@ -973,17 +963,17 @@ _appendSIDToLetRef blockAddr sid _tc =
      in case VT.treeNode focus of
           VT.TNMutable (VT.Ref ref@(VT.Reference{VT.refArg = VT.RefPath ident _})) -> do
             m <- RefSys.searchTCIdent ident tc
-            logDebugStr $ printf "_appendSIDToLetRef: ident: %s, m: %s" ident (show m)
+            -- RM.logDebugStrRM $ printf "_appendSIDToLetRef: ident: %s, m: %s" ident (show m)
 
             maybe
               (return focus)
               ( \(addr, isLB) -> do
-                  logDebugStr $
-                    printf
-                      "_appendSIDToLetRef: rewrite %s, blockAddr: %s, addr: %s"
-                      ident
-                      (show blockAddr)
-                      (show addr)
+                  -- RM.logDebugStrRM $
+                  --   printf
+                  --     "_appendSIDToLetRef: rewrite %s, blockAddr: %s, addr: %s"
+                  --     ident
+                  --     (show blockAddr)
+                  --     (show addr)
                   if isLB && (Just blockAddr == Path.initTreeAddr addr)
                     then do
                       let newFocus = VT.setTN focus (VT.TNMutable $ VT.Ref $ append ref)
@@ -1008,7 +998,7 @@ _extAllSubNodes x = VT.subNodes x ++ VT.rawNodes x
 mergeLeftDisj :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
 mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
   -- RM.withAddrAndFocus $ \addr _ ->
-  --   logDebugStr $ printf "mergeLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
+  --   RM.logDebugStrRM $ printf "mergeLeftDisj: addr: %s, dj: %s, right: %s" (show addr) (show ut1) (show ut2)
   let t2 = Cursor.tcFocus tc2
   case VT.treeNode t2 of
     VT.TNMutable _ -> mergeLeftOther ut2 ut1 unifyTC
@@ -1023,7 +1013,7 @@ mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
 mergeDisjWithVal :: (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> UTree -> TCOps.TrCur -> m (Maybe VT.Tree)
-mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) _ut2 unifyTC =
+mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir})) _ut2 unifyTC =
   RM.debugSpanRM "mergeDisjWithVal" id unifyTC $ do
     uts1 <- utsFromDisjs (length $ VT.dsjDisjuncts dj1) _ut1
     let defIdxes1 = VT.dsjDefIndexes dj1
@@ -1050,7 +1040,7 @@ U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj ::
   (RM.ReduceMonad s r m) => (VT.Disj VT.Tree, UTree) -> (VT.Disj VT.Tree, UTree) -> TCOps.TrCur -> m (Maybe VT.Tree)
-mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir, utTC = tc1})) (dj2, _ut2) unifyTC =
+mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) unifyTC =
   RM.debugSpanRM "mergeDisjWithDisj" id unifyTC $ do
     uts1 <- utsFromDisjs (length $ VT.dsjDisjuncts dj1) _ut1
     uts2 <- utsFromDisjs (length $ VT.dsjDisjuncts dj2) _ut2
@@ -1176,15 +1166,11 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
                 then return acc
                 else do
                   let pat = VT.scsPattern cnstr
-                  r <- patMatchLabel pat newLabel tc
-                  logDebugStr $ printf "checkPerm: pat: %s, newLabel: %s, r: %s" (show pat) newLabel (show r)
-                  return r
+                  patMatchLabel pat newLabel tc
           )
           -- By default, "new" label is not allowed.
           False
           (IntMap.elems baseAllCnstrs)
-
-      logDebugStr $ printf "checkPerm: newLabel: %s, allowed: %s" (show newLabel) (show allowed)
 
       -- A field is disallowed if no pattern exists or no pattern matches the label.
       if allowed

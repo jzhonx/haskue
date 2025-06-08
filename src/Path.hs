@@ -242,11 +242,11 @@ isPrefix ::
 isPrefix x y =
   let TreeAddr xs = x
       TreeAddr ys = y
-      rxs = reverse xs
-      rys = reverse ys
+      rxs = {-# SCC "reverse" #-} reverse xs
+      rys = {-# SCC "reverse" #-} reverse ys
    in if length rxs > length rys
         then False
-        else take (length rxs) rys == rxs
+        else {-# SCC "take" #-} take (length rxs) rys == rxs
 
 {- | Trim the address by cutting off the prefix.
 

@@ -31,7 +31,6 @@ import qualified Reduce.RegOps as RegOps
 import qualified Reduce.UnifyOp as UnifyOp
 import qualified TCOps
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 fullReduce :: (RM.ReduceTCMonad s r m) => m ()
@@ -54,11 +53,11 @@ reduce tc = RM.debugSpanRM "reduce" Just tc $ do
   if isSender && Path.isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM
     then do
       let refAddr = fromJust refAddrM
-      -- RM.debugInstantTM "enqueue" $ printf "addr: %s, enqueue new reduced Addr: %s" (show addr) (show refAddr)
-      RM.addToRMNotifQ refAddr
-    else logDebugStr $ printf "reduce, addr: %s, not accessible or not enabled" (show addr)
+      RM.addToRMReadyQ refAddr
+    else return ()
 
-  return result
+  vers <- RM.getRMGlobalVers
+  return $ result{VT.treeVersion = vers}
 
 withTreeDepthLimit :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m a -> m a
 withTreeDepthLimit tc f = do
@@ -149,6 +148,7 @@ setMutRes isIterBinding mut rM tc = do
 
   -- If the rM is another mutable tree, we need to check if the mutval exists by trying to get it.
   r <- case listToMaybe (catMaybes [rM >>= VT.getMutableFromTree >>= VT.getMutVal, rM]) of
+    -- Result is not found.
     Nothing -> do
       -- We still remove receivers in case some refs have been reduced.
       Mutate.delMutValRecvs addr
@@ -164,7 +164,11 @@ setMutRes isIterBinding mut rM tc = do
   RM.debugInstantRM "setMutRes" (printf "rM: %s, mut: %s, res: %s" (show rM) (show $ VT.mkMutableTree mut) (show r)) tc
   return r
  where
-  updateMutVal m mutT = VT.setTN mutT (VT.TNMutable $ VT.setMutVal m mut)
+  -- update the mutval for the mutable tree. If the mutable tree is a reference, we update the reference value and
+  -- version.
+  updateMutVal m mutT = case VT.getMutableFromTree mutT of
+    Just (VT.Ref ref) -> VT.setTN mutT (VT.TNMutable $ VT.Ref ref{VT.refValue = m, VT.refVers = VT.treeVersion <$> m})
+    _ -> VT.setTN mutT (VT.TNMutable $ VT.setMutVal m mut)
 
 {- | Check whether the mutator is reducible.
 

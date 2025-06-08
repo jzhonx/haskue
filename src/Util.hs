@@ -2,16 +2,12 @@
 
 module Util where
 
+import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Logger (
-  MonadLogger,
-  logDebugN,
- )
 import Control.Monad.State (MonadState, gets, modify)
 import Data.Aeson (ToJSON, object, toJSON, (.=))
 import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
-import Data.Text (pack)
 import Data.Text.Lazy (unpack)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
@@ -145,30 +141,32 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadLogger m, MonadIO m, HasTrace s, Show a) =>
+  (MonadState s m, MonadIO m, HasTrace s, Show a) =>
+  Bool ->
   String ->
   String ->
   Maybe String ->
   (String, String) ->
   m (a, String, String) ->
   m a
-debugSpan name addr args (bTraced, bTracedCUEVal) f = do
-  _ <- debugSpanStart name addr args bTraced bTracedCUEVal
-  debugSpanExec name addr f
+debugSpan enable name addr args (bTraced, bTracedCUEVal) f = do
+  _ <- debugSpanStart enable name addr args bTraced bTracedCUEVal
+  debugSpanExec enable name addr f
 
 debugSpanStart ::
-  (MonadState s m, MonadLogger m, HasTrace s, MonadIO m) =>
+  (MonadState s m, HasTrace s, MonadIO m) =>
+  Bool ->
   String ->
   String ->
   Maybe String ->
   String ->
   String ->
   m Trace
-debugSpanStart name addr args bTraced bTracedCUEVal = do
+debugSpanStart enable name addr args bTraced bTracedCUEVal = do
   let msg = printf "%s, at:%s" name addr
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  logDebugStr $
+  dumpTrace enable $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
@@ -178,17 +176,18 @@ debugSpanStart name addr args bTraced bTracedCUEVal = do
   return tr
 
 debugSpanExec ::
-  (MonadState s m, MonadLogger m, HasTrace s, Show a, MonadIO m) =>
+  (MonadState s m, HasTrace s, Show a, MonadIO m) =>
+  Bool ->
   String ->
   String ->
   m (a, String, String) ->
   m a
-debugSpanExec name addr f = do
+debugSpanExec enable name addr f = do
   let msg = printf "%s, at:%s" name addr
   (res, focus, focusCUEVal) <- f
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  logDebugStr $
+  dumpTrace enable $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
@@ -198,19 +197,23 @@ debugSpanExec name addr f = do
   return res
 
 debugInstant ::
-  (MonadState s m, MonadLogger m, HasTrace s, MonadIO m) => String -> String -> Maybe String -> m ()
-debugInstant name addr args = do
+  (MonadState s m, HasTrace s, MonadIO m) => Bool -> String -> String -> Maybe String -> m ()
+debugInstant enable name addr args = do
   start <- lastTraceID
   tr <- gets getTrace
   let msg = printf "%s, at:%s" name addr
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  logDebugStr $
+  dumpTrace enable $
     "ChromeTrace"
       ++ unpack
         ( encodeToLazyText
             ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr args)
             )
         )
+
+dumpTrace :: (MonadIO m) => Bool -> String -> m ()
+dumpTrace enable msg =
+  when enable $ liftIO $ putStrLn $ "ChromeTrace" ++ msg
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceID . getTrace
@@ -227,9 +230,6 @@ lastTraceID :: (MonadState s m, HasTrace s) => m Int
 lastTraceID = do
   tr <- gets getTrace
   return $ traceID tr
-
-logDebugStr :: (MonadLogger m) => String -> m ()
-logDebugStr = logDebugN . pack
 
 emptyTrace :: Trace
 emptyTrace = Trace{traceID = 0, traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}}

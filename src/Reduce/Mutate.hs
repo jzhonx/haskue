@@ -5,7 +5,7 @@
 
 module Reduce.Mutate where
 
-import Common (ctxNotifGraph, showRefNotifiers)
+import Common (ctxNotifGraph)
 import Control.Monad.Reader (asks)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -13,8 +13,6 @@ import qualified MutEnv
 import qualified Path
 import qualified Reduce.RMonad as RM
 import qualified TCOps
-import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 {- | Delete the notification receivers that have the specified prefix.
@@ -26,14 +24,6 @@ deleted.
 delRefSysRecvPrefix :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m ()
 delRefSysRecvPrefix addrPrefix = do
   RM.modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delEmptyElem $ del (ctxNotifGraph ctx)}
-  RM.withAddrAndFocus $ \addr _ -> do
-    notifiers <- ctxNotifGraph <$> RM.getRMContext
-    logDebugStr $
-      printf
-        "delRefSysRecvs: addr: %s delete receiver prefix: %s, updated notifiers: %s"
-        (show addr)
-        (show addrPrefix)
-        (showRefNotifiers notifiers)
  where
   delEmptyElem :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
   delEmptyElem = Map.filter (not . null)

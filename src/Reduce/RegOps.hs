@@ -16,7 +16,6 @@ import qualified Path
 import qualified Reduce.RMonad as RM
 import qualified TCOps
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 -- * Regular Unary Ops
@@ -153,9 +152,7 @@ regBinLeftAtom ::
   (Path.BinOpDirect, TCOps.TrCur) ->
   m (Maybe VT.Tree)
 regBinLeftAtom op@(AST.wpVal -> opv) (d1, ta1, tc1) (d2, tc2) = do
-  let
-    t2 = Cursor.tcFocus tc2
-  logDebugStr $ printf "regBinLeftAtom: %s (%s: %s) (%s: %s)" (show opv) (show d1) (show ta1) (show d2) (show t2)
+  let t2 = Cursor.tcFocus tc2
   if
     -- comparison operators
     | isJust (lookup opv cmpOps) -> case VT.treeNode t2 of

@@ -76,14 +76,16 @@ goDownTSeg seg startT = goDownTCSeg seg (TreeCursor startT [])
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
+It ensures that the version of the parent node is always greater than or equal to any of its children.
+
 It stops at the root.
 -}
 propUpTC :: (Env r s m) => TrCur -> m TrCur
 propUpTC (TreeCursor _ []) = throwErrSt "already at the top"
 propUpTC tc@(TreeCursor _ [(RootTASeg, _)]) = return tc
-propUpTC (TreeCursor subT ((seg, parT) : cs)) = do
+propUpTC (TreeCursor subT@VT.Tree{VT.treeVersion = vers} ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
-  return $ TreeCursor t cs
+  return $ TreeCursor (t{VT.treeVersion = vers}) cs
 
 -- Propagate the bottom value up until the root and return the updated tree cursor with the original cursor position.
 syncTC :: (Env r s m) => TrCur -> m TrCur

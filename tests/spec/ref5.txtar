@@ -1,12 +1,19 @@
--- ref5 --
-// this test the reference can be populated by a struct that is dynamically created.
-b: c.z // b will be 1
-c: {} // c will be {z: 1}
-df: "c"
-(df): {z: 1}
+-- ref8 --
+// this tests whether the chained reference is resolved correctly.
+y: x
+x: {a: z}
+z: {b: 1 + 2}
 -- exp --
-b: 1
-c: {
-    z: 1
+y: {
+    a: {
+        b: 3
+    }
 }
-df: "c"
+x: {
+    a: {
+        b: 3
+    }
+}
+z: {
+    b: 3
+}

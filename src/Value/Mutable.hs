@@ -183,6 +183,7 @@ mkRefMutable var ts =
       { refArg = RefPath var ts
       , refOrigAddrs = Nothing
       , refValue = Nothing
+      , refVers = Nothing
       }
 
 mkDisjoinOp :: [DisjTerm t] -> Mutable t

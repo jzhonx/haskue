@@ -8,7 +8,7 @@
 module EvalExpr where
 
 import AST
-import Common (Env, IDStore (..))
+import qualified Common
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (gets, modify)
@@ -19,18 +19,14 @@ import qualified Data.Set as Set
 import Exception (throwErrSt)
 import Reduce.Nodes (
   builtinMutableTable,
-  mkVarLinkTree,
  )
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
-type EvalEnv r s m = (Env r s m, IDStore s)
+type EvalEnv r s m = (Common.Env r s m, Common.IDStore s)
 
 evalSourceFile :: (EvalEnv r s m) => SourceFile -> m VT.Tree
-evalSourceFile (SourceFile decls) = do
-  logDebugStr $ printf "evalSourceFile: decls: %s" (show decls)
-  evalStructLit (pure $ StructLit decls)
+evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -165,28 +161,21 @@ evalFDeclLabels lbls e =
     [] -> throwErrSt "empty labels"
     [l1] ->
       do
-        logDebugStr $ printf "evalFDeclLabels: lb1: %s" (show l1)
         val <- evalExpr e
-        adder <- mkAdder l1 val
-        logDebugStr $ printf "evalFDeclLabels: adder: %s" (show adder)
-        return adder
+        mkAdder l1 val
     l1 : l2 : rs ->
       do
-        logDebugStr $ printf "evalFDeclLabels, nested: lb1: %s" (show l1)
         sf2 <- evalFDeclLabels (l2 : rs) e
         sid <- allocOID
         let val = VT.mkStructTree $ VT.mkStructFromAdders sid [sf2]
-        adder <- mkAdder l1 val
-        logDebugStr $ printf "evalFDeclLabels, nested: adder: %s" (show adder)
-        return adder
+        mkAdder l1 val
  where
   mkAdder :: (EvalEnv r s m) => Label -> VT.Tree -> m (VT.BlockElemAdder VT.Tree)
   mkAdder (wpVal -> Label le) val = case wpVal le of
     AST.LabelName ln c ->
       let attr = VT.LabelAttr{VT.lbAttrCnstr = cnstrFrom c, VT.lbAttrIsIdent = isVar ln}
        in case ln of
-            (toIDentLabel -> Just key) -> do
-              logDebugStr $ printf "evalFDeclLabels: key: %s, mkAdder, val: %s" key (show val)
+            (toIDentLabel -> Just key) ->
               return $ VT.StaticSAdder key (VT.staticFieldMker val attr)
             (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
@@ -232,7 +221,7 @@ evalFDeclLabels lbls e =
 {- | Insert a new element into the struct. If the field is already in the struct, then unify the field with the new
 field.
 -}
-addNewBlockElem :: (Env r s m) => VT.BlockElemAdder VT.Tree -> VT.Block VT.Tree -> m VT.Tree
+addNewBlockElem :: (Common.Env r s m) => VT.BlockElemAdder VT.Tree -> VT.Block VT.Tree -> m VT.Tree
 addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
   (VT.StaticSAdder name sf) ->
     maybe
@@ -250,11 +239,9 @@ addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
                   , VT.ssfObjects = Set.empty
                   }
              in
-              do
-                logDebugStr $ printf "addNewBlockElem: extSF: %s, sf: %s" (show extSF) (show sf)
-                return $
-                  VT.mkBlockTree $
-                    VT.setBlockStruct (struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}) block
+              return $
+                VT.mkBlockTree $
+                  VT.setBlockStruct (struct{VT.stcFields = Map.insert name unifySFOp (VT.stcFields struct)}) block
           [VT.SStubLet _] -> return $ aliasErr name
           -- The label is not seen before in the struct.
           [] ->
@@ -341,7 +328,6 @@ evalPrimExpr e = case wpVal e of
       Nothing -> mkVarLinkTree ident
     OpExpression expr -> do
       x <- evalExpr expr
-      logDebugStr $ printf "evalPrimExpr: new root: %s" (show x)
       return $ x{VT.treeIsRootOfSubTree = True}
   (PrimExprSelector primExpr sel) -> do
     p <- evalPrimExpr primExpr
@@ -353,6 +339,12 @@ evalPrimExpr e = case wpVal e of
     p <- evalPrimExpr primExpr
     args <- mapM evalExpr aes
     replaceFuncArgs p args
+
+-- | Create a new identifier reference.
+mkVarLinkTree :: (MonadError String m) => String -> m VT.Tree
+mkVarLinkTree var = do
+  let mut = VT.mkRefMutable var []
+  return $ VT.mkMutableTree mut
 
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
@@ -448,7 +440,6 @@ evalDisj e1 e2 = do
       r <- evalExpr e2
       return ((,) False l, (,) False r)
   let r = flattenDisj (VT.DisjTerm isLStar lt) (VT.DisjTerm isRStar rt)
-  logDebugStr $ printf "evalDisj: l: %s, r: %s, result: %s" (show lt) (show rt) (show r)
   return r
 
 {- | Flatten the disjoin op tree.
@@ -481,7 +472,7 @@ flattenDisj l r = case getLeftAcc of
 
 allocOID :: (EvalEnv r s m) => m Int
 allocOID = do
-  i <- gets getID
+  i <- gets Common.getID
   let j = i + 1
-  modify (`setID` j)
+  modify (`Common.setID` j)
   return j

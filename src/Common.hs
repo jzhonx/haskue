@@ -7,7 +7,6 @@ module Common where
 import qualified AST
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (MonadLogger)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
 import qualified Data.Map.Strict as Map
@@ -18,7 +17,6 @@ import Util (HasTrace (..), Trace, emptyTrace)
 
 type Env r s m =
   ( MonadError String m
-  , MonadLogger m
   , HasCallStack
   , MonadReader r m
   , HasConfig r
@@ -72,7 +70,8 @@ data Config = Config
   deriving (Show)
 
 data Settings = Settings
-  { stTraceExec :: Bool
+  { stDebugLogging :: Bool
+  , stTraceExec :: Bool
   , stTracePrintTree :: Bool
   , stShowMutArgs :: Bool
   , stMaxTreeDepth :: Int
@@ -94,7 +93,8 @@ emptyConfig =
 emptySettings :: Settings
 emptySettings =
   Settings
-    { stTraceExec = False
+    { stDebugLogging = False
+    , stTraceExec = False
     , stTracePrintTree = False
     , stShowMutArgs = False
     , stMaxTreeDepth = 0
@@ -125,11 +125,12 @@ emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}
 
 data Context = Context
   { ctxObjID :: Int
+  , ctxGlobalVers :: Int
   , ctxReduceStack :: [TreeAddr]
   , ctxNotifEnabled :: Bool
   , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
-  , ctxNotifQueue :: [TreeAddr]
-  -- ^ The notif queue is a list of addresses that will trigger the notification.
+  , ctxReadyQueue :: [TreeAddr]
+  -- ^ The ready queue is a queue of addresses that have been reduced and can notify their dependents.
   , ctxLetMap :: Map.Map TreeAddr Bool
   , ctxTrace :: Trace
   }
@@ -147,9 +148,10 @@ emptyContext :: Context
 emptyContext =
   Context
     { ctxObjID = 0
+    , ctxGlobalVers = 0
     , ctxReduceStack = []
     , ctxNotifGraph = Map.empty
-    , ctxNotifQueue = []
+    , ctxReadyQueue = []
     , ctxNotifEnabled = True
     , ctxLetMap = Map.empty
     , ctxTrace = emptyTrace

@@ -34,6 +34,10 @@ func main() {
 	scanner := bufio.NewScanner(inputFile)
 	debugRegex := regexp.MustCompile(`^\[Debug\]\s+ChromeTrace(.*)`)
 
+	// Increase buffer size to handle long lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // Set max token size to 1MB
+
 	traceList := []any{}
 
 	for scanner.Scan() {

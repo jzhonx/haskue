@@ -19,7 +19,6 @@ import AST
 import qualified Common
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (MonadLogger, runNoLoggingT, runStderrLoggingT)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (evalStateT, execStateT, runStateT)
 import qualified Cursor
@@ -36,7 +35,7 @@ import qualified Reduce
 import Reduce.PostReduce (postValidation)
 import qualified Reduce.RMonad as RM
 import Text.Printf (printf)
-import Util (emptyTrace, logDebugStr)
+import Util (emptyTrace)
 import qualified Value.Tree as VT
 
 data EvalConfig = EvalConfig
@@ -92,40 +91,34 @@ instance Common.HasConfig Runner where
   setConfig r c = r{rcConfig = c}
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
-runIO eStr conf =
-  if ecDebugLogging conf
-    then runStderrLoggingT res
-    else runNoLoggingT res
- where
-  res :: (MonadError String m, MonadLogger m, MonadIO m) => m Builder
-  res = do
-    r <- runStr eStr conf
-    case r of
-      Left err -> return $ string7 err
-      Right
-        ( wpVal ->
-            AST.ExprUnaryExpr
-              ( wpVal ->
-                  AST.UnaryExprPrimaryExpr
-                    ( wpVal ->
-                        AST.PrimExprOperand
-                          ( wpVal ->
-                              AST.OpLiteral
-                                ( wpVal ->
-                                    AST.LitStructLit
-                                      (wpVal -> AST.StructLit decls)
-                                  )
-                            )
-                      )
-                )
-          ) ->
-          return (declsBld 0 decls)
-      _ -> throwErrSt "Expected a struct literal"
+runIO eStr conf = do
+  r <- runStr eStr conf
+  case r of
+    Left err -> return $ string7 err
+    Right
+      ( wpVal ->
+          AST.ExprUnaryExpr
+            ( wpVal ->
+                AST.UnaryExprPrimaryExpr
+                  ( wpVal ->
+                      AST.PrimExprOperand
+                        ( wpVal ->
+                            AST.OpLiteral
+                              ( wpVal ->
+                                  AST.LitStructLit
+                                    (wpVal -> AST.StructLit decls)
+                                )
+                          )
+                    )
+              )
+        ) ->
+        return (declsBld 0 decls)
+    _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m VT.Tree
-runTreeIO s = runNoLoggingT $ runTreeStr s emptyEvalConfig
+runTreeIO s = runTreeStr s emptyEvalConfig
 
-runStr :: (MonadError String m, MonadLogger m, MonadIO m) => String -> EvalConfig -> m (Either String AST.Expression)
+runStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Either String AST.Expression)
 runStr s conf = do
   t <- runTreeStr s conf
   case VT.treeNode t of
@@ -133,10 +126,10 @@ runStr s conf = do
     VT.TNBottom (VT.Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ -> Right <$> evalStateT (runReaderT (Common.buildASTExpr False t) emptyRunner) emptyTrace
 
-runTreeStr :: (MonadError String m, MonadLogger m, MonadIO m) => String -> EvalConfig -> m VT.Tree
+runTreeStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m VT.Tree
 runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 
-evalFile :: (MonadError String m, MonadLogger m, MonadIO m) => SourceFile -> EvalConfig -> m VT.Tree
+evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m VT.Tree
 evalFile sf conf = do
   let runner =
         updateConfig
@@ -144,7 +137,8 @@ evalFile sf conf = do
           ( Common.Config
               { Common.cfSettings =
                   (Common.cfSettings . rcConfig $ emptyRunner)
-                    { Common.stTraceExec = ecTraceExec conf
+                    { Common.stDebugLogging = ecDebugLogging conf
+                    , Common.stTraceExec = ecTraceExec conf
                     , Common.stTracePrintTree = ecTracePrintTree conf
                     , Common.stShowMutArgs = ecShowMutArgs conf
                     , Common.stMaxTreeDepth = ecMaxTreeDepth conf
@@ -155,21 +149,15 @@ evalFile sf conf = do
                     }
               }
           )
-  logDebugStr $ printf "runner: %s" (show runner)
   reduced <-
     runReaderT
       ( do
           (root, eeState) <- runStateT (evalSourceFile sf) Common.emptyEEState
-          logDebugStr $ printf "---- file evaluated to tree: ----\n%s" (VT.treeFullStr 0 root)
 
           let
             rootTC = Cursor.TreeCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]
             cv = RM.mkRTState rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
-          logDebugStr $ printf "---- start reduce tree ----"
-          res <- execStateT Reduce.fullReduce cv
-          let reducedTC = RM.rtsTC res
-          logDebugStr $ printf "---- reduced: ----\n%s" (show reducedTC)
-          return res
+          execStateT Reduce.fullReduce cv
       )
       runner
 
@@ -183,5 +171,4 @@ evalFile sf conf = do
           )
       )
   let finalTC = Cursor.getTreeCursor finalized
-  logDebugStr $ printf "---- constraints evaluated: ----\n%s" (show finalTC)
   return $ Cursor.tcFocus finalTC

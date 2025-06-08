@@ -20,7 +20,6 @@ import qualified Reduce.RMonad as RM
 import TCOps (goDownTCAddr, topTC)
 import qualified TCOps
 import Text.Printf (printf)
-import Util (logDebugStr)
 import qualified Value.Tree as VT
 
 data DerefResult = DerefResult
@@ -62,7 +61,6 @@ index argRef@VT.Reference{VT.refArg = (VT.RefPath var sels), VT.refOrigAddrs = o
         -- If the let value is not a reference, but a regular expression.
         -- For example, let x = {}, let x = 1 + 2
         | Nothing <- VT.getRefFromTree lb -> do
-            logDebugStr $ printf "index: let %s bind value is %s" var (show lb)
             let
               newRef = (VT.mkIndexRef (lb : sels)){VT.refOrigAddrs = origAddrsM}
               -- build the new reference tree.
@@ -100,7 +98,6 @@ index VT.Reference{VT.refArg = arg@(VT.RefIndex _)} tc = RM.debugSpanRM "index" 
   reducedOperandM <- Mutate.reduceToNonMut operandTC
 
   idxValPathM <- resolveRefValPath arg tc
-  logDebugStr $ printf "index: idxValPathM is reduced to %s" (show idxValPathM)
   let
     tarTCM = do
       idxValPath <- idxValPathM
@@ -118,7 +115,6 @@ index VT.Reference{VT.refArg = arg@(VT.RefIndex _)} tc = RM.debugSpanRM "index" 
 refTCFromRef :: (RM.ReduceMonad s r m) => VT.Reference VT.Tree -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Path.ValPath))
 refTCFromRef VT.Reference{VT.refArg = arg@(VT.RefPath var _), VT.refOrigAddrs = origAddrsM} tc = do
   refRestPathM <- resolveRefValPath arg tc
-  logDebugStr $ printf "refTCFromRef: refRestPathM is reduced to %s" (show refRestPathM)
 
   maybe
     (return Nothing)
@@ -782,27 +778,22 @@ already exist.
 The tree cursor must at least have the root segment.
 -}
 searchTCIdent :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
--- searchTCIdent name tc = RM.debugSpanRM "searchTCIdent" (fmap (Cursor.tcFocus . fst)) tc $ do
 searchTCIdent name tc = do
   subM <- findIdent name tc
-  r <-
-    maybe
-      (goUp tc)
-      ( \(identTC, isLB) -> do
-          when isLB $ do
-            -- Mark the ident as referred if it is a let binding.
-            RM.markRMLetReferred (Cursor.tcCanAddr identTC)
-            unrefLets <- RM.getRMUnreferredLets
-            RM.debugInstantRM
-              "searchLetBindValue"
-              (printf "ident: %s, unrefLets: %s" (show $ Cursor.tcCanAddr identTC) (show unrefLets))
-              tc
-          return $ Just (identTC, isLB)
-      )
-      subM
-
-  logDebugStr $ printf "searchTCIdent: name: %s, cur_path: %s, result: %s" name (show $ Cursor.tcCanAddr tc) (show r)
-  return r
+  maybe
+    (goUp tc)
+    ( \(identTC, isLB) -> do
+        when isLB $ do
+          -- Mark the ident as referred if it is a let binding.
+          RM.markRMLetReferred (Cursor.tcCanAddr identTC)
+          unrefLets <- RM.getRMUnreferredLets
+          RM.debugInstantRM
+            "searchLetBindValue"
+            (printf "ident: %s, unrefLets: %s" (show $ Cursor.tcCanAddr identTC) (show unrefLets))
+            tc
+        return $ Just (identTC, isLB)
+    )
+    subM
  where
   mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
 
@@ -876,37 +867,6 @@ searchTCIdent name tc = do
           )
           Nothing
           (reverse (zip [0 ..] binds))
-      -- VT.TNComprehIterVal c -> do
-      --   let binds = VT.citIterBindings c
-      --   RM.debugInstantRM
-      --     "searchTCIdent"
-      --     (printf "binds: %s" (show binds))
-      --     blockTC
-      --   foldM
-      --     ( \acc (i, bind) ->
-      --         if isJust acc
-      --           then return acc
-      --           else
-      --             let bindName = VT.cphBindName bind
-      --              in if bindName == ident
-      --                   then do
-      --                     RM.debugInstantRM
-      --                       "searchTCIdent"
-      --                       (printf "found in comprehension binding: %s" (show bindName))
-      --                       blockTC
-      --                     -- Since the bindName is an identifier and watchRefRM only watches referable identifiers, we
-      --                     -- do not need to worry that the bindValTC will be accessed.
-      --                     -- The ComprehIterBindingTASeg is used to make sure the address passes the cycle detection.
-      --                     let bindValTC =
-      --                           Cursor.mkSubTC
-      --                             (Path.ComprehTASeg (Path.ComprehIterBindingTASeg i))
-      --                             (VT.cphBindValue bind)
-      --                             blockTC
-      --                     return $ Just (bindValTC, False)
-      --                   else return acc
-      --     )
-      --     Nothing
-      --     (reverse (zip [0 ..] binds))
       _ -> return Nothing
 
 searchLetBindValue :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe VT.Tree)
@@ -941,9 +901,3 @@ inAbsAddrTCMust ::
 inAbsAddrTCMust p tc f = do
   tarM <- goTCAbsAddr p tc
   maybe (throwErrSt $ printf "%s is not found" (show p)) f tarM
-
--- mustReferableAddr :: (Common.Env r s m) => Path.TreeAddr -> m Path.TreeAddr
--- mustReferableAddr addr = do
---   let r = Path.getReferableAddr addr
---   when (isNothing r) $ throwErrSt $ printf "the addr %s is not referable" (show addr)
---   return $ fromJust r

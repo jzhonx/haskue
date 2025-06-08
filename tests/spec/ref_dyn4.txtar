@@ -1,0 +1,13 @@
+-- dyn_ref4 --
+// this tests versioned tree works correctly.
+// b first saw an empty {} with version 0, then it got notified with change.
+b: c // b will be {z:1}
+c: {}
+("c"): {z: 1}
+-- exp --
+b: {
+    z: 1
+}
+c: {
+    z: 1
+}

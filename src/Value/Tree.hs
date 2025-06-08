@@ -78,6 +78,7 @@ data Tree = Tree
   -- According to the spec,
   -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
   -- of its descendants are also regarded as cyclic.
+  , treeVersion :: Int
   }
 
 newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
@@ -134,6 +135,7 @@ instance TreeRepBuilderIter Tree where
                       ++ (if isJust (treeExpr t) then "" else "t_N,")
                       ++ (if treeIsRootOfSubTree t then "t_R," else "")
                       ++ (if treeIsCyclic t then "t_C," else "")
+                      ++ printf "t_v:%d," (treeVersion t)
                   else []
               )
                 ++ trMeta trf
@@ -269,6 +271,7 @@ buildRepTreeTN t tn opt = case tn of
           ( symbol
           , showRefArg (refArg ref) (\x -> listToMaybe $ catMaybes [getStringFromTree x, show <$> getIntFromTree x])
               <> maybe mempty (\from -> ", from:" <> show from) (refOrigAddrs ref)
+              <> (", vers:" <> maybe "N" show (refVers ref))
           , consFields val
           , []
           )
@@ -669,6 +672,7 @@ emptyTree =
     , treeRecurClosed = False
     , treeIsRootOfSubTree = False
     , treeIsCyclic = False
+    , treeVersion = 0
     }
 
 setTN :: Tree -> TreeNode Tree -> Tree

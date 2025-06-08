@@ -21,6 +21,8 @@ data Reference t = Reference
   -- If it is, the address of the scope is stored here.
   -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
   -- The address is the abs address of the value in the subtree.
+  , refVers :: Maybe Int
+  -- ^ refVers records the version of the referenced value.
   , refValue :: Maybe t
   }
   deriving (Show)
@@ -94,6 +96,7 @@ mkIndexRef ts =
     { refArg = RefIndex ts
     , refValue = Nothing
     , refOrigAddrs = Nothing
+    , refVers = Nothing
     }
 
 mkRefFromValPath :: (Common.Env r s m) => (Atom -> t) -> String -> Path.ValPath -> m (Reference t)
@@ -110,4 +113,5 @@ mkRefFromValPath aToTree var (Path.ValPath xs) = do
       { refArg = RefPath var ys
       , refValue = Nothing
       , refOrigAddrs = Nothing
+      , refVers = Nothing
       }
