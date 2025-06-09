@@ -1,12 +1,17 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Value.DisjoinOp where
+
+import Control.DeepSeq (NFData (..))
+import GHC.Generics (Generic)
 
 data DisjTerm t = DisjTerm
   { dstMarked :: Bool
   , dstValue :: t
   }
-  deriving (Eq, Show, Functor)
+  deriving (Eq, Show, Functor, Generic, NFData)
 
 {- | DisjoinOp is used to handle reference disjuncts, so that when values of references change, the new disjunction can
 be created correctly.
@@ -17,4 +22,4 @@ data DisjoinOp t = DisjoinOp
   { djoTerms :: [DisjTerm t]
   , djoValue :: Maybe t
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)

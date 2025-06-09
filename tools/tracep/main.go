@@ -32,7 +32,7 @@ func main() {
 	defer inputFile.Close()
 
 	scanner := bufio.NewScanner(inputFile)
-	debugRegex := regexp.MustCompile(`^\[Debug\]\s+ChromeTrace(.*)`)
+	debugRegex := regexp.MustCompile(`^ChromeTrace(.*)`)
 
 	// Increase buffer size to handle long lines
 	buf := make([]byte, 0, 64*1024)

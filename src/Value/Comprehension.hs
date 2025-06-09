@@ -1,4 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -6,10 +8,13 @@ module Value.Comprehension where
 
 import qualified AST
 import qualified Common
+import Control.DeepSeq (NFData (..))
+import qualified Data.Text as T
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 
 data Comprehension t = Comprehension
-  { cphIsListCompreh :: Bool
+  { cphIsListCompreh :: !Bool
   , cphIterClauses :: [IterClause t]
   , cphStruct :: t
   , cphIterBindings :: [ComprehIterBinding t]
@@ -17,7 +22,7 @@ data Comprehension t = Comprehension
   , cphIterVal :: Maybe t
   , cphValue :: Maybe t
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 buildComprehASTExpr :: (Common.Env r s m, Common.BuildASTExpr t) => Bool -> Comprehension t -> m AST.Comprehension
 buildComprehASTExpr c cph = do
@@ -59,8 +64,8 @@ buildComprehASTExpr c cph = do
       start <- buildStartClause clause
       return $ AST.ClauseStartClause (pure start)
 
-data IterClause t = IterClauseLet String t | IterClauseIf t | IterClauseFor String (Maybe String) t
-  deriving (Eq, Show, Functor)
+data IterClause t = IterClauseLet T.Text t | IterClauseIf t | IterClauseFor T.Text (Maybe T.Text) t
+  deriving (Eq, Show, Functor, Generic, NFData)
 
 mkComprehension :: Bool -> [IterClause t] -> t -> Comprehension t
 mkComprehension isListCompreh clauses sv =
@@ -79,7 +84,7 @@ getValFromIterClause (IterClauseIf v) = v
 getValFromIterClause (IterClauseFor _ _ v) = v
 
 data ComprehIterBinding t = ComprehIterBinding
-  { cphBindName :: String
+  { cphBindName :: T.Text
   , cphBindValue :: t
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)

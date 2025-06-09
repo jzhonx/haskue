@@ -1,4 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,7 +9,10 @@ module Value.Mutable where
 
 import qualified AST
 import Common (BuildASTExpr (..), Env)
+import Control.DeepSeq (NFData (..))
+import qualified Data.Text as T
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 import Value.Comprehension
 import Value.DisjoinOp
 import Value.Interpolation
@@ -22,6 +27,7 @@ data Mutable t
   | DisjOp (DisjoinOp t)
   | UOp (UnifyOp t)
   | Itp (Interpolation t)
+  deriving (Generic, NFData)
 
 instance (Eq t) => Eq (Mutable t) where
   (==) (RegOp m1) (RegOp m2) = m1 == m2
@@ -45,6 +51,7 @@ data OpType
   | BinOpType AST.BinaryOp
   | CloseFunc
   | InvalidOpType
+  deriving (Generic, NFData)
 
 -- | RegularOp is a tree node that represents a function.
 data RegularOp t = RegularOp
@@ -70,6 +77,9 @@ instance (BuildASTExpr t) => BuildASTExpr (RegularOp t) where
       -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
       then ropExpr mut
       else maybe (ropExpr mut) (buildASTExpr c) (ropValue mut)
+
+instance (NFData t) => NFData (RegularOp t) where
+  rnf (RegularOp n t a _ v) = rnf n `seq` rnf t `seq` rnf a `seq` rnf v
 
 getRefFromMutable :: Mutable t -> Maybe (Reference t)
 getRefFromMutable mut = case mut of
@@ -176,7 +186,7 @@ buildBinaryExpr op l r = do
   ye <- buildASTExpr c r
   return $ pure $ AST.ExprBinaryOp op xe ye
 
-mkRefMutable :: String -> [t] -> Mutable t
+mkRefMutable :: T.Text -> [t] -> Mutable t
 mkRefMutable var ts =
   Ref $
     Reference
@@ -202,7 +212,7 @@ buildArgsExpr func ts = do
         ( AST.PrimExprArguments
             ( AST.PrimExprOperand
                 AST.<<^>> AST.OpLiteral
-                AST.<^> AST.strToLit func
+                AST.<^> AST.strToLit (T.pack func)
             )
             ets
         )

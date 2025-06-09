@@ -21,7 +21,13 @@ options =
       )
     <*> switch
       ( long "trace-print-tree"
-          <> help "trace execution"
+          <> help "Print the execution tree"
+      )
+    <*> option
+      str
+      ( long "trace-filter"
+          <> help "Filter for trace output. If empty, all traces are shown. Delimited by commas."
+          <> value "reduce,fullReduce,drainRefSysQueue,notify,bfsLoopQ"
       )
     <*> switch
       ( long "show-mutable-args"

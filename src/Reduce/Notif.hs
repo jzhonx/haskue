@@ -104,10 +104,10 @@ instance (Common.HasContext s) => Common.HasContext (WithBFSState s) where
 bfsLoopQ :: (RM.ReduceTCMonad r s m, HasBFSState s) => m ()
 bfsLoopQ = do
   state@(BFSState{bfsQueue = q}) <- gets getBFSState
-  RM.debugSpanArgsTM "bfsLoopQ" (printf "q:%s" (show q)) $ do
-    case q of
-      [] -> return ()
-      ((addr, toReduce, srcVers) : xs) -> do
+  case q of
+    [] -> return ()
+    ((addr, toReduce, srcVers) : xs) -> do
+      RM.debugSpanArgsTM "bfsLoopQ" (printf "q:%s" (show q)) $ do
         -- pop the first element of the queue.
         modify $ \s -> setBFSState s state{bfsQueue = xs}
 
@@ -128,7 +128,7 @@ bfsLoopQ = do
         -- We must go back to the original addr even when the addr is not found, because that would lead to unexpected
         -- address.
         RefSys.goRMAbsAddrMust origAddr
-        bfsLoopQ
+      bfsLoopQ
  where
   -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
   -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.

@@ -11,6 +11,7 @@ import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
 import Path (TASeg, TreeAddr)
 import Util (HasTrace (..), Trace, emptyTrace)
@@ -73,6 +74,7 @@ data Settings = Settings
   { stDebugLogging :: Bool
   , stTraceExec :: Bool
   , stTracePrintTree :: Bool
+  , stTraceFilter :: Set.Set String
   , stShowMutArgs :: Bool
   , stMaxTreeDepth :: Int
   }
@@ -96,6 +98,7 @@ emptySettings =
     { stDebugLogging = False
     , stTraceExec = False
     , stTracePrintTree = False
+    , stTraceFilter = Set.empty
     , stShowMutArgs = False
     , stMaxTreeDepth = 0
     }
@@ -124,10 +127,10 @@ emptyEEState :: EEState
 emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}
 
 data Context = Context
-  { ctxObjID :: Int
-  , ctxGlobalVers :: Int
+  { ctxObjID :: !Int
+  , ctxGlobalVers :: !Int
   , ctxReduceStack :: [TreeAddr]
-  , ctxNotifEnabled :: Bool
+  , ctxNotifEnabled :: !Bool
   , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
   , ctxReadyQueue :: [TreeAddr]
   -- ^ The ready queue is a queue of addresses that have been reduced and can notify their dependents.
@@ -143,6 +146,11 @@ instance HasTrace Context where
 instance IDStore Context where
   getID = ctxObjID
   setID ctx i = ctx{ctxObjID = i}
+
+instance HasContext Context where
+  getContext = id
+  setContext _ = id
+  modifyContext ctx f = f ctx
 
 emptyContext :: Context
 emptyContext =

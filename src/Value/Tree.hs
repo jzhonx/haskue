@@ -1,4 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -26,13 +28,17 @@ where
 
 import qualified AST
 import Common (BuildASTExpr (..), Env, TreeOp (..), TreeRepBuilder (..))
+import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 import Path (
   ComprehTASeg (..),
   Selector (..),
@@ -40,7 +46,7 @@ import Path (
   TASeg (..),
   TreeAddr,
   ValPath (ValPath),
-  addrToNormOrdList,
+  addrToList,
  )
 import Text.Printf (printf)
 import Value.Atom
@@ -69,17 +75,18 @@ data Tree = Tree
   { treeNode :: TreeNode Tree
   , treeExpr :: Maybe AST.Expression
   -- ^ treeExpr is the parsed expression.
-  , treeRecurClosed :: Bool
+  , treeRecurClosed :: !Bool
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
-  , treeIsRootOfSubTree :: Bool
+  , treeIsRootOfSubTree :: !Bool
   -- ^ treeIsRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parenthesis.
-  , treeIsCyclic :: Bool
+  , treeIsCyclic :: !Bool
   -- ^ treeIsCyclic is used to indicate whether the tree is cyclic.
   -- According to the spec,
   -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
   -- of its descendants are also regarded as cyclic.
-  , treeVersion :: Int
+  , treeVersion :: !Int
   }
+  deriving (Generic, NFData)
 
 newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
 
@@ -186,14 +193,14 @@ buildRepTreeTN t tn opt = case tn of
           map
             ( \k ->
                 maybe
-                  (k, "", mkBottomTree "not found")
-                  (\sf -> (k, staticFieldMeta sf, ssfValue sf))
+                  (T.unpack k, "", mkBottomTree "not found")
+                  (\sf -> (T.unpack k, staticFieldMeta sf, ssfValue sf))
                   (lookupStructField k s)
             )
             (stcOrdLabels s)
             ++ map
               ( \(k, lb) ->
-                  (show (StructTASeg $ LetTASeg k), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
+                  (show (StructTASeg $ LetTASeg (TE.encodeUtf8 k)), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
               )
               (Map.toList (stcLets s))
             ++ map
@@ -241,7 +248,7 @@ buildRepTreeTN t tn opt = case tn of
       , mempty
       , consFields
           [ ("atom", mempty, mkAtomVTree (cnsAtom c))
-          , ("validator", mempty, mkAtomTree $ String (show $ cnsValidator c))
+          , ("validator", mempty, mkAtomTree $ String (T.pack $ show $ cnsValidator c))
           ]
       , []
       )
@@ -269,7 +276,9 @@ buildRepTreeTN t tn opt = case tn of
        in
         consRep
           ( symbol
-          , showRefArg (refArg ref) (\x -> listToMaybe $ catMaybes [getStringFromTree x, show <$> getIntFromTree x])
+          , showRefArg
+              (refArg ref)
+              (\x -> listToMaybe $ catMaybes [T.unpack <$> getStringFromTree x, show <$> getIntFromTree x])
               <> maybe mempty (\from -> ", from:" <> show from) (refOrigAddrs ref)
               <> (", vers:" <> maybe "N" show (refVers ref))
           , consFields val
@@ -394,7 +403,7 @@ instance BuildASTExpr Tree where
 buildStructASTExpr :: (Env r s m) => Bool -> Block Tree -> m AST.Expression
 buildStructASTExpr concrete block@(Block{blkStruct = s}) =
   let
-    processSField :: (Env r s m) => (String, Field Tree) -> m AST.Declaration
+    processSField :: (Env r s m) => (T.Text, Field Tree) -> m AST.Declaration
     processSField (sel, sf) = do
       e <- buildASTExpr concrete (ssfValue sf)
       return $
@@ -455,7 +464,7 @@ buildStructASTExpr concrete block@(Block{blkStruct = s}) =
           ( \l -> do
               pair <-
                 maybe
-                  (throwErrSt $ "struct field not found: " ++ l)
+                  (throwErrSt $ "struct field not found: " ++ show l)
                   (\f -> return (l, f))
                   (lookupStructField l s)
               processSField pair
@@ -638,7 +647,7 @@ treeToSubStr toff moreSub t =
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
   TNBlock (Block{blkStruct = struct}) ->
-    [(StructTASeg $ StringTASeg s, ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
+    [(StructTASeg $ StringTASeg (TE.encodeUtf8 s), ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
       ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
       ++ [(StructTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
@@ -654,7 +663,7 @@ rawNodes t = case treeNode t of
   TNBlock block@(Block{blkStruct = struct}) ->
     [(Path.StructTASeg $ Path.PatternTASeg i 1, scsValue c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
       ++ [(Path.StructTASeg $ Path.DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
-      ++ [(Path.StructTASeg $ Path.LetTASeg s, lbValue lb) | (s, lb) <- Map.toList $ stcLets struct]
+      ++ [(Path.StructTASeg $ Path.LetTASeg (TE.encodeUtf8 s), lbValue lb) | (s, lb) <- Map.toList $ stcLets struct]
       ++ [(Path.StructTASeg $ Path.EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
   TNMutable (Compreh c) ->
     [ (Path.ComprehTASeg (Path.ComprehIterClauseValTASeg i), getValFromIterClause v)
@@ -787,7 +796,7 @@ getCnstredValFromTree t = case treeNode t of
   _ -> Nothing
 
 -- | TODO: default and cnstred?
-getStringFromTree :: Tree -> Maybe String
+getStringFromTree :: Tree -> Maybe T.Text
 getStringFromTree t = case treeNode t of
   (TNMutable mut) -> getMutVal mut >>= getStringFromTree
   _ -> getAtomVFromTree t >>= getStringFromAtomV
@@ -864,7 +873,7 @@ treeToSel t = case treeNode t of
 concreteToSel :: Tree -> Maybe Selector
 concreteToSel t = case treeNode t of
   TNAtom a
-    | (String s) <- va -> Just (StringSel s)
+    | (String s) <- va -> Just (StringSel (TE.encodeUtf8 s))
     | (Int j) <- va -> Just (IntSel $ fromIntegral j)
    where
     va = amvAtom a
@@ -873,10 +882,10 @@ concreteToSel t = case treeNode t of
   _ -> Nothing
 
 addrToTrees :: TreeAddr -> Maybe [Tree]
-addrToTrees p = mapM selToTree (addrToNormOrdList p)
+addrToTrees p = mapM selToTree (addrToList p)
  where
   selToTree :: TASeg -> Maybe Tree
   selToTree sel = case sel of
-    StructTASeg (StringTASeg s) -> Just $ mkAtomTree (String s)
+    StructTASeg (StringTASeg s) -> Just $ mkAtomTree (String (TE.decodeUtf8 s))
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing

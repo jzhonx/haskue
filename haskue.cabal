@@ -71,6 +71,10 @@ library
       optparse-applicative >= 0.18.1 && < 0.19,
       aeson,
       time,
+      vector,
+      split,
+      unordered-containers,
+      deepseq,
 
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -95,11 +99,10 @@ executable haskue
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
-  hs-source-dirs:   tests
+  hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
     SpecTest,
-    -- TreeTest,
   build-depends:
         base ^>=4.17.0.0,
         tasty >= 0.7,
@@ -110,4 +113,53 @@ Test-Suite haskue-unit-test
         containers,
         transformers,
         directory,
+  default-language: Haskell2010
+
+
+benchmark time
+  type: exitcode-stdio-1.0
+  main-is: FuncBenchMain.hs
+  hs-source-dirs: tests
+  ghc-options: -fprof-late -rtsopts
+  build-depends:
+      base,
+      criterion,
+      containers >= 0.6.7 && < 0.7,
+      haskue,
+      vector,
+      deepseq,
+      mtl,
+     
+  default-language: Haskell2010
+
+
+benchmark memory
+  type: exitcode-stdio-1.0
+  main-is: MemBenchMain.hs
+  hs-source-dirs: tests
+  ghc-options: -fprof-late -rtsopts
+  build-depends:
+      base,
+      weigh,
+      containers >= 0.6.7 && < 0.7,
+      haskue,
+      vector,
+     
+  default-language: Haskell2010
+
+benchmark spec
+  type: exitcode-stdio-1.0
+  main-is: SpecBenchMain.hs
+  hs-source-dirs: tests
+  ghc-options: -fprof-late -rtsopts
+  build-depends:
+      base,
+      criterion,
+      containers >= 0.6.7 && < 0.7,
+      haskue,
+      vector,
+      deepseq,
+      mtl,
+      bytestring,
+     
   default-language: Haskell2010

@@ -1,24 +1,35 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Path where
 
+import Control.DeepSeq (NFData (..))
+import qualified Data.ByteString as B
 import Data.List (intercalate)
+import Data.List.Split (splitOn)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Vector as V
+import GHC.Generics (Generic)
 
-data Selector = StringSel String | IntSel Int
-  deriving (Eq, Ord)
+data Selector = StringSel B.ByteString | IntSel !Int
+  deriving (Eq, Ord, Generic, NFData)
 
 {- ValPath is a list of selectors.
 
 The selectors are not stored in reverse order.
 -}
 newtype ValPath = ValPath {getRefSels :: [Selector]}
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show Selector where
-  show (StringSel s) = s
+  show (StringSel s) = show s
   show (IntSel i) = show i
 
 instance Show ValPath where
+  show :: ValPath -> String
   show (ValPath sels) = intercalate "." (map show sels)
 
 emptyValPath :: ValPath
@@ -51,22 +62,37 @@ selToTASeg :: Selector -> TASeg
 selToTASeg (StringSel s) = StructTASeg $ StringTASeg s
 selToTASeg (IntSel i) = IndexTASeg i
 
+valPathFromString :: String -> ValPath
+valPathFromString s =
+  ValPath
+    { getRefSels =
+        map
+          ( \x ->
+              case reads x of
+                [(i, "")] -> IntSel i
+                _ -> StringSel (TE.encodeUtf8 (T.pack x))
+          )
+          (splitOn "." s)
+    }
+
+-- == TASeg ==
+
 -- | TASeg is paired with a tree node.
 data TASeg
   = -- RootTASeg is a special segment that represents the root of the addr.
     -- It is crucial to distinguish between the absolute addr and the relative addr.
     RootTASeg
   | StructTASeg StructTASeg
-  | IndexTASeg Int
+  | IndexTASeg !Int
   | DisjDefaultTASeg
-  | DisjDisjunctTASeg Int
+  | DisjDisjunctTASeg !Int
   | -- | SubValTASeg is used to represent the only sub value of a value.
     SubValTASeg
   | -- | MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
-    MutableArgTASeg Int
+    MutableArgTASeg !Int
   | ComprehTASeg ComprehTASeg
   | ParentTASeg
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show TASeg where
   show RootTASeg = "/"
@@ -82,33 +108,33 @@ instance Show TASeg where
 data StructTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
     -- let binding.
-    StringTASeg String
+    StringTASeg B.ByteString
   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
-    PatternTASeg Int Int
+    PatternTASeg !Int !Int
   | -- | DynFieldTASeg is used to represent a dynamic field.
     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
-    DynFieldTASeg Int Int
+    DynFieldTASeg !Int !Int
   | -- | A let binding is always indexed by the LetTASeg.
     LetTASeg
       -- | Identifier
-      String
-  | EmbedTASeg Int
-  deriving (Eq, Ord)
+      B.ByteString
+  | EmbedTASeg !Int
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show StructTASeg where
-  show (StringTASeg s) = s
+  show (StringTASeg s) = show s
   -- c stands for constraint.
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
   show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
-  show (LetTASeg s) = "let_" ++ s
+  show (LetTASeg s) = "let_" ++ show s
   show (EmbedTASeg i) = "emb_" ++ show i
 
 data ComprehTASeg
-  = ComprehIterClauseValTASeg Int
+  = ComprehIterClauseValTASeg !Int
   | -- | Binding can not be accessed through addressing.
-    ComprehIterBindingTASeg Int
+    ComprehIterBindingTASeg !Int
   | ComprehIterValTASeg
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show ComprehTASeg where
   show (ComprehIterClauseValTASeg i) = "cph_cl" ++ show i
@@ -116,8 +142,8 @@ instance Show ComprehTASeg where
   show ComprehIterValTASeg = "cph_v"
 
 getStrFromSeg :: StructTASeg -> Maybe String
-getStrFromSeg (StringTASeg s) = Just s
-getStrFromSeg (LetTASeg s) = Just s
+getStrFromSeg (StringTASeg s) = Just (show s)
+getStrFromSeg (LetTASeg s) = Just (show s)
 getStrFromSeg _ = Nothing
 
 unaryOpTASeg :: TASeg
@@ -161,76 +187,85 @@ instance Show BinOpDirect where
 {- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype TreeAddr = TreeAddr {getTreeSegs :: [TASeg]}
-  deriving (Eq, Ord)
-
-showTreeAddr :: TreeAddr -> String
-showTreeAddr (TreeAddr []) = "."
-showTreeAddr (TreeAddr segs) =
-  let revSegs = reverse segs
-   in if (revSegs !! 0) == RootTASeg
-        then "/" ++ (intercalate "/" $ map show (drop 1 revSegs))
-        else intercalate "/" $ map show (reverse segs)
+newtype TreeAddr = TreeAddr {getTreeAddrSegs :: V.Vector TASeg}
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show TreeAddr where
   show = showTreeAddr
 
+showTreeAddr :: TreeAddr -> String
+showTreeAddr (TreeAddr a)
+  | V.null a = "."
+  | otherwise =
+      if a V.! 0 == RootTASeg
+        then "/" ++ intercalate "/" (map show (V.toList $ V.drop 1 a))
+        else intercalate "/" $ map show (V.toList a)
+
 emptyTreeAddr :: TreeAddr
-emptyTreeAddr = TreeAddr []
+emptyTreeAddr = TreeAddr V.empty
 
 rootTreeAddr :: TreeAddr
-rootTreeAddr = TreeAddr [RootTASeg]
+rootTreeAddr = TreeAddr (V.singleton RootTASeg)
 
 isTreeAddrEmpty :: TreeAddr -> Bool
-isTreeAddrEmpty (TreeAddr []) = True
-isTreeAddrEmpty _ = False
+isTreeAddrEmpty a = V.null (getTreeAddrSegs a)
 
 addrFromList :: [TASeg] -> TreeAddr
-addrFromList segs = TreeAddr (reverse segs)
+addrFromList segs = TreeAddr (V.fromList segs)
 
--- | Convert a TreeAddr to normal order list, meaning the first segment is the first in the list.
-addrToNormOrdList :: TreeAddr -> [TASeg]
-addrToNormOrdList (TreeAddr segs) = reverse segs
+-- | This is mostly used for testing purpose.
+addrFromStringList :: [String] -> TreeAddr
+addrFromStringList segs =
+  TreeAddr (V.fromList $ map (\s -> StructTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))) segs)
 
-appendSeg :: TASeg -> TreeAddr -> TreeAddr
-appendSeg seg (TreeAddr xs) = TreeAddr (seg : xs)
+{- | This is mostly used for testing purpose.
+
+Segments are separated by dots, such as "a.b.c".
+-}
+addrFromString :: String -> TreeAddr
+addrFromString s = addrFromStringList (splitOn "." s)
+
+addrToList :: TreeAddr -> [TASeg]
+addrToList (TreeAddr a) = V.toList a
+
+appendSeg :: TreeAddr -> TASeg -> TreeAddr
+appendSeg (TreeAddr a) seg = TreeAddr (V.snoc a seg)
 
 {- | Append the new addr to old addr.
 new and old are reversed, such as [z, y, x] and [b, a]. The appended addr should be [z, y, x, b, a], which is
 a.b.x.y.z.
 -}
 appendTreeAddr ::
-  -- | new addr to be appended to the old addr
-  TreeAddr ->
   -- | old addr
   TreeAddr ->
+  -- | new addr to be appended to the old addr
+  TreeAddr ->
   TreeAddr
-appendTreeAddr (TreeAddr new) (TreeAddr old) = TreeAddr (new ++ old)
+appendTreeAddr (TreeAddr old) (TreeAddr new) = TreeAddr (old V.++ new)
 
 -- | Get the parent addr of a addr by removing the last segment.
 initTreeAddr :: TreeAddr -> Maybe TreeAddr
-initTreeAddr (TreeAddr []) = Nothing
-initTreeAddr (TreeAddr xs) = Just $ TreeAddr (drop 1 xs)
+initTreeAddr (TreeAddr a)
+  | V.null a = Nothing
+  | otherwise = Just $ TreeAddr (V.init a)
 
 -- | Get the tail addr of a addr, excluding the head segment.
 tailTreeAddr :: TreeAddr -> Maybe TreeAddr
-tailTreeAddr (TreeAddr []) = Nothing
-tailTreeAddr (TreeAddr xs) = Just $ TreeAddr (init xs)
+tailTreeAddr (TreeAddr a)
+  | V.null a = Nothing
+  | otherwise = Just $ TreeAddr (V.tail a)
 
-{- | Get the last segment of a addr.
->>> lastSeg (TreeAddr [StringTASeg "a", StringTASeg "b"])
--}
+-- | Get the last segment of a addr.
 lastSeg :: TreeAddr -> Maybe TASeg
-lastSeg (TreeAddr []) = Nothing
-lastSeg (TreeAddr xs) = Just $ xs !! 0
+lastSeg (TreeAddr a)
+  | V.null a = Nothing
+  | otherwise = Just $ V.last a
 
-{- | Get the head segment of a addr.
->>> headSeg (TreeAddr [StringTASeg "a", StringTASeg "b"])
-Just b
--}
+-- | Get the head segment of a addr.
 headSeg :: TreeAddr -> Maybe TASeg
-headSeg (TreeAddr []) = Nothing
-headSeg (TreeAddr xs) = Just $ last xs
+headSeg (TreeAddr a)
+  | V.null a = Nothing
+  | otherwise = Just $ V.head a
 
 -- | Check if addr x is a prefix of addr y.
 isPrefix ::
@@ -239,14 +274,11 @@ isPrefix ::
   -- | y
   TreeAddr ->
   Bool
-isPrefix x y =
-  let TreeAddr xs = x
-      TreeAddr ys = y
-      rxs = {-# SCC "reverse" #-} reverse xs
-      rys = {-# SCC "reverse" #-} reverse ys
-   in if length rxs > length rys
-        then False
-        else {-# SCC "take" #-} take (length rxs) rys == rxs
+isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && V.and (V.zipWith eq x y)
+ where
+  eq = {-# SCC "isPrefix-eq" #-} (==)
+
+-- isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && x == V.take (V.length x) y
 
 {- | Trim the address by cutting off the prefix.
 
@@ -259,14 +291,9 @@ trimPrefixTreeAddr ::
   -- | address
   TreeAddr ->
   TreeAddr
-trimPrefixTreeAddr pre x
+trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
   | not (isPrefix pre x) = x
-  | otherwise =
-      let
-        segs = reverse $ getTreeSegs x
-        prelen = length $ getTreeSegs pre
-       in
-        TreeAddr $ reverse $ drop prelen segs
+  | otherwise = TreeAddr (V.drop (V.length pa) xa)
 
 -- | Check if the addr is accessible, either by index or by field name.
 isTreeAddrAccessible :: TreeAddr -> Bool
@@ -277,7 +304,7 @@ isInDisj (Path.TreeAddr xs) = any Path.isSegDisj xs
 
 -- | Convert the addr to referable form which only contains string, int or root segments.
 trimToReferable :: TreeAddr -> TreeAddr
-trimToReferable (TreeAddr xs) = TreeAddr $ filter isSegReferable xs
+trimToReferable (TreeAddr xs) = TreeAddr $ V.filter isSegReferable xs
 
 isSegReferable :: TASeg -> Bool
 isSegReferable (StructTASeg (getStrFromSeg -> Just _)) = True
@@ -293,7 +320,7 @@ arg segment, then the address is not referable.
 -}
 getReferableAddr :: TreeAddr -> Maybe TreeAddr
 getReferableAddr p =
-  if not (all isSegReferable (getTreeSegs p))
+  if not (all isSegReferable (getTreeAddrSegs p))
     then Nothing
     else Just p
 
@@ -308,7 +335,7 @@ isSegNonCanonical _ = False
 Single value form is the addr that only contains a single value.
 -}
 trimToSingleValueTA :: TreeAddr -> TreeAddr
-trimToSingleValueTA (TreeAddr xs) = TreeAddr $ filter isSingleVal xs
+trimToSingleValueTA (TreeAddr xs) = TreeAddr $ V.filter isSingleVal xs
  where
   isSingleVal (MutableArgTASeg _) = False
   isSingleVal SubValTASeg = False

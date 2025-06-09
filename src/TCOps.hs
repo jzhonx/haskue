@@ -7,7 +7,7 @@ import Common (Env, TreeOp (setSubTree, subTree))
 import Control.Monad (foldM)
 import Cursor
 import Exception (throwErrSt)
-import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr (TreeAddr), tailTreeAddr)
+import Path (TASeg (DisjDefaultTASeg, RootTASeg, SubValTASeg), TreeAddr, addrToList, tailTreeAddr)
 import Text.Printf (printf)
 import qualified Value.Tree as VT
 
@@ -21,7 +21,7 @@ getTCFocusSeg (TreeCursor _ []) = throwErrSt "already at the top"
 getTCFocusSeg (TreeCursor _ ((seg, _) : _)) = return seg
 
 goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
-goDownTCAddr (TreeAddr sels) = go (reverse sels)
+goDownTCAddr a = go (Path.addrToList a)
  where
   go :: [TASeg] -> TrCur -> Maybe TrCur
   go [] cursor = Just cursor

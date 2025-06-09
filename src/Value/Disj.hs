@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
@@ -10,8 +12,10 @@ import Common (
   Env,
   TreeOp (isTreeBottom),
  )
+import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import qualified Data.Set as Set
+import GHC.Generics (Generic)
 
 -- | Disjuntion
 data Disj t = Disj
@@ -24,7 +28,7 @@ data Disj t = Disj
   -- ^ Disjuncts should not have values of type Disj or Bottom.
   -- It should have at least two disjuncts.
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 -- | Get the default disjuncts from the disjunction.
 defDisjunctsFromDisj :: Disj t -> [t]

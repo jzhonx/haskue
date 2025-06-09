@@ -7,18 +7,19 @@
 
 module Reduce.PostReduce where
 
-import Common (Env, TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), buildASTExpr, ctxNotifGraph)
+import Common (TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), ctxNotifGraph)
 import Control.Monad (when)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isNothing)
 import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
-import Reduce.Root (fullReduce, reduce)
+import Reduce.Root (reduce)
 import qualified Reduce.UnifyOp as UnifyOp
 import qualified TCOps
 import Text.Printf (printf)
@@ -49,9 +50,7 @@ postValidation = RM.debugSpanTM "postValidation" $ do
         Just (Path.StructTASeg (Path.LetTASeg label)) -> return label
         _ -> throwErrSt "invalid let seg"
 
-      RM.putTMTree $
-        VT.mkBottomTree $
-          printf "unreferenced let clause let %s" label
+      RM.putTMTree $ VT.mkBottomTree $ printf "unreferenced let clause let %s" (T.unpack $ TE.decodeUtf8 label)
 
 {- | Traverse the tree and does the following things with the node:
 
@@ -204,7 +203,7 @@ validatePermItem struct p = RM.debugSpanTM "validatePermItem" $ do
     -- This is what CUE does.
     _ -> return ()
  where
-  dynIdxesToLabels :: Set.Set Int -> Maybe (Set.Set String)
+  dynIdxesToLabels :: Set.Set Int -> Maybe (Set.Set T.Text)
   dynIdxesToLabels idxes =
     Set.fromList
       <$> mapM

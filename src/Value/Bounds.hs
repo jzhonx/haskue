@@ -1,11 +1,17 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module Value.Bounds where
 
 import qualified AST
 import Common (BuildASTExpr (..), TreeRepBuilder (..))
+import Control.DeepSeq (NFData (..))
+import qualified Data.Text as T
+import GHC.Generics (Generic)
 import Value.Atom (Atom, aToLiteral)
 
 newtype Bounds = Bounds {bdsList :: [Bound]}
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 data Bound
   = BdNE Atom
@@ -13,25 +19,25 @@ data Bound
   | BdStrMatch BdStrMatch
   | BdType BdType
   | BdIsAtom Atom -- helper type
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 data BdNumCmpOp
   = BdLT
   | BdLE
   | BdGT
   | BdGE
-  deriving (Eq, Enum, Ord)
+  deriving (Eq, Enum, Ord, Generic, NFData)
 
 data Number = NumInt Integer | NumFloat Double
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 data BdNumCmp = BdNumCmpCons BdNumCmpOp Number
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 data BdStrMatch
-  = BdReMatch String
-  | BdReNotMatch String
-  deriving (Eq)
+  = BdReMatch T.Text
+  | BdReNotMatch T.Text
+  deriving (Eq, Generic, NFData)
 
 data BdType
   = BdBool
@@ -39,7 +45,7 @@ data BdType
   | BdFloat
   | BdNumber
   | BdString
-  deriving (Eq, Enum, Bounded)
+  deriving (Eq, Enum, Bounded, Generic, NFData)
 
 instance Show Bounds where
   show b = AST.exprStr $ buildBoundsASTExpr b
@@ -72,7 +78,7 @@ buildBoundASTExpr b = case b of
   BdStrMatch m -> case m of
     BdReMatch s -> litOp AST.ReMatch (AST.wpVal $ AST.strToLit s)
     BdReNotMatch s -> litOp AST.ReNotMatch (AST.wpVal $ AST.strToLit s)
-  BdType t -> AST.idCons (pure $ show t)
+  BdType t -> AST.idCons (pure $ T.pack (show t))
   BdIsAtom a -> AST.litCons (aToLiteral a)
  where
   litOp :: AST.RelOpNode -> AST.LiteralNode -> AST.Expression

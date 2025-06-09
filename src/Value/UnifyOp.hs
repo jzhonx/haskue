@@ -1,9 +1,14 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module Value.UnifyOp where
 
 import qualified AST
 import Common (BuildASTExpr (..))
+import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM, when)
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 
 {- | UnifyOp is commutative, associative, and idempotent.
 
@@ -16,7 +21,7 @@ data UnifyOp t = UnifyOp
   { ufConjuncts :: [t]
   , ufValue :: Maybe t
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 instance (BuildASTExpr t) => BuildASTExpr (UnifyOp t) where
   buildASTExpr c op = do

@@ -16,6 +16,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import Exception (throwErrSt)
 import Reduce.Nodes (
   builtinMutableTable,
@@ -66,12 +67,18 @@ evalStructLit (wpVal -> StructLit decls) = do
   sid <- allocOID
   foldM evalDecl (VT.mkStructTree (VT.emptyStruct{VT.stcID = sid})) decls
 
-simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either VT.Tree String)
+simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either VT.Tree T.Text)
 simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
   (asM, aSegs, aExprs) <-
     foldM
       ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
-          UnicodeVal x -> return (maybe (Just [x]) (\y -> Just $ y ++ [x]) accCurStrM, accItpSegs, accItpExprs)
+          UnicodeVal x ->
+            return
+              -- TODO: efficiency
+              ( maybe (Just (T.singleton x)) (\y -> Just $ T.snoc y x) accCurStrM
+              , accItpSegs
+              , accItpExprs
+              )
           InterpolationStr (wpVal -> Interpolation e) -> do
             t <- evalExpr e
             -- First append the current string segment to the accumulator if the current string segment exists, then
@@ -86,7 +93,7 @@ simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
       segs
   let rSegs = maybe aSegs (\x -> aSegs ++ [VT.IplSegStr x]) asM
   if
-    | null rSegs -> return $ Right ""
+    | null rSegs -> return $ Right T.empty
     | not (null aExprs) ->
         return $ Left $ VT.mkMutableTree $ VT.mkItpMutable rSegs aExprs
     | length rSegs == 1, VT.IplSegStr s <- head rSegs -> return $ Right s
@@ -195,7 +202,7 @@ evalFDeclLabels lbls e =
       return (VT.CnstrSAdder oid pat val)
 
   -- Returns the label name and the whether the label is static.
-  toIDentLabel :: LabelName -> Maybe String
+  toIDentLabel :: LabelName -> Maybe T.Text
   toIDentLabel (wpVal -> LabelID (wpVal -> ident)) = Just ident
   toIDentLabel _ = Nothing
 
@@ -289,7 +296,7 @@ addNewBlockElem adder block@(VT.Block{VT.blkStruct = struct}) = case adder of
   lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
 
   -- Checks if name is already in the struct. If it is, then return an error message.
-  existCheck :: String -> Bool -> Maybe VT.Tree
+  existCheck :: T.Text -> Bool -> Maybe VT.Tree
   existCheck name isNameLet =
     case (VT.lookupStructStubVal name struct, isNameLet) of
       ([VT.SStubField f], True)
@@ -323,7 +330,7 @@ evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m VT.Tree
 evalPrimExpr e = case wpVal e of
   (PrimExprOperand op) -> case wpVal op of
     OpLiteral lit -> evalLiteral lit
-    OperandName (wpVal -> Identifier (wpVal -> ident)) -> case lookup ident builtinOpNameTable of
+    OperandName (wpVal -> Identifier (wpVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
       Just v -> return v
       Nothing -> mkVarLinkTree ident
     OpExpression expr -> do
@@ -341,7 +348,7 @@ evalPrimExpr e = case wpVal e of
     replaceFuncArgs p args
 
 -- | Create a new identifier reference.
-mkVarLinkTree :: (MonadError String m) => String -> m VT.Tree
+mkVarLinkTree :: (MonadError String m) => T.Text -> m VT.Tree
 mkVarLinkTree var = do
   let mut = VT.mkRefMutable var []
   return $ VT.mkMutableTree mut

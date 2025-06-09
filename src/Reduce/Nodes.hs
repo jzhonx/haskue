@@ -14,6 +14,8 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -113,7 +115,7 @@ reduceStruct stc = do
       ( \(_, s, tc) -> do
           mapM_
             ( \x ->
-                RM.addRMUnreferredLet (Path.appendSeg (Path.StructTASeg (Path.LetTASeg x)) (Cursor.tcCanAddr tc))
+                RM.addRMUnreferredLet (Path.appendSeg (Cursor.tcCanAddr tc) (Path.StructTASeg (Path.LetTASeg (TE.encodeUtf8 x))))
             )
             (Map.keys $ VT.stcLets s)
 
@@ -201,7 +203,7 @@ inStructSub sseg f tc =
           return (sub `Cursor.setTCFocus` tc)
         else TCOps.propUpTC (sub `Cursor.setTCFocus` subTC)
 
-validateLetName :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m TCOps.TrCur
+validateLetName :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m TCOps.TrCur
 validateLetName name =
   whenBlock
     ( \(_, _, tc) -> do
@@ -216,13 +218,13 @@ validateLetName name =
           _ -> tc
     )
 
-aliasErr :: String -> VT.Tree
+aliasErr :: T.Text -> VT.Tree
 aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
 
-lbRedeclErr :: String -> VT.Tree
+lbRedeclErr :: T.Text -> VT.Tree
 lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
 
-reduceStructField :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m TCOps.TrCur
+reduceStructField :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m TCOps.TrCur
 reduceStructField name stc = do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   whenBlock
@@ -238,7 +240,7 @@ reduceStructField name stc = do
     )
     stc
     >>= whenBlock
-      (\(_, _, tc) -> inStructSub (Path.StringTASeg name) reduce tc)
+      (\(_, _, tc) -> inStructSub (Path.StringTASeg (TE.encodeUtf8 name)) reduce tc)
 
 {- | Handle the post process of the mutable object change in the struct.
 
@@ -250,7 +252,7 @@ once the "b" is reduced, it will trigger the re-reduction of the "a" field.
 The focus of the tree must be a struct.
 -}
 handleStructMutObjChange ::
-  (RM.ReduceMonad s r m) => Path.StructTASeg -> TCOps.TrCur -> m (TCOps.TrCur, [String])
+  (RM.ReduceMonad s r m) => Path.StructTASeg -> TCOps.TrCur -> m (TCOps.TrCur, [T.Text])
 handleStructMutObjChange seg stc = RM.debugSpanRM
   (printf "handleStructMutObjChange, seg: %s" (show seg))
   (Just . Cursor.tcFocus . fst)
@@ -374,7 +376,7 @@ handleStructMutObjChange seg stc = RM.debugSpanRM
                   )
       _ -> return (stc, [])
 
-getLabelFieldPairs :: VT.Struct VT.Tree -> [(String, VT.Field VT.Tree)]
+getLabelFieldPairs :: VT.Struct VT.Tree -> [(T.Text, VT.Field VT.Tree)]
 getLabelFieldPairs struct = Map.toList $ VT.stcFields struct
 
 {- | Convert a dynamic field to a static field.
@@ -384,7 +386,7 @@ It returns a pair which contains reduced string and the newly created/updated fi
 dynFieldToStatic ::
   VT.Struct VT.Tree ->
   VT.DynamicField VT.Tree ->
-  Either VT.Tree (Maybe (String, VT.Field VT.Tree))
+  Either VT.Tree (Maybe (T.Text, VT.Field VT.Tree))
 dynFieldToStatic struct df = case VT.treeNode label of
   VT.TNBottom _ -> Left label
   VT.TNMutable mut
@@ -409,7 +411,7 @@ dynFieldToStatic struct df = case VT.treeNode label of
 Returns the new field. If the field is not matched with the pattern, it returns the original field.
 -}
 constrainFieldWithCnstrs ::
-  (RM.ReduceMonad s r m) => String -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> TCOps.TrCur -> m (VT.Field VT.Tree)
+  (RM.ReduceMonad s r m) => T.Text -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> TCOps.TrCur -> m (VT.Field VT.Tree)
 constrainFieldWithCnstrs name field cnstrs tc =
   foldM
     ( \accField cnstr -> do
@@ -430,7 +432,7 @@ It can run in any kind of node.
 -}
 bindFieldWithCnstr ::
   (RM.ReduceMonad s r m) =>
-  String ->
+  T.Text ->
   VT.Field VT.Tree ->
   VT.StructCnstr VT.Tree ->
   TCOps.TrCur ->
@@ -457,7 +459,7 @@ If the constrained result introduce new fields that are not in the struct, then 
 -}
 updateStructWithCnstredRes ::
   -- | The constrained result is a list of tuples that contains the name of the field, the field.
-  [(String, VT.Field VT.Tree)] ->
+  [(T.Text, VT.Field VT.Tree)] ->
   VT.Struct VT.Tree ->
   VT.Struct VT.Tree
 updateStructWithCnstredRes res struct =
@@ -472,7 +474,7 @@ updateStructWithCnstredRes res struct =
     res
 
 -- | Filter the names that are matched with the constraint's pattern.
-filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [String] -> TCOps.TrCur -> m [String]
+filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [T.Text] -> TCOps.TrCur -> m [T.Text]
 filterMatchedNames cnstr labels tc =
   foldM
     ( \acc name -> do
@@ -493,7 +495,7 @@ removeAppliedObject ::
   Int ->
   VT.Struct VT.Tree ->
   TCOps.TrCur ->
-  m (VT.Struct VT.Tree, [String])
+  m (VT.Struct VT.Tree, [T.Text])
 removeAppliedObject objID struct tc = RM.debugSpanRM "removeAppliedObject" (Just . VT.mkStructTree . fst) tc $ do
   (remAffFields, removedLabels) <-
     foldM
@@ -552,7 +554,7 @@ removeAppliedObject objID struct tc = RM.debugSpanRM "removeAppliedObject" (Just
   unifier l r = VT.mkMutableTree $ VT.mkUnifyOp [l, r]
 
   -- Find the fields that are unified with the object
-  fieldsUnifiedWithObject :: Int -> [(String, VT.Field VT.Tree)] -> [(String, VT.Field VT.Tree)]
+  fieldsUnifiedWithObject :: Int -> [(T.Text, VT.Field VT.Tree)] -> [(T.Text, VT.Field VT.Tree)]
   fieldsUnifiedWithObject j =
     foldr (\(k, field) acc -> if j `elem` VT.ssfObjects field then (k, field) : acc else acc) []
 
@@ -562,7 +564,7 @@ applyMoreCnstr ::
   VT.StructCnstr VT.Tree ->
   VT.Struct VT.Tree ->
   TCOps.TrCur ->
-  m (VT.Struct VT.Tree, [String])
+  m (VT.Struct VT.Tree, [T.Text])
 applyMoreCnstr cnstr struct tc = RM.debugSpanRM "applyMoreCnstr" (const Nothing) tc $ do
   (addAffFields, addAffLabels) <-
     foldM
@@ -928,10 +930,10 @@ reduceInterpolation l tc = do
             argTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg j) tc
             r <- reduce argTC
             if
-              | Just s <- VT.getStringFromTree r -> return $ (++ s) <$> accRes
-              | Just i <- VT.getIntFromTree r -> return $ (++ show i) <$> accRes
-              | Just b <- VT.getBoolFromTree r -> return $ (++ show b) <$> accRes
-              | Just f <- VT.getFloatFromTree r -> return $ (++ show f) <$> accRes
+              | Just s <- VT.getStringFromTree r -> return $ (`T.append` s) <$> accRes
+              | Just i <- VT.getIntFromTree r -> return $ (`T.append` (T.pack $ show i)) <$> accRes
+              | Just b <- VT.getBoolFromTree r -> return $ (`T.append` (T.pack $ show b)) <$> accRes
+              | Just f <- VT.getFloatFromTree r -> return $ (`T.append` (T.pack $ show f)) <$> accRes
               | Just _ <- VT.getStructFromTree r ->
                   return $
                     Left $
@@ -943,9 +945,9 @@ reduceInterpolation l tc = do
                       VT.mkBottomTree $
                         printf "can not use list in interpolation: %s" (VT.showTreeSymbol r)
               | otherwise -> return undefined
-          VT.IplSegStr s -> return $ (++ s) <$> accRes
+          VT.IplSegStr s -> return $ (`T.append` s) <$> accRes
       )
-      (Right "")
+      (Right T.empty)
       (VT.itpSegs l)
   case r of
     Left err -> return $ Just err

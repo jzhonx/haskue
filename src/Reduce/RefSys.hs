@@ -13,6 +13,8 @@ import Control.Monad (foldM, unless, when)
 import qualified Cursor
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import qualified Path
 import qualified Reduce.Mutate as Mutate
@@ -121,7 +123,7 @@ refTCFromRef VT.Reference{VT.refArg = arg@(VT.RefPath var _), VT.refOrigAddrs = 
     ( \refRestPath@(Path.ValPath reducedSels) -> do
         newRef <- VT.mkRefFromValPath VT.mkAtomTree var refRestPath
         let
-          newRefValPath = Path.ValPath $ Path.StringSel var : reducedSels
+          newRefValPath = Path.ValPath $ Path.StringSel (TE.encodeUtf8 var) : reducedSels
           -- build the new reference tree.
           refTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef{VT.refOrigAddrs = origAddrsM}) tc
         return $ Just (refTC, newRefValPath)
@@ -308,7 +310,7 @@ locateRef valPath trail refEnv = do
           ( \identAddr -> do
               -- The ref is non-empty, so the rest must be a valid addr.
               let rest = fromJust $ Path.tailValPath valPath
-                  potentialTarAddr = Path.appendTreeAddr (Path.valPathToAddr rest) identAddr
+                  potentialTarAddr = Path.appendTreeAddr identAddr (Path.valPathToAddr rest)
               detectCycle valPath (Cursor.tcCanAddr refEnv) Set.empty potentialTarAddr
           )
           identAddrM
@@ -665,7 +667,7 @@ getRefIdentAddr valPath origAddrsM tc = do
     )
     origAddrsM
 
-notFoundMsg :: (Common.Env r s m) => String -> Maybe AST.Position -> m String
+notFoundMsg :: (Common.Env r s m) => T.Text -> Maybe AST.Position -> m String
 notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
   return $
     printf
@@ -742,21 +744,21 @@ addrHasDef p =
   any
     ( \case
         Path.StructTASeg (Path.StringTASeg s) -> fromMaybe False $ do
-          typ <- VT.getFieldType s
+          typ <- VT.getFieldType (T.unpack $ TE.decodeUtf8 s)
           return $ typ == VT.SFTDefinition
         _ -> False
     )
-    $ Path.addrToNormOrdList p
+    $ Path.addrToList p
 
-selToIdent :: (Common.Env r s m) => Path.Selector -> m String
-selToIdent (Path.StringSel s) = return s
+selToIdent :: (Common.Env r s m) => Path.Selector -> m T.Text
+selToIdent (Path.StringSel s) = return $ TE.decodeUtf8 s
 selToIdent _ = throwErrSt "invalid selector"
 
 {- | Search in the parent scope for the first identifier that can match the segment.
 
 Also return if the identifier is a let binding.
 -}
-searchTCIdentInPar :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe (Path.TreeAddr, Bool))
+searchTCIdentInPar :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m (Maybe (Path.TreeAddr, Bool))
 searchTCIdentInPar name tc = do
   ptc <- Cursor.parentTCMust tc
   if Cursor.isTCTop ptc
@@ -777,7 +779,7 @@ already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCIdent :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
+searchTCIdent :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
 searchTCIdent name tc = do
   subM <- findIdent name tc
   maybe
@@ -795,7 +797,7 @@ searchTCIdent name tc = do
     )
     subM
  where
-  mkSeg isLB = Path.StructTASeg $ if isLB then Path.LetTASeg name else Path.StringTASeg name
+  mkSeg isLB = let nt = TE.encodeUtf8 name in Path.StructTASeg $ if isLB then Path.LetTASeg nt else Path.StringTASeg nt
 
   goUp :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
   goUp (Cursor.TreeCursor _ [(Path.RootTASeg, _)]) = return Nothing -- stop at the root.
@@ -804,7 +806,7 @@ searchTCIdent name tc = do
     searchTCIdent name ptc
 
   -- TODO: findIdent for default disjunct?
-  findIdent :: (Common.Env r s m) => String -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
+  findIdent :: (Common.Env r s m) => T.Text -> TCOps.TrCur -> m (Maybe (TCOps.TrCur, Bool))
   findIdent ident blockTC = do
     case VT.treeNode (Cursor.tcFocus blockTC) of
       VT.TNBlock blk@(VT.Block{VT.blkStruct = struct})
@@ -869,7 +871,7 @@ searchTCIdent name tc = do
           (reverse (zip [0 ..] binds))
       _ -> return Nothing
 
-searchLetBindValue :: (RM.ReduceMonad s r m) => String -> TCOps.TrCur -> m (Maybe VT.Tree)
+searchLetBindValue :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m (Maybe VT.Tree)
 searchLetBindValue ident tc = do
   m <- searchTCIdent ident tc
   case m of

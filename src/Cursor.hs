@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -5,6 +7,7 @@
 module Cursor where
 
 import Common
+import Control.DeepSeq (NFData (..))
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -12,7 +15,9 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import qualified Data.Vector as V
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 import qualified Path
 
 class HasTreeCursor s t where
@@ -22,7 +27,7 @@ class HasTreeCursor s t where
 type TreeCrumb t = (Path.TASeg, t)
 
 addrFromCrumbs :: [TreeCrumb t] -> Path.TreeAddr
-addrFromCrumbs crumbs = Path.TreeAddr . reverse $ go crumbs []
+addrFromCrumbs crumbs = Path.addrFromList $ go crumbs []
  where
   go :: [TreeCrumb t] -> [Path.TASeg] -> [Path.TASeg]
   go [] acc = acc
@@ -44,7 +49,7 @@ data TreeCursor t = TreeCursor
   { tcFocus :: t
   , tcCrumbs :: [TreeCrumb t]
   }
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 -- | By default, only show the focus of the cursor.
 instance (Show t) => Show (TreeCursor t) where
@@ -58,7 +63,7 @@ tcCanAddr :: TreeCursor t -> Path.TreeAddr
 tcCanAddr c = trim $ addrFromCrumbs (tcCrumbs c)
  where
   trim :: Path.TreeAddr -> Path.TreeAddr
-  trim (Path.TreeAddr segs) = Path.TreeAddr $ filter (not . Path.isSegNonCanonical) segs
+  trim (Path.TreeAddr segs) = Path.TreeAddr $ V.filter (not . Path.isSegNonCanonical) segs
 
 -- | Get the parent of the cursor without propagating the value up.
 parentTC :: TreeCursor t -> Maybe (TreeCursor t)

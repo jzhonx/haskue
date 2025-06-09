@@ -1,6 +1,11 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module Value.Constraint where
 
 import qualified AST
+import Control.DeepSeq (NFData (..))
+import GHC.Generics (Generic)
 import Value.Atom (AtomV)
 
 data AtomCnstr t = AtomCnstr
@@ -13,6 +18,7 @@ data AtomCnstr t = AtomCnstr
   -- reduced to atom with 200. Then the validator would be incorrectly set to RCTail. The original expr of the (a+1) is
   -- the correct validator.
   }
+  deriving (Generic, NFData)
 
 instance (Eq t) => Eq (AtomCnstr t) where
   (==) (AtomCnstr a1 v1) (AtomCnstr a2 v2) = a1 == a2 && v1 == v2
@@ -31,4 +37,4 @@ data CnstredVal t = CnstredVal
   -- ^ cnsedOrigExpr is the original expression without constraints. It is used for showing the original expression
   -- without constraints applied.
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)

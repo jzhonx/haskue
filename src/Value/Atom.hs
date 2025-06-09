@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE InstanceSigs #-}
 
@@ -5,18 +7,21 @@ module Value.Atom where
 
 import qualified AST
 import Common (BuildASTExpr (..), Env)
+import Control.DeepSeq (NFData (..))
+import qualified Data.Text as T
+import GHC.Generics (Generic)
 
 data Atom
-  = String String
+  = String T.Text
   | Int Integer
   | Float Double
   | Bool Bool
   | Null
-  deriving (Ord)
+  deriving (Ord, Generic, NFData)
 
 -- | Show is only used for debugging.
 instance Show Atom where
-  show (String s) = s
+  show (String s) = show s
   show (Int i) = show i
   show (Float f) = show f
   show (Bool b) = show b
@@ -47,6 +52,7 @@ aToLiteral a = pure $ case a of
 newtype AtomV = AtomV
   { amvAtom :: Atom
   }
+  deriving (Generic, NFData)
 
 instance Show AtomV where
   show (AtomV v) = show v
@@ -57,12 +63,12 @@ instance Eq AtomV where
 instance BuildASTExpr AtomV where
   buildASTExpr c (AtomV v) = buildASTExpr c v
 
-getStringFromAtom :: Atom -> Maybe String
+getStringFromAtom :: Atom -> Maybe T.Text
 getStringFromAtom a = case a of
   String s -> Just s
   _ -> Nothing
 
-getStringFromAtomV :: AtomV -> Maybe String
+getStringFromAtomV :: AtomV -> Maybe T.Text
 getStringFromAtomV (AtomV a) = getStringFromAtom a
 
 getIntFromAtom :: Atom -> Maybe Int

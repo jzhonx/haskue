@@ -13,12 +13,13 @@ import qualified Common
 import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (gets, modify, runStateT)
+import Control.Monad.State.Strict (get, gets, modify, runStateT)
 import qualified Cursor
 import Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
+import qualified Data.Set as Set
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -193,7 +194,9 @@ getTMTASeg = do
 -- Cursor
 
 getTMCursor :: (ReduceTCMonad r s m) => m TCOps.TrCur
-getTMCursor = gets Cursor.getTreeCursor
+getTMCursor = do
+  x <- get
+  return $ {-# SCC "getTreeCursor" #-} Cursor.getTreeCursor x
 
 putTMCursor :: (ReduceTCMonad r s m) => TCOps.TrCur -> m ()
 putTMCursor tc = modify $ \s -> Cursor.setTreeCursor s tc
@@ -292,7 +295,7 @@ propUpTMUntilSeg seg = do
 -- Move down operations
 
 descendTM :: (ReduceTCMonad r s m) => Path.TreeAddr -> m Bool
-descendTM dst = go (Path.addrToNormOrdList dst)
+descendTM dst = go (Path.addrToList dst)
  where
   go :: (ReduceTCMonad r s m) => [Path.TASeg] -> m Bool
   go [] = return True
@@ -413,12 +416,13 @@ instance Show ShowTree where
   show (ShowFullTree t) = VT.treeFullStr 0 t
   show (ShowTree t) = VT.treeToSubStr 0 True t
 
-whenTraceEnabled :: (Common.Env r s m) => m a -> m a -> m a
-whenTraceEnabled f traced = do
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  if not traceExec
-    then f
-    else traced
+whenTraceEnabled :: (Common.Env r s m) => String -> m a -> m a -> m a
+whenTraceEnabled name f traced = do
+  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec, Common.stTraceFilter = tFilter}} <-
+    asks Common.getConfig
+  if traceExec && (Set.null tFilter || Set.member name tFilter)
+    then traced
+    else f
 
 canonicalizeTree :: (Common.Env r s m) => VT.Tree -> m VT.Tree
 canonicalizeTree t = Cursor.tcFocus <$> TCOps.snapshotTC (Cursor.TreeCursor t [])
@@ -440,20 +444,17 @@ debugSpanArgsTM :: (ReduceTCMonad r s m, Show a) => String -> String -> m a -> m
 debugSpanArgsTM name args = _traceActionTM name (Just args)
 
 _traceActionTM :: (ReduceTCMonad r s m, Show a) => String -> Maybe String -> m a -> m a
-_traceActionTM name argsM f = whenTraceEnabled f $ withAddrAndFocus $ \addr _ -> do
+_traceActionTM name argsM f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
   bTraced <- getTMTree >>= spanTreeMsgs
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  debugSpan traceExec name (show addr) argsM bTraced $ do
+  debugSpan True name (show addr) argsM bTraced $ do
     res <- f
     traced <- getTMTree >>= spanTreeMsgs
     return (res, fst traced, snd traced)
 
 debugInstantTM :: (ReduceTCMonad r s m) => String -> String -> m ()
-debugInstantTM name args = whenTraceEnabled (return ()) $
+debugInstantTM name args = whenTraceEnabled name (return ()) $
   withAddrAndFocus $
-    \addr _ -> do
-      Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-      debugInstant traceExec name (show addr) (Just args)
+    \addr _ -> debugInstant True name (show addr) (Just args)
 
 debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
 debugSpanRM name = _traceActionRM name Nothing
@@ -463,13 +464,12 @@ debugSpanArgsRM name args = _traceActionRM name (Just args)
 
 _traceActionRM ::
   (Common.Env r s m, Show a) => String -> Maybe String -> (a -> Maybe VT.Tree) -> TCOps.TrCur -> m a -> m a
-_traceActionRM name argsM g tc f = whenTraceEnabled f $ do
+_traceActionRM name argsM g tc f = whenTraceEnabled name f $ do
   let
     addr = Cursor.tcCanAddr tc
     bfocus = Cursor.tcFocus tc
   bTraced <- spanTreeMsgs bfocus
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  debugSpan traceExec name (show addr) argsM bTraced $ do
+  debugSpan True name (show addr) argsM bTraced $ do
     res <- f
     traced <- maybe (return ("", "")) spanTreeMsgs (g res)
     return (res, fst traced, snd traced)
@@ -483,19 +483,16 @@ debugSpanArgsOpRM :: (Common.Env r s m, Show a) => String -> String -> Path.Tree
 debugSpanArgsOpRM name args = _traceOpActionRM name (Just args)
 
 _traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> Path.TreeAddr -> m a -> m a
-_traceOpActionRM name argsM addr f = whenTraceEnabled f $ do
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  debugSpan traceExec name (show addr) argsM ("", "") $ do
+_traceOpActionRM name argsM addr f = whenTraceEnabled name f $ do
+  debugSpan True name (show addr) argsM ("", "") $ do
     res <- f
     return (res, "", "")
 
 debugInstantRM :: (Common.Env r s m) => String -> String -> TCOps.TrCur -> m ()
-debugInstantRM name args tc = whenTraceEnabled (return ()) $ do
+debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
   let addr = Cursor.tcCanAddr tc
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  debugInstant traceExec name (show addr) (Just args)
+  debugInstant True name (show addr) (Just args)
 
 debugInstantOpRM :: (Common.Env r s m) => String -> String -> Path.TreeAddr -> m ()
-debugInstantOpRM name args addr = whenTraceEnabled (return ()) $ do
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec}} <- asks Common.getConfig
-  debugInstant traceExec name (show addr) (Just args)
+debugInstantOpRM name args addr = whenTraceEnabled name (return ()) $ do
+  debugInstant True name (show addr) (Just args)

@@ -1,15 +1,23 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module AST where
 
+import Control.DeepSeq (NFData (..))
 import Data.ByteString.Builder (
   Builder,
+  byteString,
   char7,
+  charUtf8,
   integerDec,
   string7,
   toLazyByteString,
  )
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import GHC.Generics (Generic)
 import Prelude hiding (GT, LT)
 
 -- | Source position with line and column information
@@ -17,7 +25,7 @@ data SourcePos = SourcePos
   { posLine :: Int
   , posColumn :: Int
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 -- | Position range with start and end positions, and optional file path
 data Position = Position
@@ -25,7 +33,7 @@ data Position = Position
   , posEnd :: SourcePos
   , posFile :: Maybe FilePath
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 -- | Create a default position with no information
 noPosition :: Position
@@ -36,7 +44,7 @@ data WithPos a = WithPos
   { wpPos :: Maybe Position
   , wpVal :: a
   }
-  deriving (Eq, Show, Functor)
+  deriving (Eq, Show, Functor, Generic, NFData)
 
 instance (Ord a) => Ord (WithPos a) where
   WithPos _ v1 `compare` WithPos _ v2 = v1 `compare` v2
@@ -62,14 +70,14 @@ newtype SourceFile = SourceFile
 data ExprNode
   = ExprUnaryExpr UnaryExpr
   | ExprBinaryOp BinaryOp Expression Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Expression = WithPos ExprNode
 
 data UnaryExprNode
   = UnaryExprPrimaryExpr PrimaryExpr
   | UnaryExprUnaryOp UnaryOp UnaryExpr
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type UnaryExpr = WithPos UnaryExprNode
 
@@ -78,18 +86,18 @@ data PrimaryExprNode
   | PrimExprSelector PrimaryExpr Selector
   | PrimExprIndex PrimaryExpr Index
   | PrimExprArguments PrimaryExpr [Expression]
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type PrimaryExpr = WithPos PrimaryExprNode
 
 data SelectorNode
   = IDSelector Identifier
   | StringSelector SimpleStringLit
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Selector = WithPos SelectorNode
 
-newtype IndexNode = Index Expression deriving (Eq, Show)
+newtype IndexNode = Index Expression deriving (Eq, Show, Generic, NFData)
 
 type Index = WithPos IndexNode
 
@@ -97,7 +105,7 @@ data OperandNode
   = OpLiteral Literal
   | OpExpression Expression
   | OperandName OperandName
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Operand = WithPos OperandNode
 
@@ -111,11 +119,11 @@ data LiteralNode
   | NullLit
   | LitStructLit StructLit
   | ListLit ElementList
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Literal = WithPos LiteralNode
 
-newtype StructLitNode = StructLit [Declaration] deriving (Eq, Show)
+newtype StructLitNode = StructLit [Declaration] deriving (Eq, Show, Generic, NFData)
 
 type StructLit = WithPos StructLitNode
 
@@ -124,54 +132,54 @@ data DeclarationNode
   | EllipsisDecl EllipsisDecl
   | Embedding Embedding
   | DeclLet LetClause
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Declaration = WithPos DeclarationNode
 
 data FieldDeclNode
   = Field [Label] Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type FieldDecl = WithPos FieldDeclNode
 
-newtype EllipsisDeclNode = Ellipsis (Maybe Expression) deriving (Eq, Show)
+newtype EllipsisDeclNode = Ellipsis (Maybe Expression) deriving (Eq, Show, Generic, NFData)
 
 type EllipsisDecl = WithPos EllipsisDeclNode
 
-newtype ElementListNode = EmbeddingList [Embedding] deriving (Eq, Show)
+newtype ElementListNode = EmbeddingList [Embedding] deriving (Eq, Show, Generic, NFData)
 
 type ElementList = WithPos ElementListNode
 
-newtype OperandNameNode = Identifier Identifier deriving (Eq, Show)
+newtype OperandNameNode = Identifier Identifier deriving (Eq, Show, Generic, NFData)
 
 type OperandName = WithPos OperandNameNode
 
-newtype StringLitNode = SimpleStringL SimpleStringLit deriving (Eq, Show)
+newtype StringLitNode = SimpleStringL SimpleStringLit deriving (Eq, Show, Generic, NFData)
 
 type StringLit = WithPos StringLitNode
 
 type SimpleStringLit = WithPos SimpleStringLitNode
 
 newtype SimpleStringLitNode = SimpleStringLit [SimpleStringLitSeg]
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 data SimpleStringLitSeg
   = UnicodeVal Char
   | InterpolationStr Interpolation
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
-newtype InterpolationNode = Interpolation Expression deriving (Eq, Show)
+newtype InterpolationNode = Interpolation Expression deriving (Eq, Show, Generic, NFData)
 
 type Interpolation = WithPos InterpolationNode
 
-newtype LabelNode = Label LabelExpr deriving (Eq, Show)
+newtype LabelNode = Label LabelExpr deriving (Eq, Show, Generic, NFData)
 
 type Label = WithPos LabelNode
 
 data LabelExprNode
   = LabelName LabelName LabelConstraint
   | LabelPattern Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type LabelExpr = WithPos LabelExprNode
 
@@ -179,17 +187,17 @@ data LabelConstraint
   = RegularLabel
   | OptionalLabel
   | RequiredLabel
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 data LabelNameNode
   = LabelID Identifier
   | LabelString SimpleStringLit
   | LabelNameExpr Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type LabelName = WithPos LabelNameNode
 
-type IdentifierNode = String
+type IdentifierNode = T.Text
 
 type Identifier = WithPos IdentifierNode
 
@@ -201,7 +209,7 @@ data RelOpNode
   | GE
   | ReMatch
   | ReNotMatch
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show RelOpNode where
   show NE = "!="
@@ -215,16 +223,16 @@ instance Show RelOpNode where
 type RelOp = WithPos RelOpNode
 
 data EmbeddingNode = EmbedComprehension Comprehension | AliasExpr Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Embedding = WithPos EmbeddingNode
 
 data ComprehensionNode = Comprehension Clauses StructLit
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Comprehension = WithPos ComprehensionNode
 
-data ClausesNode = Clauses StartClause [Clause] deriving (Eq, Show)
+data ClausesNode = Clauses StartClause [Clause] deriving (Eq, Show, Generic, NFData)
 
 type Clauses = WithPos ClausesNode
 
@@ -233,19 +241,19 @@ data StartClauseNode
     GuardClause Expression
   | -- | ForClause is a "for" expression
     ForClause Identifier (Maybe Identifier) Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type StartClause = WithPos StartClauseNode
 
 data ClauseNode
   = ClauseStartClause StartClause
   | ClauseLetClause LetClause
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type Clause = WithPos ClauseNode
 
 data LetClauseNode = LetClause Identifier Expression
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type LetClause = WithPos LetClauseNode
 
@@ -258,7 +266,7 @@ data BinaryOpNode
   | Div
   | Equ
   | BinRelOp RelOpNode
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 type BinaryOp = WithPos BinaryOpNode
 
@@ -278,7 +286,7 @@ data UnaryOpNode
   | Not
   | Star
   | UnaRelOp RelOpNode
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, NFData)
 
 type UnaryOp = WithPos UnaryOpNode
 
@@ -295,11 +303,11 @@ instance Show Quote where
   show SingleQuote = "'"
   show DoubleQuote = "\""
 
-strToLit :: String -> Literal
+strToLit :: T.Text -> Literal
 strToLit s = StringLit <<^>> SimpleStringL <^> strToSimpleStrLit s
 
-strToSimpleStrLit :: String -> SimpleStringLit
-strToSimpleStrLit s = pure (SimpleStringLit (map UnicodeVal s))
+strToSimpleStrLit :: T.Text -> SimpleStringLit
+strToSimpleStrLit s = pure (SimpleStringLit (map UnicodeVal (T.unpack s)))
 
 litCons :: Literal -> Expression
 litCons x =
@@ -363,7 +371,7 @@ primBld ident e = case wpVal e of
 
 selBld :: Selector -> Builder
 selBld e = case wpVal e of
-  IDSelector is -> string7 (wpVal is)
+  IDSelector is -> byteString $ TE.encodeUtf8 (wpVal is)
   StringSelector s -> simpleStrLitBld s
 
 opndBld :: Int -> Operand -> Builder
@@ -374,7 +382,7 @@ opndBld ident op = case wpVal op of
 
 opNameBld :: Int -> OperandName -> Builder
 opNameBld _ e = case wpVal e of
-  Identifier i -> string7 (wpVal i)
+  Identifier i -> byteString $ TE.encodeUtf8 (wpVal i)
 
 litBld :: Int -> Literal -> Builder
 litBld ident e = case wpVal e of
@@ -396,7 +404,7 @@ simpleStrLitBld (WithPos{wpVal = SimpleStringLit segs}) =
   foldr (\seg acc -> simpleStrLitSegBld seg <> acc) mempty segs
 
 simpleStrLitSegBld :: SimpleStringLitSeg -> Builder
-simpleStrLitSegBld (UnicodeVal s) = char7 s
+simpleStrLitSegBld (UnicodeVal s) = charUtf8 s
 simpleStrLitSegBld (InterpolationStr (wpVal -> Interpolation e)) =
   string7 "\\(" <> exprBldIdent 0 e <> char7 ')'
 
@@ -427,7 +435,7 @@ declBld i e = case wpVal e of
   EllipsisDecl (WithPos{wpVal = Ellipsis _}) -> string7 "..."
   Embedding eb -> embeddingBld i eb
   DeclLet (WithPos{wpVal = LetClause ident binde}) ->
-    string7 "let" <> string7 (wpVal ident) <> string7 " = " <> exprBldIdent 0 binde
+    string7 "let" <> byteString (TE.encodeUtf8 $ wpVal ident) <> string7 " = " <> exprBldIdent 0 binde
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
 fieldDeclBld ident e = case wpVal e of
@@ -462,6 +470,6 @@ labelExprBld e = case wpVal e of
 
 labelNameBld :: LabelName -> Builder
 labelNameBld e = case wpVal e of
-  LabelID i -> string7 (wpVal i)
+  LabelID i -> byteString $ TE.encodeUtf8 (wpVal i)
   LabelString s -> simpleStrLitBld s
   LabelNameExpr ex -> char7 '(' <> exprBldIdent 0 ex <> char7 ')'

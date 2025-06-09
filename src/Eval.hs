@@ -12,6 +12,9 @@ module Eval (
   runTreeIO,
   evalFile,
   emptyEvalConfig,
+  strToCUEVal,
+  emptyRunner,
+  Runner (..),
 )
 where
 
@@ -20,16 +23,18 @@ import qualified Common
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (evalStateT, execStateT, runStateT)
+import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
 import qualified Cursor
 import Data.ByteString.Builder (
   Builder,
   string7,
  )
+import Data.List.Split (splitOn)
+import qualified Data.Set as Set
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
 import qualified MutEnv
-import Parser (parseSourceFile)
+import Parser (parseExpr, parseSourceFile)
 import Path (TASeg (RootTASeg))
 import qualified Reduce
 import Reduce.PostReduce (postValidation)
@@ -42,6 +47,7 @@ data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
   , ecTraceExec :: Bool
   , ecTracePrintTree :: Bool
+  , ecTraceFilter :: String
   , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
   , ecFilePath :: String
@@ -53,6 +59,7 @@ emptyEvalConfig =
     { ecDebugLogging = False
     , ecTraceExec = False
     , ecTracePrintTree = False
+    , ecTraceFilter = ""
     , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
     , ecFilePath = ""
@@ -126,11 +133,20 @@ runStr s conf = do
     VT.TNBottom (VT.Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ -> Right <$> evalStateT (runReaderT (Common.buildASTExpr False t) emptyRunner) emptyTrace
 
+strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m VT.Tree
+strToCUEVal s conf = do
+  e <- parseExpr s
+  evalToTree (evalExpr e) conf
+
 runTreeStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m VT.Tree
 runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 
 evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m VT.Tree
-evalFile sf conf = do
+evalFile sf = evalToTree (evalSourceFile sf)
+
+evalToTree ::
+  (MonadError String m, MonadIO m) => StateT Common.EEState (ReaderT Runner m) VT.Tree -> EvalConfig -> m VT.Tree
+evalToTree f conf = do
   let runner =
         updateConfig
           emptyRunner
@@ -140,6 +156,9 @@ evalFile sf conf = do
                     { Common.stDebugLogging = ecDebugLogging conf
                     , Common.stTraceExec = ecTraceExec conf
                     , Common.stTracePrintTree = ecTracePrintTree conf
+                    , Common.stTraceFilter =
+                        let s = ecTraceFilter conf
+                         in if null s then Set.empty else Set.fromList $ splitOn "," s
                     , Common.stShowMutArgs = ecShowMutArgs conf
                     , Common.stMaxTreeDepth = ecMaxTreeDepth conf
                     }
@@ -152,7 +171,7 @@ evalFile sf conf = do
   reduced <-
     runReaderT
       ( do
-          (root, eeState) <- runStateT (evalSourceFile sf) Common.emptyEEState
+          (root, eeState) <- runStateT f Common.emptyEEState
 
           let
             rootTC = Cursor.TreeCursor root [(RootTASeg, VT.mkNewTree VT.TNTop)]

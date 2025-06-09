@@ -167,12 +167,11 @@ debugSpanStart enable name addr args bTraced bTracedCUEVal = do
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace enable $
-    "ChromeTrace"
-      ++ unpack
-        ( encodeToLazyText
-            ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced bTracedCUEVal args)
-            )
-        )
+    unpack
+      ( encodeToLazyText
+          ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced bTracedCUEVal args)
+          )
+      )
   return tr
 
 debugSpanExec ::
@@ -188,12 +187,11 @@ debugSpanExec enable name addr f = do
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace enable $
-    "ChromeTrace"
-      ++ unpack
-        ( encodeToLazyText
-            ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus focusCUEVal)
-            )
-        )
+    unpack
+      ( encodeToLazyText
+          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus focusCUEVal)
+          )
+      )
   return res
 
 debugInstant ::
@@ -204,12 +202,11 @@ debugInstant enable name addr args = do
   let msg = printf "%s, at:%s" name addr
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace enable $
-    "ChromeTrace"
-      ++ unpack
-        ( encodeToLazyText
-            ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr args)
-            )
-        )
+    unpack
+      ( encodeToLazyText
+          ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr args)
+          )
+      )
 
 dumpTrace :: (MonadIO m) => Bool -> String -> m ()
 dumpTrace enable msg =

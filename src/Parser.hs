@@ -9,6 +9,7 @@ import AST
 import Control.Monad (void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Data.Maybe (fromJust, isNothing)
+import qualified Data.Text as T
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -307,16 +308,19 @@ identifier =
     ( do
         prefix <- string "#"
         part <- identPart
-        return (prefix ++ fst part, TokenIdentifier)
+        return (T.pack $ prefix ++ fst part, TokenIdentifier)
     )
       <|> try
         ( do
             -- "_" is a valid identPart letter as well, so we use try to first match the identifier with a prefix.
             prefix <- string "_#"
             part <- identPart
-            return (prefix ++ fst part, TokenIdentifier)
+            return (T.pack $ prefix ++ fst part, TokenIdentifier)
         )
-      <|> identPart
+      <|> ( do
+              (x, y) <- identPart
+              return (T.pack x, y)
+          )
  where
   identPart = do
     firstChar <- letter

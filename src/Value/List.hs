@@ -1,9 +1,14 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module Value.List where
 
 import qualified AST
 import Common (BuildASTExpr (..))
+import Control.DeepSeq (NFData (..))
+import GHC.Generics (Generic)
 
-newtype List t = List {lstSubs :: [t]}
+newtype List t = List {lstSubs :: [t]} deriving (Show, Generic, NFData)
 
 instance (Eq t) => Eq (List t) where
   (==) l1 l2 = lstSubs l1 == lstSubs l2

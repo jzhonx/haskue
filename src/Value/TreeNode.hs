@@ -1,13 +1,18 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Value.TreeNode where
 
 import Common (Env, TreeOp)
+import Control.DeepSeq (NFData (..))
 import Control.Monad.Except (MonadError)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
+import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
+import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import Path (
   ComprehTASeg (..),
@@ -80,6 +85,7 @@ data TreeNode t
     TNRefCycle TreeAddr
   | TNMutable (Mutable t)
   | TNCnstredVal (CnstredVal t)
+  deriving (Generic, NFData)
 
 instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNBlock s1) (TNBlock s2) = s1 == s2
@@ -109,12 +115,12 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (RootTASeg, _) -> Just t
   (StructTASeg s, TNBlock estruct@(Block{blkStruct = struct})) -> case s of
     StringTASeg name
-      | Just sf <- lookupStructField name struct -> Just $ ssfValue sf
+      | Just sf <- lookupStructField (TE.decodeUtf8 name) struct -> Just $ ssfValue sf
     PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
     DynFieldTASeg i j ->
       (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
     LetTASeg name
-      | Just lb <- Value.Struct.lookupStructLet name struct -> Just (lbValue lb)
+      | Just lb <- lookupStructLet (TE.decodeUtf8 name) struct -> Just (lbValue lb)
     EmbedTASeg i -> embValue <$> blkEmbeds estruct IntMap.!? i
     _ -> Nothing
   (SubValTASeg, TNBlock estruct) -> blkNonStructValue estruct
@@ -207,17 +213,17 @@ setSubTreeTN seg subT parT = do
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
-    , Just field <- lookupStructField name parStruct =
+    , Just field <- lookupStructField (TE.decodeUtf8 name) parStruct =
         let
           newField = subT `updateFieldValue` field
-          newStruct = updateStructField name newField parStruct
+          newStruct = updateStructField (TE.decodeUtf8 name) newField parStruct
          in
           return (structToTN newStruct parEStruct)
     | LetTASeg name <- labelSeg
-    , Just oldLet <- lookupStructLet name parStruct =
+    , Just oldLet <- lookupStructLet (TE.decodeUtf8 name) parStruct =
         let
           newLet = subT <$ oldLet
-          newStruct = updateStructLet name newLet parStruct
+          newStruct = updateStructLet (TE.decodeUtf8 name) newLet parStruct
          in
           return (structToTN newStruct parEStruct)
     | PatternTASeg i j <- labelSeg =

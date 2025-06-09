@@ -23,6 +23,7 @@ import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isNothing)
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -480,12 +481,12 @@ mergeAtomBounds (d1, a1) (d2, bs) =
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
-reMatch :: String -> String -> Bool
+reMatch :: T.Text -> T.Text -> Bool
 reMatch = (==)
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
-reNotMatch :: String -> String -> Bool
+reNotMatch :: T.Text -> T.Text -> Bool
 reNotMatch = (/=)
 
 mergeBoundList :: (Path.BinOpDirect, [VT.Bound]) -> (Path.BinOpDirect, [VT.Bound]) -> Either String [VT.Bound]
@@ -774,7 +775,7 @@ mergeStructsInner (eidM1, s1) (eidM2, s2) = do
   retTr merged
 
 fieldsToStruct ::
-  Int -> [(String, VT.Field VT.Tree)] -> (VT.Struct VT.Tree, Maybe Int) -> (VT.Struct VT.Tree, Maybe Int) -> VT.Tree
+  Int -> [(T.Text, VT.Field VT.Tree)] -> (VT.Struct VT.Tree, Maybe Int) -> (VT.Struct VT.Tree, Maybe Int) -> VT.Tree
 fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
   VT.mkStructTree $
     VT.emptyStruct
@@ -821,7 +822,7 @@ fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
 
 The structs can not be both embedded.
 -}
-_unionFields :: (VT.Struct VT.Tree, Maybe Int) -> (VT.Struct VT.Tree, Maybe Int) -> [(String, VT.Field VT.Tree)]
+_unionFields :: (VT.Struct VT.Tree, Maybe Int) -> (VT.Struct VT.Tree, Maybe Int) -> [(T.Text, VT.Field VT.Tree)]
 _unionFields (st1, eidM1) (st2, eidM2) =
   foldr
     ( \label acc ->
@@ -916,9 +917,13 @@ _preprocessBlock blockTC block = do
               blockIdents =
                 Set.fromList $
                   map
-                    (\k -> if k `Map.member` VT.stcLets struct then k ++ "_" ++ show sid else k)
+                    ( \k ->
+                        if k `Map.member` VT.stcLets struct
+                          then T.append k (T.pack $ "_" ++ show sid)
+                          else k
+                    )
                     (Set.toList $ VT.stcBlockIdents struct)
-              lets = Map.fromList $ map (\(k, v) -> (k ++ "_" ++ show sid, v)) (Map.toList $ VT.stcLets struct)
+              lets = Map.fromList $ map (\(k, v) -> (T.append k (T.pack $ "_" ++ show sid), v)) (Map.toList $ VT.stcLets struct)
               newStruct = struct{VT.stcBlockIdents = blockIdents, VT.stcLets = lets}
             -- RM.logDebugStrRM $ printf "_preprocessBlock: newStruct: %s" (show $ VT.mkStructTree newStruct)
             return $ Right newStruct
@@ -988,7 +993,7 @@ _appendSIDToLetRef blockAddr sid _tc =
 
   append :: VT.Reference VT.Tree -> VT.Reference VT.Tree
   append ref@(VT.Reference{VT.refArg = VT.RefPath ident sels}) =
-    ref{VT.refArg = VT.RefPath (ident ++ "_" ++ show sid) sels}
+    ref{VT.refArg = VT.RefPath (T.append ident (T.pack $ '_' : show sid)) sels}
   append r = r
 
 -- | Extended version of all sub nodes of the tree, including patterns, dynamic fields and let bindings.
@@ -1091,11 +1096,11 @@ The focus of the tree must be a struct.
 -}
 checkLabelsPerm ::
   (RM.ReduceMonad s r m) =>
-  Set.Set String ->
+  Set.Set T.Text ->
   IntMap.IntMap (VT.StructCnstr VT.Tree) ->
   Bool ->
   Bool ->
-  Set.Set String ->
+  Set.Set T.Text ->
   TCOps.TrCur ->
   m TCOps.TrCur
 checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded labelsSet tc =
@@ -1123,11 +1128,11 @@ checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded labelsSet tc
 
 checkPerm ::
   (RM.ReduceMonad s r m) =>
-  Set.Set String ->
+  Set.Set T.Text ->
   IntMap.IntMap (VT.StructCnstr VT.Tree) ->
   Bool ->
   Bool ->
-  String ->
+  T.Text ->
   TCOps.TrCur ->
   m (Maybe VT.Tree)
 checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
@@ -1147,11 +1152,11 @@ checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
 
 _checkPerm ::
   (RM.ReduceMonad s r m) =>
-  Set.Set String ->
+  Set.Set T.Text ->
   IntMap.IntMap (VT.StructCnstr VT.Tree) ->
   Bool ->
   Bool ->
-  String ->
+  T.Text ->
   TCOps.TrCur ->
   m (Maybe VT.Tree)
 _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
@@ -1178,7 +1183,7 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
         else return . Just $ VT.mkBottomTree $ printf "%s is not allowed" newLabel
 
 -- | Returns whether the pattern matches the label.
-patMatchLabel :: (RM.ReduceMonad s r m) => VT.Tree -> String -> TCOps.TrCur -> m Bool
+patMatchLabel :: (RM.ReduceMonad s r m) => VT.Tree -> T.Text -> TCOps.TrCur -> m Bool
 patMatchLabel pat name tc = case VT.treeNode pat of
   VT.TNMutable mut
     -- If the mutable is a reference or an index, then we should try to use the value of the mutable.

@@ -191,7 +191,7 @@ regBinLeftAtom op@(AST.wpVal -> opv) (d1, ta1, tc1) (d2, tc2) = do
                 (VT.Int i1, VT.Int i2) -> ri $ dirApply (+) (d1, i1) i2
                 (VT.Int i1, VT.Float i2) -> rf $ dirApply (+) (d1, fromIntegral i1) i2
                 (VT.Float i1, VT.Int i2) -> rf $ dirApply (+) (d1, i1) (fromIntegral i2)
-                (VT.String s1, VT.String s2) -> Right . VT.String $ dirApply (++) (d1, s1) s2
+                (VT.String s1, VT.String s2) -> Right . VT.String $ dirApply (<>) (d1, s1) s2
                 _ -> Left $ mismatch op a1 (VT.amvAtom ta2)
               AST.Sub -> case (a1, VT.amvAtom ta2) of
                 (VT.Int i1, VT.Int i2) -> ri $ dirApply (-) (d1, i1) i2

@@ -39,24 +39,26 @@ reference.
 If the receiver addresss is the mutable address plus the argument segment, then it should be skipped.
 -}
 delMutValRecvs :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
-delMutValRecvs mutAddr = do
-  RM.modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delEmptyElem $ delRecvs (ctxNotifGraph ctx)}
- where
-  delEmptyElem :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
-  delEmptyElem = Map.filter (not . null)
+delMutValRecvs mutAddr = RM.modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delRecvsInMap mutAddr (ctxNotifGraph ctx)}
 
-  -- Delete the receivers that have the mutable address as the prefix.
-  delRecvs :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
-  delRecvs =
-    Map.map
-      ( filter
-          ( \recv ->
-              let
-                mutValAddr = Path.appendSeg Path.SubValTASeg mutAddr
-               in
-                not $ Path.isPrefix mutValAddr recv
-          )
-      )
+-- | Delete the receivers that have the mutable address as the prefix.
+delRecvsInMap :: Path.TreeAddr -> Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
+delRecvsInMap mutAddr =
+  Map.mapMaybe
+    ( \l ->
+        let r =
+              filter
+                ( \recv ->
+                    let
+                      mutValAddr = Path.appendSeg mutAddr Path.SubValTASeg
+                     in
+                      not $ {-# SCC "isPrefix" #-} Path.isPrefix mutValAddr recv
+                )
+                l
+         in if null r
+              then Nothing
+              else Just r
+    )
 
 -- | Reduce the tree cursor to non-mutable.
 reduceToNonMut :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m (Maybe VT.Tree)

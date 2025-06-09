@@ -1,17 +1,25 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Value.Reference where
 
 import qualified Common
+import Control.DeepSeq (NFData (..))
 import Data.List (intercalate)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Exception (throwErrSt)
+import GHC.Generics (Generic)
 import qualified Path
 import Value.Atom
 
 data RefArg t
   = -- | RefPath denotes a reference starting with an identifier.
-    RefPath String [t]
+    RefPath T.Text [t]
   | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
     RefIndex [t]
+  deriving (Generic, NFData)
 
 data Reference t = Reference
   { refArg :: RefArg t
@@ -25,10 +33,10 @@ data Reference t = Reference
   -- ^ refVers records the version of the referenced value.
   , refValue :: Maybe t
   }
-  deriving (Show)
+  deriving (Show, Generic, NFData)
 
 instance Show (RefArg t) where
-  show (RefPath s _) = "ref_v_" ++ s
+  show (RefPath s _) = "ref_v_" ++ show s
   show (RefIndex _) = "index"
 
 instance (Eq t) => Eq (RefArg t) where
@@ -39,12 +47,8 @@ instance (Eq t) => Eq (RefArg t) where
 instance (Eq t) => Eq (Reference t) where
   (==) r1 r2 = refArg r1 == refArg r2 && refOrigAddrs r1 == refOrigAddrs r2
 
--- instance (Common.BuildASTExpr t) => Common.BuildASTExpr (Reference t) where
---   buildASTExpr c r = case refArg r of
---     RefPath var xs ->
-
 showRefArg :: RefArg t -> (t -> Maybe String) -> String
-showRefArg (RefPath s xs) f = intercalate "." (s : map (\x -> maybe "_" id (f x)) xs)
+showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) xs)
 showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) xs)
 
 refHasRefPath :: Reference t -> Bool
@@ -63,12 +67,12 @@ valPathFromRefArg treeToA arg = case arg of
     sels <-
       mapM
         ( \x -> case treeToA x of
-            Just (String s) -> return $ Path.StringSel s
+            Just (String s) -> return $ Path.StringSel (TE.encodeUtf8 s)
             Just (Int i) -> return $ Path.IntSel (fromIntegral i)
             _ -> Nothing
         )
         xs
-    return $ Path.ValPath (Path.StringSel var : sels)
+    return $ Path.ValPath (Path.StringSel (TE.encodeUtf8 var) : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
 
@@ -99,12 +103,15 @@ mkIndexRef ts =
     , refVers = Nothing
     }
 
-mkRefFromValPath :: (Common.Env r s m) => (Atom -> t) -> String -> Path.ValPath -> m (Reference t)
+mkRefFromValPath :: (Common.Env r s m) => (Atom -> t) -> T.Text -> Path.ValPath -> m (Reference t)
 mkRefFromValPath aToTree var (Path.ValPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
-          Path.StringSel s -> return $ aToTree (String s)
+          Path.StringSel s -> do
+            case TE.decodeUtf8' s of
+              Left err -> throwErrSt (show err)
+              Right str -> return $ aToTree (String str)
           Path.IntSel i -> return $ aToTree (Int $ fromIntegral i)
       )
       xs
