@@ -9,19 +9,19 @@
 module Reduce.Notif where
 
 import qualified Common
-import Control.Monad (foldM, unless, when)
+import Control.Monad (foldM, when)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (execStateT, get, gets, modify, put, runStateT)
+import Control.Monad.State.Strict (get, gets, modify, put, runStateT)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
+import qualified Data.Sequence as Seq
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
 import qualified Reduce.Mutate as Mutate
 import qualified Reduce.Nodes as Nodes
 import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
 import qualified TCOps
 import Text.Printf (printf)
 import Util (
@@ -74,7 +74,7 @@ notify tc = RM.debugSpanRM "notify" (Just <$> Cursor.tcFocus) tc $ do
     t = Cursor.tcFocus tc
     visiting = [addr]
     -- The initial node has already been reduced.
-    q = [(addr, False, VT.treeVersion t)]
+    q = Seq.fromList [(addr, False, VT.treeVersion t)]
 
   s <- get
   (r, ns) <- runStateT (bfsLoopQ tc) (WithBFSState (BFSState visiting q) s)
@@ -88,7 +88,7 @@ class HasBFSState s where
 
 data BFSState = BFSState
   { _bfsVisiting :: [Path.TreeAddr]
-  , bfsQueue :: [(Path.TreeAddr, Bool, Int)]
+  , bfsQueue :: Seq.Seq (Path.TreeAddr, Bool, Int)
   -- ^ The queue contains pairs of (address of the source, toReduce, version of the source).
   }
 
@@ -118,8 +118,8 @@ bfsLoopQ :: (RM.ReduceMonad r s m, HasBFSState s) => TCOps.TrCur -> m TCOps.TrCu
 bfsLoopQ tc = do
   state@(BFSState{bfsQueue = q}) <- gets getBFSState
   case q of
-    [] -> return tc
-    ((addr, toReduce, srcVers) : xs) -> do
+    Seq.Empty -> return tc
+    ((addr, toReduce, srcVers) Seq.:<| xs) -> do
       r <- RM.debugSpanArgsRM "bfsLoopQ" (printf "q:%s" (show q)) (Just <$> Cursor.tcFocus) tc $ do
         -- pop the first element of the queue.
         modify $ \s -> setBFSState s state{bfsQueue = xs}
@@ -213,7 +213,7 @@ loopAddDeps tc = do
               foldr
                 ( \recv s@(BFSState v q) ->
                     if recv `notElem` v
-                      then BFSState (recv : v) (q ++ [(recv, True, srcVers)])
+                      then BFSState (recv : v) (q Seq.|> (recv, True, srcVers))
                       else s
                 )
                 bfsState
