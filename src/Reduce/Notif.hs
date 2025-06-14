@@ -138,14 +138,10 @@ bfsLoopQ tc = do
               do
                 utc <-
                   if toReduce
-                    then do
-                      RM.debugInstantRM "bfsLoopQ" (printf "reducing %s" (show $ Cursor.tcFocus dstTC)) dstTC
-
-                      reduceImParMut srcVers dstTC
-                    else
-                      return dstTC
+                    then reduceImParMut srcVers dstTC
+                    else return dstTC
                 -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
-                addDepsUntilRoot utc
+                loopAddDeps utc
           )
           dstTCM
 
@@ -187,8 +183,8 @@ propUpTC2 tc = do
 
 -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
 -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-addDepsUntilRoot :: (RM.ReduceMonad r s m, HasBFSState s) => TCOps.TrCur -> m TCOps.TrCur
-addDepsUntilRoot tc = do
+loopAddDeps :: (RM.ReduceMonad r s m, HasBFSState s) => TCOps.TrCur -> m TCOps.TrCur
+loopAddDeps tc = do
   let cs = Cursor.tcCrumbs tc
   -- We should not use root value to notify.
   if length cs <= 1
@@ -224,21 +220,7 @@ addDepsUntilRoot tc = do
                 recvs
          in setBFSState st newBFSState
 
-      -- TODO: remove checking
-      inReducing <- do
-        -- We must check if the parent is reducing. If the parent is reducing, we should not go up and keep
-        -- notifying the dependents.
-        -- Because once parent is done with reducing, it will notify its dependents.
-        parentIsReducing $ Cursor.tcCanAddr tc
-      if not inReducing
-        then do
-          ptc <- propFocusUpWithPostHandling tc
-          addDepsUntilRoot ptc
-        else return tc
- where
-  parentIsReducing parTreeAddr = do
-    stack <- Common.ctxReduceStack <$> RM.getRMContext
-    return $ length stack > 1 && stack !! 1 == parTreeAddr
+      propFocusUpWithPostHandling tc >>= loopAddDeps
 
 propFocusUpWithPostHandling :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
 propFocusUpWithPostHandling subTC = do
