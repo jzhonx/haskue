@@ -11,10 +11,10 @@ module Reduce.Notif where
 import qualified Common
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (execStateT, get, gets, modify, put)
+import Control.Monad.State.Strict (execStateT, get, gets, modify, put, runStateT)
 import qualified Cursor
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromJust, fromMaybe)
 import Exception (throwErrSt)
 import qualified MutEnv
 import qualified Path
@@ -22,30 +22,40 @@ import qualified Reduce.Mutate as Mutate
 import qualified Reduce.Nodes as Nodes
 import qualified Reduce.RMonad as RM
 import qualified Reduce.RefSys as RefSys
+import qualified TCOps
 import Text.Printf (printf)
 import Util (
   HasTrace (..),
  )
 import qualified Value.Tree as VT
 
-drainRefSysQueue :: (RM.ReduceTCMonad s r m) => m ()
-drainRefSysQueue = do
+drainRefSysQueue :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
+drainRefSysQueue tc = do
   q <- RM.getRMReadyQ
   graph <- Common.ctxNotifGraph <$> RM.getRMContext
-  more <- RM.debugSpanArgsTM "drainRefSysQueue" (printf "q: %s, graph: %s" (show q) (show $ Map.toList graph)) $ do
-    headM <- RM.popRMReadyQ
-    case headM of
-      Nothing -> return False
-      Just addr -> do
-        -- RM.logDebugStrRM $ printf "drainRefSysQueue: addr: %s" (show addr)
-        maybe
-          (return ())
-          -- (RM.logDebugStrRM $ printf "drainRefSysQueue: addr: %s, not found" (show addr))
-          (const $ return ())
-          =<< RefSys.inAbsAddrRM addr notify
-        return True
+  (res, more) <- RM.debugSpanArgsRM
+    "drainRefSysQueue"
+    (printf "q: %s, graph: %s" (show q) (show $ Map.toList graph))
+    (Just <$> Cursor.tcFocus . fst)
+    tc
+    $ do
+      headM <- RM.popRMReadyQ
+      case headM of
+        Nothing -> return (tc, False)
+        Just addr -> do
+          dstTCM <- goTCAbsAddr2 addr tc
+          r <-
+            maybe
+              (return tc)
+              (\dstTC -> notify dstTC)
+              dstTCM
+          return (r, True)
 
-  when more drainRefSysQueue
+  if more
+    then drainRefSysQueue res
+    else do
+      -- go back to the root
+      propUpTCUntilSeg Path.RootTASeg res
 
 {- | RefSysy starts notification propagation in the tree.
 
@@ -54,20 +64,23 @@ propagates to the dependents of the visiting node and the dependents of its ance
 
 The propagation starts from the current focus.
 -}
-notify :: (RM.ReduceTCMonad s r m) => m ()
-notify = RM.withAddrAndFocus $ \addr t -> RM.debugSpanTM "notify" $ do
+notify :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
+notify tc = RM.debugSpanRM "notify" (Just <$> Cursor.tcFocus) tc $ do
   origRefSysEnabled <- RM.getRMNotifEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
   RM.setRMNotifEnabled False
   let
+    addr = Cursor.tcCanAddr tc
+    t = Cursor.tcFocus tc
     visiting = [addr]
     -- The initial node has already been reduced.
     q = [(addr, False, VT.treeVersion t)]
 
   s <- get
-  ns <- execStateT bfsLoopQ (WithBFSState (BFSState visiting q) s)
+  (r, ns) <- runStateT (bfsLoopQ tc) (WithBFSState (BFSState visiting q) s)
   put (wbOther ns)
   RM.setRMNotifEnabled origRefSysEnabled
+  return r
 
 class HasBFSState s where
   getBFSState :: s -> BFSState
@@ -101,45 +114,88 @@ instance (Common.HasContext s) => Common.HasContext (WithBFSState s) where
   setContext s ctx = s{wbOther = Common.setContext (wbOther s) ctx}
   modifyContext s f = s{wbOther = Common.modifyContext (wbOther s) f}
 
-bfsLoopQ :: (RM.ReduceTCMonad r s m, HasBFSState s) => m ()
-bfsLoopQ = do
+bfsLoopQ :: (RM.ReduceMonad r s m, HasBFSState s) => TCOps.TrCur -> m TCOps.TrCur
+bfsLoopQ tc = do
   state@(BFSState{bfsQueue = q}) <- gets getBFSState
   case q of
-    [] -> return ()
+    [] -> return tc
     ((addr, toReduce, srcVers) : xs) -> do
-      RM.debugSpanArgsTM "bfsLoopQ" (printf "q:%s" (show q)) $ do
+      r <- RM.debugSpanArgsRM "bfsLoopQ" (printf "q:%s" (show q)) (Just <$> Cursor.tcFocus) tc $ do
         -- pop the first element of the queue.
         modify $ \s -> setBFSState s state{bfsQueue = xs}
 
-        origAddr <- RM.getTMAbsAddr
         -- First try to go to the addr.
-        found <- RefSys.goRMAbsAddr addr
-        if found
-          then do
-            when toReduce (reduceImParMut srcVers)
-            -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
-            addDepsUntilRoot
-          else
-            -- Remove the notification if the receiver is not found. The receiver might be relocated. For
-            -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
-            -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
-            Mutate.delRefSysRecvPrefix addr
+        dstTCM <- goTCAbsAddr2 addr tc
+        maybe
+          ( do
+              -- Remove the notification if the receiver is not found. The receiver might be relocated. For
+              -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
+              -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
+              Mutate.delRefSysRecvPrefix addr
+              return tc
+          )
+          ( \dstTC ->
+              do
+                utc <-
+                  if toReduce
+                    then do
+                      RM.debugInstantRM "bfsLoopQ" (printf "reducing %s" (show $ Cursor.tcFocus dstTC)) dstTC
 
-        -- We must go back to the original addr even when the addr is not found, because that would lead to unexpected
-        -- address.
-        RefSys.goRMAbsAddrMust origAddr
-      bfsLoopQ
+                      reduceImParMut srcVers dstTC
+                    else
+                      return dstTC
+                -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
+                addDepsUntilRoot utc
+          )
+          dstTCM
+
+      bfsLoopQ r
+
+goTCAbsAddr2 :: (RM.ReduceMonad r s m) => Path.TreeAddr -> TCOps.TrCur -> m (Maybe TCOps.TrCur)
+goTCAbsAddr2 dst tc = do
+  when (Path.headSeg dst /= Just Path.RootTASeg) $
+    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
+  top <- propUpTCUntilSeg Path.RootTASeg tc
+  let dstNoRoot = fromJust $ Path.tailTreeAddr dst
+  return $ TCOps.goDownTCAddr dstNoRoot top
+
+-- Propagate the value up until the lowest segment is matched.
+propUpTCUntilSeg :: (RM.ReduceMonad r s m) => Path.TASeg -> TCOps.TrCur -> m TCOps.TrCur
+propUpTCUntilSeg seg tc = do
+  if isMatched tc
+    then return tc
+    else do
+      propUpTC2 tc >>= propUpTCUntilSeg seg
  where
-  -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
-  -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-  addDepsUntilRoot :: (RM.ReduceTCMonad r s m, HasBFSState s) => m ()
-  addDepsUntilRoot = do
-    cs <- RM.getTMCrumbs
-    -- We should not use root value to notify.
-    when (length cs > 1) $ do
+  isMatched :: TCOps.TrCur -> Bool
+  isMatched (Cursor.TreeCursor _ []) = False -- propUpTM would panic.
+  isMatched (Cursor.TreeCursor _ ((s, _) : _)) = s == seg
+
+propUpTC2 :: (RM.ReduceMonad r s m) => TCOps.TrCur -> m TCOps.TrCur
+propUpTC2 tc = do
+  let addr = Cursor.tcCanAddr tc
+      focus = Cursor.tcFocus tc
+  seg <- TCOps.getTCFocusSeg tc
+
+  -- If the focus is a bottom and the address is not an immediate disj, then we should overwrite the parent with the
+  -- bottom.
+  if Common.isTreeBottom focus && Path.isInDisj addr && not (Path.isSegDisj seg)
+    then do
+      ptc <- Cursor.parentTCMust tc
+      return $ Cursor.setTCFocus focus ptc
+    else TCOps.propUpTC tc
+
+-- Add the dependents of the current focus and its ancestors to the visited list and the queue.
+-- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
+addDepsUntilRoot :: (RM.ReduceMonad r s m, HasBFSState s) => TCOps.TrCur -> m TCOps.TrCur
+addDepsUntilRoot tc = do
+  let cs = Cursor.tcCrumbs tc
+  -- We should not use root value to notify.
+  if length cs <= 1
+    then return tc
+    else do
       recvs <- do
         notifyG <- Common.ctxNotifGraph <$> RM.getRMContext
-        addr <- RM.getTMAbsAddr
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
         -- finalized address can be notified.
         -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
@@ -148,11 +204,11 @@ bfsLoopQ = do
           fromMaybe
             []
             ( do
-                srcFinalizedAddr <- Path.getReferableAddr addr
+                srcFinalizedAddr <- Path.getReferableAddr (Cursor.tcCanAddr tc)
                 Map.lookup srcFinalizedAddr notifyG
             )
 
-      srcVers <- VT.treeVersion <$> RM.getTMTree
+      let srcVers = VT.treeVersion (Cursor.tcFocus tc)
 
       -- Add the receivers to the visited list and the queue.
       modify $ \st ->
@@ -168,86 +224,79 @@ bfsLoopQ = do
                 recvs
          in setBFSState st newBFSState
 
+      -- TODO: remove checking
       inReducing <- do
-        ptc <- RM.getTMCursor
         -- We must check if the parent is reducing. If the parent is reducing, we should not go up and keep
         -- notifying the dependents.
         -- Because once parent is done with reducing, it will notify its dependents.
-        parentIsReducing $ Cursor.tcCanAddr ptc
-
-      unless inReducing $ do
-        propFocusUpWithPostHandling
-        addDepsUntilRoot
-
+        parentIsReducing $ Cursor.tcCanAddr tc
+      if not inReducing
+        then do
+          ptc <- propFocusUpWithPostHandling tc
+          addDepsUntilRoot ptc
+        else return tc
+ where
   parentIsReducing parTreeAddr = do
     stack <- Common.ctxReduceStack <$> RM.getRMContext
     return $ length stack > 1 && stack !! 1 == parTreeAddr
 
-propFocusUpWithPostHandling :: (RM.ReduceTCMonad s r m) => m ()
-propFocusUpWithPostHandling = do
-  subTC <- RM.getTMCursor
+propFocusUpWithPostHandling :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
+propFocusUpWithPostHandling subTC = do
   seg <- Cursor.focusTCSeg subTC
-  p <- RM.getTMParent
-  RM.debugSpanArgsTM "propFocusUpWithPostHandling" (printf "bpar: %s" (show p)) $ do
-    RM.propUpTM
-    RM.withTree $ \t -> case (seg, VT.getBlockFromTree t) of
+  RM.debugSpanRM "propFocusUpWithPostHandling" (Just <$> Cursor.tcFocus) subTC $ do
+    tc <- propUpTC2 subTC
+    case (seg, VT.getBlockFromTree (Cursor.tcFocus tc)) of
       (Path.StructTASeg sseg, Just _) -> do
-        tc <- RM.getTMCursor
         (utc, affected) <- Nodes.handleStructMutObjChange sseg tc
-        final <-
-          if null affected
-            then return utc
-            else foldM (flip Nodes.reduceStructField) utc affected
-        RM.putTMCursor final
-      _ -> return ()
+        if null affected
+          then return utc
+          else foldM (flip Nodes.reduceStructField) utc affected
+      _ -> return tc
 
 -- | Reduce the immediate parent mutable.
-reduceImParMut :: (RM.ReduceTCMonad s r m) => Int -> m ()
-reduceImParMut srcVers = RM.debugSpanTM "reduceImParMut" $ do
-  toReduce <- RM.withTree $ \t -> case VT.treeNode t of
+reduceImParMut :: (RM.ReduceMonad s r m) => Int -> TCOps.TrCur -> m TCOps.TrCur
+reduceImParMut srcVers tc = RM.debugSpanRM "reduceImParMut" (Just <$> Cursor.tcFocus) tc $ do
+  let focus = Cursor.tcFocus tc
+  (utc, toReduce) <- case VT.treeNode focus of
     VT.TNMutable mut
       | Just ref <- VT.getRefFromMutable mut ->
           if maybe True (< srcVers) (VT.refVers ref)
             then do
               let newRef = ref{VT.refVers = Just srcVers}
-              RM.putTMTree $ VT.setTN t (VT.TNMutable $ VT.Ref newRef)
-              return True
+              return (TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef) tc, True)
             else do
-              RM.debugInstantTM "reduceImParMut" (printf "reduceImParMut: ref %s is already up to date" (show ref))
-              return False
-    _ -> throwErrSt "ImPar is not a mutable node"
+              RM.debugInstantRM "reduceImParMut" (printf "reduceImParMut: ref %s is already up to date" (show ref)) tc
+              return (tc, False)
+    _ -> throwErrSt $ printf "ImPar %s is not a ref node" (VT.showTreeSymbol focus)
 
-  when toReduce $ do
-    -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
-    -- Notice the tree focus now changes to the Im mutable.
-    locateImMutable
-    addr <- RM.getTMAbsAddr
-    RM.debugInstantTM "reduceImParMut" (printf "addr: %s" (show addr))
-    RM.withTree $ \t -> case VT.treeNode t of
-      VT.TNMutable mut
-        | Just _ <- VT.getRefFromMutable mut -> reduceFocus
-        -- re-evaluate the mutable when it is not a reference.
-        | otherwise -> reduceFocus
-      _ -> return ()
-
--- RM.logDebugStrRM "reduceImParMut: ImPar is not found"
-
-reduceFocus :: (RM.ReduceTCMonad s r m) => m ()
-reduceFocus = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-  tc <- RM.getTMCursor
-  r <- reduce tc
-  RM.putTMCursor (r `Cursor.setTCFocus` tc)
+  if not toReduce
+    then return utc
+    else do
+      -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
+      -- Notice the tree focus now changes to the Im mutable.
+      mtc <- locateImMutable utc
+      MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
+      case VT.treeNode (Cursor.tcFocus mtc) of
+        VT.TNMutable mut
+          | Just _ <- VT.getRefFromMutable mut -> do
+              r <- reduce mtc
+              return $ Cursor.setTCFocus r mtc
+          -- re-evaluate the mutable when it is not a reference.
+          | otherwise -> do
+              r <- reduce mtc
+              return $ Cursor.setTCFocus r mtc
+        _ -> return mtc
 
 -- Locate the immediate parent mutable.
 -- TODO: consider the mutable does not have arguments.
-locateImMutable :: (RM.ReduceTCMonad s r m) => m ()
-locateImMutable = do
-  addr <- RM.getTMAbsAddr
+-- TODO: it can be simpler.
+locateImMutable :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
+locateImMutable tc = do
+  let addr = Cursor.tcCanAddr tc
   if hasEmptyTreeAddr addr || not (hasMutableArgSeg addr)
-    then return ()
+    then return tc
     -- If the addr has mutable argument segments, that means we are in a mutable node.
-    else RM.propUpTM >> locateImMutable
+    else propUpTC2 tc >>= locateImMutable
  where
   hasEmptyTreeAddr (Path.TreeAddr sels) = null sels
   -- Check if the addr has mutable argument segments.

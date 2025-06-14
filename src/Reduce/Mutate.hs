@@ -21,7 +21,7 @@ we need to delete receiver starting with the addr, not only the addr. For exampl
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delRefSysRecvPrefix :: (RM.ReduceTCMonad s r m) => Path.TreeAddr -> m ()
+delRefSysRecvPrefix :: (RM.ReduceMonad s r m) => Path.TreeAddr -> m ()
 delRefSysRecvPrefix addrPrefix = do
   RM.modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delEmptyElem $ del (ctxNotifGraph ctx)}
  where

@@ -38,7 +38,9 @@ fullReduce = RM.debugSpanTM "fullReduce" $ do
   tc <- RM.getTMCursor
   r <- reduce tc
   RM.putTMTree r
-  Notif.drainRefSysQueue
+  ntc <- RM.getTMCursor
+  rtc <- Notif.drainRefSysQueue ntc
+  RM.putTMCursor rtc
 
 -- | Reduce the tree to the lowest form.
 reduce :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m VT.Tree
