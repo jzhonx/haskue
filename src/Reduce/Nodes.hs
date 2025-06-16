@@ -255,128 +255,138 @@ The focus of the tree must be a struct.
 -}
 handleStructMutObjChange ::
   (RM.ReduceMonad s r m) => Path.StructTASeg -> TCOps.TrCur -> m (TCOps.TrCur, [T.Text])
-handleStructMutObjChange seg stc = RM.debugSpanRM
-  (printf "handleStructMutObjChange, seg: %s" (show seg))
-  (Just . Cursor.tcFocus . fst)
-  stc
-  $ do
-    void RM.increaseRMGlobalVers
+handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
+  | Path.DynFieldTASeg i _ <- seg
+  , VT.TNBlock block@(VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+      (printf "handleStructMutObjChange, seg: %s" (show seg))
+      (Just . Cursor.tcFocus . fst)
+      stc
+      $ do
+        void RM.increaseRMGlobalVers
+        (remAffStruct, remAffLabels) <- removeAppliedObject i _struct stc
+        let
+          dsf = VT.stcDynFields _struct IntMap.! i
+          rE = dynFieldToStatic remAffStruct dsf
+          allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
 
-    case VT.treeNode (Cursor.tcFocus stc) of
-      VT.TNBlock block@(VT.Block{VT.blkStruct = _struct})
-        | Path.DynFieldTASeg i _ <- seg -> do
-            (remAffStruct, remAffLabels) <- removeAppliedObject i _struct stc
-            let
-              dsf = VT.stcDynFields _struct IntMap.! i
-              rE = dynFieldToStatic remAffStruct dsf
-              allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
+        RM.debugInstantRM "handleStructMutObjChange" (printf "dsf: %s, rE: %s" (show dsf) (show rE)) stc
 
-            RM.debugInstantRM "handleStructMutObjChange" (printf "dsf: %s, rE: %s" (show dsf) (show rE)) stc
-
-            either
-              (\err -> return (TCOps.setTCFocusTN (VT.treeNode err) stc, []))
-              ( \labelFieldM -> do
-                  -- Constrain the dynamic field with all existing constraints.
-                  (addAffFields, addAffLabels) <-
-                    maybe
-                      (return ([], []))
-                      ( \(name, field) -> do
-                          newField <- constrainFieldWithCnstrs name field allCnstrs stc
-                          return
-                            ( [(name, newField)]
-                            , if not (null $ VT.ssfObjects newField) then [name] else []
-                            )
-                      )
-                      labelFieldM
-
-                  let
-                    -- TODO: dedup
-                    affectedLabels = remAffLabels ++ addAffLabels
-                    newSTC =
-                      TCOps.setTCFocusTN
-                        ( VT.TNBlock $
-                            block
-                              { VT.blkStruct = VT.updateStructWithFields addAffFields remAffStruct
-                              }
+        either
+          (\err -> return (TCOps.setTCFocusTN (VT.treeNode err) stc, []))
+          ( \labelFieldM -> do
+              -- Constrain the dynamic field with all existing constraints.
+              (addAffFields, addAffLabels) <-
+                maybe
+                  (return ([], []))
+                  ( \(name, field) -> do
+                      newField <- constrainFieldWithCnstrs name field allCnstrs stc
+                      return
+                        ( [(name, newField)]
+                        , if not (null $ VT.ssfObjects newField) then [name] else []
                         )
-                        stc
+                  )
+                  labelFieldM
 
-                  RM.debugInstantRM
-                    "handleStructMutObjChange"
-                    (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffFields) (show affectedLabels))
+              let
+                -- TODO: dedup
+                affectedLabels = remAffLabels ++ addAffLabels
+                newSTC =
+                  TCOps.setTCFocusTN
+                    ( VT.TNBlock $
+                        block
+                          { VT.blkStruct = VT.updateStructWithFields addAffFields remAffStruct
+                          }
+                    )
                     stc
 
-                  return (newSTC, affectedLabels)
-              )
-              rE
-        | Path.PatternTASeg i _ <- seg -> do
-            -- Constrain all fields with the new constraint if it exists.
-            let cnstr = VT.stcCnstrs _struct IntMap.! i
-            -- New constraint might have the following effects:
-            -- A. It matches fewer fields than the previous constraint with narrower constraints.
-            -- -----
-            -- abcde
-            --   +++
-            -- In the above example, we need to do
-            -- 1. Remove the constraint for a,b
-            -- 2. Do nothing for c,d,e
-            --
-            -- B. It could also match more fields when the constraint just got reduced to a concrete pattern.
-
-            (remAffStruct, remAffLabels) <- removeAppliedObject i _struct stc
-            (newStruct, addAffLabels) <- applyMoreCnstr cnstr remAffStruct stc
-            let
-              affectedLabels = remAffLabels ++ addAffLabels
-              nstc = VT.mkStructTree newStruct `Cursor.setTCFocus` stc
-            unless (null affectedLabels) $
               RM.debugInstantRM
                 "handleStructMutObjChange"
-                ( printf
-                    "-: %s, +: %s, new struct: %s"
-                    (show remAffLabels)
-                    (show addAffLabels)
-                    (show $ VT.mkStructTree newStruct)
+                (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffFields) (show affectedLabels))
+                stc
+
+              return (newSTC, affectedLabels)
+          )
+          rE
+  | Path.PatternTASeg i _ <- seg
+  , VT.TNBlock (VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+      (printf "handleStructMutObjChange, seg: %s" (show seg))
+      (Just . Cursor.tcFocus . fst)
+      stc
+      $ do
+        void RM.increaseRMGlobalVers
+        -- Constrain all fields with the new constraint if it exists.
+        let cnstr = VT.stcCnstrs _struct IntMap.! i
+        -- New constraint might have the following effects:
+        -- A. It matches fewer fields than the previous constraint with narrower constraints.
+        -- -----
+        -- abcde
+        --   +++
+        -- In the above example, we need to do
+        -- 1. Remove the constraint for a,b
+        -- 2. Do nothing for c,d,e
+        --
+        -- B. It could also match more fields when the constraint just got reduced to a concrete pattern.
+
+        (remAffStruct, remAffLabels) <- removeAppliedObject i _struct stc
+        (newStruct, addAffLabels) <- applyMoreCnstr cnstr remAffStruct stc
+        let
+          affectedLabels = remAffLabels ++ addAffLabels
+          nstc = VT.mkStructTree newStruct `Cursor.setTCFocus` stc
+        unless (null affectedLabels) $
+          RM.debugInstantRM
+            "handleStructMutObjChange"
+            ( printf
+                "-: %s, +: %s, new struct: %s"
+                (show remAffLabels)
+                (show addAffLabels)
+                (show $ VT.mkStructTree newStruct)
+            )
+            nstc
+
+        return (nstc, affectedLabels)
+  | Path.EmbedTASeg i <- seg
+  , VT.TNBlock block@(VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+      (printf "handleStructMutObjChange, seg: %s" (show seg))
+      (Just . Cursor.tcFocus . fst)
+      stc
+      $ do
+        void RM.increaseRMGlobalVers
+        let embed = VT.blkEmbeds block IntMap.! i
+        rmdEmbedStruct <- case VT.getBlockFromTree (VT.embValue embed) of
+          -- If the embedded value is not a struct, which could be a comprehension, then we only need to remove the
+          -- object.
+          Nothing -> fst <$> removeAppliedObject i _struct stc
+          Just (VT.Block{VT.blkStruct = embedStruct}) -> do
+            let rmIDs = i : (IntMap.keys (VT.stcCnstrs embedStruct) ++ IntMap.keys (VT.stcDynFields embedStruct))
+            (allRmStruct, _) <-
+              foldM
+                ( \(accStruct, accLabels) idx -> do
+                    (s, affLabels) <- removeAppliedObject idx accStruct stc
+                    return (s, affLabels ++ accLabels)
                 )
-                nstc
+                (_struct, [])
+                rmIDs
 
-            return (nstc, affectedLabels)
-        | Path.EmbedTASeg i <- seg -> do
-            let embed = VT.blkEmbeds block IntMap.! i
-            rmdEmbedStruct <- case VT.getBlockFromTree (VT.embValue embed) of
-              -- If the embedded value is not a struct, which could be a comprehension, then we only need to remove the
-              -- object.
-              Nothing -> fst <$> removeAppliedObject i _struct stc
-              Just (VT.Block{VT.blkStruct = embedStruct}) -> do
-                let rmIDs = i : (IntMap.keys (VT.stcCnstrs embedStruct) ++ IntMap.keys (VT.stcDynFields embedStruct))
-                (allRmStruct, _) <-
-                  foldM
-                    ( \(accStruct, accLabels) idx -> do
-                        (s, affLabels) <- removeAppliedObject idx accStruct stc
-                        return (s, affLabels ++ accLabels)
-                    )
-                    (_struct, [])
-                    rmIDs
+            return allRmStruct
 
-                return allRmStruct
+        let structTC = TCOps.setTCFocusTN (VT.TNBlock (block{VT.blkStruct = rmdEmbedStruct})) stc
 
-            let structTC = TCOps.setTCFocusTN (VT.TNBlock (block{VT.blkStruct = rmdEmbedStruct})) stc
+        RM.debugInstantRM "handleStructMutObjChange" (printf "new struct: %s" (show $ Cursor.tcFocus structTC)) structTC
 
-            RM.debugInstantRM "handleStructMutObjChange" (printf "new struct: %s" (show $ Cursor.tcFocus structTC)) structTC
-
-            mergedM <- UnifyOp.unifyTCs [structTC] structTC
-            case mergedM of
-              Nothing -> return (stc, [])
-              Just merged -> do
-                utc <- handleBlockReducedRes structTC (merged `Cursor.setTCFocus` structTC)
-                return
-                  ( utc
-                  , case VT.treeNode (Cursor.tcFocus utc) of
-                      -- Currently we have to re-reduce all fields because unify does not return the reduced fields.
-                      VT.TNBlock resblock
-                        | isNothing (VT.blkNonStructValue resblock) -> Map.keys $ VT.stcFields . VT.blkStruct $ resblock
-                      _ -> []
-                  )
-      _ -> return (stc, [])
+        mergedM <- UnifyOp.unifyTCs [structTC] structTC
+        case mergedM of
+          Nothing -> return (stc, [])
+          Just merged -> do
+            utc <- handleBlockReducedRes structTC (merged `Cursor.setTCFocus` structTC)
+            return
+              ( utc
+              , case VT.treeNode (Cursor.tcFocus utc) of
+                  -- Currently we have to re-reduce all fields because unify does not return the reduced fields.
+                  VT.TNBlock resblock
+                    | isNothing (VT.blkNonStructValue resblock) -> Map.keys $ VT.stcFields . VT.blkStruct $ resblock
+                  _ -> []
+              )
+  | otherwise = return (stc, [])
 
 getLabelFieldPairs :: VT.Struct VT.Tree -> [(T.Text, VT.Field VT.Tree)]
 getLabelFieldPairs struct = Map.toList $ VT.stcFields struct
