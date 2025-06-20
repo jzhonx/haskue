@@ -7,7 +7,7 @@
 module Reduce.Nodes where
 
 import qualified Common
-import Control.Monad (foldM, unless, void)
+import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (asks)
 import qualified Cursor
 import qualified Data.IntMap.Strict as IntMap
@@ -641,11 +641,13 @@ close :: (RM.ReduceMonad s r m) => [VT.Tree] -> TCOps.TrCur -> m (Maybe VT.Tree)
 close args tc
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
-      r <- Mutate.reduceMutableArg Path.unaryOpTASeg tc
-      case VT.treeNode r of
+      argTC <- TCOps.goDownTCSegMust Path.unaryOpTASeg tc
+      rM <- Mutate.reduceToNonMut argTC
+      maybe
         -- If the argument is pending, wait for the result.
-        VT.TNMutable _ -> return Nothing
-        _ -> return $ Just $ closeTree r
+        (return Nothing)
+        (return . Just . closeTree)
+        rM
 
 -- | Close a struct when the tree has struct.
 closeTree :: VT.Tree -> VT.Tree
@@ -663,15 +665,26 @@ closeTree a =
     _ -> VT.mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
 reduceeDisjOp :: (RM.ReduceMonad s r m) => Bool -> VT.DisjoinOp VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
-reduceeDisjOp asConj terms disjOpTC = RM.debugSpanRM "reduceeDisjOp" id disjOpTC $ do
-  disjuncts <- procMarkedTerms asConj (VT.djoTerms terms) disjOpTC
+reduceeDisjOp asConj disjOp disjOpTC = RM.debugSpanRM "reduceeDisjOp" id disjOpTC $ do
+  let terms = VT.djoTerms disjOp
+  when (length terms < 2) $
+    throwErrSt $
+      printf "disjunction operation requires at least 2 terms, got %d" (length terms)
+  disjuncts <- procMarkedTerms asConj terms disjOpTC
   RM.debugInstantRM "reduceeDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
-  let
-    d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
-  r <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
-  return $ Just r
+
+  if null disjuncts
+    -- If none of the disjuncts are ready, return Nothing.
+    then return Nothing
+    else do
+      let
+        d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
+      r <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
+      return $ Just r
 
 {- | Construct a disjunction from the default and the disjuncts.
+
+It filters out incomplete disjuncts.
 
 Some existing rules for marked disjunctions:
 M0:  ⟨v⟩    => ⟨v⟩        don't introduce defaults for unmarked term
@@ -685,15 +698,20 @@ procMarkedTerms asConj terms tc = do
 
   let hasMarked = any VT.dstMarked terms
   reducedTerms <-
-    -- If the unification is a conjunct, there is no need to reduce the terms.
+    -- If the disjunction is a conjunct, there is no need to reduce the terms.
     if asConj
       then return terms
       else
-        mapM
-          ( \(i, term) -> do
-              a <- Mutate.reduceMutableArg (Path.MutableArgTASeg i) tc
-              return $ term{VT.dstValue = a}
+        -- We need to reduce the terms to know if they are disjunctions or not so that marked terms can be processed.
+        foldM
+          ( \acc (i, term) -> do
+              argTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg i) tc
+              rM <- Mutate.reduceToNonMut argTC
+              case rM of
+                Nothing -> return acc -- Incomplete term
+                Just r -> return $ acc ++ [term{VT.dstValue = r}]
           )
+          []
           (zip [0 ..] terms)
   return $
     foldr

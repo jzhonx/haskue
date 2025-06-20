@@ -94,8 +94,8 @@ Notice before this step, there is no marked terms in the disjunction. For exampl
 
 This handles the case where a marked term is a reference. For example the f of the *f | v1 would be <f, f> if we use the
 value-default pair. When the value of the f changes to a disjunction like *1 | 2, the flattened disjuncts would be 1 and
-2 with the default index of di + 0, where di is the index of the disjunct f. When the value of f changes to 1 | 2, the
-flattened disjuncts would be 1 and 2 with the default indexes of di + 0 and di + 1.
+2 with the default index of di, where di is the index of the disjunct f. When the value of f changes to 1 | 2, the
+flattened disjuncts would be 1 and 2 with the default indexes of di and di + 1.
 
 It also follows the rules of disjunction operation:
 D0: ⟨v1⟩ | ⟨v2⟩         => ⟨v1|v2⟩

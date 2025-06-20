@@ -8,7 +8,6 @@ module Reduce.Mutate where
 import Common (ctxNotifGraph)
 import Control.Monad.Reader (asks)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
 import qualified MutEnv
 import qualified Path
 import qualified Reduce.RMonad as RM
@@ -66,12 +65,3 @@ reduceToNonMut tc = RM.debugSpanArgsRM "reduceToNonMut" (show tc) id tc $ do
   MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   r <- reduce tc
   return $ VT.getNonMutFromTree r
-
--- | Reduce the argument of the mutable to non-mutable.
-reduceMutableArg :: (RM.ReduceMonad s r m) => Path.TASeg -> TCOps.TrCur -> m VT.Tree
-reduceMutableArg seg mutTC = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-  argTC <- TCOps.goDownTCSegMust seg mutTC
-  r <- reduce argTC
-  let nonMutM = VT.getNonMutFromTree r
-  return $ fromMaybe r nonMutM
