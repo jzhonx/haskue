@@ -10,6 +10,7 @@ import Common (
   hasCtxNotifSender,
  )
 import qualified Cursor
+import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Exception (throwErrSt)
 import qualified Path
@@ -109,7 +110,7 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
                 lTC <- TCOps.goDownTCSegMust Path.binOpLeftTASeg tc
                 rTC <- TCOps.goDownTCSegMust Path.binOpRightTASeg tc
                 RegOps.regBin op lTC rTC
-              VT.CloseFunc -> close (VT.ropArgs rop) tc
+              VT.CloseFunc -> close (toList $ VT.ropArgs rop) tc
             VT.Compreh compreh -> do
               rM <- reduceCompreh compreh tc
               -- the result of the comprehension could be an un-reduced tree or a unification op tree.
@@ -124,7 +125,7 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
                 (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))
                 rM
             VT.UOp u -> do
-              rM <- UnifyOp.unify (VT.ufConjuncts u) tc
+              rM <- UnifyOp.unify (toList $ VT.ufConjuncts u) tc
               maybe
                 (return Nothing)
                 (\r -> Just <$> reduceTCFocus (r `Cursor.setTCFocus` tc))

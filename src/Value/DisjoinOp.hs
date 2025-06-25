@@ -5,6 +5,7 @@
 module Value.DisjoinOp where
 
 import Control.DeepSeq (NFData (..))
+import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
 
 data DisjTerm t = DisjTerm
@@ -19,7 +20,7 @@ be created correctly.
 Its value should be a Disj or other single value.
 -}
 data DisjoinOp t = DisjoinOp
-  { djoTerms :: [DisjTerm t]
+  { djoTerms :: Seq.Seq (DisjTerm t)
   , djoValue :: Maybe t
   }
   deriving (Eq, Show, Generic, NFData)

@@ -18,6 +18,7 @@ import Common (
 import Control.Monad (foldM, forM, when)
 import Control.Monad.Reader (asks, local)
 import qualified Cursor
+import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
@@ -206,7 +207,7 @@ normalizeConjunct tc = RM.debugSpanRM "normalizeConjunct" (const Nothing) tc $ d
                 return $ acc ++ subs
             )
             []
-            (zip [0 ..] (VT.ufConjuncts u))
+            (zip [0 ..] (toList $ VT.ufConjuncts u))
         VT.TNBlock es@(VT.Block{VT.blkStruct = struct}) -> do
           -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
           -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b

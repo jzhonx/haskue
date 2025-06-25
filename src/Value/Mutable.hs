@@ -10,6 +10,7 @@ module Value.Mutable where
 import qualified AST
 import Common (BuildASTExpr (..), Env)
 import Control.DeepSeq (NFData (..))
+import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
@@ -53,34 +54,6 @@ data OpType
   | InvalidOpType
   deriving (Generic, NFData)
 
--- | RegularOp is a tree node that represents a function.
-data RegularOp t = RegularOp
-  { ropName :: String
-  , ropOpType :: OpType
-  , ropArgs :: [t]
-  -- ^ Args stores the arguments that may or may not need to be evaluated.
-  , ropExpr :: forall r s m. (Env r s m) => m AST.Expression
-  -- ^ ropExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
-  -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
-  -- available.
-  -- The return value of the method should be stored in the tree.
-  , ropValue :: Maybe t
-  -- ^ ropValue stores the non-atom, non-Mutable (isTreeValue true) value.
-  }
-
-instance (Eq t) => Eq (RegularOp t) where
-  (==) f1 f2 = ropName f1 == ropName f2 && ropArgs f1 == ropArgs f2
-
-instance (BuildASTExpr t) => BuildASTExpr (RegularOp t) where
-  buildASTExpr c mut = do
-    if c || requireMutableConcrete mut
-      -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
-      then ropExpr mut
-      else maybe (ropExpr mut) (buildASTExpr c) (ropValue mut)
-
-instance (NFData t) => NFData (RegularOp t) where
-  rnf (RegularOp n t a _ v) = rnf n `seq` rnf t `seq` rnf a `seq` rnf v
-
 getRefFromMutable :: Mutable t -> Maybe (Reference t)
 getRefFromMutable mut = case mut of
   Ref ref -> Just ref
@@ -118,24 +91,60 @@ setMutVal m (DisjOp d) = DisjOp $ d{djoValue = m}
 setMutVal m (UOp u) = UOp $ u{ufValue = m}
 setMutVal m (Itp i) = Itp $ i{itpValue = m}
 
-getMutArgs :: Mutable t -> [t]
+getMutArgs :: Mutable t -> Seq.Seq t
 getMutArgs (RegOp rop) = ropArgs rop
 getMutArgs (Ref ref) = subRefArgs $ refArg ref
-getMutArgs (Compreh _) = []
-getMutArgs (DisjOp d) = map dstValue (djoTerms d)
+getMutArgs (Compreh _) = Seq.empty
+getMutArgs (DisjOp d) = fmap dstValue (djoTerms d)
 getMutArgs (UOp u) = ufConjuncts u
 getMutArgs (Itp itp) = itpExprs itp
+
+updateMutArg :: Int -> t -> Mutable t -> Mutable t
+updateMutArg i t (RegOp mut) = RegOp $ mut{ropArgs = Seq.update i t (ropArgs mut)}
+updateMutArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
+updateMutArg _ _ (Compreh c) = Compreh c
+updateMutArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
+updateMutArg i t (UOp u) = UOp $ u{ufConjuncts = Seq.update i t (ufConjuncts u)}
+updateMutArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
 
 modifyRegMut :: (RegularOp t -> RegularOp t) -> Mutable t -> Mutable t
 modifyRegMut f (RegOp m) = RegOp $ f m
 modifyRegMut _ r = r
+
+-- | RegularOp is a tree node that represents a function.
+data RegularOp t = RegularOp
+  { ropName :: String
+  , ropOpType :: OpType
+  , ropArgs :: Seq.Seq t
+  -- ^ Args stores the arguments that may or may not need to be evaluated.
+  , ropExpr :: forall r s m. (Env r s m) => m AST.Expression
+  -- ^ ropExpr is needed when the Mutable is created dynamically, for example, dynamically creating a same field
+  -- in a struct, {a: string, f: "a", (f): "b"}. In this case, no original expression for the expr, string & "b", is
+  -- available.
+  -- The return value of the method should be stored in the tree.
+  , ropValue :: Maybe t
+  -- ^ ropValue stores the non-atom, non-Mutable (isTreeValue true) value.
+  }
+
+instance (Eq t) => Eq (RegularOp t) where
+  (==) f1 f2 = ropName f1 == ropName f2 && ropArgs f1 == ropArgs f2
+
+instance (BuildASTExpr t) => BuildASTExpr (RegularOp t) where
+  buildASTExpr c mut = do
+    if c || requireMutableConcrete mut
+      -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
+      then ropExpr mut
+      else maybe (ropExpr mut) (buildASTExpr c) (ropValue mut)
+
+instance (NFData t) => NFData (RegularOp t) where
+  rnf (RegularOp n t a _ v) = rnf n `seq` rnf t `seq` rnf a `seq` rnf v
 
 emptyRegularOp :: RegularOp t
 emptyRegularOp =
   RegularOp
     { ropName = ""
     , ropOpType = InvalidOpType
-    , ropArgs = []
+    , ropArgs = Seq.empty
     , ropExpr = throwErrSt "stub mutable"
     , ropValue = Nothing
     }
@@ -148,7 +157,7 @@ mkUnaryOp op n =
       { ropExpr = buildUnaryExpr op n
       , ropName = show op
       , ropOpType = UnaryOpType op
-      , ropArgs = [n]
+      , ropArgs = Seq.fromList [n]
       , ropValue = Nothing
       }
 
@@ -175,7 +184,7 @@ mkBinaryOp op l r =
       { ropExpr = buildBinaryExpr op l r
       , ropName = show op
       , ropOpType = BinOpType op
-      , ropArgs = [l, r]
+      , ropArgs = Seq.fromList [l, r]
       , ropValue = Nothing
       }
 
@@ -186,21 +195,11 @@ buildBinaryExpr op l r = do
   ye <- buildASTExpr c r
   return $ pure $ AST.ExprBinaryOp op xe ye
 
-mkRefMutable :: T.Text -> [t] -> Mutable t
-mkRefMutable var ts =
-  Ref $
-    Reference
-      { refArg = RefPath var ts
-      , refOrigAddrs = Nothing
-      , refValue = Nothing
-      , refVers = Nothing
-      }
-
-mkDisjoinOp :: [DisjTerm t] -> Mutable t
+mkDisjoinOp :: Seq.Seq (DisjTerm t) -> Mutable t
 mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}
 
 mkUnifyOp :: [t] -> Mutable t
-mkUnifyOp ts = UOp $ emptyUnifyOp{ufConjuncts = ts}
+mkUnifyOp ts = UOp $ emptyUnifyOp{ufConjuncts = Seq.fromList ts}
 
 buildArgsExpr :: (Env r s m, BuildASTExpr t) => String -> [t] -> m AST.Expression
 buildArgsExpr func ts = do
@@ -218,4 +217,4 @@ buildArgsExpr func ts = do
         )
 
 mkItpMutable :: [IplSeg] -> [t] -> Mutable t
-mkItpMutable segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = exprs}
+mkItpMutable segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}

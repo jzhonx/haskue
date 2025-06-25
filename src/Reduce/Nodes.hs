@@ -10,9 +10,11 @@ import qualified Common
 import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (asks)
 import qualified Cursor
+import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -630,7 +632,7 @@ builtinMutableTable =
         -- built-in close does not recursively close the struct.
         VT.emptyRegularOp
           { VT.ropName = "close"
-          , VT.ropArgs = [VT.mkNewTree VT.TNTop]
+          , VT.ropArgs = Seq.fromList [VT.mkNewTree VT.TNTop]
           , VT.ropOpType = VT.CloseFunc
           }
     )
@@ -666,7 +668,7 @@ closeTree a =
 
 reduceeDisjOp :: (RM.ReduceMonad s r m) => Bool -> VT.DisjoinOp VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
 reduceeDisjOp asConj disjOp disjOpTC = RM.debugSpanRM "reduceeDisjOp" id disjOpTC $ do
-  let terms = VT.djoTerms disjOp
+  let terms = toList $ VT.djoTerms disjOp
   when (length terms < 2) $
     throwErrSt $
       printf "disjunction operation requires at least 2 terms, got %d" (length terms)
@@ -923,7 +925,7 @@ newIterStruct bindings rawStruct _tc =
                                       Just $
                                         VT.setTN
                                           focus
-                                          (VT.TNMutable $ VT.Ref $ VT.mkIndexRef (VT.cphBindValue bind : rest))
+                                          (VT.TNMutable $ VT.Ref $ VT.mkIndexRef (VT.cphBindValue bind Seq.<| rest))
                                 | otherwise -> return acc
                           )
                           Nothing

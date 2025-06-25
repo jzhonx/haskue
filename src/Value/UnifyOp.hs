@@ -6,7 +6,8 @@ module Value.UnifyOp where
 import qualified AST
 import Common (BuildASTExpr (..))
 import Control.DeepSeq (NFData (..))
-import Control.Monad (foldM, when)
+import Control.Monad (foldM)
+import qualified Data.Sequence as Seq
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
 
@@ -18,24 +19,25 @@ It is used to handle reference unifications, so that when values of references c
 created correctly.
 -}
 data UnifyOp t = UnifyOp
-  { ufConjuncts :: [t]
+  { ufConjuncts :: Seq.Seq t
   , ufValue :: Maybe t
   }
   deriving (Eq, Show, Generic, NFData)
 
 instance (BuildASTExpr t) => BuildASTExpr (UnifyOp t) where
-  buildASTExpr c op = do
-    when (length (ufConjuncts op) < 2) $
-      throwErrSt "Conjuncts should be at least 2"
-
-    leftMost <- buildASTExpr c (head (ufConjuncts op))
-    foldM
-      ( \acc x -> do
-          right <- buildASTExpr c x
-          return $ pure $ AST.ExprBinaryOp (pure AST.Unify) acc right
-      )
-      leftMost
-      (tail (ufConjuncts op))
+  buildASTExpr c op
+    | fstConj Seq.:<| rest <- ufConjuncts op
+    , -- The rest should be a non-empty sequence.
+      _ Seq.:|> _ <- rest = do
+        leftMost <- buildASTExpr c fstConj
+        foldM
+          ( \acc x -> do
+              right <- buildASTExpr c x
+              return $ pure $ AST.ExprBinaryOp (pure AST.Unify) acc right
+          )
+          leftMost
+          rest
+    | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
 emptyUnifyOp :: UnifyOp t
-emptyUnifyOp = UnifyOp [] Nothing
+emptyUnifyOp = UnifyOp Seq.empty Nothing

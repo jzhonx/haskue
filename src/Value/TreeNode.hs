@@ -10,6 +10,7 @@ import Control.DeepSeq (NFData (..))
 import Control.Monad.Except (MonadError)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isNothing)
+import qualified Data.Sequence as Seq
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
@@ -37,16 +38,14 @@ import Value.Bounds (Bounds)
 import Value.Comprehension
 import Value.Constraint (AtomCnstr, CnstredVal (cnsedVal))
 import Value.Disj (Disj (dsjDefault, dsjDisjuncts))
-import Value.DisjoinOp (DisjTerm (dstValue), DisjoinOp (djoTerms))
-import Value.Interpolation
 import Value.List (List (lstSubs))
 import Value.Mutable (
   Mutable (..),
-  RegularOp (ropArgs),
+  getMutArgs,
   getMutVal,
   setMutVal,
+  updateMutArg,
  )
-import Value.Reference (Reference (refArg), setRefArgs, subRefArgs)
 import Value.Struct (
   Block (..),
   DynamicField (..),
@@ -61,7 +60,6 @@ import Value.Struct (
   updateStructField,
   updateStructLet,
  )
-import Value.UnifyOp (UnifyOp (ufConjuncts))
 
 class HasTreeNode t where
   getTreeNode :: t -> TreeNode t
@@ -106,6 +104,36 @@ instance (Eq t, TreeOp t, HasTreeNode t) => Eq (TreeNode t) where
   (==) (TNRefCycle a1) (TNRefCycle a2) = a1 == a2
   (==) _ _ = False
 
+asAtom :: TreeNode t -> Maybe AtomV
+asAtom (TNAtom a) = Just a; asAtom _ = Nothing
+
+asBottom :: TreeNode t -> Maybe Bottom
+asBottom (TNBottom b) = Just b; asBottom _ = Nothing
+
+asBounds :: TreeNode t -> Maybe Bounds
+asBounds (TNBounds b) = Just b; asBounds _ = Nothing
+
+asBlock :: TreeNode t -> Maybe (Block t)
+asBlock (TNBlock b) = Just b; asBlock _ = Nothing
+
+asList :: TreeNode t -> Maybe (List t)
+asList (TNList l) = Just l; asList _ = Nothing
+
+asDisj :: TreeNode t -> Maybe (Disj t)
+asDisj (TNDisj d) = Just d; asDisj _ = Nothing
+
+asAtomCnstr :: TreeNode t -> Maybe (AtomCnstr t)
+asAtomCnstr (TNAtomCnstr c) = Just c; asAtomCnstr _ = Nothing
+
+asMutable :: TreeNode t -> Maybe (Mutable t)
+asMutable (TNMutable m) = Just m; asMutable _ = Nothing
+
+asCnstredVal :: TreeNode t -> Maybe (CnstredVal t)
+asCnstredVal (TNCnstredVal cv) = Just cv; asCnstredVal _ = Nothing
+
+isTop :: TreeNode t -> Bool
+isTop TNTop = True; isTop _ = False
+
 {- | descend into the tree with the given segment.
 
 This should only be used by TreeCursor.
@@ -126,11 +154,7 @@ subTreeTN seg t = case (seg, getTreeNode t) of
   (SubValTASeg, TNBlock estruct) -> blkNonStructValue estruct
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
-    | (MutableArgTASeg i, RegOp m) <- (seg, mut) -> ropArgs m `indexList` i
-    | (MutableArgTASeg i, Ref ref) <- (seg, mut) -> subRefArgs (refArg ref) `indexList` i
-    | (MutableArgTASeg i, DisjOp d) <- (seg, mut) -> dstValue <$> djoTerms d `indexList` i
-    | (MutableArgTASeg i, UOp u) <- (seg, mut) -> ufConjuncts u `indexList` i
-    | (MutableArgTASeg i, Itp itp) <- (seg, mut) -> itpExprs itp `indexList` i
+    | MutableArgTASeg i <- seg -> getMutArgs mut Seq.!? i
     | (ComprehTASeg (ComprehIterClauseValTASeg i), Compreh c) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
     | (ComprehTASeg ComprehIterValTASeg, Compreh c) <- (seg, mut) -> cphIterVal c
@@ -155,36 +179,7 @@ setSubTreeTN seg subT parT = do
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
-      | MutableArgTASeg i <- seg
-      , RegOp f <- mut -> do
-          let
-            args = ropArgs f
-            l = TNMutable . RegOp $ f{ropArgs = take i args ++ [subT] ++ drop (i + 1) args}
-          return l
-      | MutableArgTASeg i <- seg
-      , Ref ref <- mut -> do
-          let
-            sels = subRefArgs (refArg ref)
-            l = TNMutable . Ref $ ref{refArg = setRefArgs (refArg ref) $ take i sels ++ [subT] ++ drop (i + 1) sels}
-          return l
-      | MutableArgTASeg i <- seg
-      , DisjOp d <- mut -> do
-          let
-            terms = djoTerms d
-            l = TNMutable . DisjOp $ d{djoTerms = take i terms ++ [subT <$ terms !! i] ++ drop (i + 1) terms}
-          return l
-      | MutableArgTASeg i <- seg
-      , UOp u <- mut -> do
-          let
-            conjuncts = ufConjuncts u
-            l = TNMutable . UOp $ u{ufConjuncts = take i conjuncts ++ [subT] ++ drop (i + 1) conjuncts}
-          return l
-      | MutableArgTASeg i <- seg
-      , Itp p <- mut -> do
-          let
-            exprs = itpExprs p
-            l = TNMutable . Itp $ p{itpExprs = take i exprs ++ [subT] ++ drop (i + 1) exprs}
-          return l
+      | MutableArgTASeg i <- seg -> return $ TNMutable $ updateMutArg i subT mut
       | ComprehTASeg ComprehIterValTASeg <- seg
       , Compreh c <- mut ->
           return $ TNMutable $ Compreh c{cphIterVal = Just subT}

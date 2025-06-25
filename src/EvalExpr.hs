@@ -12,9 +12,11 @@ import qualified Common
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State.Strict (gets, modify)
+import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Exception (throwErrSt)
@@ -332,7 +334,7 @@ evalPrimExpr e = case wpVal e of
     OpLiteral lit -> evalLiteral lit
     OperandName (wpVal -> Identifier (wpVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
       Just v -> return v
-      Nothing -> mkVarLinkTree ident
+      Nothing -> return $ VT.mkMutableTree $ VT.Ref $ VT.emptyIdentRef ident
     OpExpression expr -> do
       x <- evalExpr expr
       return $ x{VT.treeIsRootOfSubTree = True}
@@ -347,12 +349,6 @@ evalPrimExpr e = case wpVal e of
     args <- mapM evalExpr aes
     replaceFuncArgs p args
 
--- | Create a new identifier reference.
-mkVarLinkTree :: (MonadError String m) => T.Text -> m VT.Tree
-mkVarLinkTree var = do
-  let mut = VT.mkRefMutable var []
-  return $ VT.mkMutableTree mut
-
 -- | mutApplier creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => VT.Tree -> [VT.Tree] -> m VT.Tree
 replaceFuncArgs t args = case VT.getMutableFromTree t of
@@ -360,7 +356,7 @@ replaceFuncArgs t args = case VT.getMutableFromTree t of
     return . VT.setTN t $
       VT.TNMutable . VT.RegOp $
         fn
-          { VT.ropArgs = args
+          { VT.ropArgs = Seq.fromList args
           , VT.ropExpr = VT.buildArgsExpr (VT.ropName fn) args
           }
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
@@ -417,7 +413,7 @@ evalBinary op e1 e2 = do
 
 flattenUnify :: VT.Tree -> VT.Tree -> VT.Tree
 flattenUnify l r = case getLeftAcc of
-  Just acc -> VT.mkMutableTree $ VT.mkUnifyOp (acc ++ [r])
+  Just acc -> VT.mkMutableTree $ VT.mkUnifyOp (toList acc ++ [r])
   Nothing -> VT.mkMutableTree $ VT.mkUnifyOp [l, r]
  where
   getLeftAcc = case VT.treeNode l of
@@ -467,8 +463,8 @@ We never need to go deeper into the right nodes.
 -}
 flattenDisj :: VT.DisjTerm VT.Tree -> VT.DisjTerm VT.Tree -> VT.Tree
 flattenDisj l r = case getLeftAcc of
-  Just acc -> VT.mkMutableTree $ VT.mkDisjoinOp (acc ++ [r])
-  Nothing -> VT.mkMutableTree $ VT.mkDisjoinOp [l, r]
+  Just acc -> VT.mkMutableTree $ VT.mkDisjoinOp (acc Seq.|> r)
+  Nothing -> VT.mkMutableTree $ VT.mkDisjoinOp (Seq.fromList [l, r])
  where
   getLeftAcc = case VT.treeNode (VT.dstValue l) of
     VT.TNMutable (VT.DisjOp dj)

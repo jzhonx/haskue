@@ -30,10 +30,12 @@ import qualified AST
 import Common (BuildASTExpr (..), Env, TreeOp (..), TreeRepBuilder (..))
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
+import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -258,7 +260,7 @@ buildRepTreeTN t tn opt = case tn of
       let
         args =
           if trboShowMutArgs opt
-            then zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (ropArgs mut)
+            then zipWith (\j v -> (show (MutableArgTASeg j), mempty, v)) [0 ..] (toList $ ropArgs mut)
             else []
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ropValue mut)
        in
@@ -313,7 +315,7 @@ buildRepTreeTN t tn opt = case tn of
                     (show (MutableArgTASeg j), if dstMarked v then ",*" else "", dstValue v)
                 )
                 [0 ..]
-                (djoTerms d)
+                (toList $ djoTerms d)
             else []
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (djoValue d)
        in
@@ -331,7 +333,7 @@ buildRepTreeTN t tn opt = case tn of
               zipWith
                 (\j v -> (show (MutableArgTASeg j), mempty, v))
                 [0 ..]
-                (ufConjuncts u)
+                (toList $ ufConjuncts u)
             else []
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ufValue u)
        in
@@ -344,7 +346,7 @@ buildRepTreeTN t tn opt = case tn of
               zipWith
                 (\j v -> (show (MutableArgTASeg j), mempty, v))
                 [0 ..]
-                (itpExprs itp)
+                (toList $ itpExprs itp)
             else []
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (itpValue itp)
        in
@@ -651,7 +653,7 @@ subNodes t = case treeNode t of
       ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
       ++ [(StructTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  TNMutable mut -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (getMutArgs mut)]
+  TNMutable mut -> [(MutableArgTASeg i, v) | (i, v) <- zip [0 ..] (toList $ getMutArgs mut)]
   TNDisj d ->
     maybe [] (\x -> [(DisjDefaultTASeg, x)]) (dsjDefault d)
       ++ [(DisjDisjunctTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
@@ -858,7 +860,7 @@ appendSelToRefTree oprnd selArg = case treeNode oprnd of
   TNMutable m
     | Just ref <- getRefFromMutable m ->
         mkMutableTree $ Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
-  _ -> mkMutableTree $ Ref $ mkIndexRef [oprnd, selArg]
+  _ -> mkMutableTree $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
 treesToValPath :: [Tree] -> Maybe Path.ValPath
 treesToValPath ts = Path.ValPath <$> mapM treeToSel ts

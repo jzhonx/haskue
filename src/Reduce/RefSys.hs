@@ -11,7 +11,9 @@ import qualified AST
 import qualified Common
 import Control.Monad (foldM, unless, when)
 import qualified Cursor
+import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -64,14 +66,14 @@ index argRef@VT.Reference{VT.refArg = (VT.RefPath var sels), VT.refOrigAddrs = o
         -- For example, let x = {}, let x = 1 + 2
         | Nothing <- VT.getRefFromTree lb -> do
             let
-              newRef = (VT.mkIndexRef (lb : sels)){VT.refOrigAddrs = origAddrsM}
+              newRef = (VT.mkIndexRef (lb Seq.<| sels)){VT.refOrigAddrs = origAddrsM}
               -- build the new reference tree.
               refTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef) tc
             resolveTCIfRef refTC
         -- Let value is an index. For example, let x = ({a:1}).a
         | Just rf <- VT.getRefFromTree lb
         , Just segs <- VT.getIndexSegs rf -> do
-            let newRef = (VT.mkIndexRef (segs ++ sels)){VT.refOrigAddrs = origAddrsM}
+            let newRef = (VT.mkIndexRef (segs Seq.>< sels)){VT.refOrigAddrs = origAddrsM}
                 -- build the new reference tree.
                 refTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Ref newRef) tc
             resolveTCIfRef refTC
@@ -138,8 +140,8 @@ The tree cursor must be the reference.
 resolveRefValPath :: (RM.ReduceMonad s r m) => VT.RefArg VT.Tree -> TCOps.TrCur -> m (Maybe Path.ValPath)
 resolveRefValPath arg tc = do
   l <- case arg of
-    (VT.RefPath _ sels) -> return $ zip [0 ..] sels
-    (VT.RefIndex (_ : rest)) -> return $ zip [1 ..] rest
+    (VT.RefPath _ sels) -> return $ zip [0 ..] (toList sels)
+    (VT.RefIndex (_ Seq.:<| rest)) -> return $ zip [1 ..] (toList rest)
     _ -> throwErrSt "invalid index"
   m <-
     mapM
