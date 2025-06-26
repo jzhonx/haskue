@@ -408,10 +408,10 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
       (_, VT.TNBlock s2) -> mergeLeftBlock (s2, ut2) ut1 unifyTC
       _ -> mergeLeftOther ut1 ut2 unifyTC
  where
-  rtn :: (RM.ReduceMonad s r m) => VT.TreeNode VT.Tree -> m (Maybe VT.Tree)
+  rtn :: (RM.ReduceMonad s r m) => VT.TreeNode -> m (Maybe VT.Tree)
   rtn = return . Just . VT.mkNewTree
 
-  amismatch :: (Show a) => a -> a -> VT.TreeNode VT.Tree
+  amismatch :: (Show a) => a -> a -> VT.TreeNode
   amismatch x y = VT.TNBottom . VT.Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
   mkCnstrOrOther :: (RM.ReduceMonad s r m) => VT.Tree -> m (Maybe VT.Tree)

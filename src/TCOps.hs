@@ -3,7 +3,7 @@
 
 module TCOps where
 
-import Common (Env, TreeOp (setSubTree, subTree))
+import Common (Env)
 import Control.Monad (foldM)
 import Cursor
 import Exception (throwErrSt)
@@ -13,7 +13,7 @@ import qualified Value.Tree as VT
 
 type TrCur = TreeCursor VT.Tree
 
-setTCFocusTN :: VT.TreeNode VT.Tree -> TrCur -> TrCur
+setTCFocusTN :: VT.TreeNode -> TrCur -> TrCur
 setTCFocusTN tn tc = let focus = tcFocus tc in VT.setTN focus tn `setTCFocus` tc
 
 getTCFocusSeg :: (Env r s m) => TrCur -> m TASeg
@@ -46,7 +46,7 @@ It handles the cases when a node can be accessed without segments, such as the d
 goDownTCSeg :: TASeg -> TrCur -> Maybe TrCur
 goDownTCSeg seg tc = do
   let focus = tcFocus tc
-  case subTree seg focus of
+  case VT.subTree seg focus of
     Just nextTree -> return $ mkSubTC seg nextTree tc
     Nothing -> do
       (nextTree, nextSeg) <- case VT.treeNode focus of
@@ -84,7 +84,7 @@ propUpTC :: (Env r s m) => TrCur -> m TrCur
 propUpTC (TreeCursor _ []) = throwErrSt "already at the top"
 propUpTC tc@(TreeCursor _ [(RootTASeg, _)]) = return tc
 propUpTC (TreeCursor subT@VT.Tree{VT.treeVersion = vers} ((seg, parT) : cs)) = do
-  t <- setSubTree seg subT parT
+  t <- VT.setSubTree seg subT parT
   return $ TreeCursor (t{VT.treeVersion = vers}) cs
 
 -- Propagate the bottom value up until the root and return the updated tree cursor with the original cursor position.

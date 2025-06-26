@@ -4,7 +4,7 @@
 module Value.Bounds where
 
 import qualified AST
-import Common (BuildASTExpr (..), TreeRepBuilder (..))
+import Common (BuildASTExpr (..))
 import Control.DeepSeq (NFData (..))
 import qualified Data.Text as T
 import GHC.Generics (Generic)
@@ -55,9 +55,6 @@ instance BuildASTExpr Bounds where
 
 instance Show Bound where
   show b = AST.exprStr $ buildBoundASTExpr b
-
-instance TreeRepBuilder Bound where
-  repTree _ b = "(" <> show b <> ")"
 
 instance BuildASTExpr Bound where
   buildASTExpr _ b = return $ buildBoundASTExpr b

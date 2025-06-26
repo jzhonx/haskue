@@ -6,37 +6,35 @@
 module MutEnv where
 
 import qualified AST
-import Common (Env, HasContext, IDStore (..), TreeOp)
+import Common (Env, HasContext, IDStore (..))
 import Cursor (TreeCursor)
 import Exception (throwErrSt)
+import qualified Value.Tree as VT
 
 -- This file is used to break the circular dependency on Mutable.
 
-class HasFuncs r t | r -> t where
-  getFuncs :: r -> Functions t
-  setFuncs :: r -> Functions t -> r
+class HasFuncs r where
+  getFuncs :: r -> Functions
+  setFuncs :: r -> Functions -> r
 
-type EvalEnv r s t m =
+type EvalEnv r s m =
   ( Env r s m
-  , TreeOp t
   , IDStore s
   )
 
-type MutableEnv r s t m =
+type MutableEnv r s m =
   ( Env r s m
-  , TreeOp t
-  , -- , HasTreeCursor s t
-    HasFuncs r t
+  , HasFuncs r
   , HasContext s
   )
 
-data Functions t = Functions
-  { fnEvalExpr :: forall r s m. (EvalEnv r s t m) => AST.Expression -> m t
-  , fnReduce :: forall r s m. (MutableEnv r s t m) => TreeCursor t -> m t
-  , reduceUnifyConj :: forall r s m. (MutableEnv r s t m) => TreeCursor t -> m (Maybe t)
+data Functions = Functions
+  { fnEvalExpr :: forall r s m. (EvalEnv r s m) => AST.Expression -> m VT.Tree
+  , fnReduce :: forall r s m. (MutableEnv r s m) => TreeCursor VT.Tree -> m VT.Tree
+  , reduceUnifyConj :: forall r s m. (MutableEnv r s m) => TreeCursor VT.Tree -> m (Maybe VT.Tree)
   }
 
-emptyFunctions :: Functions t
+emptyFunctions :: Functions
 emptyFunctions =
   Functions
     { fnEvalExpr = \_ -> throwErrSt "fnEvalExpr not set"

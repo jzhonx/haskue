@@ -68,7 +68,7 @@ emptyEvalConfig =
 -- | Runner holds the configuration and functions for evaluation.
 data Runner = Runner
   { rcConfig :: Common.Config
-  , rcFuncs :: MutEnv.Functions VT.Tree
+  , rcFuncs :: MutEnv.Functions
   }
 
 instance Show Runner where
@@ -89,7 +89,7 @@ emptyRunner =
 updateConfig :: Runner -> Common.Config -> Runner
 updateConfig r c = r{rcConfig = c}
 
-instance MutEnv.HasFuncs Runner VT.Tree where
+instance MutEnv.HasFuncs Runner where
   getFuncs = rcFuncs
   setFuncs r f = r{rcFuncs = f}
 

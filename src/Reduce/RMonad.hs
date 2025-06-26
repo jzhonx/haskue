@@ -32,7 +32,7 @@ import qualified Value.Tree as VT
 type ReduceMonad r s m =
   ( Common.Env r s m
   , Common.HasContext s
-  , MutEnv.HasFuncs r VT.Tree
+  , MutEnv.HasFuncs r
   )
 
 -- | ReduceTCMonad is the environment for reducing the tree with tree cursor stored.
@@ -237,10 +237,10 @@ withAddrAndFocus f = do
 
 -- VT.TreeNode
 
-withTN :: (ReduceTCMonad r s m) => (VT.TreeNode VT.Tree -> m a) -> m a
+withTN :: (ReduceTCMonad r s m) => (VT.TreeNode -> m a) -> m a
 withTN f = withTree (f . VT.treeNode)
 
-modifyTMTN :: (ReduceTCMonad r s m) => VT.TreeNode VT.Tree -> m ()
+modifyTMTN :: (ReduceTCMonad r s m) => VT.TreeNode -> m ()
 modifyTMTN tn = do
   t <- getTMTree
   putTMTree $ VT.setTN t tn

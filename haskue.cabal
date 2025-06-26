@@ -49,7 +49,6 @@ library
         Value.Reference,
         Value.Struct,
         Value.Tree,
-        Value.TreeNode,
         Value.UnifyOp,
 
     other-modules:
