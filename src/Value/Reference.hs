@@ -1,11 +1,9 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Value.Reference where
 
 import qualified Common
-import Control.DeepSeq (NFData (..))
 import Data.Foldable (toList)
 import Data.List (intercalate)
 import qualified Data.Sequence as Seq
@@ -13,19 +11,13 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
-import qualified Path
+import Path
 import Value.Atom
+import {-# SOURCE #-} Value.Tree
 
-data RefArg t
-  = -- | RefPath denotes a reference starting with an identifier.
-    RefPath T.Text (Seq.Seq t)
-  | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
-    RefIndex (Seq.Seq t)
-  deriving (Generic, NFData)
-
-data Reference t = Reference
-  { refArg :: RefArg t
-  , refOrigAddrs :: Maybe Path.TreeAddr
+data Reference = Reference
+  { refArg :: RefArg
+  , refOrigAddrs :: Maybe TreeAddr
   -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
   -- expression.
   -- If it is, the address of the scope is stored here.
@@ -33,67 +25,62 @@ data Reference t = Reference
   -- The address is the abs address of the value in the subtree.
   , refVers :: Maybe Int
   -- ^ refVers records the version of the referenced value.
-  , refValue :: Maybe t
+  , refValue :: Maybe Tree
   }
-  deriving (Show, Generic, NFData)
+  deriving (Generic)
 
-instance Show (RefArg t) where
-  show (RefPath s _) = "ref_v_" ++ show s
-  show (RefIndex _) = "index"
+data RefArg
+  = -- | RefPath denotes a reference starting with an identifier.
+    RefPath T.Text (Seq.Seq Tree)
+  | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
+    RefIndex (Seq.Seq Tree)
+  deriving (Generic)
 
-instance (Eq t) => Eq (RefArg t) where
-  (==) (RefPath s1 xs1) (RefPath s2 xs2) = s1 == s2 && xs1 == xs2
-  (==) (RefIndex xs1) (RefIndex xs2) = xs1 == xs2
-  (==) _ _ = False
-
-instance (Eq t) => Eq (Reference t) where
-  (==) r1 r2 = refArg r1 == refArg r2 && refOrigAddrs r1 == refOrigAddrs r2
-
-showRefArg :: RefArg t -> (t -> Maybe String) -> String
+showRefArg :: RefArg -> (Tree -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) (toList xs))
 showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) (toList xs))
 
-refHasRefPath :: Reference t -> Bool
+refHasRefPath :: Reference -> Bool
 refHasRefPath r = case refArg r of
   RefPath _ _ -> True
   RefIndex _ -> False
 
-getIndexSegs :: Reference t -> Maybe (Seq.Seq t)
+getIndexSegs :: Reference -> Maybe (Seq.Seq Tree)
 getIndexSegs r = case refArg r of
   RefPath _ _ -> Nothing
   RefIndex xs -> Just xs
 
-valPathFromRefArg :: (t -> Maybe Atom) -> RefArg t -> Maybe Path.ValPath
+valPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe ValPath
 valPathFromRefArg treeToA arg = case arg of
   RefPath var xs -> do
     sels <-
       mapM
         ( \x -> case treeToA x of
-            Just (String s) -> return $ Path.StringSel (TE.encodeUtf8 s)
-            Just (Int i) -> return $ Path.IntSel (fromIntegral i)
+            Just (String s) -> return $ StringSel (TE.encodeUtf8 s)
+            Just (Int i) -> return $ IntSel (fromIntegral i)
             _ -> Nothing
         )
         (toList xs)
-    return $ Path.ValPath (Path.StringSel (TE.encodeUtf8 var) : sels)
+    return $ ValPath (StringSel (TE.encodeUtf8 var) : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
 
-valPathFromRef :: (t -> Maybe Atom) -> Reference t -> Maybe Path.ValPath
+valPathFromRef :: (Tree -> Maybe Atom) -> Reference -> Maybe ValPath
 valPathFromRef treeToA ref = valPathFromRefArg treeToA (refArg ref)
 
-appendRefArg :: t -> RefArg t -> RefArg t
+appendRefArg :: Tree -> RefArg -> RefArg
 appendRefArg y (RefPath s xs) = RefPath s (xs Seq.|> y)
 appendRefArg y (RefIndex xs) = RefIndex (xs Seq.|> y)
 
-subRefArgs :: RefArg t -> Seq.Seq t
+subRefArgs :: RefArg -> Seq.Seq Tree
 subRefArgs (RefPath _ xs) = xs
 subRefArgs (RefIndex xs) = xs
 
-modifySubRefArgs :: (Seq.Seq t -> Seq.Seq t) -> RefArg t -> RefArg t
+modifySubRefArgs :: (Seq.Seq Tree -> Seq.Seq Tree) -> RefArg -> RefArg
 modifySubRefArgs f (RefPath s xs) = RefPath s (f xs)
 modifySubRefArgs f (RefIndex xs) = RefIndex (f xs)
 
-mkIndexRef :: Seq.Seq t -> Reference t
+mkIndexRef :: Seq.Seq Tree -> Reference
 mkIndexRef ts =
   Reference
     { refArg = RefIndex ts
@@ -102,7 +89,7 @@ mkIndexRef ts =
     , refVers = Nothing
     }
 
-emptyIdentRef :: T.Text -> Reference t
+emptyIdentRef :: T.Text -> Reference
 emptyIdentRef ident =
   Reference
     { refArg = RefPath ident Seq.empty
@@ -111,16 +98,16 @@ emptyIdentRef ident =
     , refVers = Nothing
     }
 
-mkRefFromValPath :: (Common.Env r s m) => (Atom -> t) -> T.Text -> Path.ValPath -> m (Reference t)
-mkRefFromValPath aToTree var (Path.ValPath xs) = do
+mkRefFromValPath :: (Common.Env r s m) => (Atom -> Tree) -> T.Text -> ValPath -> m Reference
+mkRefFromValPath aToTree var (ValPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
-          Path.StringSel s -> do
+          StringSel s -> do
             case TE.decodeUtf8' s of
               Left err -> throwErrSt (show err)
               Right str -> return $ aToTree (String str)
-          Path.IntSel i -> return $ aToTree (Int $ fromIntegral i)
+          IntSel i -> return $ aToTree (Int $ fromIntegral i)
       )
       xs
   return $

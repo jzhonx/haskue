@@ -7,50 +7,70 @@
 
 module Reduce.PostReduce where
 
-import Common (TreeOp (isTreeAtom, isTreeBottom, isTreeMutable), ctxNotifGraph)
+import Common (ctxNotifGraph)
 import Control.Monad (when)
-import qualified Cursor
+import Cursor
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
-import qualified Path
-import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
+import Path
+import Reduce.RMonad (
+  ReduceMonad,
+  ReduceTCMonad,
+  debugInstantRM,
+  debugInstantTM,
+  debugSpanArgsTM,
+  debugSpanRM,
+  debugSpanTM,
+  evalExprRM,
+  getRMContext,
+  getRMUnreferredLets,
+  getTMCursor,
+  getTMTree,
+  modifyTMNodeWithTree,
+  modifyTMTN,
+  putRMContext,
+  putTMCursor,
+  putTMTree,
+  traverseTM,
+  withTN,
+  withTree,
+ )
+import Reduce.RefSys (goTCLAAddr)
 import Reduce.Root (reduce)
-import qualified Reduce.UnifyOp as UnifyOp
-import qualified TCOps
+import Reduce.UnifyOp (checkLabelsPerm)
 import Text.Printf (printf)
-import qualified Value.Tree as VT
+import Value
 
-postValidation :: (RM.ReduceTCMonad s r m) => m ()
-postValidation = RM.debugSpanTM "postValidation" $ do
-  ctx <- RM.getRMContext
+postValidation :: (ReduceTCMonad s r m) => m ()
+postValidation = debugSpanTM "postValidation" $ do
+  ctx <- getRMContext
   -- remove all notifiers.
-  RM.putRMContext $ ctx{ctxNotifGraph = Map.empty}
+  putRMContext $ ctx{ctxNotifGraph = Map.empty}
 
   -- rewrite all functions to their results if the results exist.
   snapshotRM
   simplifyRM
 
-  t <- RM.getTMTree
-  RM.debugSpanArgsTM "validate" (VT.treeFullStr 0 t) $ do
+  t <- getTMTree
+  debugSpanArgsTM "validate" (treeFullStr 0 t) $ do
     -- then validate all constraints.
-    RM.traverseTM $ RM.withTN $ \case
-      VT.TNAtomCnstr c -> validateCnstr c
+    traverseTM $ withTN $ \case
+      TNAtomCnstr c -> validateCnstr c
       _ -> return ()
 
-  unreferred <- RM.getRMUnreferredLets
-  RM.withTree $ \res -> do
-    when (not (null unreferred) && not (isTreeBottom res)) $ do
+  unreferred <- getRMUnreferredLets
+  withTree $ \res -> do
+    when (not (null unreferred) && (case res of IsBottom _ -> False; _ -> True)) $ do
       let u = head unreferred
-      label <- case Path.lastSeg u of
-        Just (Path.StructTASeg (Path.LetTASeg label)) -> return label
+      label <- case lastSeg u of
+        Just (StructTASeg (LetTASeg label)) -> return label
         _ -> throwErrSt "invalid let seg"
 
-      RM.putTMTree $ VT.mkBottomTree $ printf "unreferenced let clause let %s" (T.unpack $ TE.decodeUtf8 label)
+      putTMTree $ mkBottomTree $ printf "unreferenced let clause let %s" (T.unpack $ TE.decodeUtf8 label)
 
 {- | Traverse the tree and does the following things with the node:
 
@@ -59,13 +79,13 @@ postValidation = RM.debugSpanTM "postValidation" $ do
 3. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
-snapshotRM :: (RM.ReduceTCMonad s r m) => m ()
-snapshotRM = RM.debugSpanTM "snapshotRM" $ do
-  RM.traverseTM $ RM.withTN $ \case
-    VT.TNBlock block
-      | Just ev <- VT.blkNonStructValue block -> RM.modifyTMNodeWithTree ev
-    VT.TNMutable m -> maybe (return ()) RM.modifyTMNodeWithTree (VT.getMutVal m)
-    VT.TNCnstredVal c -> RM.modifyTMNodeWithTree $ VT.cnsedVal c
+snapshotRM :: (ReduceTCMonad s r m) => m ()
+snapshotRM = debugSpanTM "snapshotRM" $ do
+  traverseTM $ withTN $ \case
+    TNBlock block
+      | Just ev <- blkNonStructValue block -> modifyTMNodeWithTree ev
+    TNMutable m -> maybe (return ()) modifyTMNodeWithTree (getMutVal m)
+    TNCnstredVal c -> modifyTMNodeWithTree $ cnsedVal c
     _ -> return ()
 
 {- | Traverse the tree and does the following things with the node:
@@ -73,30 +93,30 @@ snapshotRM = RM.debugSpanTM "snapshotRM" $ do
 1. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
-simplifyRM :: (RM.ReduceTCMonad s r m) => m ()
-simplifyRM = RM.debugSpanTM "simplifyRM" $ do
-  RM.traverseTM $ do
-    RM.withTN $ \case
-      VT.TNBlock _ -> validateStructPerm
+simplifyRM :: (ReduceTCMonad s r m) => m ()
+simplifyRM = debugSpanTM "simplifyRM" $ do
+  traverseTM $ do
+    withTN $ \case
+      TNBlock _ -> validateStructPerm
       _ -> return ()
 
-    RM.withTN $ \case
-      VT.TNBlock block
-        | Just _ <- VT.blkNonStructValue block -> throwErrSt "non struct value exists in block"
+    withTN $ \case
+      TNBlock block
+        | Just _ <- blkNonStructValue block -> throwErrSt "non struct value exists in block"
         | otherwise ->
-            RM.modifyTMTN $
-              VT.TNBlock $
-                ( VT.modifyBlockStruct
+            modifyTMTN $
+              TNBlock $
+                ( modifyBlockStruct
                     ( \st ->
                         st
-                          { VT.stcCnstrs = IntMap.empty
-                          , VT.stcDynFields = IntMap.empty
-                          , VT.stcPerms = []
+                          { stcCnstrs = IntMap.empty
+                          , stcDynFields = IntMap.empty
+                          , stcPerms = []
                           }
                     )
                     block
                 )
-                  { VT.blkEmbeds = IntMap.empty
+                  { blkEmbeds = IntMap.empty
                   }
       _ -> return ()
 
@@ -105,53 +125,53 @@ simplifyRM = RM.debugSpanTM "simplifyRM" $ do
 It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: (RM.ReduceTCMonad s r m) => VT.AtomCnstr VT.Tree -> m ()
-validateCnstr c = RM.debugSpanTM "validateCnstr" $ do
+validateCnstr :: (ReduceTCMonad s r m) => AtomCnstr -> m ()
+validateCnstr c = debugSpanTM "validateCnstr" $ do
   -- We can first assume that the tree value is an atom. Make sure the latest atom is created.
-  let atomT = VT.mkAtomVTree $ VT.cnsAtom c
-  RM.putTMTree atomT
+  let atomT = mkAtomTree $ cnsAtom c
+  putTMTree atomT
 
-  raw <- RM.evalExprRM (VT.cnsValidator c)
-  tc <- RM.getTMCursor
-  validator <- replaceSelfRef (VT.mkAtomVTree $ VT.cnsAtom c) (raw `Cursor.setTCFocus` tc)
-  RM.debugInstantTM "validateCnstr" $
-    printf "raw: %s, validator: %s" (VT.treeFullStr 0 raw) (VT.treeFullStr 0 validator)
+  raw <- evalExprRM (cnsValidator c)
+  tc <- getTMCursor
+  validator <- replaceSelfRef (mkAtomTree $ cnsAtom c) (raw `setTCFocus` tc)
+  debugInstantTM "validateCnstr" $
+    printf "raw: %s, validator: %s" (treeFullStr 0 raw) (treeFullStr 0 validator)
 
   -- Run the validator in a sub context of an atom value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- reduce (validator `Cursor.setTCFocus` tc)
-  RM.putTMTree $
-    if
-      | isTreeBottom res -> res
-      -- The result is valid.
-      | isTreeAtom res -> atomT
+  res <- reduce (validator `setTCFocus` tc)
+  putTMTree $ case res of
+    IsBottom _ -> res
+    -- The result is valid.
+    IsAtom _ -> atomT
+    IsMutable mut
       -- The result might be a mutable due to an atom unifying with a mutable.
-      | Just a <- VT.getMutableFromTree res >>= VT.getMutVal, isTreeAtom a -> atomT
+      | Just a <- getMutVal mut, IsAtom _ <- a -> atomT
       -- incomplete case
-      | isTreeMutable res -> res
-      | otherwise -> VT.mkBottomTree $ printf "constraint not satisfied, %s" (show res)
+      | otherwise -> res
+    _ -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
 {- | Replace any reference in the validator of the atom constraint that references the constraint and forms a vertical
 cycle with the constraint's atom.
 -}
-replaceSelfRef :: (RM.ReduceMonad s r m) => VT.Tree -> TCOps.TrCur -> m VT.Tree
-replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" Just cnstrTC $ do
-  let cnstrAddr = Cursor.tcCanAddr cnstrTC
-  utc <- TCOps.traverseTCSimple VT.subNodes (replace cnstrAddr) cnstrTC
-  return (Cursor.tcFocus utc)
+replaceSelfRef :: (ReduceMonad s r m) => Tree -> TrCur -> m Tree
+replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
+  let cnstrAddr = tcCanAddr cnstrTC
+  utc <- traverseTCSimple subNodes (replace cnstrAddr) cnstrTC
+  return (tcFocus utc)
  where
   replace cnstrAddr tc = do
-    let focus = Cursor.tcFocus tc
-    rfM <- case VT.getMutableFromTree focus of
-      Just (VT.Ref rf) -> return $ VT.valPathFromRef VT.getAtomFromTree rf
+    let focus = tcFocus tc
+    rfM <- case focus of
+      IsRef rf -> return $ valPathFromRef rtrAtom rf
       _ -> return Nothing
 
     maybe
       (return focus)
       -- If the focus is a reference, we need to check if the ref references the cnstrAddr.
       ( \rf -> do
-          rE <- RefSys.goTCLAAddr rf tc
-          RM.debugInstantRM "replaceSelfRef" (printf "rE: %s" (show rE)) cnstrTC
+          rE <- goTCLAAddr rf tc
+          debugInstantRM "replaceSelfRef" (printf "rE: %s" (show rE)) cnstrTC
           case rE of
             Left err -> return err
             Right m ->
@@ -159,7 +179,7 @@ replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" Just cnstrTC $ do
                 (return focus)
                 ( \rtc ->
                     return $
-                      if Cursor.tcCanAddr rtc == cnstrAddr
+                      if tcCanAddr rtc == cnstrAddr
                         then atomT
                         else focus
                 )
@@ -167,12 +187,12 @@ replaceSelfRef atomT cnstrTC = RM.debugSpanRM "replaceSelfRef" Just cnstrTC $ do
       )
       rfM
 
-validateStructPerm :: (RM.ReduceTCMonad s r m) => m ()
-validateStructPerm = RM.debugSpanTM "validateStructPerm" $ do
-  t <- RM.getTMTree
-  case VT.treeNode t of
-    -- After snapsnot, the VT.blkNonStructValue should be None.
-    VT.TNBlock (VT.Block{VT.blkStruct = s}) -> mapM_ (validatePermItem s) (VT.stcPerms s)
+validateStructPerm :: (ReduceTCMonad s r m) => m ()
+validateStructPerm = debugSpanTM "validateStructPerm" $ do
+  t <- getTMTree
+  case treeNode t of
+    -- After snapsnot, the blkNonStructValue should be None.
+    TNBlock (Block{blkStruct = s}) -> mapM_ (validatePermItem s) (stcPerms s)
     _ -> return ()
 
 {- | Validate the permission item.
@@ -181,24 +201,24 @@ A struct must be provided so that dynamic fields and constraints can be found.
 
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
-validatePermItem :: (RM.ReduceTCMonad s r m) => VT.Struct VT.Tree -> VT.PermItem -> m ()
-validatePermItem struct p = RM.debugSpanTM "validatePermItem" $ do
+validatePermItem :: (ReduceTCMonad s r m) => Struct -> PermItem -> m ()
+validatePermItem struct p = debugSpanTM "validatePermItem" $ do
   let
-    dynsM = dynIdxesToLabels (VT.piDyns p)
-    labels = VT.piLabels p
-    cnstrs = IntMap.fromList $ map (\i -> (i, VT.stcCnstrs struct IntMap.! i)) (Set.toList $ VT.piCnstrs p)
-    opDynsM = dynIdxesToLabels (VT.piOpDyns p)
-    opLabels = VT.piOpLabels p
+    dynsM = dynIdxesToLabels (piDyns p)
+    labels = piLabels p
+    cnstrs = IntMap.fromList $ map (\i -> (i, stcCnstrs struct IntMap.! i)) (Set.toList $ piCnstrs p)
+    opDynsM = dynIdxesToLabels (piOpDyns p)
+    opLabels = piOpLabels p
   case (dynsM, opDynsM) of
     (Just dyns, Just opDyns) ->
-      RM.getTMCursor
-        >>= UnifyOp.checkLabelsPerm
+      getTMCursor
+        >>= checkLabelsPerm
           (labels `Set.union` dyns)
           cnstrs
           True
           False
           (opLabels `Set.union` opDyns)
-        >>= RM.putTMCursor
+        >>= putTMCursor
     -- If not all dynamic fields can be resolved to string labels, we can not check the permission.
     -- This is what CUE does.
     _ -> return ()
@@ -208,6 +228,6 @@ validatePermItem struct p = RM.debugSpanTM "validatePermItem" $ do
     Set.fromList
       <$> mapM
         ( \i ->
-            VT.getStringFromTree (VT.dsfLabel $ VT.stcDynFields struct IntMap.! i)
+            rtrString (dsfLabel $ stcDynFields struct IntMap.! i)
         )
         (Set.toList idxes)

@@ -8,7 +8,7 @@ import Control.Monad.Except (ExceptT, MonadError, runExceptT, throwError)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
 import Criterion.Main
-import qualified Cursor
+import Cursor
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Vector as V
@@ -19,14 +19,14 @@ import Eval (
   strToCUEVal,
  )
 import qualified Eval
-import qualified Path
-import qualified Reduce.Mutate as Mutate
-import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
+import Path
+import Reduce.Mutate
+import Reduce.RMonad
+import Reduce.RefSys
 import qualified TCOps
-import qualified Value.Tree as VT
+import qualified Value as VT
 
-tData :: Map.Map Path.TreeAddr [Path.TreeAddr]
+tData :: Map.Map TreeAddr [TreeAddr]
 tData =
   Map.fromList
     [ (g "a.b.c.d", [g "a.b.c.e", g "a.b.c.f"])
@@ -39,50 +39,50 @@ tData =
     , (g "a.b.e.k", [])
     ]
  where
-  g = Path.addrFromString
+  g = addrFromString
 
-pathABC :: Path.TreeAddr
-pathABC = Path.addrFromString "a.b.c"
+pathABC :: TreeAddr
+pathABC = addrFromString "a.b.c"
 
-pathBC :: Path.TreeAddr
-pathBC = Path.addrFromString "b.c"
+pathBC :: TreeAddr
+pathBC = addrFromString "b.c"
 
-work :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
-work x = Mutate.delRecvsInMap pathABC x
+work :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+work x = delRecvsInMap pathABC x
 
-delRecvsInMap2 :: Path.TreeAddr -> Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
+delRecvsInMap2 :: TreeAddr -> Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
 delRecvsInMap2 mutAddr m = delEmptyElem $ delRecvs m
  where
-  delEmptyElem :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
+  delEmptyElem :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
   delEmptyElem = Map.filter (not . null)
 
   -- Delete the receivers that have the mutable address as the prefix.
-  delRecvs :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
+  delRecvs :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
   delRecvs =
     Map.map
       ( filter
           ( \recv ->
               let
-                mutValAddr = Path.appendSeg mutAddr Path.SubValTASeg
+                mutValAddr = appendSeg mutAddr SubValTASeg
                in
-                not $ Path.isPrefix mutValAddr recv
+                not $ isPrefix mutValAddr recv
           )
       )
 
-work2 :: Map.Map Path.TreeAddr [Path.TreeAddr] -> Map.Map Path.TreeAddr [Path.TreeAddr]
+work2 :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
 work2 x = delRecvsInMap2 pathABC x
 
-testPrefix :: Path.TreeAddr -> Bool
-testPrefix addr = Path.isPrefix pathLong2 addr
+testPrefix :: TreeAddr -> Bool
+testPrefix addr = isPrefix pathLong2 addr
 
-pathLong :: Path.TreeAddr
-pathLong = Path.addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
+pathLong :: TreeAddr
+pathLong = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
 
-pathLong2 :: Path.TreeAddr
-pathLong2 = Path.addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y"
+pathLong2 :: TreeAddr
+pathLong2 = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y"
 
-testPrefix2 :: Path.TreeAddr -> Path.TreeAddr -> Bool
-testPrefix2 (Path.TreeAddr x) (Path.TreeAddr y) = V.length x <= V.length y && V.and (V.zipWith (==) x y)
+testPrefix2 :: TreeAddr -> TreeAddr -> Bool
+testPrefix2 (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 
 runRM :: StateT Common.Context (ReaderT Eval.Runner (ExceptT String IO)) a -> IO a
 runRM f = do
@@ -114,19 +114,19 @@ testGetDstTC =
     ( do
         let s = "{a: {b: c: d: e: f: 1}, b: c: d: e: f: g: h: i: j: k: l: m: n: o: p: q: r: s: t: u: v: w: x: y: z: 2}}"
         rE <- runExceptT $ Eval.strToCUEVal s Eval.emptyEvalConfig
-        let !vp = Path.valPathFromString "a.b.c.d"
+        let !vp = valPathFromString "a.b.c.d"
         runRM $ do
           root <- case rE of
             Left err -> throwError err
             Right v -> return v
-          let rootTC = Cursor.TreeCursor root [(Path.RootTASeg, VT.mkNewTree VT.TNTop)]
-          let addr = Path.addrFromString "b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
+          let rootTC = TreeCursor root [(RootTASeg, mkNewTree TNTop)]
+          let addr = addrFromString "b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
           !startTC <- TCOps.goDownTCAddrMust addr rootTC
           return (vp, startTC)
     )
     ( \ ~(vp, startTC) -> bench "base" $ nfIO $ do
         runRM $ do
-          res <- RefSys.getDstTC vp Nothing startTC
+          res <- getDstTC vp Nothing startTC
           case res of
             Nothing -> throwError "getDstTC returned Nothing"
             _ -> return ()
@@ -139,12 +139,12 @@ main =
         "cue"
         [ bgroup
             "del"
-            [ bench "improve" $ whnf (Mutate.delRecvsInMap pathABC) tData
+            [ bench "improve" $ whnf (delRecvsInMap pathABC) tData
             , bench "control" $ whnf (delRecvsInMap2 pathABC) tData
             ]
         , bgroup
             "isPrefix"
-            [ bench "improve" $ nf (Path.isPrefix pathLong2) pathLong
+            [ bench "improve" $ nf (isPrefix pathLong2) pathLong
             , bench "control" $ nf (testPrefix2 pathLong2) pathLong
             ]
         , bgroup

@@ -21,7 +21,6 @@ library
         Eval,
         EvalExpr,
         Exception,
-        MutEnv,
         Parser,
         Path,
         Reduce,
@@ -34,8 +33,8 @@ library
         Reduce.RegOps,
         Reduce.Root,
         Reduce.UnifyOp,
-        TCOps,
         Util,
+        Value,
         Value.Atom,
         Value.Bottom,
         Value.Bounds,
@@ -50,6 +49,8 @@ library
         Value.Struct,
         Value.Tree,
         Value.UnifyOp,
+        Value.Util.BuildASTExpr,
+        Value.Instances,
 
     other-modules:
       Paths_haskue

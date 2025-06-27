@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -8,8 +9,7 @@ module Reduce.Nodes where
 
 import qualified Common
 import Control.Monad (foldM, unless, void, when)
-import Control.Monad.Reader (asks)
-import qualified Cursor
+import Cursor
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -19,15 +19,23 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
-import qualified MutEnv
-import qualified Path
-import qualified Reduce.Mutate as Mutate
-import qualified Reduce.RMonad as RM
-import qualified Reduce.RefSys as RefSys
-import qualified Reduce.UnifyOp as UnifyOp
-import qualified TCOps
+import Path
+import Reduce.Mutate (reduceToNonMut)
+import Reduce.RMonad (
+  ReduceMonad,
+  addRMUnreferredLet,
+  debugInstantRM,
+  debugSpanArgsRM,
+  debugSpanRM,
+  evalExprRM,
+  getRMUnreferredLets,
+  increaseRMGlobalVers,
+ )
+import Reduce.RefSys (searchTCIdentInPar)
+import {-# SOURCE #-} Reduce.Root (reduce)
+import Reduce.UnifyOp (patMatchLabel, unifyTCs)
 import Text.Printf (printf)
-import qualified Value.Tree as VT
+import Value
 
 -- ###
 -- Reduce tree nodes
@@ -37,53 +45,49 @@ import qualified Value.Tree as VT
 
 Most of the heavy work is done in the propUpStructPost function.
 -}
-reduceBlock :: forall s r m. (RM.ReduceMonad s r m) => TCOps.TrCur -> m VT.Tree
-reduceBlock _tc = RM.debugSpanRM "reduceBlock" Just _tc $ do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-
-  mergedM <- UnifyOp.unifyTCs [_tc] _tc
+reduceBlock :: forall s r m. (ReduceMonad s r m) => TrCur -> m Tree
+reduceBlock _tc = debugSpanRM "reduceBlock" Just _tc $ do
+  mergedM <- unifyTCs [_tc] _tc
   case mergedM of
     -- some of the embedded values are not ready.
-    Nothing -> return $ Cursor.tcFocus _tc
+    Nothing -> return $ tcFocus _tc
     Just merged -> do
-      let tc = merged `Cursor.setTCFocus` _tc
-      utc <- case VT.treeNode (Cursor.tcFocus tc) of
-        VT.TNBlock _ -> reduceStruct tc
+      let tc = merged `setTCFocus` _tc
+      utc <- case treeNode (tcFocus tc) of
+        TNBlock _ -> reduceStruct tc
         -- The focus has become a mutable.
-        VT.TNMutable _ -> do
+        TNMutable _ -> do
           r <- reduce tc
-          return $ r `Cursor.setTCFocus` tc
+          return $ r `setTCFocus` tc
         _ -> return tc
 
-      Cursor.tcFocus <$> handleBlockReducedRes _tc utc
+      tcFocus <$> handleBlockReducedRes _tc utc
 
 {- | Reduce the struct
 
 Embedded values have been applied to the fields.
 -}
-reduceStruct :: (RM.ReduceMonad s r m) => TCOps.TrCur -> m TCOps.TrCur
+reduceStruct :: (ReduceMonad s r m) => TrCur -> m TrCur
 reduceStruct stc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-
   whenBlock
     ( \(block, s, tc) -> do
         -- Close the struct if the tree is closed.
         let
-          focus = Cursor.tcFocus tc
-          isClosed = VT.treeRecurClosed focus
+          focus = tcFocus tc
+          isClosed = treeRecurClosed focus
         return $
           if isClosed
-            -- Use RM.modifyTMTN instead of VT.mkNewTree because tree attributes need to be preserved, such as
-            -- VT.treeRecurClosed.
+            -- Use modifyTMTN instead of mkNewTree because tree attributes need to be preserved, such as
+            -- treeRecurClosed.
             then
-              VT.setTN
+              setTN
                 focus
-                (VT.TNBlock $ VT.modifyBlockStruct (const s{VT.stcClosed = True}) block)
-                `Cursor.setTCFocus` tc
+                (TNBlock $ modifyBlockStruct (const s{stcClosed = True}) block)
+                `setTCFocus` tc
             else tc
     )
     stc
-    >>= whenBlock (\(_, s, tc) -> foldM (flip validateLetName) tc (Map.keys $ VT.stcLets s))
+    >>= whenBlock (\(_, s, tc) -> foldM (flip validateLetName) tc (Map.keys $ stcLets s))
     -- reduce the labels of the dynamic fields first. If the dynfields become actual fields, later they will be
     -- reduced.
     >>= whenBlock
@@ -91,12 +95,12 @@ reduceStruct stc = do
           foldM
             ( \acc (i, _) -> do
                 -- Inserting reduced dynamic field element into the struct is handled by propUpStructPost.
-                utc <- inStructSub (Path.DynFieldTASeg i 0) reduce acc
+                utc <- inStructSub (DynFieldTASeg i 0) reduce acc
                 -- we will reduce every fields, so no need to return affected labels.
-                fst <$> handleStructMutObjChange (Path.DynFieldTASeg i 0) utc
+                fst <$> handleStructMutObjChange (DynFieldTASeg i 0) utc
             )
             tc
-            (IntMap.toList $ VT.stcDynFields s)
+            (IntMap.toList $ stcDynFields s)
       )
     >>= whenBlock
       ( \(_, s, tc) ->
@@ -106,143 +110,139 @@ reduceStruct stc = do
                 -- be resolved in the unification node of the static field.
                 -- See unify for more details.
                 -- reduced constraint will constrain fields, which is done in the propUpStructPost.
-                utc <- inStructSub (Path.PatternTASeg i 0) reduce acc
-                fst <$> handleStructMutObjChange (Path.PatternTASeg i 0) utc
+                utc <- inStructSub (PatternTASeg i 0) reduce acc
+                fst <$> handleStructMutObjChange (PatternTASeg i 0) utc
             )
             tc
-            (IntMap.toList $ VT.stcCnstrs s)
+            (IntMap.toList $ stcCnstrs s)
       )
     -- Add the let bindings to the unreferred let bindings.
     >>= whenBlock
       ( \(_, s, tc) -> do
           mapM_
             ( \x ->
-                RM.addRMUnreferredLet (Path.appendSeg (Cursor.tcCanAddr tc) (Path.StructTASeg (Path.LetTASeg (TE.encodeUtf8 x))))
+                addRMUnreferredLet (appendSeg (tcCanAddr tc) (StructTASeg (LetTASeg (TE.encodeUtf8 x))))
             )
-            (Map.keys $ VT.stcLets s)
+            (Map.keys $ stcLets s)
 
-          unrefLets <- RM.getRMUnreferredLets
-          RM.debugInstantRM "reduceBlock" (printf "unrefLets: %s" (show unrefLets)) tc
+          unrefLets <- getRMUnreferredLets
+          debugInstantRM "reduceBlock" (printf "unrefLets: %s" (show unrefLets)) tc
 
           return tc
       )
     -- Reduce all fields.
     >>= whenBlock
-      (\(_, s, tc) -> foldM (flip reduceStructField) tc (Map.keys . VT.stcFields $ s))
+      (\(_, s, tc) -> foldM (flip reduceStructField) tc (Map.keys . stcFields $ s))
     >>= whenBlock
       ( \(block, s, tc) -> do
           -- According to the spec,
           -- A value is concrete if it is either an atom, or a struct whose field values are all concrete, recursively.
           let isStructConcrete =
                 foldl
-                  (\acc field -> acc && isJust (VT.getConcreteValue $ VT.ssfValue field))
+                  (\acc field -> acc && isJust (rtrConcrete $ ssfValue field))
                   True
-                  (Map.elems . VT.stcFields $ s)
+                  (Map.elems . stcFields $ s)
                   -- dynamic fields must have concrete labels.
                   && foldl
-                    (\acc field -> acc && isJust (VT.getConcreteValue $ VT.dsfLabel field))
+                    (\acc field -> acc && isJust (rtrConcrete $ dsfLabel field))
                     True
-                    (IntMap.elems . VT.stcDynFields $ s)
-              newStruct = s{VT.stcIsConcrete = isStructConcrete}
-              newBlock = block{VT.blkStruct = newStruct}
-          return $ TCOps.setTCFocusTN (VT.TNBlock newBlock) tc
+                    (IntMap.elems . stcDynFields $ s)
+              newStruct = s{stcIsConcrete = isStructConcrete}
+              newBlock = block{blkStruct = newStruct}
+          return $ setTCFocusTN (TNBlock newBlock) tc
       )
 
-handleBlockReducedRes :: (RM.ReduceMonad s r m) => TCOps.TrCur -> TCOps.TrCur -> m TCOps.TrCur
+handleBlockReducedRes :: (ReduceMonad s r m) => TrCur -> TrCur -> m TrCur
 handleBlockReducedRes orig reduced = do
-  let focus = Cursor.tcFocus reduced
-  case VT.treeNode focus of
-    VT.TNBottom _ -> return reduced
-    VT.TNBlock block ->
+  let focus = tcFocus reduced
+  case treeNode focus of
+    TNBottom _ -> return reduced
+    TNBlock block ->
       mustBlock
         orig
         ( \(origBlock, _) ->
             -- Add back the embeds which are removed in the unify step.
-            return $ TCOps.setTCFocusTN (VT.TNBlock (block{VT.blkEmbeds = VT.blkEmbeds origBlock})) reduced
+            return $ setTCFocusTN (TNBlock (block{blkEmbeds = blkEmbeds origBlock})) reduced
         )
     _ ->
       mustBlock
         orig
         ( \(origBlock, _) ->
             -- If the focus is not a struct, it means the struct has been reduced to an embedded value.
-            return $ TCOps.setTCFocusTN (VT.TNBlock (origBlock{VT.blkNonStructValue = Just focus})) reduced
+            return $ setTCFocusTN (TNBlock (origBlock{blkNonStructValue = Just focus})) reduced
         )
 
-mustBlock :: (RM.ReduceMonad r s m) => TCOps.TrCur -> ((VT.Block VT.Tree, TCOps.TrCur) -> m a) -> m a
+mustBlock :: (ReduceMonad r s m) => TrCur -> ((Block, TrCur) -> m a) -> m a
 mustBlock tc f =
-  let t = Cursor.tcFocus tc
-   in case VT.treeNode t of
-        VT.TNBlock es -> f (es, tc)
+  let t = tcFocus tc
+   in case treeNode t of
+        TNBlock es -> f (es, tc)
         _ -> throwErrSt $ printf "%s is not a struct" (show t)
 
 whenBlock ::
-  (RM.ReduceMonad s r m) =>
-  ((VT.Block VT.Tree, VT.Struct VT.Tree, TCOps.TrCur) -> m TCOps.TrCur) ->
-  TCOps.TrCur ->
-  m TCOps.TrCur
+  (ReduceMonad s r m) =>
+  ((Block, Struct, TrCur) -> m TrCur) ->
+  TrCur ->
+  m TrCur
 whenBlock f tc = do
-  let t = Cursor.tcFocus tc
-  case VT.treeNode t of
-    VT.TNBlock block@(VT.Block{VT.blkStruct = struct}) -> f (block, struct, tc)
+  let t = tcFocus tc
+  case treeNode t of
+    TNBlock block@(Block{blkStruct = struct}) -> f (block, struct, tc)
     -- The struct might have been turned to another type due to embedding.
     _ -> return tc
 
 inStructSub ::
-  (RM.ReduceMonad s r m) =>
-  Path.StructTASeg ->
-  (TCOps.TrCur -> m VT.Tree) ->
-  TCOps.TrCur ->
-  m TCOps.TrCur
-inStructSub sseg f tc =
-  do
-    let seg = Path.StructTASeg sseg
-    subTC <- TCOps.goDownTCSegMust seg tc
-    sub <- f subTC
-    do
-      let addr = Cursor.tcCanAddr subTC
-      if Common.isTreeBottom sub && Path.isInDisj addr
-        then do
-          return (sub `Cursor.setTCFocus` tc)
-        else TCOps.propUpTC (sub `Cursor.setTCFocus` subTC)
+  (ReduceMonad s r m) =>
+  StructTASeg ->
+  (TrCur -> m Tree) ->
+  TrCur ->
+  m TrCur
+inStructSub sseg f tc = do
+  let seg = StructTASeg sseg
+  subTC <- goDownTCSegMust seg tc
+  sub <- f subTC
+  let addr = tcCanAddr subTC
+  case sub of
+    IsBottom _ | isInDisj addr -> return (sub `setTCFocus` tc)
+    _ -> propUpTC (sub `setTCFocus` subTC)
 
-validateLetName :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m TCOps.TrCur
+validateLetName :: (ReduceMonad s r m) => T.Text -> TrCur -> m TrCur
 validateLetName name =
   whenBlock
     ( \(_, _, tc) -> do
         -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make sure
         -- in the parent scope that there is no field with the same name.
-        parResM <- RefSys.searchTCIdentInPar name tc
+        parResM <- searchTCIdentInPar name tc
         return $ case parResM of
           -- If the let binding with the name is found in the scope.
-          Just (_, True) -> lbRedeclErr name `Cursor.setTCFocus` tc
+          Just (_, True) -> lbRedeclErr name `setTCFocus` tc
           -- If the field with the same name is found in the scope.
-          Just (_, False) -> aliasErr name `Cursor.setTCFocus` tc
+          Just (_, False) -> aliasErr name `setTCFocus` tc
           _ -> tc
     )
 
-aliasErr :: T.Text -> VT.Tree
-aliasErr name = VT.mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
+aliasErr :: T.Text -> Tree
+aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
 
-lbRedeclErr :: T.Text -> VT.Tree
-lbRedeclErr name = VT.mkBottomTree $ printf "%s redeclared in same scope" name
+lbRedeclErr :: T.Text -> Tree
+lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
 
-reduceStructField :: (RM.ReduceMonad s r m) => T.Text -> TCOps.TrCur -> m TCOps.TrCur
+reduceStructField :: (ReduceMonad s r m) => T.Text -> TrCur -> m TrCur
 reduceStructField name stc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   whenBlock
     ( \(_, _, tc) -> do
         -- Fields and let bindings are made exclusive in the same scope in the evalExpr step, so we only need to make
         -- sure in the parent scope that there is no field with the same name.
-        parResM <- RefSys.searchTCIdentInPar name tc
+        parResM <- searchTCIdentInPar name tc
 
         case parResM of
           -- If the let binding with the name is found in the scope.
-          Just (_, True) -> return $ aliasErr name `Cursor.setTCFocus` tc
+          Just (_, True) -> return $ aliasErr name `setTCFocus` tc
           _ -> return tc
     )
     stc
     >>= whenBlock
-      (\(_, _, tc) -> inStructSub (Path.StringTASeg (TE.encodeUtf8 name)) reduce tc)
+      (\(_, _, tc) -> inStructSub (StringTASeg (TE.encodeUtf8 name)) reduce tc)
 
 {- | Handle the post process of the mutable object change in the struct.
 
@@ -254,25 +254,25 @@ once the "b" is reduced, it will trigger the re-reduction of the "a" field.
 The focus of the tree must be a struct.
 -}
 handleStructMutObjChange ::
-  (RM.ReduceMonad s r m) => Path.StructTASeg -> TCOps.TrCur -> m (TCOps.TrCur, [T.Text])
-handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
-  | Path.DynFieldTASeg i _ <- seg
-  , VT.TNBlock block@(VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+  (ReduceMonad s r m) => StructTASeg -> TrCur -> m (TrCur, [T.Text])
+handleStructMutObjChange seg stc@TrCur{tcFocus = focus}
+  | DynFieldTASeg i _ <- seg
+  , TNBlock block@(Block{blkStruct = _struct}) <- treeNode focus = debugSpanRM
       (printf "handleStructMutObjChange, seg: %s" (show seg))
-      (Just . Cursor.tcFocus . fst)
+      (Just . tcFocus . fst)
       stc
       $ do
-        void RM.increaseRMGlobalVers
+        void increaseRMGlobalVers
         (remAffStruct, remAffLabels) <- removeAppliedObject i _struct stc
         let
-          dsf = VT.stcDynFields _struct IntMap.! i
+          dsf = stcDynFields _struct IntMap.! i
           rE = dynFieldToStatic remAffStruct dsf
-          allCnstrs = IntMap.elems $ VT.stcCnstrs remAffStruct
+          allCnstrs = IntMap.elems $ stcCnstrs remAffStruct
 
-        RM.debugInstantRM "handleStructMutObjChange" (printf "dsf: %s, rE: %s" (show dsf) (show rE)) stc
+        debugInstantRM "handleStructMutObjChange" (printf "dsf: %s, rE: %s" (show dsf) (show rE)) stc
 
         either
-          (\err -> return (TCOps.setTCFocusTN (VT.treeNode err) stc, []))
+          (\err -> return (setTCFocusTN (treeNode err) stc, []))
           ( \labelFieldM -> do
               -- Constrain the dynamic field with all existing constraints.
               (addAffFields, addAffLabels) <-
@@ -282,7 +282,7 @@ handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
                       newField <- constrainFieldWithCnstrs name field allCnstrs stc
                       return
                         ( [(name, newField)]
-                        , if not (null $ VT.ssfObjects newField) then [name] else []
+                        , if not (null $ ssfObjects newField) then [name] else []
                         )
                   )
                   labelFieldM
@@ -291,15 +291,15 @@ handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
                 -- TODO: dedup
                 affectedLabels = remAffLabels ++ addAffLabels
                 newSTC =
-                  TCOps.setTCFocusTN
-                    ( VT.TNBlock $
+                  setTCFocusTN
+                    ( TNBlock $
                         block
-                          { VT.blkStruct = VT.updateStructWithFields addAffFields remAffStruct
+                          { blkStruct = updateStructWithFields addAffFields remAffStruct
                           }
                     )
                     stc
 
-              RM.debugInstantRM
+              debugInstantRM
                 "handleStructMutObjChange"
                 (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffFields) (show affectedLabels))
                 stc
@@ -307,15 +307,15 @@ handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
               return (newSTC, affectedLabels)
           )
           rE
-  | Path.PatternTASeg i _ <- seg
-  , VT.TNBlock (VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+  | PatternTASeg i _ <- seg
+  , TNBlock (Block{blkStruct = _struct}) <- treeNode focus = debugSpanRM
       (printf "handleStructMutObjChange, seg: %s" (show seg))
-      (Just . Cursor.tcFocus . fst)
+      (Just . tcFocus . fst)
       stc
       $ do
-        void RM.increaseRMGlobalVers
+        void increaseRMGlobalVers
         -- Constrain all fields with the new constraint if it exists.
-        let cnstr = VT.stcCnstrs _struct IntMap.! i
+        let cnstr = stcCnstrs _struct IntMap.! i
         -- New constraint might have the following effects:
         -- A. It matches fewer fields than the previous constraint with narrower constraints.
         -- -----
@@ -331,33 +331,30 @@ handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
         (newStruct, addAffLabels) <- applyMoreCnstr cnstr remAffStruct stc
         let
           affectedLabels = remAffLabels ++ addAffLabels
-          nstc = VT.mkStructTree newStruct `Cursor.setTCFocus` stc
+          nstc = mkStructTree newStruct `setTCFocus` stc
         unless (null affectedLabels) $
-          RM.debugInstantRM
+          debugInstantRM
             "handleStructMutObjChange"
             ( printf
                 "-: %s, +: %s, new struct: %s"
                 (show remAffLabels)
                 (show addAffLabels)
-                (show $ VT.mkStructTree newStruct)
+                (show $ mkStructTree newStruct)
             )
             nstc
 
         return (nstc, affectedLabels)
-  | Path.EmbedTASeg i <- seg
-  , VT.TNBlock block@(VT.Block{VT.blkStruct = _struct}) <- VT.treeNode focus = RM.debugSpanRM
+  | EmbedTASeg i <- seg
+  , TNBlock block@(Block{blkStruct = _struct}) <- treeNode focus = debugSpanRM
       (printf "handleStructMutObjChange, seg: %s" (show seg))
-      (Just . Cursor.tcFocus . fst)
+      (Just . tcFocus . fst)
       stc
       $ do
-        void RM.increaseRMGlobalVers
-        let embed = VT.blkEmbeds block IntMap.! i
-        rmdEmbedStruct <- case VT.getBlockFromTree (VT.embValue embed) of
-          -- If the embedded value is not a struct, which could be a comprehension, then we only need to remove the
-          -- object.
-          Nothing -> fst <$> removeAppliedObject i _struct stc
-          Just (VT.Block{VT.blkStruct = embedStruct}) -> do
-            let rmIDs = i : (IntMap.keys (VT.stcCnstrs embedStruct) ++ IntMap.keys (VT.stcDynFields embedStruct))
+        void increaseRMGlobalVers
+        let embed = blkEmbeds block IntMap.! i
+        rmdEmbedStruct <- case embValue embed of
+          IsBlock (Block{blkStruct = embedStruct}) -> do
+            let rmIDs = i : (IntMap.keys (stcCnstrs embedStruct) ++ IntMap.keys (stcDynFields embedStruct))
             (allRmStruct, _) <-
               foldM
                 ( \(accStruct, accLabels) idx -> do
@@ -368,53 +365,56 @@ handleStructMutObjChange seg stc@Cursor.TreeCursor{Cursor.tcFocus = focus}
                 rmIDs
 
             return allRmStruct
+          -- If the embedded value is not a struct, which could be a comprehension, then we only need to remove the
+          -- object.
+          _ -> fst <$> removeAppliedObject i _struct stc
 
-        let structTC = TCOps.setTCFocusTN (VT.TNBlock (block{VT.blkStruct = rmdEmbedStruct})) stc
+        let structTC = setTCFocusTN (TNBlock (block{blkStruct = rmdEmbedStruct})) stc
 
-        RM.debugInstantRM "handleStructMutObjChange" (printf "new struct: %s" (show $ Cursor.tcFocus structTC)) structTC
+        debugInstantRM "handleStructMutObjChange" (printf "new struct: %s" (show $ tcFocus structTC)) structTC
 
-        mergedM <- UnifyOp.unifyTCs [structTC] structTC
+        mergedM <- unifyTCs [structTC] structTC
         case mergedM of
           Nothing -> return (stc, [])
           Just merged -> do
-            utc <- handleBlockReducedRes structTC (merged `Cursor.setTCFocus` structTC)
+            utc <- handleBlockReducedRes structTC (merged `setTCFocus` structTC)
             return
               ( utc
-              , case VT.treeNode (Cursor.tcFocus utc) of
+              , case treeNode (tcFocus utc) of
                   -- Currently we have to re-reduce all fields because unify does not return the reduced fields.
-                  VT.TNBlock resblock
-                    | isNothing (VT.blkNonStructValue resblock) -> Map.keys $ VT.stcFields . VT.blkStruct $ resblock
+                  TNBlock resblock
+                    | isNothing (blkNonStructValue resblock) -> Map.keys $ stcFields . blkStruct $ resblock
                   _ -> []
               )
   | otherwise = return (stc, [])
 
-getLabelFieldPairs :: VT.Struct VT.Tree -> [(T.Text, VT.Field VT.Tree)]
-getLabelFieldPairs struct = Map.toList $ VT.stcFields struct
+getLabelFieldPairs :: Struct -> [(T.Text, Field)]
+getLabelFieldPairs struct = Map.toList $ stcFields struct
 
 {- | Convert a dynamic field to a static field.
 
 It returns a pair which contains reduced string and the newly created/updated field.
 -}
 dynFieldToStatic ::
-  VT.Struct VT.Tree ->
-  VT.DynamicField VT.Tree ->
-  Either VT.Tree (Maybe (T.Text, VT.Field VT.Tree))
-dynFieldToStatic struct df = case VT.treeNode label of
-  VT.TNBottom _ -> Left label
-  VT.TNMutable mut
+  Struct ->
+  DynamicField ->
+  Either Tree (Maybe (T.Text, Field))
+dynFieldToStatic struct df = case treeNode label of
+  TNBottom _ -> Left label
+  TNMutable mut
     -- TODO: atom can become bottom or not found.
-    | Just (VT.TNAtom (VT.AtomV (VT.String s))) <- VT.treeNode <$> VT.getMutVal mut -> mkField s
+    | Just (TNAtom (String s)) <- treeNode <$> getMutVal mut -> mkField s
     -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
     -- have been reduced to a string.
     | otherwise -> return Nothing
-  VT.TNAtom (VT.AtomV (VT.String s)) -> mkField s
-  _ -> Left (VT.mkBottomTree "label can only be a string")
+  TNAtom (String s) -> mkField s
+  _ -> Left (mkBottomTree "label can only be a string")
  where
-  label = VT.dsfLabel df
+  label = dsfLabel df
   mkField s =
     let
-      unifier l r = VT.mkMutableTree $ VT.mkUnifyOp [l, r]
-      newSF = VT.dynToField df (VT.lookupStructField s struct) unifier
+      unifier l r = mkMutableTree $ mkUnifyOp [l, r]
+      newSF = dynToField df (lookupStructField s struct) unifier
      in
       return (Just (s, newSF))
 
@@ -423,7 +423,7 @@ dynFieldToStatic struct df = case VT.treeNode label of
 Returns the new field. If the field is not matched with the pattern, it returns the original field.
 -}
 constrainFieldWithCnstrs ::
-  (RM.ReduceMonad s r m) => T.Text -> VT.Field VT.Tree -> [VT.StructCnstr VT.Tree] -> TCOps.TrCur -> m (VT.Field VT.Tree)
+  (ReduceMonad s r m) => T.Text -> Field -> [StructCnstr] -> TrCur -> m Field
 constrainFieldWithCnstrs name field cnstrs tc =
   foldM
     ( \accField cnstr -> do
@@ -443,24 +443,24 @@ The field should not have been applied with the constraint before.
 It can run in any kind of node.
 -}
 bindFieldWithCnstr ::
-  (RM.ReduceMonad s r m) =>
+  (ReduceMonad s r m) =>
   T.Text ->
-  VT.Field VT.Tree ->
-  VT.StructCnstr VT.Tree ->
-  TCOps.TrCur ->
-  m (VT.Field VT.Tree, Bool)
+  Field ->
+  StructCnstr ->
+  TrCur ->
+  m (Field, Bool)
 bindFieldWithCnstr name field cnstr tc = do
-  let selPattern = VT.scsPattern cnstr
+  let selPattern = scsPattern cnstr
 
-  matched <- UnifyOp.patMatchLabel selPattern name tc
+  matched <- patMatchLabel selPattern name tc
 
   let
-    fval = VT.ssfValue field
+    fval = ssfValue field
     -- TODO: comment on why mkCnstredValTree is used.
-    op = VT.mkMutableTree $ VT.mkUnifyOp [fval, VT.mkCnstredValTree (VT.scsValue cnstr) Nothing]
+    op = mkMutableTree $ mkUnifyOp [fval, mkCnstredValTree (scsValue cnstr) Nothing]
     newField =
       if matched
-        then field{VT.ssfValue = op, VT.ssfObjects = Set.insert (VT.scsID cnstr) (VT.ssfObjects field)}
+        then field{ssfValue = op, ssfObjects = Set.insert (scsID cnstr) (ssfObjects field)}
         else field
 
   return (newField, matched)
@@ -471,26 +471,26 @@ If the constrained result introduce new fields that are not in the struct, then 
 -}
 updateStructWithCnstredRes ::
   -- | The constrained result is a list of tuples that contains the name of the field, the field.
-  [(T.Text, VT.Field VT.Tree)] ->
-  VT.Struct VT.Tree ->
-  VT.Struct VT.Tree
+  [(T.Text, Field)] ->
+  Struct ->
+  Struct
 updateStructWithCnstredRes res struct =
   foldr
     ( \(name, newField) acc ->
         maybe
           acc
-          (\_ -> VT.updateStructField name newField acc)
-          (VT.lookupStructField name struct)
+          (\_ -> updateStructField name newField acc)
+          (lookupStructField name struct)
     )
     struct
     res
 
 -- | Filter the names that are matched with the constraint's pattern.
-filterMatchedNames :: (RM.ReduceMonad s r m) => VT.StructCnstr VT.Tree -> [T.Text] -> TCOps.TrCur -> m [T.Text]
+filterMatchedNames :: (ReduceMonad s r m) => StructCnstr -> [T.Text] -> TrCur -> m [T.Text]
 filterMatchedNames cnstr labels tc =
   foldM
     ( \acc name -> do
-        matched <- UnifyOp.patMatchLabel (VT.scsPattern cnstr) name tc
+        matched <- patMatchLabel (scsPattern cnstr) name tc
         return $ if matched then name : acc else acc
     )
     []
@@ -503,21 +503,21 @@ Returns the updated struct and the list of labels whose fields are affected.
 This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 -}
 removeAppliedObject ::
-  (RM.ReduceMonad s r m) =>
+  (ReduceMonad s r m) =>
   Int ->
-  VT.Struct VT.Tree ->
-  TCOps.TrCur ->
-  m (VT.Struct VT.Tree, [T.Text])
-removeAppliedObject objID struct tc = RM.debugSpanRM "removeAppliedObject" (Just . VT.mkStructTree . fst) tc $ do
+  Struct ->
+  TrCur ->
+  m (Struct, [T.Text])
+removeAppliedObject objID struct tc = debugSpanRM "removeAppliedObject" (Just . mkStructTree . fst) tc $ do
   (remAffFields, removedLabels) <-
     foldM
       ( \(accUpdated, accRemoved) (name, field) -> do
           let
-            newObjectIDs = Set.delete objID (VT.ssfObjects field)
+            newObjectIDs = Set.delete objID (ssfObjects field)
             newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
             newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
-            baseRawM = VT.ssfBaseRaw field
-          RM.debugInstantRM
+            baseRawM = ssfBaseRaw field
+          debugInstantRM
             "removeAppliedObject"
             ( printf
                 "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
@@ -531,10 +531,10 @@ removeAppliedObject objID struct tc = RM.debugSpanRM "removeAppliedObject" (Just
           case baseRawM of
             Just raw -> do
               let
-                rawField = field{VT.ssfValue = raw, VT.ssfObjects = Set.empty}
+                rawField = field{ssfValue = raw, ssfObjects = Set.empty}
                 fieldWithDyns =
                   foldr
-                    (\dyn acc -> VT.dynToField dyn (Just acc) unifier)
+                    (\dyn acc -> dynToField dyn (Just acc) unifier)
                     rawField
                     (IntMap.elems newDyns)
               newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
@@ -547,37 +547,37 @@ removeAppliedObject objID struct tc = RM.debugSpanRM "removeAppliedObject" (Just
                 else do
                   let
                     dyns = IntMap.elems newDyns
-                    startField = field{VT.ssfValue = VT.dsfValue $ head dyns}
+                    startField = field{ssfValue = dsfValue $ head dyns}
                     fieldWithDyns =
                       foldr
-                        (\dyn acc -> VT.dynToField dyn (Just acc) unifier)
+                        (\dyn acc -> dynToField dyn (Just acc) unifier)
                         startField
                         (tail dyns)
                   newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
                   return ((name, newField) : accUpdated, accRemoved)
       )
       ([], [])
-      (fieldsUnifiedWithObject objID $ Map.toList $ VT.stcFields struct)
-  let res = VT.removeStructFields removedLabels $ VT.updateStructWithFields remAffFields struct
+      (fieldsUnifiedWithObject objID $ Map.toList $ stcFields struct)
+  let res = removeStructFields removedLabels $ updateStructWithFields remAffFields struct
   return (res, map fst remAffFields)
  where
-  allCnstrs = VT.stcCnstrs struct
-  allDyns = VT.stcDynFields struct
-  unifier l r = VT.mkMutableTree $ VT.mkUnifyOp [l, r]
+  allCnstrs = stcCnstrs struct
+  allDyns = stcDynFields struct
+  unifier l r = mkMutableTree $ mkUnifyOp [l, r]
 
   -- Find the fields that are unified with the object
-  fieldsUnifiedWithObject :: Int -> [(T.Text, VT.Field VT.Tree)] -> [(T.Text, VT.Field VT.Tree)]
+  fieldsUnifiedWithObject :: Int -> [(T.Text, Field)] -> [(T.Text, Field)]
   fieldsUnifiedWithObject j =
-    foldr (\(k, field) acc -> if j `elem` VT.ssfObjects field then (k, field) : acc else acc) []
+    foldr (\(k, field) acc -> if j `elem` ssfObjects field then (k, field) : acc else acc) []
 
 -- | Apply the additional constraint to the fields.
 applyMoreCnstr ::
-  (RM.ReduceMonad s r m) =>
-  VT.StructCnstr VT.Tree ->
-  VT.Struct VT.Tree ->
-  TCOps.TrCur ->
-  m (VT.Struct VT.Tree, [T.Text])
-applyMoreCnstr cnstr struct tc = RM.debugSpanRM "applyMoreCnstr" (const Nothing) tc $ do
+  (ReduceMonad s r m) =>
+  StructCnstr ->
+  Struct ->
+  TrCur ->
+  m (Struct, [T.Text])
+applyMoreCnstr cnstr struct tc = debugSpanRM "applyMoreCnstr" (const Nothing) tc $ do
   (addAffFields, addAffLabels) <-
     foldM
       ( \(accFields, accLabels) (name, field) -> do
@@ -588,73 +588,55 @@ applyMoreCnstr cnstr struct tc = RM.debugSpanRM "applyMoreCnstr" (const Nothing)
       )
       ([], [])
       (getLabelFieldPairs struct)
-  let newStruct = VT.updateStructWithFields addAffFields struct
+  let newStruct = updateStructWithFields addAffFields struct
   return (newStruct, addAffLabels)
 
-reduceCnstredVal :: (RM.ReduceMonad s r m) => VT.CnstredVal VT.Tree -> TCOps.TrCur -> m VT.Tree
+reduceCnstredVal :: (ReduceMonad s r m) => CnstredVal -> TrCur -> m Tree
 reduceCnstredVal _ tc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-  Cursor.tcFocus <$> TCOps.inSubTC Path.SubValTASeg reduce tc
+  tcFocus <$> inSubTC SubValTASeg reduce tc
 
-reduceDisj :: (RM.ReduceMonad s r m) => VT.Disj VT.Tree -> TCOps.TrCur -> m VT.Tree
+reduceDisj :: (ReduceMonad s r m) => Disj -> TrCur -> m Tree
 reduceDisj d tc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   r <-
-    Cursor.tcFocus
+    tcFocus
       <$> foldM
-        (\acc (i, _) -> TCOps.inSubTC (Path.DisjDisjunctTASeg i) reduce acc)
+        (\acc (i, _) -> inSubTC (DisjRegTASeg i) reduce acc)
         tc
-        (zip [0 ..] (VT.dsjDisjuncts d))
-  case VT.treeNode r of
-    VT.TNDisj nd -> do
-      let disjuncts = VT.dsjDisjuncts nd
-      newDisjT <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree (d{VT.dsjDisjuncts = disjuncts})
-      return $ VT.setTN (Cursor.tcFocus tc) (VT.treeNode newDisjT)
+        (zip [0 ..] (dsjDisjuncts d))
+  case treeNode r of
+    TNDisj nd -> do
+      let disjuncts = dsjDisjuncts nd
+      newDisjT <- normalizeDisj mkDisjTree (d{dsjDisjuncts = disjuncts})
+      return $ setTN (tcFocus tc) (treeNode newDisjT)
     _ -> return r
 
-reduceList :: (RM.ReduceMonad s r m) => VT.List VT.Tree -> TCOps.TrCur -> m VT.Tree
+reduceList :: (ReduceMonad s r m) => List -> TrCur -> m Tree
 reduceList l tc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   r <-
     foldM
       ( \acc (i, origElem) -> do
-          let elemTC = Cursor.mkSubTC (Path.IndexTASeg i) origElem tc
+          let elemTC = mkSubTC (IndexTASeg i) origElem tc
           r <- reduce elemTC
-          case VT.treeNode origElem of
+          case treeNode origElem of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
-            VT.TNMutable (VT.Compreh cph)
-              | VT.cphIsListCompreh cph
-              , Just rList <- VT.getListFromTree r ->
-                  return $ acc ++ VT.lstSubs rList
+            TNMutable (Compreh cph)
+              | cphIsListCompreh cph
+              , Just rList <- rtrList r ->
+                  return $ acc ++ lstSubs rList
             _ -> return $ acc ++ [r]
       )
       []
-      (zip [0 ..] (VT.lstSubs l))
-  return $ VT.mkListTree r
-
--- built-in functions
-builtinMutableTable :: [(String, VT.Tree)]
-builtinMutableTable =
-  [
-    ( "close"
-    , VT.mkMutableTree . VT.RegOp $
-        -- built-in close does not recursively close the struct.
-        VT.emptyRegularOp
-          { VT.ropName = "close"
-          , VT.ropArgs = Seq.fromList [VT.mkNewTree VT.TNTop]
-          , VT.ropOpType = VT.CloseFunc
-          }
-    )
-  ]
+      (zip [0 ..] (lstSubs l))
+  return $ mkListTree r
 
 -- | Closes a struct when the tree has struct.
-close :: (RM.ReduceMonad s r m) => [VT.Tree] -> TCOps.TrCur -> m (Maybe VT.Tree)
+close :: (ReduceMonad s r m) => [Tree] -> TrCur -> m (Maybe Tree)
 close args tc
   | length args /= 1 = throwErrSt $ printf "expected 1 argument, got %d" (length args)
   | otherwise = do
-      argTC <- TCOps.goDownTCSegMust Path.unaryOpTASeg tc
-      rM <- Mutate.reduceToNonMut argTC
+      argTC <- goDownTCSegMust unaryOpTASeg tc
+      rM <- reduceToNonMut argTC
       maybe
         -- If the argument is pending, wait for the result.
         (return Nothing)
@@ -662,37 +644,148 @@ close args tc
         rM
 
 -- | Close a struct when the tree has struct.
-closeTree :: VT.Tree -> VT.Tree
+closeTree :: Tree -> Tree
 closeTree a =
-  case VT.treeNode a of
-    VT.TNBlock b -> VT.setTN a $ VT.TNBlock $ VT.modifyBlockStruct (\s -> s{VT.stcClosed = True}) b
-    VT.TNDisj dj ->
+  case treeNode a of
+    TNBlock b -> setTN a $ TNBlock $ modifyBlockStruct (\s -> s{stcClosed = True}) b
+    TNDisj dj ->
       let
-        dft = closeTree <$> VT.dsjDefault dj
-        ds = map closeTree (VT.dsjDisjuncts dj)
+        dft = closeTree <$> dsjDefault dj
+        ds = map closeTree (dsjDisjuncts dj)
        in
-        VT.setTN a $ VT.TNDisj (dj{VT.dsjDefault = dft, VT.dsjDisjuncts = ds})
-    -- TODO: VT.Mutable should be closed.
-    -- VT.TNMutable _ -> throwErrSt "TODO"
-    _ -> VT.mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
+        setTN a $ TNDisj (dj{dsjDefault = dft, dsjDisjuncts = ds})
+    -- TODO: Mutable should be closed.
+    -- TNMutable _ -> throwErrSt "TODO"
+    _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-reduceeDisjOp :: (RM.ReduceMonad s r m) => Bool -> VT.DisjoinOp VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
-reduceeDisjOp asConj disjOp disjOpTC = RM.debugSpanRM "reduceeDisjOp" id disjOpTC $ do
-  let terms = toList $ VT.djoTerms disjOp
+reduceeDisjOp :: (ReduceMonad s r m) => Bool -> DisjoinOp -> TrCur -> m (Maybe Tree)
+reduceeDisjOp asConj disjOp disjOpTC = debugSpanRM "reduceeDisjOp" id disjOpTC $ do
+  let terms = toList $ djoTerms disjOp
   when (length terms < 2) $
     throwErrSt $
       printf "disjunction operation requires at least 2 terms, got %d" (length terms)
   disjuncts <- procMarkedTerms asConj terms disjOpTC
-  RM.debugInstantRM "reduceeDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
+  debugInstantRM "reduceeDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
 
   if null disjuncts
     -- If none of the disjuncts are ready, return Nothing.
     then return Nothing
     else do
       let
-        d = VT.emptyDisj{VT.dsjDisjuncts = disjuncts}
-      r <- VT.normalizeDisj VT.getDisjFromTree VT.mkDisjTree d
+        d = emptyDisj{dsjDisjuncts = disjuncts}
+      r <- normalizeDisj mkDisjTree d
       return $ Just r
+
+{- | Normalize the disjunction.
+
+1. Flatten the disjunction.
+2. Deduplicate the disjuncts.
+3. Remove the bottom disjuncts.
+4. If the disjunct is left with only one element, return the value.
+5. If the disjunct is left with no elements, return the first bottom it found.
+-}
+normalizeDisj :: (Common.Env r s m) => (Disj -> Tree) -> Disj -> m Tree
+normalizeDisj toTree d = do
+  flattened <- flattenDisjuncts d
+  final <- removeUnwantedDisjuncts flattened
+  let
+    finalDisjs = dsjDisjuncts final
+   in
+    return
+      if
+        | null finalDisjs -> head $ filter (\case IsBottom _ -> True; _ -> False) (dsjDisjuncts flattened)
+        -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
+        | length finalDisjs == 1 && null (dsjDefIndexes final) -> head finalDisjs
+        | otherwise -> toTree $ buildDefVal toTree final
+
+{- | Flatten the disjuncts.
+
+Because disjunction operation is associative, we can flatten the disjuncts. The nested disjunctions were like
+parenthesized disjunctions. For example, (a | *b) | c | (d | e) = a | *b | c | d | e.
+
+Notice before this step, there is no marked terms in the disjunction. For example, *(a | *b) has been reduced to (a |
+*b).
+
+This handles the case where a marked term is a reference. For example the f of the *f | v1 would be <f, f> if we use the
+value-default pair. When the value of the f changes to a disjunction like *1 | 2, the flattened disjuncts would be 1 and
+2 with the default index of di, where di is the index of the disjunct f. When the value of f changes to 1 | 2, the
+flattened disjuncts would be 1 and 2 with the default indexes of di and di + 1.
+
+It also follows the rules of disjunction operation:
+D0: ⟨v1⟩ | ⟨v2⟩         => ⟨v1|v2⟩
+D1: ⟨v1, d1⟩ | ⟨v2⟩     => ⟨v1|v2, d1⟩
+D2: ⟨v1, d1⟩ | ⟨v2, d2⟩ => ⟨v1|v2, d1|d2⟩
+
+TODO: more efficiency
+-}
+flattenDisjuncts :: (Common.Env r s m) => Disj -> m Disj
+flattenDisjuncts (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
+  -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
+  (newIndexes, newDisjs) <- foldM flatten ([], []) (zip [0 ..] disjuncts)
+  return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
+ where
+  origDefIdxesSet = Set.fromList idxes
+  -- Suppose we are processing the ith disjunct, and we have accumulated the disjuncts xs.
+  -- If the ith disjunct is not a disjunction, then we can just add it to the disjuncts. We also need to add the index
+  -- to the default indexes if it belongs to the default disjunction.
+  flatten (accIs, accDs) (origIdx, t) =
+    case rtrDisj t of
+      Just sub -> do
+        Disj{dsjDefIndexes = subDefIndexes, dsjDisjuncts = subDisjs} <- flattenDisjuncts sub
+        let
+          -- Add offset to the indexes of the new disjuncts. The offset is the length of the accumulated disjuncts.
+          newDefIndexes =
+            -- If no sub defaults found for the disjunct but the disjunct is a default disjunct, that means the
+            -- disjunct has been flattened to multiple disjuncts.
+            if null subDefIndexes && origIdx `Set.member` origDefIdxesSet
+              then map (+ length accDs) [0 .. length subDisjs - 1]
+              else map (+ length accDs) subDefIndexes
+        return (accIs ++ newDefIndexes, accDs ++ subDisjs)
+      _ ->
+        return
+          ( if origIdx `Set.member` origDefIdxesSet
+              -- The index of the new disjunct is the length of the accumulated disjuncts.
+              then accIs ++ [length accDs]
+              else accIs
+          , accDs ++ [t]
+          )
+
+{- | Remove the duplicate default disjuncts, duplicate disjuncts and bottom disjuncts.
+
+TODO: consider make t an instance of Ord and use Set to remove duplicates.
+-}
+removeUnwantedDisjuncts :: (Common.Env r s m) => Disj -> m Disj
+removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) = do
+  let (newIndexes, newDisjs) = foldl go ([], []) (zip [0 ..] disjuncts)
+   in return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
+ where
+  defValues = map (disjuncts !!) dfIdxes
+  origDefIdxesSet = Set.fromList dfIdxes
+
+  go (accIs, accXs) (idx, x) =
+    let
+      notAddedDisj = not (x `elem` accXs)
+      -- If the disjunct is equal to the default value. Note that it does not mean the disjunct is the original default
+      -- value.
+      isValEqDef = x `elem` defValues
+      -- The disjunct is kept if all of the following conditions are met:
+      -- 1. it is not a bottom disjunct.
+      -- 2. it is not added before
+      -- 3. it is not a default value OR it is one of the default disjuncts and its index is in the original default
+      -- indexes.
+      -- The second condition makes sure the relative order of the default disjuncts is kept.
+      -- For example, *b | c | a | b | *a should be reduced to <b | c | a, 0|2>.
+      keepDisjunct =
+        (case x of IsBottom _ -> False; _ -> True)
+          && notAddedDisj
+          && (not isValEqDef || idx `Set.member` origDefIdxesSet)
+      -- The disjunct is default if it is one of the default disjuncts and it is not seen before.
+      isDefIndex = keepDisjunct && isValEqDef
+     in
+      -- Add the current disjunct index to the default indexes if condition is met.
+      ( if isDefIndex then accIs ++ [length accXs] else accIs
+      , if keepDisjunct then accXs ++ [x] else accXs
+      )
 
 {- | Construct a disjunction from the default and the disjuncts.
 
@@ -704,11 +797,11 @@ M1: *⟨v⟩    => ⟨v, v⟩     introduce identical default for marked term
 M2: *⟨v, d⟩ => ⟨v, d⟩     keep existing defaults for marked term
 M3:  ⟨v, d⟩ => ⟨v⟩        strip existing defaults from unmarked term
 -}
-procMarkedTerms :: (RM.ReduceMonad s r m) => Bool -> [VT.DisjTerm VT.Tree] -> TCOps.TrCur -> m [VT.Tree]
+procMarkedTerms :: (ReduceMonad s r m) => Bool -> [DisjTerm] -> TrCur -> m [Tree]
 procMarkedTerms asConj terms tc = do
   -- disjoin operation allows incompleteness.
 
-  let hasMarked = any VT.dstMarked terms
+  let hasMarked = any dstMarked terms
   reducedTerms <-
     -- If the disjunction is a conjunct, there is no need to reduce the terms.
     if asConj
@@ -717,80 +810,80 @@ procMarkedTerms asConj terms tc = do
         -- We need to reduce the terms to know if they are disjunctions or not so that marked terms can be processed.
         foldM
           ( \acc (i, term) -> do
-              argTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg i) tc
-              rM <- Mutate.reduceToNonMut argTC
+              argTC <- goDownTCSegMust (MutArgTASeg i) tc
+              rM <- reduceToNonMut argTC
               case rM of
                 Nothing -> return acc -- Incomplete term
-                Just r -> return $ acc ++ [term{VT.dstValue = r}]
+                Just r -> return $ acc ++ [term{dstValue = r}]
           )
           []
           (zip [0 ..] terms)
   return $
     foldr
       ( \term accDisjuncts ->
-          let val = VT.dstValue term
+          let val = dstValue term
            in if
                 -- Apply Rule M1 and M2
-                | hasMarked && VT.dstMarked term ->
-                    VT.setTN
+                | hasMarked && dstMarked term ->
+                    setTN
                       val
-                      ( VT.TNDisj $
+                      ( TNDisj $
                           maybe
                             -- Rule M1
-                            (VT.emptyDisj{VT.dsjDefIndexes = [0], VT.dsjDisjuncts = [val]})
+                            (emptyDisj{dsjDefIndexes = [0], dsjDisjuncts = [val]})
                             ( \d ->
-                                if null (VT.dsjDefIndexes d)
+                                if null (dsjDefIndexes d)
                                   -- Rule M1
-                                  then d{VT.dsjDefIndexes = [0 .. length (VT.dsjDisjuncts d)]}
+                                  then d{dsjDefIndexes = [0 .. length (dsjDisjuncts d)]}
                                   -- Rule M2
                                   else d
                             )
-                            (VT.getDisjFromTree val)
+                            (rtrDisj val)
                       )
                       : accDisjuncts
                 -- Apply Rule M0 and M3
                 | hasMarked ->
                     maybe
                       val
-                      (\d -> VT.setTN val $ VT.TNDisj $ d{VT.dsjDefIndexes = []})
-                      (VT.getDisjFromTree val)
+                      (\d -> setTN val $ TNDisj $ d{dsjDefIndexes = []})
+                      (rtrDisj val)
                       : accDisjuncts
                 | otherwise -> val : accDisjuncts
       )
       []
       reducedTerms
 
-reduceCompreh :: (RM.ReduceMonad s r m) => VT.Comprehension VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
-reduceCompreh cph tc = RM.debugSpanRM "reduceCompreh" id tc $ do
+reduceCompreh :: (ReduceMonad s r m) => Comprehension -> TrCur -> m (Maybe Tree)
+reduceCompreh cph tc = debugSpanRM "reduceCompreh" id tc $ do
   r <- reduceClause 0 cph tc (IterCtx 0 (Right []))
   case icRes r of
     Left Nothing -> return Nothing
     Left (Just t) -> return $ Just t
     Right vs ->
-      if VT.cphIsListCompreh cph
-        then return $ Just $ VT.mkListTree vs
+      if cphIsListCompreh cph
+        then return $ Just $ mkListTree vs
         else return $ Just $ case vs of
-          [] -> VT.mkBlockTree VT.emptyBlock
+          [] -> mkBlockTree emptyBlock
           [x] -> x
-          _ -> VT.mkMutableTree $ VT.mkUnifyOp vs
+          _ -> mkMutableTree $ mkUnifyOp vs
 
 data IterCtx = IterCtx
   { icCnt :: Int
-  , icRes :: Either (Maybe VT.Tree) [VT.Tree]
+  , icRes :: Either (Maybe Tree) [Tree]
   }
   deriving (Show)
 
 reduceClause ::
-  (RM.ReduceMonad s r m) =>
+  (ReduceMonad s r m) =>
   Int ->
-  VT.Comprehension VT.Tree ->
-  TCOps.TrCur ->
+  Comprehension ->
+  TrCur ->
   IterCtx ->
   m IterCtx
 reduceClause i cph tc iterCtx
-  | i == length (VT.cphIterClauses cph) = RM.debugSpanArgsRM
+  | i == length (cphIterClauses cph) = debugSpanArgsRM
       (printf "reduceIterVal iter:%s" (show $ icCnt iterCtx))
-      (printf "bindings: %s" (show $ VT.cphIterBindings cph))
+      (printf "bindings: %s" (show $ cphIterBindings cph))
       ( \x -> case icRes x of
           Left v -> v
           Right [] -> Nothing
@@ -798,82 +891,82 @@ reduceClause i cph tc iterCtx
       )
       tc
       $ do
-        let s = VT.cphStruct cph
-        r <- newIterStruct (VT.cphIterBindings cph) s tc
+        let s = cphStruct cph
+        r <- newIterStruct (cphIterBindings cph) s tc
         case icRes iterCtx of
           Left _ -> throwErrSt "should not reach the leaf node"
           Right vs -> return $ iterCtx{icRes = Right (vs ++ [r]), icCnt = icCnt iterCtx + 1}
   | otherwise = do
-      clauseTC <- TCOps.goDownTCSegMust (Path.ComprehTASeg $ Path.ComprehIterClauseValTASeg i) tc
-      tM <- Mutate.reduceToNonMut clauseTC
+      clauseTC <- goDownTCSegMust (ComprehTASeg $ ComprehIterClauseValTASeg i) tc
+      tM <- reduceToNonMut clauseTC
       case tM of
         -- Incomplete clause.
         Nothing -> return $ iterCtx{icRes = Left Nothing}
         Just t
-          | VT.TNBottom _ <- VT.treeNode t -> return $ iterCtx{icRes = Left (Just t)}
-          | otherwise -> case VT.cphIterClauses cph !! i of
-              VT.IterClauseIf{} -> case VT.getAtomFromTree t of
-                Just (VT.Bool True) -> reduceClause (i + 1) cph tc iterCtx
+          | TNBottom _ <- treeNode t -> return $ iterCtx{icRes = Left (Just t)}
+          | otherwise -> case cphIterClauses cph !! i of
+              IterClauseIf{} -> case rtrAtom t of
+                Just (Bool True) -> reduceClause (i + 1) cph tc iterCtx
                 -- Do not go to next clause if the condition is false.
-                Just (VT.Bool False) -> return iterCtx
+                Just (Bool False) -> return iterCtx
                 _ ->
                   return $
                     iterCtx
-                      { icRes = Left $ Just $ VT.mkBottomTree $ printf "%s is not a boolean" (VT.showTreeSymbol t)
+                      { icRes = Left $ Just $ mkBottomTree $ printf "%s is not a boolean" (showTreeSymbol t)
                       }
-              VT.IterClauseLet letName _ -> do
+              IterClauseLet letName _ -> do
                 let
-                  newBind = VT.ComprehIterBinding letName t
+                  newBind = ComprehIterBinding letName t
                   newCompreh =
                     cph
-                      { VT.cphIterBindings = VT.cphIterBindings cph ++ [newBind]
+                      { cphIterBindings = cphIterBindings cph ++ [newBind]
                       }
-                  newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+                  newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
                 reduceClause (i + 1) newCompreh newTC iterCtx
-              VT.IterClauseFor k vM _ ->
+              IterClauseFor k vM _ ->
                 if
                   -- TODO: only iterate optional fields
-                  | Just (VT.Block{VT.blkStruct = struct}) <- VT.getBlockFromTree t -> do
+                  | IsBlock (Block{blkStruct = struct}) <- t -> do
                       foldM
                         ( \acc (label, field) -> do
                             let
                               newBinds =
                                 maybe
-                                  [VT.ComprehIterBinding k (VT.ssfValue field)]
+                                  [ComprehIterBinding k (ssfValue field)]
                                   ( \v ->
-                                      [ VT.ComprehIterBinding k (VT.mkAtomTree (VT.String label))
-                                      , VT.ComprehIterBinding v (VT.ssfValue field)
+                                      [ ComprehIterBinding k (mkAtomTree (String label))
+                                      , ComprehIterBinding v (ssfValue field)
                                       ]
                                   )
                                   vM
                               newCompreh =
                                 cph
-                                  { VT.cphIterBindings = VT.cphIterBindings cph ++ newBinds
+                                  { cphIterBindings = cphIterBindings cph ++ newBinds
                                   }
-                              newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+                              newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
 
                             reduceClause (i + 1) newCompreh newTC acc
                         )
                         iterCtx
-                        (Map.toList $ VT.stcFields struct)
-                  | Just (VT.List{VT.lstSubs = list}) <- VT.getListFromTree t -> do
+                        (Map.toList $ stcFields struct)
+                  | Just (List{lstSubs = list}) <- rtrList t -> do
                       foldM
-                        ( \acc (index, element) -> do
+                        ( \acc (idx, element) -> do
                             let
                               newBinds =
                                 maybe
-                                  [VT.ComprehIterBinding k element]
+                                  [ComprehIterBinding k element]
                                   ( \v ->
-                                      [ VT.ComprehIterBinding k (VT.mkAtomTree (VT.Int index))
-                                      , VT.ComprehIterBinding v element
+                                      [ ComprehIterBinding k (mkAtomTree (Int idx))
+                                      , ComprehIterBinding v element
                                       ]
                                   )
                                   vM
                               newCompreh =
                                 cph
-                                  { VT.cphIterBindings = VT.cphIterBindings cph ++ newBinds
+                                  { cphIterBindings = cphIterBindings cph ++ newBinds
                                   }
-                              newTC = TCOps.setTCFocusTN (VT.TNMutable $ VT.Compreh newCompreh) tc
+                              newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
 
                             reduceClause (i + 1) newCompreh newTC acc
                         )
@@ -882,7 +975,7 @@ reduceClause i cph tc iterCtx
                   | otherwise ->
                       return $
                         iterCtx
-                          { icRes = Left $ Just $ VT.mkBottomTree $ printf "%s is not iterable" (VT.showTreeSymbol t)
+                          { icRes = Left $ Just $ mkBottomTree $ printf "%s is not iterable" (showTreeSymbol t)
                           }
 
 {- | Create a new struct with the given bindings.
@@ -890,52 +983,51 @@ reduceClause i cph tc iterCtx
 The generated struct will not have comoprehensions, otherwise it will be reduced again, and the bindings will be lost.
 -}
 newIterStruct ::
-  (RM.ReduceMonad s r m) => [VT.ComprehIterBinding VT.Tree] -> VT.Tree -> TCOps.TrCur -> m VT.Tree
+  (ReduceMonad s r m) => [ComprehIterBinding] -> Tree -> TrCur -> m Tree
 newIterStruct bindings rawStruct _tc =
-  RM.debugSpanArgsRM
+  debugSpanArgsRM
     "newIterStruct"
     (printf "bindings: %s" (show bindings))
     Just
     _tc
     $ do
-      se <- Common.buildASTExpr False rawStruct
-      structT <- RM.evalExprRM se
-      MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
-      let sTC = Cursor.mkSubTC (Path.ComprehTASeg Path.ComprehIterValTASeg) structT _tc
+      se <- buildASTExpr False rawStruct
+      structT <- evalExprRM se
+      let sTC = mkSubTC (ComprehTASeg ComprehIterValTASeg) structT _tc
       r <- reduce sTC
-      ripped <- case VT.treeNode r of
-        VT.TNBlock block -> do
+      ripped <- case treeNode r of
+        TNBlock block -> do
           let
-            newBlock = block{VT.blkEmbeds = IntMap.filter (not . isComprehension) (VT.blkEmbeds block)}
-          return $ VT.setTN r (VT.TNBlock newBlock)
+            newBlock = block{blkEmbeds = IntMap.filter (not . isComprehension) (blkEmbeds block)}
+          return $ setTN r (TNBlock newBlock)
         _ -> return r
 
       -- replace the refs that are found in the bindings with the binding values. This includes all references in all
       -- possible trees.
       x <-
-        TCOps.traverseTCSimple
-          (\x -> VT.subNodes x ++ VT.rawNodes x)
+        traverseTCSimple
+          (\x -> subNodes x ++ rawNodes x)
           ( \tc -> do
-              let focus = Cursor.tcFocus tc
-              case VT.treeNode focus of
-                VT.TNMutable (VT.Ref ref)
+              let focus = tcFocus tc
+              case treeNode focus of
+                TNMutable (Ref ref)
                   -- oirgAddrs should be empty because the reference should not be copied from other places.
-                  | Nothing <- VT.refOrigAddrs ref
-                  , VT.RefPath var rest <- VT.refArg ref -> do
+                  | Nothing <- refOrigAddrs ref
+                  , RefPath var rest <- refArg ref -> do
                       rM <-
                         foldM
                           ( \acc bind ->
                               if
                                 | isJust acc -> return acc
-                                | VT.cphBindName bind == var
+                                | cphBindName bind == var
                                 , null rest ->
-                                    return $ Just (VT.cphBindValue bind)
-                                | VT.cphBindName bind == var ->
+                                    return $ Just (cphBindValue bind)
+                                | cphBindName bind == var ->
                                     return $
                                       Just $
-                                        VT.setTN
+                                        setTN
                                           focus
-                                          (VT.TNMutable $ VT.Ref $ VT.mkIndexRef (VT.cphBindValue bind Seq.<| rest))
+                                          (TNMutable $ Ref $ mkIndexRef (cphBindValue bind Seq.<| rest))
                                 | otherwise -> return acc
                           )
                           Nothing
@@ -943,42 +1035,41 @@ newIterStruct bindings rawStruct _tc =
                       maybe (return focus) return rM
                 _ -> return focus
           )
-          (Cursor.TreeCursor ripped [])
-      return $ Cursor.tcFocus x
+          (TrCur ripped [])
+      return $ tcFocus x
  where
-  isComprehension emb = case VT.treeNode (VT.embValue emb) of
-    VT.TNMutable (VT.Compreh _) -> True
+  isComprehension emb = case treeNode (embValue emb) of
+    TNMutable (Compreh _) -> True
     _ -> False
 
-reduceInterpolation :: (RM.ReduceMonad s r m) => VT.Interpolation VT.Tree -> TCOps.TrCur -> m (Maybe VT.Tree)
+reduceInterpolation :: (ReduceMonad s r m) => Interpolation -> TrCur -> m (Maybe Tree)
 reduceInterpolation l tc = do
-  MutEnv.Functions{MutEnv.fnReduce = reduce} <- asks MutEnv.getFuncs
   r <-
     foldM
       ( \accRes seg -> case seg of
-          VT.IplSegExpr j -> do
-            argTC <- TCOps.goDownTCSegMust (Path.MutableArgTASeg j) tc
+          IplSegExpr j -> do
+            argTC <- goDownTCSegMust (MutArgTASeg j) tc
             r <- reduce argTC
             if
-              | Just s <- VT.getStringFromTree r -> return $ (`T.append` s) <$> accRes
-              | Just i <- VT.getIntFromTree r -> return $ (`T.append` (T.pack $ show i)) <$> accRes
-              | Just b <- VT.getBoolFromTree r -> return $ (`T.append` (T.pack $ show b)) <$> accRes
-              | Just f <- VT.getFloatFromTree r -> return $ (`T.append` (T.pack $ show f)) <$> accRes
-              | Just _ <- VT.getStructFromTree r ->
+              | Just s <- rtrString r -> return $ (`T.append` s) <$> accRes
+              | Just i <- rtrInt r -> return $ (`T.append` (T.pack $ show i)) <$> accRes
+              | Just b <- rtrBool r -> return $ (`T.append` (T.pack $ show b)) <$> accRes
+              | Just f <- rtrFloat r -> return $ (`T.append` (T.pack $ show f)) <$> accRes
+              | Just _ <- rtrStruct r ->
                   return $
                     Left $
-                      VT.mkBottomTree $
-                        printf "can not use struct in interpolation: %s" (VT.showTreeSymbol r)
-              | Just _ <- VT.getListFromTree r ->
+                      mkBottomTree $
+                        printf "can not use struct in interpolation: %s" (showTreeSymbol r)
+              | Just _ <- rtrList r ->
                   return $
                     Left $
-                      VT.mkBottomTree $
-                        printf "can not use list in interpolation: %s" (VT.showTreeSymbol r)
+                      mkBottomTree $
+                        printf "can not use list in interpolation: %s" (showTreeSymbol r)
               | otherwise -> return undefined
-          VT.IplSegStr s -> return $ (`T.append` s) <$> accRes
+          IplSegStr s -> return $ (`T.append` s) <$> accRes
       )
       (Right T.empty)
-      (VT.itpSegs l)
+      (itpSegs l)
   case r of
     Left err -> return $ Just err
-    Right res -> return $ Just $ VT.mkAtomTree (VT.String res)
+    Right res -> return $ Just $ mkAtomTree (String res)

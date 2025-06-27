@@ -84,12 +84,12 @@ data TASeg
     RootTASeg
   | StructTASeg StructTASeg
   | IndexTASeg !Int
-  | DisjDefaultTASeg
-  | DisjDisjunctTASeg !Int
+  | DisjDefTASeg
+  | DisjRegTASeg !Int
   | -- | SubValTASeg is used to represent the only sub value of a value.
     SubValTASeg
-  | -- | MutableArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
-    MutableArgTASeg !Int
+  | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
+    MutArgTASeg !Int
   | ComprehTASeg ComprehTASeg
   | ParentTASeg
   deriving (Eq, Ord, Generic, NFData)
@@ -98,9 +98,9 @@ instance Show TASeg where
   show RootTASeg = "/"
   show (StructTASeg s) = show s
   show (IndexTASeg i) = "i" ++ show i
-  show DisjDefaultTASeg = "d*"
-  show (DisjDisjunctTASeg i) = "dj" ++ show i
-  show (MutableArgTASeg i) = "fa" ++ show i
+  show DisjDefTASeg = "d*"
+  show (DisjRegTASeg i) = "dj" ++ show i
+  show (MutArgTASeg i) = "fa" ++ show i
   show SubValTASeg = "sv"
   show ParentTASeg = ".."
   show (ComprehTASeg s) = show s
@@ -147,13 +147,13 @@ getStrFromSeg (LetTASeg s) = Just (show s)
 getStrFromSeg _ = Nothing
 
 unaryOpTASeg :: TASeg
-unaryOpTASeg = MutableArgTASeg 0
+unaryOpTASeg = MutArgTASeg 0
 
 binOpLeftTASeg :: TASeg
-binOpLeftTASeg = MutableArgTASeg 0
+binOpLeftTASeg = MutArgTASeg 0
 
 binOpRightTASeg :: TASeg
-binOpRightTASeg = MutableArgTASeg 1
+binOpRightTASeg = MutArgTASeg 1
 
 toBinOpTASeg :: BinOpDirect -> TASeg
 toBinOpTASeg L = binOpLeftTASeg
@@ -171,11 +171,11 @@ isSegAccessible seg = case seg of
   SubValTASeg -> True
   -- If a addr ends with a disj default segment, for example /p/d*, then it is accessible.
   -- It it the same as /p.
-  DisjDefaultTASeg -> True
+  DisjDefTASeg -> True
   _ -> False
 
-isSegDisj :: Path.TASeg -> Bool
-isSegDisj (Path.DisjDisjunctTASeg _) = True
+isSegDisj :: TASeg -> Bool
+isSegDisj (DisjRegTASeg _) = True
 isSegDisj _ = False
 
 data BinOpDirect = L | R deriving (Eq, Ord)
@@ -299,8 +299,8 @@ trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
 isTreeAddrAccessible :: TreeAddr -> Bool
 isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
 
-isInDisj :: Path.TreeAddr -> Bool
-isInDisj (Path.TreeAddr xs) = any Path.isSegDisj xs
+isInDisj :: TreeAddr -> Bool
+isInDisj (TreeAddr xs) = any isSegDisj xs
 
 -- | Convert the addr to referable form which only contains string, int or root segments.
 trimToReferable :: TreeAddr -> TreeAddr
@@ -326,8 +326,8 @@ getReferableAddr p =
 
 -- | A non-canonical segment is a segment that would not have to be existed to access to the value.
 isSegNonCanonical :: TASeg -> Bool
-isSegNonCanonical Path.SubValTASeg = True
-isSegNonCanonical Path.DisjDefaultTASeg = True
+isSegNonCanonical SubValTASeg = True
+isSegNonCanonical DisjDefTASeg = True
 isSegNonCanonical _ = False
 
 {- | Trim the addr to a single value form.
@@ -337,10 +337,10 @@ Single value form is the addr that only contains a single value.
 trimToSingleValueTA :: TreeAddr -> TreeAddr
 trimToSingleValueTA (TreeAddr xs) = TreeAddr $ V.filter isSingleVal xs
  where
-  isSingleVal (MutableArgTASeg _) = False
+  isSingleVal (MutArgTASeg _) = False
   isSingleVal SubValTASeg = False
   isSingleVal (StructTASeg (EmbedTASeg _)) = False
-  isSingleVal (DisjDisjunctTASeg _) = False
+  isSingleVal (DisjRegTASeg _) = False
   -- \^ embed segment is a conjunct.
   isSingleVal _ = True
 

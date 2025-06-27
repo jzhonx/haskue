@@ -1,39 +1,33 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE InstanceSigs #-}
 
 module Value.Struct where
 
-import Common (BuildASTExpr (..))
 import Control.DeepSeq (NFData (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Exception (throwErrSt)
 import GHC.Generics (Generic)
+import {-# SOURCE #-} Value.Tree
 
 {- | A block is a structure that contains a struct and a set of embeddings.
 
 Reduction of a block is not necessarily a struct.
 -}
-data Block t = Block
-  { blkStruct :: Struct t
-  , blkEmbeds :: IntMap.IntMap (Embedding t)
-  , blkNonStructValue :: Maybe t
+data Block = Block
+  { blkStruct :: Struct
+  , blkEmbeds :: IntMap.IntMap Embedding
+  , blkNonStructValue :: Maybe Tree
   }
-  deriving (Generic, NFData)
+  deriving (Generic)
 
-instance (Eq t) => Eq (Block t) where
-  (==) s1 s2 = blkStruct s1 == blkStruct s2 && blkNonStructValue s1 == blkNonStructValue s2
+-- instance (Eq t) => Eq (Block t) where
+--   (==) s1 s2 = blkStruct s1 == blkStruct s2 && blkNonStructValue s1 == blkNonStructValue s2
 
-instance (BuildASTExpr t) => BuildASTExpr (Block t) where
-  buildASTExpr _ _ = throwErrSt "not implemented"
-
-emptyBlock :: Block t
+emptyBlock :: Block
 emptyBlock =
   Block
     { blkStruct = emptyStruct
@@ -41,13 +35,13 @@ emptyBlock =
     , blkNonStructValue = Nothing
     }
 
-modifyBlockStruct :: (Struct t -> Struct t) -> Block t -> Block t
+modifyBlockStruct :: (Struct -> Struct) -> Block -> Block
 modifyBlockStruct f blk = blk{blkStruct = f (blkStruct blk)}
 
-setBlockStruct :: Struct t -> Block t -> Block t
+setBlockStruct :: Struct -> Block -> Block
 setBlockStruct s blk = blk{blkStruct = s}
 
-data Struct t = Struct
+data Struct = Struct
   { stcID :: !Int
   -- ^ The ID is used to identify the struct. It will not be used in the comparison of structs.
   , stcOrdLabels :: [T.Text]
@@ -59,20 +53,20 @@ data Struct t = Struct
   -- It is needed because new static fields of embeddings can be merged into the struct.
   -- Once the struct is created, the static identifiers are fixed. The let identifiers can be rewritten with the scope
   -- id.
-  , stcLets :: Map.Map T.Text (LetBinding t)
+  , stcLets :: Map.Map T.Text LetBinding
   -- ^ Let bindings are read-only. They are not reduced.
-  , stcCnstrs :: IntMap.IntMap (StructCnstr t)
-  , stcDynFields :: IntMap.IntMap (DynamicField t)
+  , stcCnstrs :: IntMap.IntMap StructCnstr
+  , stcDynFields :: IntMap.IntMap DynamicField
   -- ^ We should not shrink the list as it is a heap list.
   -- | == Results start
   , stcClosed :: !Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
   , stcPerms :: [PermItem]
-  , stcFields :: Map.Map T.Text (Field t)
+  , stcFields :: Map.Map T.Text Field
   -- ^ It is the fields, excluding the let bindings.
   , stcIsConcrete :: !Bool
   }
-  deriving (Generic, NFData)
+  deriving (Generic)
 
 data LabelAttr = LabelAttr
   { lbAttrCnstr :: StructFieldCnstr
@@ -86,102 +80,97 @@ data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
 data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
-data StructStubVal t
-  = SStubField (Field t)
-  | SStubLet (LetBinding t)
-  deriving (Show, Eq)
+data StructStubVal
+  = SStubField Field
+  | SStubLet LetBinding
 
-data Field t = Field
-  { ssfValue :: t
-  , ssfBaseRaw :: Maybe t
+data Field = Field
+  { ssfValue :: Tree
+  , ssfBaseRaw :: Maybe Tree
   -- ^ It is the raw parsed value of the field before any dynamic fields or constraints are applied.
   -- It can be None if the field is created from a dynamic field.
   , ssfAttr :: LabelAttr
   , ssfObjects :: Set.Set Int
   -- ^ A set of object IDs that have been unified with base raw value.
   }
-  deriving (Show, Generic, NFData)
+  deriving (Generic)
 
-data LetBinding t = LetBinding
+data LetBinding = LetBinding
   { lbReferred :: Bool
-  , lbValue :: t
+  , lbValue :: Tree
   -- ^ The value is only for the storage purpose.
   }
-  deriving (Show, Eq, Functor, Generic, NFData)
+  deriving (Generic)
 
 {- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
 possible.
 -}
-data DynamicField t = DynamicField
+data DynamicField = DynamicField
   { dsfID :: !Int
   , dsfAttr :: LabelAttr
-  , dsfLabel :: t
+  , dsfLabel :: Tree
   , dsfLabelIsInterp :: !Bool
   -- ^ Whether the label is an interpolated label.
-  , dsfValue :: t
+  , dsfValue :: Tree
   -- ^ The value is only for the storage purpose. It will not be reduced during reducing dynamic fields.
   }
-  deriving (Show, Generic, NFData)
+  deriving (Generic)
 
 {- | StructCnstr is in the form of {[pattern]: value}.
 
 The first element is the pattern, the second element is the value.
 -}
-data StructCnstr t = StructCnstr
+data StructCnstr = StructCnstr
   { scsID :: !Int
-  , scsPattern :: t
-  , scsValue :: t
+  , scsPattern :: Tree
+  , scsValue :: Tree
   -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing.
   }
-  deriving (Show, Generic, NFData)
+  deriving (Generic)
 
-data Embedding t = Embedding
+data Embedding = Embedding
   { embID :: !Int
-  , embValue :: t
+  , embValue :: Tree
   }
-  deriving (Show, Functor, Generic, NFData)
+  deriving (Generic)
 
-data BlockElemAdder t
-  = StaticSAdder T.Text (Field t)
-  | DynamicSAdder !Int (DynamicField t)
-  | CnstrSAdder !Int t t
-  | LetSAdder T.Text t
-  | EmbedSAdder !Int t
-  deriving (Show)
+data BlockElemAdder
+  = StaticSAdder T.Text Field
+  | DynamicSAdder !Int DynamicField
+  | CnstrSAdder !Int Tree Tree
+  | LetSAdder T.Text Tree
+  | EmbedSAdder !Int Tree
 
-instance (Eq t) => Eq (Struct t) where
-  (==) :: (Eq t) => Struct t -> Struct t -> Bool
-  (==) s1 s2 =
-    stcOrdLabels s1 == stcOrdLabels s2
-      && stcFields s1 == stcFields s2
-      -- && stcCnstrs s1 == stcCnstrs s2
-      -- && stcDynFields s1 == stcDynFields s2
-      && stcClosed s1 == stcClosed s2
+-- instance (Eq t) => Eq (Struct) where
+--   (==) :: (Eq t) => Struct -> Struct -> Bool
+--   (==) s1 s2 =
+--     stcOrdLabels s1 == stcOrdLabels s2
+--       && stcFields s1 == stcFields s2
+--       -- && stcCnstrs s1 == stcCnstrs s2
+--       -- && stcDynFields s1 == stcDynFields s2
+--       && stcClosed s1 == stcClosed s2
 
-instance (Show t) => Show (Struct t) where
-  show s =
-    "Struct {"
-      ++ "stcID="
-      ++ show (stcID s)
-      ++ ", stcOrdLabels="
-      ++ show (stcOrdLabels s)
-      ++ "}"
+-- instance (Show t) => Show (Struct) where
+--   show s =
+--     "Struct {"
+--       ++ "stcID="
+--       ++ show (stcID s)
+--       ++ ", stcOrdLabels="
+--       ++ show (stcOrdLabels s)
+--       ++ "}"
 
-instance (BuildASTExpr t) => BuildASTExpr (Struct t) where
-  buildASTExpr _ _ = throwErrSt "not implemented"
+-- instance (Eq t) => Eq (StructCnstr t) where
+--   (==) f1 f2 = scsPattern f1 == scsPattern f2 && scsValue f1 == scsValue f2
 
-instance (Eq t) => Eq (StructCnstr t) where
-  (==) f1 f2 = scsPattern f1 == scsPattern f2 && scsValue f1 == scsValue f2
+-- instance (Eq t) => Eq (DynamicField) where
+--   (==) f1 f2 =
+--     dsfValue f1 == dsfValue f2
+--       && dsfAttr f1 == dsfAttr f2
+--       && dsfLabel f1 == dsfLabel f2
+--       && dsfLabelIsInterp f1 == dsfLabelIsInterp f2
 
-instance (Eq t) => Eq (DynamicField t) where
-  (==) f1 f2 =
-    dsfValue f1 == dsfValue f2
-      && dsfAttr f1 == dsfAttr f2
-      && dsfLabel f1 == dsfLabel f2
-      && dsfLabelIsInterp f1 == dsfLabelIsInterp f2
-
-instance (Eq t) => Eq (Field t) where
-  (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
+-- instance (Eq t) => Eq (Field) where
+--   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
 
 {- | Permission item stores permission information for the static fields and dynamic fields of a struct.
 
@@ -200,7 +189,7 @@ data PermItem = PermItem
   , piOpDyns :: Set.Set Int
   -- ^ The dynamic fields to be checked.
   }
-  deriving (Generic, NFData)
+  deriving (Eq, Generic, NFData)
 
 instance Show PermItem where
   show p =
@@ -224,7 +213,7 @@ mergeAttrs a1 a2 =
     , lbAttrIsIdent = lbAttrIsIdent a1 || lbAttrIsIdent a2
     }
 
-mkStructFromAdders :: Int -> [BlockElemAdder t] -> Struct t
+mkStructFromAdders :: Int -> [BlockElemAdder] -> Struct
 mkStructFromAdders sid as =
   emptyStruct
     { stcID = sid
@@ -260,7 +249,7 @@ mkStructFromAdders sid as =
         []
         as
 
-emptyStruct :: Struct t
+emptyStruct :: Struct
 emptyStruct =
   Struct
     { stcID = 0
@@ -275,10 +264,10 @@ emptyStruct =
     , stcIsConcrete = False
     }
 
-updateFieldValue :: t -> Field t -> Field t
+updateFieldValue :: Tree -> Field -> Field
 updateFieldValue t field = field{ssfValue = t}
 
-staticFieldMker :: (Show t) => t -> LabelAttr -> Field t
+staticFieldMker :: Tree -> LabelAttr -> Field
 staticFieldMker t a =
   Field
     { ssfValue = t
@@ -288,10 +277,10 @@ staticFieldMker t a =
     }
 
 dynToField ::
-  DynamicField t ->
-  Maybe (Field t) ->
-  (t -> t -> t) ->
-  Field t
+  DynamicField ->
+  Maybe Field ->
+  (Tree -> Tree -> Tree) ->
+  Field
 dynToField df sfM unifier = case sfM of
   -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
   -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
@@ -315,14 +304,14 @@ dynToField df sfM unifier = case sfM of
       , ssfObjects = Set.fromList [dsfID df]
       }
 
-mkEmbedding :: Int -> t -> Embedding t
+mkEmbedding :: Int -> Tree -> Embedding
 mkEmbedding eid t =
   Embedding
     { embID = eid
     , embValue = t
     }
 
-addStructLetBind :: Struct t -> T.Text -> t -> Struct t
+addStructLetBind :: Struct -> T.Text -> Tree -> Struct
 addStructLetBind struct s t =
   struct
     { stcLets =
@@ -332,7 +321,7 @@ addStructLetBind struct s t =
           (stcLets struct)
     }
 
-markLetBindReferred :: T.Text -> Struct t -> Struct t
+markLetBindReferred :: T.Text -> Struct -> Struct
 markLetBindReferred name struct =
   case Map.lookup name lets of
     Just lb ->
@@ -344,7 +333,7 @@ markLetBindReferred name struct =
   lets = stcLets struct
 
 -- | Determines whether the struct has empty fields, including both static and dynamic fields.
-hasEmptyFields :: Struct t -> Bool
+hasEmptyFields :: Struct -> Bool
 hasEmptyFields s = Map.null (stcFields s) && null (stcDynFields s)
 
 getFieldType :: String -> Maybe StructFieldType
@@ -358,26 +347,26 @@ getFieldType ident
 
 The name could be in both the fields and let bindings, or either.
 -}
-lookupStructStubVal :: T.Text -> Struct t -> [StructStubVal t]
+lookupStructStubVal :: T.Text -> Struct -> [StructStubVal]
 lookupStructStubVal name struct =
   catMaybes
     [ SStubField <$> Map.lookup name (stcFields struct)
     , SStubLet <$> Map.lookup name (stcLets struct)
     ]
 
-lookupStructLet :: T.Text -> Struct t -> Maybe (LetBinding t)
+lookupStructLet :: T.Text -> Struct -> Maybe LetBinding
 lookupStructLet name struct = Map.lookup name (stcLets struct)
 
-updateStructLet :: T.Text -> LetBinding t -> Struct t -> Struct t
+updateStructLet :: T.Text -> LetBinding -> Struct -> Struct
 updateStructLet name sub struct =
   struct
     { stcLets = Map.insert name sub (stcLets struct)
     }
 
-lookupStructField :: T.Text -> Struct t -> Maybe (Field t)
+lookupStructField :: T.Text -> Struct -> Maybe Field
 lookupStructField name struct = Map.lookup name (stcFields struct)
 
-lookupStructIdentField :: T.Text -> Struct t -> Maybe (Field t)
+lookupStructIdentField :: T.Text -> Struct -> Maybe Field
 lookupStructIdentField name struct =
   case Map.lookup name (stcFields struct) of
     Just field ->
@@ -387,7 +376,7 @@ lookupStructIdentField name struct =
     Nothing -> Nothing
 
 -- | Update the struct with the given label name and field.
-updateStructField :: T.Text -> Field t -> Struct t -> Struct t
+updateStructField :: T.Text -> Field -> Struct -> Struct
 updateStructField name sub struct =
   _appendOrdLabelIfNeeded
     name
@@ -396,16 +385,16 @@ updateStructField name sub struct =
         }
     )
 
-_appendOrdLabelIfNeeded :: T.Text -> Struct t -> Struct t
+_appendOrdLabelIfNeeded :: T.Text -> Struct -> Struct
 _appendOrdLabelIfNeeded name struct =
   if name `elem` stcOrdLabels struct
     then struct
     else struct{stcOrdLabels = stcOrdLabels struct ++ [name]}
 
-updateStructWithFields :: [(T.Text, Field t)] -> Struct t -> Struct t
+updateStructWithFields :: [(T.Text, Field)] -> Struct -> Struct
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
 
-removeStructFields :: [T.Text] -> Struct t -> Struct t
+removeStructFields :: [T.Text] -> Struct -> Struct
 removeStructFields names struct =
   struct
     { stcOrdLabels = filter (`notElem` names) (stcOrdLabels struct)
@@ -415,7 +404,7 @@ removeStructFields names struct =
 {- | Given a struct and a list of static field names, return the permission information to check if the static fields
 are allowed
 -}
-getPermInfoForFields :: Struct t -> [T.Text] -> [PermItem]
+getPermInfoForFields :: Struct -> [T.Text] -> [PermItem]
 getPermInfoForFields struct = foldr go []
  where
   go name ext =
@@ -429,7 +418,7 @@ getPermInfoForFields struct = foldr go []
 {- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic
 field is allowed or whether the dynamic field allows other fields.
 -}
-getPermInfoForDyn :: Struct t -> Int -> [PermItem]
+getPermInfoForDyn :: Struct -> Int -> [PermItem]
 getPermInfoForDyn struct i =
   foldr
     ( \p acc ->
@@ -441,6 +430,6 @@ getPermInfoForDyn struct i =
 {- | Given a struct and the index of a constraint, return the permission information to check whether the constraint
 allows other fields.
 -}
-getPermInfoForPattern :: Struct t -> Int -> [PermItem]
+getPermInfoForPattern :: Struct -> Int -> [PermItem]
 getPermInfoForPattern struct i =
   foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)
