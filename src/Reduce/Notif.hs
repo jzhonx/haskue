@@ -17,13 +17,13 @@ import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Sequence as Seq
 import Exception (throwErrSt)
 import Path
-import Reduce.Mutate (delRefSysRecvPrefix)
 import qualified Reduce.Nodes as Nodes
 import Reduce.RMonad (
   ReduceMonad,
   debugInstantRM,
   debugSpanArgsRM,
   debugSpanRM,
+  delRefSysRecvPrefix,
   getRMContext,
   getRMNotifEnabled,
   getRMReadyQ,

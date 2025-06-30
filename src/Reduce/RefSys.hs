@@ -19,7 +19,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import Path
-import Reduce.Mutate (reduceToNonMut)
 import Reduce.RMonad (
   ReduceMonad,
   ReduceTCMonad,
@@ -37,6 +36,7 @@ import Reduce.RMonad (
   propUpTMUntilSeg,
   putRMContext,
  )
+import {-# SOURCE #-} Reduce.Root (reduceToNonMut)
 import Text.Printf (printf)
 import Value
 

@@ -20,7 +20,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import Path
-import Reduce.Mutate (reduceToNonMut)
 import Reduce.RMonad (
   ReduceMonad,
   addRMUnreferredLet,
@@ -32,7 +31,7 @@ import Reduce.RMonad (
   increaseRMGlobalVers,
  )
 import Reduce.RefSys (searchTCIdentInPar)
-import {-# SOURCE #-} Reduce.Root (reduce)
+import {-# SOURCE #-} Reduce.Root (reduce, reduceToNonMut)
 import Reduce.UnifyOp (patMatchLabel, unifyTCs)
 import Text.Printf (printf)
 import Value
@@ -658,14 +657,14 @@ closeTree a =
     -- TNMutable _ -> throwErrSt "TODO"
     _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-reduceeDisjOp :: (ReduceMonad s r m) => Bool -> DisjoinOp -> TrCur -> m (Maybe Tree)
-reduceeDisjOp asConj disjOp disjOpTC = debugSpanRM "reduceeDisjOp" id disjOpTC $ do
+reduceDisjOp :: (ReduceMonad s r m) => Bool -> DisjoinOp -> TrCur -> m (Maybe Tree)
+reduceDisjOp asConj disjOp disjOpTC = debugSpanRM "reduceDisjOp" id disjOpTC $ do
   let terms = toList $ djoTerms disjOp
   when (length terms < 2) $
     throwErrSt $
       printf "disjunction operation requires at least 2 terms, got %d" (length terms)
   disjuncts <- procMarkedTerms asConj terms disjOpTC
-  debugInstantRM "reduceeDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
+  debugInstantRM "reduceDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
 
   if null disjuncts
     -- If none of the disjuncts are ready, return Nothing.

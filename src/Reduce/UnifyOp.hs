@@ -25,7 +25,6 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Exception (throwErrSt)
 import Path
-import Reduce.Mutate (reduceToNonMut)
 import Reduce.RMonad (
   ReduceMonad,
   allocRMObjID,
@@ -34,7 +33,7 @@ import Reduce.RMonad (
   debugSpanRM,
  )
 import Reduce.RefSys (searchTCIdent)
-import {-# SOURCE #-} Reduce.Root (reduce, reduceUnifyConj)
+import {-# SOURCE #-} Reduce.Root (reduce, reduceToNonMut, reduceUnifyConj)
 import Text.Printf (printf)
 import Value
 

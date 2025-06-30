@@ -14,16 +14,15 @@ import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Exception (throwErrSt)
 import Path
-import Reduce.Mutate
 import Reduce.Nodes (
   close,
   reduceBlock,
   reduceCnstredVal,
   reduceCompreh,
   reduceDisj,
+  reduceDisjOp,
   reduceInterpolation,
   reduceList,
-  reduceeDisjOp,
  )
 import qualified Reduce.Notif as Notif
 import Reduce.RMonad (
@@ -33,6 +32,7 @@ import Reduce.RMonad (
   debugInstantRM,
   debugSpanRM,
   debugSpanTM,
+  delMutValRecvs,
   getRMContext,
   getRMGlobalVers,
   getRMNotifEnabled,
@@ -133,7 +133,7 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
                 (\r -> Just <$> reduceTCFocus (r `setTCFocus` tc))
                 rM
             DisjOp disjOp -> do
-              rM <- reduceeDisjOp False disjOp tc
+              rM <- reduceDisjOp False disjOp tc
               maybe
                 (return Nothing)
                 (\r -> Just <$> reduceTCFocus (r `setTCFocus` tc))
@@ -224,5 +224,11 @@ reduceUnifyConj tc = debugSpanRM "reduceUnifyConj" id tc $ withTreeDepthLimit tc
             (return Nothing)
             (\r -> reduceUnifyConj (r `setTCFocus` tc))
             rM
-      | DisjOp disjOp <- mut -> reduceeDisjOp True disjOp tc
-    _ -> return $ Just $ tcFocus tc
+      | DisjOp disjOp <- mut -> reduceDisjOp True disjOp tc
+    _ -> return $ Just $ Cursor.tcFocus tc
+
+-- | Reduce the tree cursor to non-mutable.
+reduceToNonMut :: (ReduceMonad s r m) => TrCur -> m (Maybe Tree)
+reduceToNonMut tc = do
+  r <- reduce tc
+  return $ rtrNonMut r
