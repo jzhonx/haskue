@@ -14,7 +14,7 @@ import Cursor
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -1155,20 +1155,14 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
         then return Nothing
         else return . Just $ mkBottomTree $ printf "%s is not allowed" newLabel
 
--- | Returns whether the pattern matches the label.
+{- | Returns whether the pattern matches the label.
+
+The pattern is expected to be an Atom or a Bounds.
+-}
 patMatchLabel :: (ReduceMonad s r m) => Tree -> T.Text -> TrCur -> m Bool
-patMatchLabel pat name tc = case treeNode pat of
-  TNMutable mut@(Mutable mop _)
-    -- If the mutable is a reference or an index, then we should try to use the value of the mutable.
-    -- TODO: use IsRef
-    | RegOp _ <- mop -> match pat
-    | _ <- mop ->
-        maybe
-          (return False)
-          -- The lable mutable might be a reference. The pending element should not be marked as deleted.
-          match
-          (getMutVal mut)
-  _ -> match pat
+patMatchLabel pat name tc = do
+  let r = listToMaybe $ catMaybes [rtrAtom pat >> return pat, rtrBounds pat >> return pat]
+  maybe (return False) match r
  where
   match :: (ReduceMonad s r m) => Tree -> m Bool
   match v = do

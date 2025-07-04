@@ -467,18 +467,14 @@ whenTraceEnabled name f traced = do
     then traced
     else f
 
-canonicalizeTree :: (Common.Env r s m) => Tree -> m Tree
-canonicalizeTree t = tcFocus <$> snapshotTC (TrCur t [])
-
 spanTreeMsgs :: (Common.Env r s m) => Tree -> m (String, String)
 spanTreeMsgs t = do
   Common.Config{Common.cfSettings = Common.Settings{Common.stTracePrintTree = tracePrintTree}} <- asks Common.getConfig
   if not tracePrintTree
     then return ("", "")
     else do
-      r <- canonicalizeTree t
-      e <- buildASTExprDebug r
-      return (show r, BS.unpack $ toLazyByteString (AST.exprBld e))
+      e <- buildASTExprDebug t
+      return (show t, BS.unpack $ toLazyByteString (AST.exprBld e))
 
 debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a
 debugSpanTM name = _traceActionTM name Nothing

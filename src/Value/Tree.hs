@@ -325,6 +325,13 @@ rtrBottom t = do
     IsBottom b -> Just b
     _ -> Nothing
 
+rtrBounds :: Tree -> Maybe Bounds
+rtrBounds t = do
+  v <- rtrBase t
+  case v of
+    IsBounds b -> Just b
+    _ -> Nothing
+
 {- | Get the disjunction from the tree.
 
 It stops at the first disjunction found. It does not go deeper to the default value of the disjunction.
