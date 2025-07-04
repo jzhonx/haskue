@@ -315,9 +315,6 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
     $ do
       -- Each case should handle embedded case when the left value is embedded.
       rM <- case (treeNode t1, treeNode t2) of
-        -- CnstredVal has the highest priority, because the real operand is the value of the CnstredVal.
-        (TNCnstredVal c, _) -> mergeLeftCnstredVal (c, ut1) ut2 unifyTC
-        (_, TNCnstredVal c) -> mergeLeftCnstredVal (c, ut2) ut1 unifyTC
         (TNBottom _, _) -> retTr t1
         (_, TNBottom _) -> retTr t2
         (TNTop, _) -> mergeLeftTop ut1 ut2
@@ -341,34 +338,6 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
 
 retTr :: (ReduceMonad s r m) => Tree -> m (Maybe Tree)
 retTr = return . Just
-
-mergeLeftCnstredVal ::
-  (ReduceMonad s r m) => (CnstredVal, UTree) -> UTree -> TrCur -> m (Maybe Tree)
-mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} unifyTC = do
-  let t2 = tcFocus tc2
-  eM2 <- case treeNode t2 of
-    -- ut2 is CnstredVal, we need to merge original expressions.
-    TNCnstredVal c2 -> return $ cnsedOrigExpr c2
-    -- ut2 is not CnstredVal, we need to build the original expression.
-    _ -> Just <$> buildASTExpr t2
-
-  e <- case catMaybes [cnsedOrigExpr c1, eM2] of
-    -- If only one side has an original expression, we can use it directly.
-    [e] -> return e
-    -- If both sides have original expressions, we need to unify them.
-    [e1, e2] -> return $ AST.binaryOpCons (pure AST.Unify) e1 e2
-    _ -> throwErrSt "both CnstredVals are empty"
-
-  rM <- unifyBinUTrees (ut1{utTC = cnsedVal c1 `setTCFocus` utTC ut1}) ut2 unifyTC
-  maybe
-    (return Nothing)
-    ( \r ->
-        -- Re-encapsulate the CnstredVal.
-        case treeNode r of
-          TNCnstredVal c -> retTr $ setTN r (TNCnstredVal $ c{cnsedOrigExpr = Just e})
-          _ -> retTr $ setTN r (TNCnstredVal $ CnstredVal r (Just e))
-    )
-    rM
 
 mergeLeftTop :: (ReduceMonad s r m) => UTree -> UTree -> m (Maybe Tree)
 mergeLeftTop _ ut2 = do

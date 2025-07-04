@@ -153,7 +153,6 @@ goDownTCSeg seg tc = do
         TNMutable mut -> do
           mv <- getMutVal mut
           return (mv, SubValTASeg)
-        TNCnstredVal cv -> return (cnsedVal cv, SubValTASeg)
         TNDisj d -> do
           dft <- dsjDefault d
           return (dft, DisjDefTASeg)
@@ -252,7 +251,6 @@ snapshotTC tc = do
             TNBlock block
               | Just ev <- blkNonStructValue block -> ev
             TNMutable m -> maybe focus id (getMutVal m)
-            TNCnstredVal c -> cnsedVal c
             _ -> focus
 
   traverseTCSimple subNodes rewrite tc

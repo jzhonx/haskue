@@ -100,7 +100,6 @@ buildASTExprExt t = case treeNode t of
     Itp _ -> maybe (throwErrSt "expression not found for interpolation") return (treeExpr t)
   TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
   TNRefCycle _ -> return $ AST.litCons (pure AST.TopLit)
-  TNCnstredVal c -> maybe (throwErrSt "expression not found for cnstred value") return (cnsedOrigExpr c)
 
 -- | Patterns are not included in the AST.
 buildStructASTExpr :: (BEnv r s m) => Block -> m AST.Expression

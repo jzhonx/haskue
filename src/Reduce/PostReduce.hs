@@ -85,7 +85,6 @@ snapshotRM = debugSpanTM "snapshotRM" $ do
     TNBlock block
       | Just ev <- blkNonStructValue block -> modifyTMNodeWithTree ev
     TNMutable m -> maybe (return ()) modifyTMNodeWithTree (getMutVal m)
-    TNCnstredVal c -> modifyTMNodeWithTree $ cnsedVal c
     _ -> return ()
 
 {- | Traverse the tree and does the following things with the node:

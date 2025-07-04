@@ -17,7 +17,6 @@ import Path
 import Reduce.Nodes (
   close,
   reduceBlock,
-  reduceCnstredVal,
   reduceCompreh,
   reduceDisj,
   reduceDisjOp,
@@ -156,7 +155,6 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
     TNBlock _ -> reduceBlock tc
     TNList l -> reduceList l tc
     TNDisj d -> reduceDisj d tc
-    TNCnstredVal cv -> reduceCnstredVal cv tc
     _ -> return orig
 
   -- Overwrite the treenode of the raw with the reduced tree's TreeNode to preserve tree attributes.

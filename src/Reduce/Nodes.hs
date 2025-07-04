@@ -456,8 +456,9 @@ bindFieldWithCnstr name field cnstr tc = do
 
   let
     fval = ssfValue field
+    op = mkMutableTree $ mkUnifyOp [fval, scsValue cnstr]
     -- TODO: comment on why mkCnstredValTree is used.
-    op = mkMutableTree $ mkUnifyOp [fval, mkCnstredValTree (scsValue cnstr) Nothing]
+    -- op = mkMutableTree $ mkUnifyOp [fval, mkCnstredValTree (scsValue cnstr) Nothing]
     newField =
       if matched
         then field{ssfValue = op, ssfObjects = Set.insert (scsID cnstr) (ssfObjects field)}
@@ -590,10 +591,6 @@ applyMoreCnstr cnstr struct tc = debugSpanRM "applyMoreCnstr" (const Nothing) tc
       (getLabelFieldPairs struct)
   let newStruct = updateStructWithFields addAffFields struct
   return (newStruct, addAffLabels)
-
-reduceCnstredVal :: (ReduceMonad s r m) => CnstredVal -> TrCur -> m Tree
-reduceCnstredVal _ tc = do
-  tcFocus <$> inSubTC SubValTASeg reduce tc
 
 reduceDisj :: (ReduceMonad s r m) => Disj -> TrCur -> m Tree
 reduceDisj d tc = do

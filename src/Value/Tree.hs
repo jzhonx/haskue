@@ -65,7 +65,6 @@ data TreeNode
     -- If a field references its sub field, the address is the sub field address. For example: x: x.a.
     TNRefCycle TreeAddr
   | TNMutable Mutable
-  | TNCnstredVal CnstredVal
   deriving (Generic)
 
 -- Some rules:
@@ -119,9 +118,6 @@ pattern IsAtomCnstr c <- TN (TNAtomCnstr c)
 pattern IsRefCycle :: TreeAddr -> Tree
 pattern IsRefCycle addr <- TN (TNRefCycle addr)
 
-pattern IsCnstredVal :: CnstredVal -> Tree
-pattern IsCnstredVal cv <- TN (TNCnstredVal cv)
-
 pattern IsMutable :: Mutable -> Tree
 pattern IsMutable mut <- TN (TNMutable mut)
 
@@ -159,9 +155,6 @@ subTree seg t = case (seg, treeNode t) of
   (_, TNDisj d)
     | DisjDefTASeg <- seg -> dsjDefault d
     | DisjRegTASeg i <- seg -> dsjDisjuncts d `indexList` i
-  -- CnstredVal is just a wrapper of a value. If we have additional segments, we should descend into the value.
-  (_, TNCnstredVal cv)
-    | SubValTASeg <- seg -> Just (cnsedVal cv)
   _ -> Nothing
 
 -- | Set the sub tree with the given segment and new tree.
@@ -191,8 +184,6 @@ setSubTree seg subT parT = do
       | DisjDefTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjRegTASeg i <- seg ->
           return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    (_, TNCnstredVal cv)
-      | SubValTASeg <- seg -> return $ TNCnstredVal cv{cnsedVal = subT}
     (ParentTASeg, _) -> throwErrSt "setSubTreeTN: ParentTASeg is not allowed"
     (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
     _ -> throwErrSt insertErrMsg
@@ -274,7 +265,6 @@ rtrBase t = case treeNode t of
     | Just ev <- blkNonStructValue block -> rtrBase ev
     | otherwise -> Just t
   TNAtomCnstr c -> Just $ mkAtomTree (cnsAtom c)
-  TNCnstredVal c -> rtrBase $ cnsedVal c
   TNMutable mut -> getMutVal mut >>= rtrBase
   TNRefCycle _ -> Nothing
 
@@ -433,9 +423,6 @@ mkBlockTree b = mkNewTree (TNBlock b)
 mkStructTree :: Struct -> Tree
 mkStructTree s = mkNewTree (TNBlock (emptyBlock{blkStruct = s}))
 
-mkCnstredValTree :: Tree -> Maybe AST.Expression -> Tree
-mkCnstredValTree v m = mkNewTree (TNCnstredVal $ CnstredVal v m)
-
 -- | Create an index function node.
 appendSelToRefTree :: Tree -> Tree -> Tree
 appendSelToRefTree oprnd selArg = case treeNode oprnd of
@@ -520,7 +507,6 @@ treeToSubStr toff moreSub t =
                                         (length pre)
                                         -- Some nodes can have one more level of sub-tree.
                                         ( case treeNode sub of
-                                            TNCnstredVal _ -> True
                                             TNMutable _ -> True
                                             TNAtomCnstr _ -> True
                                             _ -> False
@@ -837,7 +823,6 @@ buildRepTreeTN t tn opt = case tn of
         val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep (symbol, "", consFields (exprs ++ val), [])
-  TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
  where
@@ -869,7 +854,6 @@ showTreeSymbol t = case treeNode t of
     DisjOp _ -> "disjoin"
     UOp _ -> "unify"
     Itp _ -> "inter"
-  TNCnstredVal _ -> "cnstred"
   TNBottom _ -> "_|_"
   TNTop -> "_"
 
