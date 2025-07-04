@@ -65,12 +65,9 @@ addrFromCrumbs crumbs = addrFromList $ go crumbs []
 setTCFocus :: Tree -> TrCur -> TrCur
 setTCFocus t (TrCur _ cs) = TrCur t cs
 
--- | Generate canonical form of tree address from the tree cursor.
+-- | Generate tree address from the tree cursor.
 tcCanAddr :: TrCur -> TreeAddr
-tcCanAddr c = trim $ addrFromCrumbs (tcCrumbs c)
- where
-  trim :: TreeAddr -> TreeAddr
-  trim (TreeAddr segs) = TreeAddr $ V.filter (not . isSegNonCanonical) segs
+tcCanAddr c = addrFromCrumbs (tcCrumbs c)
 
 -- | Get the parent of the cursor without propagating the value up.
 parentTC :: TrCur -> Maybe TrCur
@@ -175,28 +172,31 @@ goDownTSeg seg startT = goDownTCSeg seg (TrCur startT [])
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
-It ensures that the version of the parent node is always greater than or equal to any of its children.
-
 It stops at the root.
 -}
 propUpTC :: (Env r s m) => TrCur -> m TrCur
 propUpTC (TrCur _ []) = throwErrSt "already at the top"
 propUpTC tc@(TrCur _ [(RootTASeg, _)]) = return tc
-propUpTC (TrCur subT@Tree{treeVersion = vers} ((seg, parT) : cs)) = do
+propUpTC (TrCur subT ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
-  return $ TrCur (t{treeVersion = vers}) cs
+  return $ TrCur t cs
 
--- Propagate the bottom value up until the root and return the updated tree cursor with the original cursor position.
+{- | Surface evaluated values up until the root and return the updated tree cursor with the original cursor
+position.
+-}
 syncTC :: (Env r s m) => TrCur -> m TrCur
-syncTC tc = do
-  let addr = tcCanAddr tc
-      addrTillRootM = tailTreeAddr addr
-  top <- go tc
-  addrTillRoot <- maybe (throwErrSt $ printf "tail tree addr of %s does not exist" (show addr)) return addrTillRootM
-  goDownTCAddrMust addrTillRoot top
+syncTC a = go a []
  where
-  go cur@(TrCur _ [(RootTASeg, _)]) = return cur
-  go cur = propUpTC cur >>= go
+  go (TrCur _ []) _ = throwErrSt "already at the top"
+  go tc@(TrCur _ [(RootTASeg, _)]) acc =
+    -- Leftmost of the acc represents the highest processed tree.
+    -- Go from the highest processed tree to the original cursor position.
+    -- The accTC has the processed parent tree.
+    return $ foldl (\accTC (t, seg) -> TrCur t ((seg, tcFocus accTC) : tcCrumbs accTC)) tc acc
+  go (TrCur _ [_]) _ = throwErrSt "highest segment is not RootTASeg"
+  go tc@(TrCur subT ((seg, _) : _)) acc = do
+    parTC <- propUpTC tc
+    go parTC ((subT, seg) : acc)
 
 -- | Get the top cursor of the tree. No propagation is involved.
 topTC :: (Env r s m) => TrCur -> m TrCur
@@ -249,7 +249,7 @@ snapshotTC tc = do
       let focus = tcFocus xtc
        in return $ case treeNode focus of
             TNBlock block
-              | Just ev <- blkNonStructValue block -> ev
+              | IsBlockEmbed ev <- block -> ev
             TNMutable m -> maybe focus id (getMutVal m)
             _ -> focus
 

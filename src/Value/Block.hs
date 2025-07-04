@@ -1,8 +1,9 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE PatternSynonyms #-}
 
-module Value.Struct where
+module Value.Block where
 
 import Control.DeepSeq (NFData (..))
 import qualified Data.IntMap.Strict as IntMap
@@ -13,57 +14,73 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Tree
 
-{- | A block is a structure that contains a struct and a set of embeddings.
+{- | A block is a structure that contains a set of fields and a set of embeddings.
 
 Reduction of a block is not necessarily a struct.
 -}
 data Block = Block
-  { blkStruct :: Struct
+  { blkID :: !Int
+  -- ^ The ID is used to identify the block. It will not be used in the comparison of structs.
+  , blkOrdLabels :: [BlockLabel]
+  -- ^ blkOrdLabels is a list of ordered field labels. It does not contain let bindings.
+  , blkStaticFields :: Map.Map T.Text Field
+  -- ^ The un-evaluated fields that defined in this block. Note that fields defined in the embedding are not included.
+  , blkBindings :: Map.Map T.Text LetBinding
+  -- ^ Let bindings are read-only. They are not reduced.
+  , blkDynFields :: IntMap.IntMap DynamicField
+  -- ^ We should not shrink the list as it is a heap list.
+  , blkCnstrs :: IntMap.IntMap StructCnstr
   , blkEmbeds :: IntMap.IntMap Embedding
-  , blkNonStructValue :: Maybe Tree
+  , blkValue :: BlockValue
   }
   deriving (Generic)
 
--- instance (Eq t) => Eq (Block t) where
---   (==) s1 s2 = blkStruct s1 == blkStruct s2 && blkNonStructValue s1 == blkNonStructValue s2
+data BlockLabel = BlockFieldLabel T.Text | BlockDynFieldOID !Int
+  deriving (Eq, Generic, NFData, Ord)
+
+instance Show BlockLabel where
+  show (BlockFieldLabel n) = T.unpack n
+  show (BlockDynFieldOID i) = show i
+
+data BlockValue
+  = BlockStruct Struct
+  | BlockEmbed Tree
+  deriving (Generic)
+
+pattern IsBlockStruct :: Struct -> Block
+pattern IsBlockStruct s <- Block{blkValue = BlockStruct s}
+
+pattern IsBlockEmbed :: Tree -> Block
+pattern IsBlockEmbed t <- Block{blkValue = BlockEmbed t}
 
 emptyBlock :: Block
 emptyBlock =
   Block
-    { blkStruct = emptyStruct
+    { blkID = 0
+    , blkStaticFields = Map.empty
+    , blkOrdLabels = []
+    , blkBindings = Map.empty
+    , blkDynFields = IntMap.empty
+    , blkCnstrs = IntMap.empty
     , blkEmbeds = IntMap.empty
-    , blkNonStructValue = Nothing
+    , blkValue = BlockStruct emptyStruct
     }
 
 modifyBlockStruct :: (Struct -> Struct) -> Block -> Block
-modifyBlockStruct f blk = blk{blkStruct = f (blkStruct blk)}
+modifyBlockStruct f blk@(IsBlockStruct s) = blk{blkValue = BlockStruct (f s)}
+modifyBlockStruct _ blk = blk
 
 setBlockStruct :: Struct -> Block -> Block
-setBlockStruct s blk = blk{blkStruct = s}
+setBlockStruct s blk@(IsBlockStruct _) = blk{blkValue = BlockStruct s}
+setBlockStruct _ blk = blk
 
 data Struct = Struct
-  { stcID :: !Int
-  -- ^ The ID is used to identify the struct. It will not be used in the comparison of structs.
-  , stcOrdLabels :: [T.Text]
-  -- ^ stcOrdLabels should only contain string labels, meaning it contains all regular fields, hidden fields and
-  -- definitions. It should not contain let bindings.
-  , stcBlockIdents :: Set.Set T.Text
-  -- ^ The original identifiers declared in the block. It is used to validate identifiers.
-  -- It includes both static fields and let bindings.
-  -- It is needed because new static fields of embeddings can be merged into the struct.
-  -- Once the struct is created, the static identifiers are fixed. The let identifiers can be rewritten with the scope
-  -- id.
-  , stcLets :: Map.Map T.Text LetBinding
-  -- ^ Let bindings are read-only. They are not reduced.
-  , stcCnstrs :: IntMap.IntMap StructCnstr
-  , stcDynFields :: IntMap.IntMap DynamicField
-  -- ^ We should not shrink the list as it is a heap list.
-  -- | == Results start
-  , stcClosed :: !Bool
-  -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
-  , stcPerms :: [PermItem]
+  { stcClosed :: !Bool
+  -- ^ == Results start
+  , -- \^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
+    stcPerms :: [PermItem]
   , stcFields :: Map.Map T.Text Field
-  -- ^ It is the fields, excluding the let bindings.
+  -- ^ It is the fields.
   , stcIsConcrete :: !Bool
   }
   deriving (Generic)
@@ -80,15 +97,12 @@ data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
 data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
-data StructStubVal
-  = SStubField Field
-  | SStubLet LetBinding
+data BlockStubVal
+  = BlkStubField Field
+  | BlkStubLet LetBinding
 
 data Field = Field
   { ssfValue :: Tree
-  , ssfBaseRaw :: Maybe Tree
-  -- ^ It is the raw parsed value of the field before any dynamic fields or constraints are applied.
-  -- It can be None if the field is created from a dynamic field.
   , ssfAttr :: LabelAttr
   , ssfObjects :: Set.Set Int
   -- ^ A set of object IDs that have been unified with base raw value.
@@ -151,12 +165,8 @@ original struct.
 -}
 data PermItem = PermItem
   { piCnstrs :: Set.Set Int
-  , piLabels :: Set.Set T.Text
-  , piDyns :: Set.Set Int
-  , piOpLabels :: Set.Set T.Text
-  -- ^ The static fields to be checked.
-  , piOpDyns :: Set.Set Int
-  -- ^ The dynamic fields to be checked.
+  , piLabels :: Set.Set BlockLabel
+  , piOpLabels :: Set.Set BlockLabel
   }
   deriving (Eq, Generic, NFData)
 
@@ -167,12 +177,8 @@ instance Show PermItem where
       ++ show (Set.toList $ piCnstrs p)
       ++ ",labels="
       ++ show (Set.toList $ piLabels p)
-      ++ ",dyns="
-      ++ show (Set.toList $ piDyns p)
       ++ ",opLabels="
       ++ show (Set.toList $ piOpLabels p)
-      ++ ",opDyns="
-      ++ show (Set.toList $ piOpDyns p)
       ++ "}"
 
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
@@ -182,52 +188,38 @@ mergeAttrs a1 a2 =
     , lbAttrIsIdent = lbAttrIsIdent a1 || lbAttrIsIdent a2
     }
 
-mkStructFromAdders :: Int -> [BlockElemAdder] -> Struct
-mkStructFromAdders sid as =
-  emptyStruct
-    { stcID = sid
-    , stcOrdLabels = ordLabels
-    , stcBlockIdents = Set.fromList ordLabels `Set.union` Set.fromList (map fst lets)
-    , stcFields = Map.fromList statics
-    , stcLets = Map.fromList lets
-    , stcDynFields = dyns
-    , stcCnstrs = cnstrs
-    }
+mkBlockFromAdder :: Int -> BlockElemAdder -> Block
+mkBlockFromAdder bid adder
+  | StaticSAdder s sf <- adder =
+      block
+        { blkStaticFields = Map.singleton s sf
+        , blkOrdLabels = [BlockFieldLabel s]
+        , blkValue =
+            BlockStruct $
+              emptyStruct
+                { stcFields = Map.singleton s sf
+                }
+        }
+  | DynamicSAdder oid dsf <- adder =
+      block
+        { blkOrdLabels = [BlockDynFieldOID oid]
+        , blkDynFields = IntMap.singleton oid dsf
+        }
+  | CnstrSAdder oid pat val <- adder =
+      block
+        { blkCnstrs = IntMap.singleton oid (StructCnstr oid pat val)
+        }
+  | LetSAdder s v <- adder =
+      block{blkBindings = Map.singleton s LetBinding{lbReferred = False, lbValue = v}}
+  | EmbedSAdder eid t <- adder =
+      block{blkEmbeds = IntMap.singleton eid (mkEmbedding eid t)}
  where
-  ordLabels = [l | StaticSAdder l _ <- as]
-  statics = [(s, sf) | StaticSAdder s sf <- as]
-  lets = [(s, LetBinding{lbReferred = False, lbValue = v}) | LetSAdder s v <- as]
-  dyns =
-    IntMap.fromList $
-      foldr
-        ( \x acc ->
-            case x of
-              DynamicSAdder oid dsf -> (oid, dsf) : acc
-              _ -> acc
-        )
-        []
-        as
-  cnstrs =
-    IntMap.fromList $
-      foldr
-        ( \x acc ->
-            case x of
-              CnstrSAdder oid pattern val -> (oid, StructCnstr oid pattern val) : acc
-              _ -> acc
-        )
-        []
-        as
+  block = emptyBlock{blkID = bid}
 
 emptyStruct :: Struct
 emptyStruct =
   Struct
-    { stcID = 0
-    , stcOrdLabels = []
-    , stcFields = Map.empty
-    , stcBlockIdents = Set.empty
-    , stcLets = Map.empty
-    , stcDynFields = IntMap.empty
-    , stcCnstrs = IntMap.empty
+    { stcFields = Map.empty
     , stcClosed = False
     , stcPerms = []
     , stcIsConcrete = False
@@ -240,7 +232,6 @@ staticFieldMker :: Tree -> LabelAttr -> Field
 staticFieldMker t a =
   Field
     { ssfValue = t
-    , ssfBaseRaw = Just t
     , ssfAttr = a
     , ssfObjects = Set.empty
     }
@@ -268,7 +259,6 @@ dynToField df sfM unifier = case sfM of
   _ ->
     Field
       { ssfValue = dsfValue df
-      , ssfBaseRaw = Nothing
       , ssfAttr = dsfAttr df
       , ssfObjects = Set.fromList [dsfID df]
       }
@@ -280,30 +270,43 @@ mkEmbedding eid t =
     , embValue = t
     }
 
-addStructLetBind :: Struct -> T.Text -> Tree -> Struct
-addStructLetBind struct s t =
-  struct
-    { stcLets =
+lookupBlockLet :: T.Text -> Block -> Maybe LetBinding
+lookupBlockLet name block = Map.lookup name (blkBindings block)
+
+{- | Insert a new let binding into the block.
+
+Caller should ensure that the name is not already in the block.
+-}
+insertBlockLet :: T.Text -> Tree -> Block -> Block
+insertBlockLet s t block =
+  block
+    { blkBindings =
         Map.insert
           s
-          (LetBinding{lbValue = t, lbReferred = False})
-          (stcLets struct)
+          LetBinding
+            { lbReferred = False
+            , lbValue = t
+            }
+          (blkBindings block)
     }
 
-markLetBindReferred :: T.Text -> Struct -> Struct
-markLetBindReferred name struct =
-  case Map.lookup name lets of
-    Just lb ->
-      struct
-        { stcLets = Map.insert name (lb{lbReferred = True}) lets
-        }
-    _ -> struct
- where
-  lets = stcLets struct
+updateBlockLet :: T.Text -> Tree -> Block -> Block
+updateBlockLet name t block =
+  block
+    { blkBindings =
+        Map.update (\lb -> Just lb{lbValue = t}) name (blkBindings block)
+    }
 
--- | Determines whether the struct has empty fields, including both static and dynamic fields.
-hasEmptyFields :: Struct -> Bool
-hasEmptyFields s = Map.null (stcFields s) && null (stcDynFields s)
+markLetBindReferred :: T.Text -> Block -> Block
+markLetBindReferred name block =
+  block
+    { blkBindings =
+        Map.update (\lb -> Just lb{lbReferred = True}) name (blkBindings block)
+    }
+
+-- | Determines whether the block has empty fields, including both static and dynamic fields.
+hasEmptyFields :: Block -> Bool
+hasEmptyFields blk = Map.null (blkStaticFields blk) && null (blkDynFields blk)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -312,25 +315,17 @@ getFieldType ident
   | head ident == '_' = Just SFTHidden
   | otherwise = Just SFTRegular
 
-{- | Look up the struct stub value in the struct.
+{- | Look up the stub value in the block.
 
 The name could be in both the fields and let bindings, or either.
 -}
-lookupStructStubVal :: T.Text -> Struct -> [StructStubVal]
-lookupStructStubVal name struct =
+lookupBlockStubVal :: T.Text -> Block -> [BlockStubVal]
+lookupBlockStubVal name blk@(IsBlockStruct struct) =
   catMaybes
-    [ SStubField <$> Map.lookup name (stcFields struct)
-    , SStubLet <$> Map.lookup name (stcLets struct)
+    [ BlkStubField <$> Map.lookup name (stcFields struct)
+    , BlkStubLet <$> Map.lookup name (blkBindings blk)
     ]
-
-lookupStructLet :: T.Text -> Struct -> Maybe LetBinding
-lookupStructLet name struct = Map.lookup name (stcLets struct)
-
-updateStructLet :: T.Text -> LetBinding -> Struct -> Struct
-updateStructLet name sub struct =
-  struct
-    { stcLets = Map.insert name sub (stcLets struct)
-    }
+lookupBlockStubVal name blk = catMaybes [BlkStubLet <$> Map.lookup name (blkBindings blk)]
 
 lookupStructField :: T.Text -> Struct -> Maybe Field
 lookupStructField name struct = Map.lookup name (stcFields struct)
@@ -346,29 +341,14 @@ lookupStructIdentField name struct =
 
 -- | Update the struct with the given label name and field.
 updateStructField :: T.Text -> Field -> Struct -> Struct
-updateStructField name sub struct =
-  _appendOrdLabelIfNeeded
-    name
-    ( struct
-        { stcFields = Map.insert name sub (stcFields struct)
-        }
-    )
-
-_appendOrdLabelIfNeeded :: T.Text -> Struct -> Struct
-_appendOrdLabelIfNeeded name struct =
-  if name `elem` stcOrdLabels struct
-    then struct
-    else struct{stcOrdLabels = stcOrdLabels struct ++ [name]}
+updateStructField name sub struct = struct{stcFields = Map.insert name sub (stcFields struct)}
 
 updateStructWithFields :: [(T.Text, Field)] -> Struct -> Struct
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
 
-removeStructFields :: [T.Text] -> Struct -> Struct
-removeStructFields names struct =
-  struct
-    { stcOrdLabels = filter (`notElem` names) (stcOrdLabels struct)
-    , stcFields = foldr Map.delete (stcFields struct) names
-    }
+-- | Remove the static fields by names from the struct.
+removeStructFieldsByNames :: [T.Text] -> Struct -> Struct
+removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
 
 {- | Given a struct and a list of static field names, return the permission information to check if the static fields
 are allowed
@@ -379,19 +359,19 @@ getPermInfoForFields struct = foldr go []
   go name ext =
     foldr
       ( \p acc ->
-          if name `Set.member` piLabels p || name `Set.member` piOpLabels p then p : acc else acc
+          if BlockFieldLabel name `Set.member` piLabels p || BlockFieldLabel name `Set.member` piOpLabels p then p : acc else acc
       )
       ext
       (stcPerms struct)
 
-{- | Given a struct and the index of a dynamic field, return the permission information to check if the dynamic
+{- | Given a struct and the id of a dynamic field, return the permission information to check if the dynamic
 field is allowed or whether the dynamic field allows other fields.
 -}
 getPermInfoForDyn :: Struct -> Int -> [PermItem]
 getPermInfoForDyn struct i =
   foldr
     ( \p acc ->
-        if i `Set.member` piDyns p || i `Set.member` piOpDyns p then p : acc else acc
+        if BlockDynFieldOID i `Set.member` piLabels p || BlockDynFieldOID i `Set.member` piOpLabels p then p : acc else acc
     )
     []
     (stcPerms struct)
@@ -402,3 +382,23 @@ allows other fields.
 getPermInfoForPattern :: Struct -> Int -> [PermItem]
 getPermInfoForPattern struct i =
   foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)
+
+{- | Deduplicate the block labels by removing the static that have the same label or dynamic field that is evaluated to
+the same label.
+-}
+dedupBlockLabels :: (Tree -> Maybe T.Text) -> IntMap.IntMap DynamicField -> [BlockLabel] -> [BlockLabel]
+dedupBlockLabels rtrString dynFields labels =
+  reverse . fst $ foldl go ([], Set.empty) labels
+ where
+  go (acc, seen) (BlockFieldLabel n)
+    | Set.member n seen = (acc, seen)
+    | otherwise = (BlockFieldLabel n : acc, Set.insert n seen)
+  go (acc, seen) (BlockDynFieldOID i) =
+    case do
+      df <- IntMap.lookup i dynFields
+      rtrString (dsfLabel df) of
+      -- The dynamic field label is a string so that we should examine it.
+      Just s
+        | Set.member s seen -> (acc, seen)
+        | otherwise -> (BlockDynFieldOID i : acc, Set.insert s seen)
+      Nothing -> (BlockDynFieldOID i : acc, seen)

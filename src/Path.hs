@@ -59,7 +59,7 @@ valPathToAddr :: ValPath -> TreeAddr
 valPathToAddr (ValPath sels) = addrFromList $ map selToTASeg sels
 
 selToTASeg :: Selector -> TASeg
-selToTASeg (StringSel s) = StructTASeg $ StringTASeg s
+selToTASeg (StringSel s) = BlockTASeg $ StringTASeg s
 selToTASeg (IntSel i) = IndexTASeg i
 
 valPathFromString :: String -> ValPath
@@ -82,30 +82,29 @@ data TASeg
   = -- RootTASeg is a special segment that represents the root of the addr.
     -- It is crucial to distinguish between the absolute addr and the relative addr.
     RootTASeg
-  | StructTASeg StructTASeg
   | IndexTASeg !Int
+  | BlockTASeg BlockTASeg
   | DisjDefTASeg
   | DisjRegTASeg !Int
   | -- | SubValTASeg is used to represent the only sub value of a value.
     SubValTASeg
   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
     MutArgTASeg !Int
-  | ComprehTASeg ComprehTASeg
-  | ParentTASeg
+  | -- | EphemeralTASeg is used to represent the ephemeral value, which can be temporary iteration binding.
+    EphemeralTASeg
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show TASeg where
   show RootTASeg = "/"
-  show (StructTASeg s) = show s
+  show (BlockTASeg s) = show s
   show (IndexTASeg i) = "i" ++ show i
   show DisjDefTASeg = "d*"
   show (DisjRegTASeg i) = "dj" ++ show i
   show (MutArgTASeg i) = "fa" ++ show i
   show SubValTASeg = "sv"
-  show ParentTASeg = ".."
-  show (ComprehTASeg s) = show s
+  show EphemeralTASeg = "eph"
 
-data StructTASeg
+data BlockTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
     -- let binding.
     StringTASeg B.ByteString
@@ -121,7 +120,7 @@ data StructTASeg
   | EmbedTASeg !Int
   deriving (Eq, Ord, Generic, NFData)
 
-instance Show StructTASeg where
+instance Show BlockTASeg where
   show (StringTASeg s) = show s
   -- c stands for constraint.
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
@@ -129,19 +128,7 @@ instance Show StructTASeg where
   show (LetTASeg s) = "let_" ++ show s
   show (EmbedTASeg i) = "emb_" ++ show i
 
-data ComprehTASeg
-  = ComprehIterClauseValTASeg !Int
-  | -- | Binding can not be accessed through addressing.
-    ComprehIterBindingTASeg !Int
-  | ComprehIterValTASeg
-  deriving (Eq, Ord, Generic, NFData)
-
-instance Show ComprehTASeg where
-  show (ComprehIterClauseValTASeg i) = "cph_cl" ++ show i
-  show (ComprehIterBindingTASeg i) = "cph_b" ++ show i
-  show ComprehIterValTASeg = "cph_v"
-
-getStrFromSeg :: StructTASeg -> Maybe String
+getStrFromSeg :: BlockTASeg -> Maybe String
 getStrFromSeg (StringTASeg s) = Just (show s)
 getStrFromSeg (LetTASeg s) = Just (show s)
 getStrFromSeg _ = Nothing
@@ -158,21 +145,6 @@ binOpRightTASeg = MutArgTASeg 1
 toBinOpTASeg :: BinOpDirect -> TASeg
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
-
--- | Check if the segment is accessible, either by index or by field name.
-isSegAccessible :: TASeg -> Bool
-isSegAccessible seg = case seg of
-  RootTASeg -> True
-  (StructTASeg (StringTASeg _)) -> True
-  (StructTASeg (LetTASeg _)) -> True
-  (IndexTASeg _) -> True
-  -- If a addr ends with a mutval segment, for example /p/sv, then it is accessible.
-  -- It it the same as /p.
-  SubValTASeg -> True
-  -- If a addr ends with a disj default segment, for example /p/d*, then it is accessible.
-  -- It it the same as /p.
-  DisjDefTASeg -> True
-  _ -> False
 
 isSegDisj :: TASeg -> Bool
 isSegDisj (DisjRegTASeg _) = True
@@ -216,7 +188,7 @@ addrFromList segs = TreeAddr (V.fromList segs)
 -- | This is mostly used for testing purpose.
 addrFromStringList :: [String] -> TreeAddr
 addrFromStringList segs =
-  TreeAddr (V.fromList $ map (\s -> StructTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))) segs)
+  TreeAddr (V.fromList $ map (\s -> BlockTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))) segs)
 
 {- | This is mostly used for testing purpose.
 
@@ -295,23 +267,12 @@ trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
   | not (isPrefix pre x) = x
   | otherwise = TreeAddr (V.drop (V.length pa) xa)
 
--- | Check if the addr is accessible, either by index or by field name.
-isTreeAddrAccessible :: TreeAddr -> Bool
-isTreeAddrAccessible (TreeAddr xs) = all isSegAccessible xs
-
 isInDisj :: TreeAddr -> Bool
 isInDisj (TreeAddr xs) = any isSegDisj xs
 
 -- | Convert the addr to referable form which only contains string, int or root segments.
 trimToReferable :: TreeAddr -> TreeAddr
 trimToReferable (TreeAddr xs) = TreeAddr $ V.filter isSegReferable xs
-
-isSegReferable :: TASeg -> Bool
-isSegReferable (StructTASeg (getStrFromSeg -> Just _)) = True
-isSegReferable (IndexTASeg _) = True
-isSegReferable RootTASeg = True
--- isSegReferable (ComprehTASeg (ComprehIterBindingTASeg _)) = True
-isSegReferable _ = False
 
 {- | Get the referable address.
 
@@ -324,29 +285,8 @@ getReferableAddr p =
     then Nothing
     else Just p
 
--- | A non-canonical segment is a segment that would not have to be existed to access to the value.
-isSegNonCanonical :: TASeg -> Bool
-isSegNonCanonical SubValTASeg = True
-isSegNonCanonical DisjDefTASeg = True
-isSegNonCanonical _ = False
-
-{- | Trim the addr to a single value form.
-
-Single value form is the addr that only contains a single value.
--}
-trimToSingleValueTA :: TreeAddr -> TreeAddr
-trimToSingleValueTA (TreeAddr xs) = TreeAddr $ V.filter isSingleVal xs
- where
-  isSingleVal (MutArgTASeg _) = False
-  isSingleVal SubValTASeg = False
-  isSingleVal (StructTASeg (EmbedTASeg _)) = False
-  isSingleVal (DisjRegTASeg _) = False
-  -- \^ embed segment is a conjunct.
-  isSingleVal _ = True
-
-isSegIterBinding :: TASeg -> Bool
-isSegIterBinding (ComprehTASeg (ComprehIterBindingTASeg _)) = True
-isSegIterBinding _ = False
-
-isPathIterBinding :: TreeAddr -> Bool
-isPathIterBinding (TreeAddr xs) = any isSegIterBinding xs
+isSegReferable :: TASeg -> Bool
+isSegReferable (BlockTASeg (getStrFromSeg -> Just _)) = True
+isSegReferable (IndexTASeg _) = True
+isSegReferable RootTASeg = True
+isSegReferable _ = False

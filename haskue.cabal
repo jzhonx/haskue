@@ -45,7 +45,7 @@ library
         Value.List,
         Value.Mutable,
         Value.Reference,
-        Value.Struct,
+        Value.Block,
         Value.Tree,
         Value.UnifyOp,
         Value.Util.BuildASTExpr,

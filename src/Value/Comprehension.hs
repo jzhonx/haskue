@@ -3,48 +3,42 @@
 
 module Value.Comprehension where
 
+import qualified Data.Map.Strict as Map
+import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Tree
 
 data Comprehension = Comprehension
   { cphIsListCompreh :: !Bool
-  , cphIterClauses :: [IterClause]
-  , cphStruct :: Tree
-  , cphIterBindings :: [ComprehIterBinding]
-  -- ^ Bindings are temporary on each iteration.
-  , cphIterVal :: Maybe Tree
+  , cphClauses :: Seq.Seq ComprehClause
+  , cphIterBindings :: Map.Map T.Text Tree
+  -- ^ Temporary iteration bindings for the comprehension so far.
+  , cphBlock :: Tree
   }
   deriving (Generic)
 
-data IterClause
-  = IterClauseLet T.Text Tree
-  | IterClauseIf Tree
-  | IterClauseFor T.Text (Maybe T.Text) Tree
+data ComprehClause
+  = ComprehClauseLet T.Text Tree
+  | ComprehClauseIf Tree
+  | ComprehClauseFor T.Text (Maybe T.Text) Tree
   deriving (Generic)
 
-mkComprehension :: Bool -> [IterClause] -> Tree -> Comprehension
+mkComprehension :: Bool -> [ComprehClause] -> Tree -> Comprehension
 mkComprehension isListCompreh clauses sv =
   Comprehension
     { cphIsListCompreh = isListCompreh
-    , cphIterClauses = clauses
-    , cphStruct = sv
-    , cphIterBindings = []
-    , cphIterVal = Nothing
+    , cphClauses = Seq.fromList clauses
+    , cphIterBindings = Map.empty
+    , cphBlock = sv
     }
 
-getValFromIterClause :: IterClause -> Tree
-getValFromIterClause (IterClauseLet _ v) = v
-getValFromIterClause (IterClauseIf v) = v
-getValFromIterClause (IterClauseFor _ _ v) = v
+getValFromIterClause :: ComprehClause -> Tree
+getValFromIterClause (ComprehClauseLet _ v) = v
+getValFromIterClause (ComprehClauseIf v) = v
+getValFromIterClause (ComprehClauseFor _ _ v) = v
 
-setValInIterClause :: Tree -> IterClause -> IterClause
-setValInIterClause v (IterClauseLet n _) = IterClauseLet n v
-setValInIterClause v (IterClauseIf _) = IterClauseIf v
-setValInIterClause v (IterClauseFor n m _) = IterClauseFor n m v
-
-data ComprehIterBinding = ComprehIterBinding
-  { cphBindName :: T.Text
-  , cphBindValue :: Tree
-  }
-  deriving (Generic)
+setValInIterClause :: Tree -> ComprehClause -> ComprehClause
+setValInIterClause v (ComprehClauseLet n _) = ComprehClauseLet n v
+setValInIterClause v (ComprehClauseIf _) = ComprehClauseIf v
+setValInIterClause v (ComprehClauseFor n m _) = ComprehClauseFor n m v

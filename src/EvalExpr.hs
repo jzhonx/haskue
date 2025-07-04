@@ -64,7 +64,7 @@ evalLiteral lit = return v
 evalStructLit :: (EvalEnv r s m) => StructLit -> m Tree
 evalStructLit (anVal -> StructLit decls) = do
   sid <- allocOID
-  foldM evalDecl (mkStructTree (emptyStruct{stcID = sid})) decls
+  foldM evalDecl (mkBlockTree (emptyBlock{blkID = sid})) decls
 
 simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either Tree T.Text)
 simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
@@ -133,7 +133,7 @@ evalEmbedding
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (IterClauseIf gev : clsv) sv
+    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (ComprehClauseIf gev : clsv) sv
 evalEmbedding
   isListCompreh
   ( anVal ->
@@ -146,20 +146,20 @@ evalEmbedding
       mkMutableTree $
         withEmptyMutFrame $
           Compreh $
-            mkComprehension isListCompreh (IterClauseFor (anVal i) (anVal <$> jM) fev : clsv) sv
+            mkComprehension isListCompreh (ComprehClauseFor (anVal i) (anVal <$> jM) fev : clsv) sv
 evalEmbedding _ _ = throwErrSt "invalid embedding"
 
-evalClause :: (EvalEnv r s m) => Clause -> m IterClause
+evalClause :: (EvalEnv r s m) => Clause -> m ComprehClause
 evalClause c = case anVal c of
   ClauseStartClause (anVal -> GuardClause e) -> do
     t <- evalExpr e
-    return $ IterClauseIf t
+    return $ ComprehClauseIf t
   ClauseStartClause (anVal -> ForClause (anVal -> i) jM e) -> do
     t <- evalExpr e
-    return $ IterClauseFor i (anVal <$> jM) t
+    return $ ComprehClauseFor i (anVal <$> jM) t
   ClauseLetClause (anVal -> LetClause (anVal -> ident) le) -> do
     lt <- evalExpr le
-    return $ IterClauseLet ident lt
+    return $ ComprehClauseLet ident lt
   _ -> throwErrSt $ printf "invalid clause: %s" (show c)
 
 evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m BlockElemAdder
@@ -174,7 +174,7 @@ evalFDeclLabels lbls e =
       do
         sf2 <- evalFDeclLabels (l2 : rs) e
         sid <- allocOID
-        let val = mkStructTree $ mkStructFromAdders sid [sf2]
+        let val = mkBlockTree $ mkBlockFromAdder sid sf2
         mkAdder l1 val
  where
   mkAdder :: (EvalEnv r s m) => Label -> Tree -> m BlockElemAdder
@@ -229,64 +229,62 @@ evalFDeclLabels lbls e =
 field.
 -}
 addNewBlockElem :: (Common.Env r s m) => BlockElemAdder -> Block -> m Tree
-addNewBlockElem adder block@(Block{blkStruct = struct}) = case adder of
+addNewBlockElem adder block@(IsBlockStruct struct) = case adder of
   (StaticSAdder name sf) ->
     maybe
-      ( case lookupStructStubVal name struct of
-          [SStubField extSF] ->
+      ( case lookupBlockStubVal name block of
+          -- The label is already in the struct, so we need to unify the field.
+          [BlkStubField extSF] ->
             let
               unifySFOp =
                 Value.Field
                   { ssfValue = mkMutableTree (mkUnifyOp [ssfValue extSF, ssfValue sf])
-                  , ssfBaseRaw =
-                      Just $
-                        mkMutableTree
-                          (mkUnifyOp [fromJust $ ssfBaseRaw extSF, fromJust $ ssfBaseRaw sf])
                   , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                   , ssfObjects = Set.empty
                   }
              in
               return $
                 mkBlockTree $
-                  setBlockStruct (struct{stcFields = Map.insert name unifySFOp (stcFields struct)}) block
-          [SStubLet _] -> return $ aliasErr name
+                  setBlockStruct
+                    (struct{stcFields = Map.insert name unifySFOp (stcFields struct)})
+                    block
+                      { blkStaticFields = Map.insert name unifySFOp (blkStaticFields block)
+                      }
+          [BlkStubLet _] -> return $ aliasErr name
           -- The label is not seen before in the struct.
           [] ->
             return $
-              mkBlockTree $
-                setBlockStruct
-                  ( struct
-                      { stcOrdLabels = stcOrdLabels struct ++ [name]
-                      , stcBlockIdents = Set.insert name (stcBlockIdents struct)
-                      , stcFields = Map.insert name sf (stcFields struct)
+              mkBlockTree
+                ( setBlockStruct
+                    ( struct
+                        { stcFields = Map.insert name sf (stcFields struct)
+                        }
+                    )
+                    block
+                      { blkStaticFields = Map.insert name sf (blkStaticFields block)
+                      , blkOrdLabels = blkOrdLabels block ++ [BlockFieldLabel name]
                       }
-                  )
-                  block
+                )
           _ -> return $ aliasErr name
       )
       return
       (existCheck name False)
   (DynamicSAdder i dsf) ->
     return . mkBlockTree $
-      setBlockStruct (struct{stcDynFields = IntMap.insert i dsf (stcDynFields struct)}) block
+      block
+        { blkOrdLabels = blkOrdLabels block ++ [BlockDynFieldOID i]
+        , blkDynFields = IntMap.insert i dsf (blkDynFields block)
+        }
   (CnstrSAdder i pattern val) ->
     return . mkBlockTree $
-      setBlockStruct
-        (struct{stcCnstrs = IntMap.insert i (StructCnstr i pattern val) (stcCnstrs struct)})
-        block
+      block
+        { blkCnstrs = IntMap.insert i (StructCnstr i pattern val) (blkCnstrs block)
+        }
   (LetSAdder name val) ->
     return $
       fromMaybe
-        -- The name is not seen before in the struct.
-        ( mkBlockTree $
-            setBlockStruct
-              ( struct
-                  { stcLets = Map.insert name (LetBinding False val) (stcLets struct)
-                  , stcBlockIdents = Set.insert name (stcBlockIdents struct)
-                  }
-              )
-              block
-        )
+        -- The name is not seen before in the block.
+        (mkBlockTree $ insertBlockLet name val block)
         (existCheck name True)
   (EmbedSAdder i val) -> do
     let embed = mkEmbedding i val
@@ -295,16 +293,17 @@ addNewBlockElem adder block@(Block{blkStruct = struct}) = case adder of
   aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
 
-  -- Checks if name is already in the struct. If it is, then return an error message.
+  -- Checks if name is already in the block. If it is, then return an error message.
   existCheck :: T.Text -> Bool -> Maybe Tree
   existCheck name isNameLet =
-    case (lookupStructStubVal name struct, isNameLet) of
-      ([SStubField f], True)
+    case (lookupBlockStubVal name block, isNameLet) of
+      ([BlkStubField f], True)
         | lbAttrIsIdent (ssfAttr f) -> Just $ aliasErr name
-      ([SStubLet _], True) -> Just $ lbRedeclErr name
-      ([SStubLet _], False) -> Just $ aliasErr name
+      ([BlkStubLet _], True) -> Just $ lbRedeclErr name
+      ([BlkStubLet _], False) -> Just $ aliasErr name
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
+addNewBlockElem _ _ = throwErrSt "addNewBlockElem: expected a Block with Struct"
 
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m Tree
 evalListLit (anVal -> AST.EmbeddingList es) = do

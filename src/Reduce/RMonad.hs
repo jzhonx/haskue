@@ -427,19 +427,18 @@ traverseSub f = withTree $ \_t -> do
   t <- getTMTree
   case treeNode t of
     -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
-    TNBlock es@(Block{blkStruct = struct})
-      | isNothing (blkNonStructValue es) -> do
-          let errM =
-                foldl
-                  ( \acc field ->
-                      if
-                        | isJust acc -> acc
-                        | IsBottom _ <- (ssfValue field) -> Just (ssfValue field)
-                        | otherwise -> Nothing
-                  )
-                  Nothing
-                  (stcFields struct)
-          maybe (return ()) putTMTree errM
+    TNBlock (IsBlockStruct struct) -> do
+      let errM =
+            foldl
+              ( \acc field ->
+                  if
+                    | isJust acc -> acc
+                    | IsBottom _ <- (ssfValue field) -> Just (ssfValue field)
+                    | otherwise -> Nothing
+              )
+              Nothing
+              (stcFields struct)
+      maybe (return ()) putTMTree errM
     TNDisj dj -> do
       newDjT <- normalizeDisj mkDisjTree dj
       modifyTMNodeWithTree newDjT

@@ -15,7 +15,6 @@ import Data.ByteString.Builder (
   string7,
   toLazyByteString,
  )
-import Data.List (intersperse)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
@@ -47,7 +46,10 @@ data ASTN a = ASTN
   -- ^ Comments associated with the AST node
   , anVal :: a
   }
-  deriving (Eq, Show, Functor, Generic, NFData)
+  deriving (Eq, Functor, Generic, NFData)
+
+instance (Show a) => Show (ASTN a) where
+  show (ASTN _ _ val) = show val
 
 instance (Ord a) => Ord (ASTN a) where
   ASTN _ _ v1 `compare` ASTN _ _ v2 = v1 `compare` v2

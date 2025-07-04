@@ -60,7 +60,7 @@ last embedded object ID in the tree address.
 getEmbeddedOID :: UTree -> Maybe Int
 getEmbeddedOID ut =
   let TreeAddr segs = tcCanAddr (utTC ut)
-      getEID (StructTASeg (EmbedTASeg i)) = Just i
+      getEID (BlockTASeg (EmbedTASeg i)) = Just i
       getEID _ = Nothing
    in -- segs are stored in reverse order so we use foldl to get the last embedded object ID.
       foldl
@@ -209,7 +209,7 @@ normalizeConjunct tc = debugSpanRM "normalizeConjunct" (const Nothing) tc $ do
             )
             []
             (zip [0 ..] (toList $ ufConjuncts u))
-        TNBlock es@(Block{blkStruct = struct}) -> do
+        TNBlock blk -> do
           -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
           -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b
           -- If it is not, it can still have embedded values. For example, x: {a: 1, b} & {} -> x: {a:1} & b & {}
@@ -217,20 +217,20 @@ normalizeConjunct tc = debugSpanRM "normalizeConjunct" (const Nothing) tc $ do
           embeds <-
             foldM
               ( \acc i -> do
-                  subConjTC <- goDownTCSegMust (StructTASeg (EmbedTASeg i)) conjTC
+                  subConjTC <- goDownTCSegMust (BlockTASeg (EmbedTASeg i)) conjTC
                   subs <- normalizeConjunct subConjTC
                   return $ acc ++ subs
               )
               []
-              (IntMap.keys $ blkEmbeds es)
+              (IntMap.keys $ blkEmbeds blk)
 
-          if hasEmptyFields struct && not (null $ blkEmbeds es)
+          if hasEmptyFields blk && not (null $ blkEmbeds blk)
             -- If the struct is an empty struct with only embedded values, we can just return the embedded values.
             then return embeds
             else do
               -- Since we have normalized the embedded values, we need to remove them from the struct to prevent
               -- normalizing them again, causing infinite loop.
-              let pureStructTC = setTCFocusTN (TNBlock $ es{blkEmbeds = IntMap.empty}) conjTC
+              let pureStructTC = setTCFocusTN (TNBlock $ blk{blkEmbeds = IntMap.empty}) conjTC
               return $ Just pureStructTC : embeds
         _ -> return [Just conjTC]
 
@@ -701,12 +701,7 @@ The s1 is made the left struct, and s2 is made the right struct.
 For closedness, unification only generates a closed struct but not a recursively closed struct since to close a struct
 recursively, the only way is to reference the struct via a #ident.
 -}
-mergeBlocks ::
-  (ReduceMonad s r m) =>
-  (Block, UTree) ->
-  (Block, UTree) ->
-  TrCur ->
-  m (Maybe Tree)
+mergeBlocks :: (ReduceMonad s r m) => (Block, UTree) -> (Block, UTree) -> TrCur -> m (Maybe Tree)
 mergeBlocks (s1, ut1@UTree{utDir = L}) (s2, ut2) unifyTC =
   let
     eidM1 = getEmbeddedOID ut1
@@ -721,80 +716,89 @@ mergeBlocks (s1, ut1@UTree{utDir = L}) (s2, ut2) unifyTC =
       unifyTC
       $ do
         checkRes <- do
-          rE1 <- _preprocessBlock (utTC ut1) s1
-          rE2 <- _preprocessBlock (utTC ut2) s2
+          rE1 <- preprocessBlock (utTC ut1) s1
+          rE2 <- preprocessBlock (utTC ut2) s2
           return $ do
             r1 <- rE1
             r2 <- rE2
             return (r1, r2)
         case checkRes of
           Left err -> retTr err
-          Right (r1, r2) -> mergeStructsInner (eidM1, r1) (eidM2, r2)
+          Right (r1, r2) -> mergeBlocksInner (eidM1, r1) (eidM2, r2)
 mergeBlocks dt1@(_, UTree{utDir = R}) dt2 unifyTC = mergeBlocks dt2 dt1 unifyTC
 
-mergeStructsInner ::
-  (ReduceMonad s r m) =>
-  (Maybe Int, Struct) ->
-  (Maybe Int, Struct) ->
-  m (Maybe Tree)
-mergeStructsInner (eidM1, s1) (eidM2, s2) = do
+mergeBlocksInner :: (ReduceMonad s r m) => (Maybe Int, Block) -> (Maybe Int, Block) -> m (Maybe Tree)
+mergeBlocksInner (eidM1, b1@(IsBlockStruct st1)) (eidM2, b2@(IsBlockStruct st2)) = do
   -- when (isJust eidM1 && isJust eidM2) $ throwErrSt "both structs are embedded, not allowed"
 
-  sid <- allocRMObjID
-  let merged = fieldsToStruct sid (_unionFields (s1, eidM1) (s2, eidM2)) (s1, eidM1) (s2, eidM2)
+  bid <- allocRMObjID
+  let merged = fieldsToBlock bid (unionFields (st1, eidM1) (st2, eidM2)) (b1, st1, eidM1) (b2, st2, eidM2)
   -- in reduce, the new combined fields will be checked by the combined patterns.
   retTr merged
+mergeBlocksInner (_, b1) (_, b2) = throwErrSt $ printf "unexpected block types: %s, %s" (show b1) (show b2)
 
-fieldsToStruct ::
-  Int -> [(T.Text, Field)] -> (Struct, Maybe Int) -> (Struct, Maybe Int) -> Tree
-fieldsToStruct sid fields (st1, eidM1) (st2, eidM2) =
-  mkStructTree $
-    emptyStruct
-      { stcID = sid
-      , stcOrdLabels = map fst fields
-      , stcBlockIdents = case (eidM1, eidM2) of
-          (Nothing, Nothing) -> stcBlockIdents st1 `Set.union` stcBlockIdents st2
-          (Just _, Nothing) -> stcBlockIdents st2
-          (Nothing, Just _) -> stcBlockIdents st1
-          (Just _, Just _) -> Set.empty
-      , stcFields = Map.fromList fields
-      , stcLets = stcLets st1 `Map.union` stcLets st2
-      , stcDynFields = combinedPendSubs
-      , stcCnstrs = combinedPatterns
-      , stcClosed = stcClosed st1 || stcClosed st2
-      , stcPerms =
-          let neitherEmbedded = isNothing eidM1 && isNothing eidM2
-           in -- st1 and st2 could be both closed.
-              stcPerms st1
-                ++ stcPerms st2
-                -- st2 as an opposite struct of st1
-                ++ [mkPermItem st1 st2 | neitherEmbedded && stcClosed st1]
-                -- st1 as an opposite struct of st2
-                ++ [mkPermItem st2 st1 | neitherEmbedded && stcClosed st2]
+fieldsToBlock :: Int -> [(T.Text, Field)] -> (Block, Struct, Maybe Int) -> (Block, Struct, Maybe Int) -> Tree
+fieldsToBlock bid fields (blk1, st1, eidM1) (blk2, st2, eidM2) =
+  mkBlockTree $
+    emptyBlock
+      { blkID = bid
+      , blkOrdLabels = unionLabels blk1 blk2
+      , blkBindings = blkBindings blk1 `Map.union` blkBindings blk2
+      , blkStaticFields =
+          if
+            | isNothing eidM1 && isNothing eidM2 ->
+                Map.unionWith
+                  ( \l r ->
+                      Field
+                        { ssfValue = mkMutableTree $ mkUnifyOp [ssfValue l, ssfValue r]
+                        , ssfAttr = mergeAttrs (ssfAttr l) (ssfAttr r)
+                        , ssfObjects = Set.empty
+                        }
+                  )
+                  (blkStaticFields blk1)
+                  (blkStaticFields blk2)
+            | isNothing eidM1 -> blkStaticFields blk1
+            | isNothing eidM2 -> blkStaticFields blk2
+            | otherwise -> Map.empty
+      , blkDynFields = combinedPendSubs
+      , blkCnstrs = combinedPatterns
+      , blkValue =
+          BlockStruct $
+            emptyStruct
+              { stcFields = Map.fromList fields
+              , stcClosed = stcClosed st1 || stcClosed st2
+              , stcPerms =
+                  let neitherEmbedded = isNothing eidM1 && isNothing eidM2
+                   in -- st1 and st2 could be both closed.
+                      stcPerms st1
+                        ++ stcPerms st2
+                        -- st2 as an opposite struct of st1
+                        ++ [mkPermItem blk1 blk2 | neitherEmbedded && stcClosed st1]
+                        -- st1 as an opposite struct of st2
+                        ++ [mkPermItem blk2 blk1 | neitherEmbedded && stcClosed st2]
+              }
       }
  where
-  combinedPendSubs = IntMap.union (stcDynFields st1) (stcDynFields st2)
+  combinedPendSubs = IntMap.union (blkDynFields blk1) (blkDynFields blk2)
   -- The combined patterns are the patterns of the first struct and the patterns of the second struct.
-  combinedPatterns = IntMap.union (stcCnstrs st1) (stcCnstrs st2)
+  combinedPatterns = IntMap.union (blkCnstrs blk1) (blkCnstrs blk2)
 
-  mkPermItem :: Struct -> Struct -> PermItem
-  mkPermItem struct opStruct =
+  mkPermItem :: Block -> Block -> PermItem
+  mkPermItem blk opBlk =
     PermItem
-      { piCnstrs = Set.fromList $ IntMap.keys $ stcCnstrs struct
+      { piCnstrs = Set.fromList $ IntMap.keys $ blkCnstrs blk
       , -- TODO: exclude let bindings
-        piLabels = Set.fromList $ stcOrdLabels struct
-      , piDyns = Set.fromList $ IntMap.keys $ stcDynFields struct
+        piLabels = Set.fromList $ blkOrdLabels blk
       , -- TODO: exclude let bindings
-        piOpLabels = Set.fromList $ stcOrdLabels opStruct
-      , piOpDyns = Set.fromList $ IntMap.keys $ stcDynFields opStruct
+        piOpLabels = Set.fromList $ blkOrdLabels opBlk
       }
 
 {- | Merge two fields.
 
 The structs can not be both embedded.
 -}
-_unionFields :: (Struct, Maybe Int) -> (Struct, Maybe Int) -> [(T.Text, Field)]
-_unionFields (st1, eidM1) (st2, eidM2) =
+unionFields :: (Struct, Maybe Int) -> (Struct, Maybe Int) -> [(T.Text, Field)]
+unionFields (st1, eidM1) (st2, eidM2) =
   foldr
     ( \label acc ->
         let
@@ -805,52 +809,47 @@ _unionFields (st1, eidM1) (st2, eidM2) =
             | label `Set.member` l1Set && label `Set.member` l2Set
             , Just sf1 <- f1M
             , Just sf2 <- f2M ->
-                (label, _mkUnifiedField (sf1, eidM1) (sf2, eidM2)) : acc
+                (label, _mkUnifiedField sf1 sf2) : acc
             | label `Set.member` l1Set, Just sf1 <- f1M -> (label, _toDisjoinedField eidM1 sf1) : acc
             | label `Set.member` l2Set, Just sf2 <- f2M -> (label, _toDisjoinedField eidM2 sf2) : acc
             | otherwise -> acc
     )
     []
-    unionLabels
+    (Set.toList $ Set.union l1Set l2Set)
  where
   fields1 = stcFields st1
   fields2 = stcFields st2
   l1Set = Map.keysSet fields1
   l2Set = Map.keysSet fields2
 
-  -- Put the labels in the order of the first struct and append the labels that are not in the first struct.
-  unionLabels =
-    stcOrdLabels st1
-      ++ foldr (\l acc -> if l `Set.member` l1Set then acc else l : acc) [] (stcOrdLabels st2)
-
-getBaseRaw :: Maybe Int -> Field -> Maybe Tree
-getBaseRaw eidM sf =
-  if isNothing eidM
-    then ssfBaseRaw sf
-    else Nothing
+-- Put the static field labels in the order of the first struct and append the labels that are not in the first
+-- struct.
+-- For dynamic fields, we just append them to the end of the list.
+unionLabels :: Block -> Block -> [BlockLabel]
+unionLabels blk1 blk2 =
+  blkOrdLabels blk1
+    ++ foldr
+      ( \l acc -> case l of
+          BlockFieldLabel fl -> if fl `Set.member` l1Set then acc else l : acc
+          BlockDynFieldOID _ -> l : acc
+      )
+      []
+      (blkOrdLabels blk2)
+ where
+  l1Set = Map.keysSet (blkStaticFields blk1)
 
 _toDisjoinedField :: Maybe Int -> Field -> Field
-_toDisjoinedField eidM sf =
-  sf
-    { ssfBaseRaw = getBaseRaw eidM sf
-    , ssfObjects = maybe Set.empty (\i -> Set.fromList [i]) eidM `Set.union` ssfObjects sf
-    }
+_toDisjoinedField eidM sf = sf{ssfObjects = maybe Set.empty (\i -> Set.fromList [i]) eidM `Set.union` ssfObjects sf}
 
 -- | Merge two fields by creating a unify node with merged attributes.
-_mkUnifiedField :: (Field, Maybe Int) -> (Field, Maybe Int) -> Field
-_mkUnifiedField (sf1, eidM1) (sf2, eidM2) =
+_mkUnifiedField :: Field -> Field -> Field
+_mkUnifiedField sf1 sf2 =
   let
     -- No original node exists yet
     unifyValOp = mkUnifyOp [ssfValue sf1, ssfValue sf2]
-    -- The field is raw only if it is not of an embedded struct and it has raw base.
-    unifiedBaseRaw = case catMaybes [getBaseRaw eidM1 sf1, getBaseRaw eidM2 sf2] of
-      [br1, br2] -> Just $ mkMutableTree $ mkUnifyOp [br1, br2]
-      [br] -> Just br
-      _ -> Nothing
    in
     Field
       { ssfValue = mkMutableTree unifyValOp
-      , ssfBaseRaw = unifiedBaseRaw
       , ssfAttr = mergeAttrs (ssfAttr sf1) (ssfAttr sf2)
       , ssfObjects = ssfObjects sf1 `Set.union` ssfObjects sf2
       }
@@ -867,37 +866,35 @@ According to spec, A block is a possibly empty sequence of declarations.
 The scope of a declared identifier is the extent of source text in which the identifier denotes the specified field,
 alias, or package.
 -}
-_preprocessBlock ::
-  (ReduceMonad s r m) =>
-  TrCur ->
-  Block ->
-  m (Either Tree Struct)
-_preprocessBlock blockTC block = do
+preprocessBlock :: (ReduceMonad s r m) => TrCur -> Block -> m (Either Tree Block)
+preprocessBlock blockTC block = do
   rM <- _validateRefIdents blockTC
-  -- logDebugStrRM $ printf "_preprocessBlock: rM: %s" (show rM)
   maybe
     ( do
         let
-          sid = stcID . blkStruct $ block
+          bid = blkID block
           blockAddr = tcCanAddr blockTC
-        appended <- _appendSIDToLetRef blockAddr sid blockTC
+        appended <- _appendSIDToLetRef blockAddr bid blockTC
         -- rewrite all ident keys of the let bindings map with the sid.
         case treeNode appended of
-          TNBlock (Block{blkStruct = struct}) -> do
+          TNBlock blk -> do
             let
-              blockIdents =
-                Set.fromList $
-                  map
-                    ( \k ->
-                        if k `Map.member` stcLets struct
-                          then T.append k (T.pack $ "_" ++ show sid)
-                          else k
-                    )
-                    (Set.toList $ stcBlockIdents struct)
-              lets = Map.fromList $ map (\(k, v) -> (T.append k (T.pack $ "_" ++ show sid), v)) (Map.toList $ stcLets struct)
-              newStruct = struct{stcBlockIdents = blockIdents, stcLets = lets}
-            -- logDebugStrRM $ printf "_preprocessBlock: newStruct: %s" (show $ mkStructTree newStruct)
-            return $ Right newStruct
+              -- blockIdents =
+              --   Set.fromList $
+              --     map
+              --       ( \k ->
+              --           if k `Map.member` blkBindings block
+              --             then T.append k (T.pack $ "_" ++ show sid)
+              --             else k
+              --       )
+              --       (Set.toList $ blkIdents blk)
+              lets = Map.fromList $ map (\(k, v) -> (T.append k (T.pack $ "_" ++ show bid), v)) (Map.toList $ blkBindings blk)
+              newBlock =
+                blk
+                  { blkBindings = lets
+                  -- , blkIdents = blockIdents
+                  }
+            return $ Right newBlock
           _ -> throwErrSt $ printf "tree must be struct, but got %s" (show appended)
     )
     (return . Left)

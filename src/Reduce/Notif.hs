@@ -236,7 +236,7 @@ propFocusUpWithPostHandling subTC = do
   debugSpanRM "propFocusUpWithPostHandling" (Just <$> tcFocus) subTC $ do
     tc <- propUpTC2 subTC
     case (seg, tcFocus tc) of
-      (StructTASeg sseg, IsBlock _) -> do
+      (BlockTASeg sseg, IsBlock _) -> do
         (utc, affected) <- Nodes.handleStructMutObjChange sseg tc
         if null affected
           then return utc

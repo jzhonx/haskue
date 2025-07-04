@@ -61,7 +61,7 @@ getMutArgs (Mutable op _) = mutOpArgs op
 mutOpArgs :: MutOp -> Seq.Seq Tree
 mutOpArgs (RegOp rop) = ropArgs rop
 mutOpArgs (Ref ref) = subRefArgs $ refArg ref
-mutOpArgs (Compreh _) = Seq.empty
+mutOpArgs (Compreh c) = fmap getValFromIterClause (cphClauses c)
 mutOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
 mutOpArgs (UOp u) = ufConjuncts u
 mutOpArgs (Itp itp) = itpExprs itp
@@ -72,7 +72,7 @@ updateMutArg i t (Mutable op frame) = Mutable (updateMutOpArg i t op) frame
 updateMutOpArg :: Int -> Tree -> MutOp -> MutOp
 updateMutOpArg i t (RegOp mut) = RegOp $ mut{ropArgs = Seq.update i t (ropArgs mut)}
 updateMutOpArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
-updateMutOpArg _ _ (Compreh c) = Compreh c
+updateMutOpArg i t (Compreh c) = Compreh $ c{cphClauses = Seq.adjust (setValInIterClause t) i (cphClauses c)}
 updateMutOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
 updateMutOpArg i t (UOp u) = UOp $ u{ufConjuncts = Seq.update i t (ufConjuncts u)}
 updateMutOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}

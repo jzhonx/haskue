@@ -13,7 +13,7 @@ import Value.Interpolation
 import Value.List
 import Value.Mutable
 import Value.Reference
-import Value.Struct
+import Value.Block
 import Value.Tree
 import Value.UnifyOp
 
@@ -22,8 +22,7 @@ import Value.UnifyOp
 -----
 
 deriving instance Eq Comprehension
-deriving instance Eq IterClause
-deriving instance Eq ComprehIterBinding
+deriving instance Eq ComprehClause
 
 deriving instance Eq Reference
 deriving instance Eq RefArg
@@ -41,6 +40,7 @@ deriving instance Eq MutFrame
 deriving instance Eq RegularOp
 
 deriving instance Eq Block
+deriving instance Eq BlockValue
 deriving instance Eq Struct
 deriving instance Eq Field
 deriving instance Eq LetBinding
@@ -79,8 +79,7 @@ instance Eq Tree where
 -----
 
 deriving instance Show Comprehension
-deriving instance Show IterClause
-deriving instance Show ComprehIterBinding
+deriving instance Show ComprehClause
 
 deriving instance Show Reference
 instance Show RefArg where
@@ -100,6 +99,7 @@ deriving instance Show MutFrame
 deriving instance Show RegularOp
 
 deriving instance Show Block
+deriving instance Show BlockValue
 deriving instance Show Struct
 deriving instance Show Field
 deriving instance Show LetBinding
@@ -117,8 +117,7 @@ deriving instance Show Disj
 -----
 
 deriving instance NFData Comprehension
-deriving instance NFData IterClause
-deriving instance NFData ComprehIterBinding
+deriving instance NFData ComprehClause
 
 deriving instance NFData Reference
 deriving instance NFData RefArg
@@ -136,6 +135,7 @@ deriving instance NFData MutFrame
 deriving instance NFData RegularOp
 
 deriving instance NFData Block
+deriving instance NFData BlockValue
 deriving instance NFData Struct
 deriving instance NFData Field
 deriving instance NFData LetBinding

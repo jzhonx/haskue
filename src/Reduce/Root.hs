@@ -9,6 +9,7 @@ import Common (
   Context (Context, ctxReduceStack),
   hasCtxNotifSender,
  )
+import Control.Monad (when)
 import Cursor
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
@@ -66,11 +67,9 @@ reduce tc = debugSpanRM "reduce" Just tc $ do
   isSender <- hasCtxNotifSender addr <$> getRMContext
   -- Only notify dependents when we are not in a temporary node.
   let refAddrM = getReferableAddr addr
-  if isSender && isTreeAddrAccessible addr && notifyEnabled && isJust refAddrM
-    then do
-      let refAddr = fromJust refAddrM
-      addToRMReadyQ refAddr
-    else return ()
+  when (isSender && notifyEnabled && isJust refAddrM) $ do
+    let refAddr = fromJust refAddrM
+    addToRMReadyQ refAddr
 
   vers <- getRMGlobalVers
   return $ result{treeVersion = vers}

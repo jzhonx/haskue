@@ -15,7 +15,7 @@ import Value.Interpolation as Export
 import Value.List as Export
 import Value.Mutable as Export
 import Value.Reference as Export
-import Value.Struct as Export
+import Value.Block as Export
 import Value.Tree as Export
 import Value.UnifyOp as Export
 import Value.Util.BuildASTExpr as Export

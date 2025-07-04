@@ -40,7 +40,7 @@ import Reduce.RMonad (
   withTN,
   withTree,
  )
-import Reduce.RefSys (goTCLAAddr)
+import Reduce.RefSys (LocateRefResult (..), locateRef)
 import Reduce.Root (reduce)
 import Text.Printf (printf)
 import Value
@@ -67,7 +67,7 @@ postValidation = debugSpanTM "postValidation" $ do
     when (not (null unreferred) && (case res of IsBottom _ -> False; _ -> True)) $ do
       let u = head unreferred
       label <- case lastSeg u of
-        Just (StructTASeg (LetTASeg label)) -> return label
+        Just (BlockTASeg (LetTASeg label)) -> return label
         _ -> throwErrSt "invalid let seg"
 
       putTMTree $ mkBottomTree $ printf "unreferenced let clause let %s" (T.unpack $ TE.decodeUtf8 label)
@@ -75,21 +75,24 @@ postValidation = debugSpanTM "postValidation" $ do
 {- | Traverse the tree and does the following things with the node:
 
 1. Replace the Mutable node with the result of the mutator if it exists, otherwise the original mutator node is kept.
-2. Replace the CnstredVal node with its value.
-3. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
-embeddings. All the pending values should have been already applied to the static fields.
+2. Extract the embedded value from the block.
 -}
 snapshotRM :: (ReduceTCMonad s r m) => m ()
 snapshotRM = debugSpanTM "snapshotRM" $ do
-  traverseTM $ withTN $ \case
-    TNBlock block
-      | Just ev <- blkNonStructValue block -> modifyTMNodeWithTree ev
-    TNMutable m -> maybe (return ()) modifyTMNodeWithTree (getMutVal m)
-    _ -> return ()
+  traverseTM $ withTree $ \t -> case extract t of
+    Just r -> modifyTMNodeWithTree r
+    Nothing -> return ()
+ where
+  -- It is similar to rtrDeterministic, but it skips the AtomCnstr which will be validated later.
+  extract t = case treeNode t of
+    TNMutable mut -> getMutVal mut >>= extract
+    TNBlock blk
+      | IsBlockEmbed ev <- blk -> extract ev
+    _ -> return t
 
 {- | Traverse the tree and does the following things with the node:
 
-1. Check struct permission and empty all stub value containers of the struct, which are constraints, dynamic fields and
+1. Check struct permission and empty all stub value containers of the struct, which are constraints and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
 simplifyRM :: (ReduceTCMonad s r m) => m ()
@@ -101,21 +104,13 @@ simplifyRM = debugSpanTM "simplifyRM" $ do
 
     withTN $ \case
       TNBlock block
-        | Just _ <- blkNonStructValue block -> throwErrSt "non struct value exists in block"
+        | IsBlockEmbed _ <- block -> throwErrSt "non struct value exists in block"
         | otherwise ->
             modifyTMTN $
               TNBlock $
-                ( modifyBlockStruct
-                    ( \st ->
-                        st
-                          { stcCnstrs = IntMap.empty
-                          , stcDynFields = IntMap.empty
-                          , stcPerms = []
-                          }
-                    )
-                    block
-                )
+                (modifyBlockStruct (\st -> st{stcPerms = []}) block)
                   { blkEmbeds = IntMap.empty
+                  , blkCnstrs = IntMap.empty
                   }
       _ -> return ()
 
@@ -169,20 +164,16 @@ replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
       (return focus)
       -- If the focus is a reference, we need to check if the ref references the cnstrAddr.
       ( \rf -> do
-          rE <- goTCLAAddr rf tc
-          debugInstantRM "replaceSelfRef" (printf "rE: %s" (show rE)) cnstrTC
-          case rE of
-            Left err -> return err
-            Right m ->
-              maybe
-                (return focus)
-                ( \rtc ->
-                    return $
-                      if tcCanAddr rtc == cnstrAddr
-                        then atomT
-                        else focus
-                )
-                m
+          lr <- locateRef rf tc
+          debugInstantRM "replaceSelfRef" (printf "lr: %s" (show lr)) cnstrTC
+          case lr of
+            LRIdentNotFound err -> return err
+            LRPartialFound _ _ -> return focus
+            LRRefFound rtc ->
+              return $
+                if tcCanAddr rtc == cnstrAddr
+                  then atomT
+                  else focus
       )
       rfM
 
@@ -191,7 +182,7 @@ validateStructPerm = debugSpanTM "validateStructPerm" $ do
   t <- getTMTree
   case treeNode t of
     -- After snapsnot, the blkNonStructValue should be None.
-    TNBlock (Block{blkStruct = s}) -> mapM_ (validatePermItem s) (stcPerms s)
+    TNBlock blk@(IsBlockStruct s) -> mapM_ (validatePermItem blk) (stcPerms s)
     _ -> return ()
 
 {- | Validate the permission item.
@@ -200,33 +191,23 @@ A struct must be provided so that dynamic fields and constraints can be found.
 
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
-validatePermItem :: (ReduceTCMonad s r m) => Struct -> PermItem -> m ()
-validatePermItem struct p = debugSpanTM "validatePermItem" $ do
+validatePermItem :: (ReduceTCMonad s r m) => Block -> PermItem -> m ()
+validatePermItem blk p = debugSpanTM "validatePermItem" $ do
   let
-    dynsM = dynIdxesToLabels (piDyns p)
-    labels = piLabels p
-    cnstrs = IntMap.fromList $ map (\i -> (i, stcCnstrs struct IntMap.! i)) (Set.toList $ piCnstrs p)
-    opDynsM = dynIdxesToLabels (piOpDyns p)
-    opLabels = piOpLabels p
-  case (dynsM, opDynsM) of
-    (Just dyns, Just opDyns) ->
+    labelsM = mapM labelToText $ Set.toList $ piLabels p
+    opLabelsM = mapM labelToText $ Set.toList $ piOpLabels p
+    cnstrs = IntMap.fromList $ map (\i -> (i, blkCnstrs blk IntMap.! i)) (Set.toList $ piCnstrs p)
+  case (labelsM, opLabelsM) of
+    (Just labels, Just opLabels) ->
       getTMCursor
-        >>= checkLabelsPerm
-          (labels `Set.union` dyns)
-          cnstrs
-          True
-          False
-          (opLabels `Set.union` opDyns)
+        >>= checkLabelsPerm (Set.fromList labels) cnstrs True False (Set.fromList opLabels)
         >>= putTMCursor
     -- If not all dynamic fields can be resolved to string labels, we can not check the permission.
     -- This is what CUE does.
     _ -> return ()
  where
-  dynIdxesToLabels :: Set.Set Int -> Maybe (Set.Set T.Text)
-  dynIdxesToLabels idxes =
-    Set.fromList
-      <$> mapM
-        ( \i ->
-            rtrString (dsfLabel $ stcDynFields struct IntMap.! i)
-        )
-        (Set.toList idxes)
+  labelToText :: BlockLabel -> Maybe T.Text
+  labelToText (BlockFieldLabel n) = Just n
+  labelToText (BlockDynFieldOID i) = do
+    df <- IntMap.lookup i (blkDynFields blk)
+    rtrString (dsfLabel df)

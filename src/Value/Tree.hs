@@ -25,9 +25,8 @@ import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import Path (
-  ComprehTASeg (..),
+  BlockTASeg (..),
   Selector (..),
-  StructTASeg (..),
   TASeg (..),
   TreeAddr,
   ValPath (ValPath),
@@ -35,6 +34,7 @@ import Path (
  )
 import Text.Printf (printf)
 import Value.Atom
+import Value.Block
 import Value.Bottom
 import Value.Bounds
 import Value.Comprehension
@@ -45,7 +45,6 @@ import Value.Interpolation
 import Value.List
 import Value.Mutable
 import Value.Reference
-import Value.Struct
 import Value.UnifyOp
 
 -- | TreeNode represents a tree structure that contains values.
@@ -127,73 +126,65 @@ pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
 pattern IsRegOp :: Mutable -> RegularOp -> Tree
 pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
 
-{- | descend into the tree with the given segment.
+{- | Descend into the tree with the given segment.
 
 This should only be used by TreeCursor.
 -}
 subTree :: (HasCallStack) => TASeg -> Tree -> Maybe Tree
 subTree seg t = case (seg, treeNode t) of
   (RootTASeg, _) -> Just t
-  (StructTASeg s, TNBlock estruct@(Block{blkStruct = struct})) -> case s of
+  (BlockTASeg s, TNBlock blk@(IsBlockStruct struct)) -> case s of
     StringTASeg name
       | Just sf <- lookupStructField (TE.decodeUtf8 name) struct -> Just $ ssfValue sf
-    PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
+    PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> blkCnstrs blk IntMap.!? i
     DynFieldTASeg i j ->
-      (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
+      (if j == 0 then dsfLabel else dsfValue) <$> blkDynFields blk IntMap.!? i
     LetTASeg name
-      | Just lb <- lookupStructLet (TE.decodeUtf8 name) struct -> Just (lbValue lb)
-    EmbedTASeg i -> embValue <$> blkEmbeds estruct IntMap.!? i
+      | Just lb <- lookupBlockLet (TE.decodeUtf8 name) blk -> Just (lbValue lb)
+    EmbedTASeg i -> embValue <$> blkEmbeds blk IntMap.!? i
     _ -> Nothing
-  (SubValTASeg, TNBlock estruct) -> blkNonStructValue estruct
+  (SubValTASeg, TNBlock (IsBlockEmbed ev)) -> Just ev
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | MutArgTASeg i <- seg -> getMutArgs mut Seq.!? i
-    | (ComprehTASeg (ComprehIterClauseValTASeg i), MutOp (Compreh c)) <- (seg, mut) ->
-        getValFromIterClause <$> (cphIterClauses c `indexList` i)
-    | (ComprehTASeg ComprehIterValTASeg, MutOp (Compreh c)) <- (seg, mut) -> cphIterVal c
     | SubValTASeg <- seg -> getMutVal mut
   (_, TNDisj d)
     | DisjDefTASeg <- seg -> dsjDefault d
     | DisjRegTASeg i <- seg -> dsjDisjuncts d `indexList` i
   _ -> Nothing
 
--- | Set the sub tree with the given segment and new tree.
+{- | Set the sub tree with the given segment and new tree.
+
+It ensures that the version of the parent node is always greater than or equal to any of its children.
+-}
 setSubTree :: (Env r s m) => TASeg -> Tree -> Tree -> m Tree
-setSubTree seg subT parT = do
+
+-- | If the segment is EphemeralTASeg, we do not set the sub-tree.
+setSubTree EphemeralTASeg _ parT = return parT
+setSubTree seg subT@Tree{treeVersion = vers} parT = do
   n <- case (seg, treeNode parT) of
-    (StructTASeg s, TNBlock estruct) -> updateParStruct estruct s
-    (SubValTASeg, TNBlock estruct) -> return $ TNBlock estruct{blkNonStructValue = Just subT}
+    (BlockTASeg s, TNBlock blk) -> updateParStruct blk s
+    (SubValTASeg, TNBlock blk) -> return $ TNBlock blk{blkValue = BlockEmbed subT}
     (IndexTASeg i, TNList vs) ->
       let subs = lstSubs vs
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
     (_, TNMutable mut)
       | MutArgTASeg i <- seg -> return $ TNMutable $ updateMutArg i subT mut
-      | ComprehTASeg ComprehIterValTASeg <- seg
-      , MutOp (Compreh c) <- mut ->
-          return $ TNMutable $ setMutOp (Compreh c{cphIterVal = Just subT}) mut
-      | ComprehTASeg (ComprehIterClauseValTASeg i) <- seg
-      , MutOp (Compreh c) <- mut -> do
-          let clauses = cphIterClauses c
-              clause = setValInIterClause subT (clauses !! i)
-          return $
-            TNMutable $
-              setMutOp (Compreh c{cphIterClauses = take i clauses ++ [clause] ++ drop (i + 1) clauses}) mut
       | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
     (_, TNDisj d)
       | DisjDefTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
       | DisjRegTASeg i <- seg ->
           return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    (ParentTASeg, _) -> throwErrSt "setSubTreeTN: ParentTASeg is not allowed"
     (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
     _ -> throwErrSt insertErrMsg
-  return $ parT{treeNode = n}
+  return $ parT{treeNode = n, treeVersion = max vers (treeVersion parT)}
  where
   structToTN :: Struct -> Block -> TreeNode
-  structToTN s est = TNBlock est{blkStruct = s}
+  structToTN s blk = TNBlock blk{blkValue = BlockStruct s}
 
-  updateParStruct :: (MonadError String m, HasCallStack) => Block -> StructTASeg -> m TreeNode
-  updateParStruct parEStruct@(Block{blkStruct = parStruct}) labelSeg
+  updateParStruct :: (MonadError String m, HasCallStack) => Block -> BlockTASeg -> m TreeNode
+  updateParStruct parBlock@(IsBlockStruct parStruct) labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
@@ -202,35 +193,32 @@ setSubTree seg subT parT = do
           newField = subT `updateFieldValue` field
           newStruct = updateStructField (TE.decodeUtf8 name) newField parStruct
          in
-          return (structToTN newStruct parEStruct)
+          return (structToTN newStruct parBlock)
     | LetTASeg name <- labelSeg
-    , Just oldLet <- lookupStructLet (TE.decodeUtf8 name) parStruct =
+    , Just _ <- lookupBlockLet (TE.decodeUtf8 name) parBlock =
         let
-          newLet = oldLet{lbValue = subT}
-          newStruct = updateStructLet (TE.decodeUtf8 name) newLet parStruct
+          newBlock = updateBlockLet (TE.decodeUtf8 name) subT parBlock
          in
-          return (structToTN newStruct parEStruct)
+          return (TNBlock newBlock)
     | PatternTASeg i j <- labelSeg =
         let
-          psf = stcCnstrs parStruct IntMap.! i
+          psf = blkCnstrs parBlock IntMap.! i
           newPSF = if j == 0 then psf{scsPattern = subT} else psf{scsValue = subT}
-          newStruct = parStruct{stcCnstrs = IntMap.insert i newPSF (stcCnstrs parStruct)}
          in
-          return (structToTN newStruct parEStruct)
+          return $ TNBlock parBlock{blkCnstrs = IntMap.insert i newPSF (blkCnstrs parBlock)}
     | DynFieldTASeg i j <- labelSeg =
         let
-          pends = stcDynFields parStruct
+          pends = blkDynFields parBlock
           psf = pends IntMap.! i
           newPSF = if j == 0 then psf{dsfLabel = subT} else psf{dsfValue = subT}
-          newStruct = parStruct{stcDynFields = IntMap.insert i newPSF pends}
          in
-          return (structToTN newStruct parEStruct)
+          return $ TNBlock parBlock{blkDynFields = IntMap.insert i newPSF (blkDynFields parBlock)}
     | EmbedTASeg i <- labelSeg =
         let
-          oldEmbeds = blkEmbeds parEStruct
+          oldEmbeds = blkEmbeds parBlock
           newEmbed = (oldEmbeds IntMap.! i){embValue = subT}
          in
-          return $ TNBlock parEStruct{blkEmbeds = IntMap.insert i newEmbed oldEmbeds}
+          return $ TNBlock parBlock{blkEmbeds = IntMap.insert i newEmbed oldEmbeds}
   updateParStruct _ _ = throwErrSt insertErrMsg
 
   insertErrMsg :: String
@@ -252,43 +240,53 @@ setTN t n = t{treeNode = n}
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
 
--- | Retrieve the basic value from the tree.
-rtrBase :: Tree -> Maybe Tree
-rtrBase t = case treeNode t of
+{- | Retrieve the deterministic value from the tree.
+
+A deterministic value is a value that can not be interpreted as multiple kinds of values.
+
+For example, a mutalbe that has cached value is not deterministic, because it contains two kinds of values: the cached
+value and the mutable value itself.
+-}
+rtrDeterministic :: Tree -> Maybe Tree
+rtrDeterministic t = case treeNode t of
   TNAtom _ -> Just t
   TNBottom _ -> Just t
   TNTop -> Just t
   TNBounds _ -> Just t
   TNList _ -> Just t
   TNDisj _ -> Just t
+  TNRefCycle _ -> Just t
   TNBlock block
-    | Just ev <- blkNonStructValue block -> rtrBase ev
+    | IsBlockEmbed ev <- block -> rtrDeterministic ev
     | otherwise -> Just t
   TNAtomCnstr c -> Just $ mkAtomTree (cnsAtom c)
-  TNMutable mut -> getMutVal mut >>= rtrBase
-  TNRefCycle _ -> Nothing
+  TNMutable mut -> getMutVal mut >>= rtrDeterministic
 
--- | Retrieve the singular value which is not a disjunction.
-rtrCUESingular :: Tree -> Maybe Tree
-rtrCUESingular t = do
-  v <- rtrBase t
+{- | Retrieve the value of non-union type.
+
+Union type represents an incomplete value, such as a disjunction or bounds.
+-}
+rtrNonUnion :: Tree -> Maybe Tree
+rtrNonUnion t = do
+  v <- rtrDeterministic t
   case treeNode v of
     TNAtom _ -> Just v
     TNBottom _ -> Just v
     TNTop -> Just v
     TNList _ -> Just v
     TNBlock _ -> Just v
-    TNDisj d | Just df <- dsjDefault d -> rtrCUESingular df
+    TNRefCycle _ -> Just v
+    TNDisj d | Just df <- dsjDefault d -> rtrNonUnion df
     _ -> Nothing
 
 -- | Retrieve the concrete value from the tree.
 rtrConcrete :: Tree -> Maybe Tree
 rtrConcrete t = do
-  v <- rtrCUESingular t
+  v <- rtrNonUnion t
   case v of
     IsAtom _ -> Just v
     -- There is only struct value after retrieving concrete value.
-    IsBlock (Block{blkStruct = s}) -> if stcIsConcrete s then Just v else Nothing
+    IsBlock (IsBlockStruct s) -> if stcIsConcrete s then Just v else Nothing
     _ -> Nothing
 
 rtrNonMut :: Tree -> Maybe Tree
@@ -297,7 +295,7 @@ rtrNonMut t = return t
 
 rtrAtom :: Tree -> Maybe Atom
 rtrAtom t = do
-  v <- rtrCUESingular t
+  v <- rtrNonUnion t
   case v of
     IsAtom a -> Just a
     _ -> Nothing
@@ -320,14 +318,14 @@ rtrFloat _ = Nothing
 
 rtrBottom :: Tree -> Maybe Bottom
 rtrBottom t = do
-  v <- rtrCUESingular t
+  v <- rtrNonUnion t
   case v of
     IsBottom b -> Just b
     _ -> Nothing
 
 rtrBounds :: Tree -> Maybe Bounds
 rtrBounds t = do
-  v <- rtrBase t
+  v <- rtrDeterministic t
   case v of
     IsBounds b -> Just b
     _ -> Nothing
@@ -338,23 +336,30 @@ It stops at the first disjunction found. It does not go deeper to the default va
 -}
 rtrDisj :: Tree -> Maybe Disj
 rtrDisj t = do
-  v <- rtrBase t
+  v <- rtrDeterministic t
   case v of
     IsDisj d -> Just d
     _ -> Nothing
 
 rtrList :: Tree -> Maybe List
 rtrList t = do
-  v <- rtrCUESingular t
+  v <- rtrNonUnion t
   case v of
     IsList l -> Just l
     _ -> Nothing
 
 rtrStruct :: Tree -> Maybe Struct
 rtrStruct t = do
-  v <- rtrCUESingular t
+  v <- rtrNonUnion t
   case v of
-    IsBlock Block{blkStruct = struct} -> Just struct
+    IsBlock (IsBlockStruct struct) -> Just struct
+    _ -> Nothing
+
+rtrBlock :: Tree -> Maybe Block
+rtrBlock t = do
+  v <- rtrNonUnion t
+  case v of
+    IsBlock b -> Just b
     _ -> Nothing
 
 -- = Traversal =
@@ -362,10 +367,10 @@ rtrStruct t = do
 -- | Generate a list of sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Tree -> [(TASeg, Tree)]
 subNodes t = case treeNode t of
-  TNBlock (Block{blkStruct = struct}) ->
-    [(StructTASeg $ StringTASeg (TE.encodeUtf8 s), ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
-      ++ [(StructTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
-      ++ [(StructTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
+  TNBlock blk@(IsBlockStruct struct) ->
+    [(BlockTASeg $ StringTASeg (TE.encodeUtf8 s), ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
+      ++ [(BlockTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ blkCnstrs blk]
+      ++ [(BlockTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ blkDynFields blk]
   TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
   TNMutable mut -> [(MutArgTASeg i, v) | (i, v) <- zip [0 ..] (toList $ getMutArgs mut)]
   TNDisj d ->
@@ -376,15 +381,11 @@ subNodes t = case treeNode t of
 -- | TODO: comprehension struct
 rawNodes :: Tree -> [(TASeg, Tree)]
 rawNodes t = case treeNode t of
-  TNBlock block@(Block{blkStruct = struct}) ->
-    [(StructTASeg $ PatternTASeg i 1, scsValue c) | (i, c) <- IntMap.toList $ stcCnstrs struct]
-      ++ [(StructTASeg $ DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
-      ++ [(StructTASeg $ LetTASeg (TE.encodeUtf8 s), lbValue lb) | (s, lb) <- Map.toList $ stcLets struct]
-      ++ [(StructTASeg $ EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
-  TNMutable (MutOp (Compreh c)) ->
-    [ (ComprehTASeg (ComprehIterClauseValTASeg i), getValFromIterClause v)
-    | (i, v) <- zip [0 ..] (cphIterClauses c)
-    ]
+  TNBlock block ->
+    [(BlockTASeg $ PatternTASeg i 1, scsValue c) | (i, c) <- IntMap.toList $ blkCnstrs block]
+      ++ [(BlockTASeg $ DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ blkDynFields block]
+      ++ [(BlockTASeg $ LetTASeg (TE.encodeUtf8 s), lbValue lb) | (s, lb) <- Map.toList $ blkBindings block]
+      ++ [(BlockTASeg $ EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
   _ -> []
 
 -- = Helpers =
@@ -431,7 +432,7 @@ mkBlockTree :: Block -> Tree
 mkBlockTree b = mkNewTree (TNBlock b)
 
 mkStructTree :: Struct -> Tree
-mkStructTree s = mkNewTree (TNBlock (emptyBlock{blkStruct = s}))
+mkStructTree s = mkNewTree (TNBlock (emptyBlock{blkValue = BlockStruct s}))
 
 -- | Create an index function node.
 appendSelToRefTree :: Tree -> Tree -> Tree
@@ -466,7 +467,7 @@ addrToTrees p = mapM selToTree (addrToList p)
  where
   selToTree :: TASeg -> Maybe Tree
   selToTree sel = case sel of
-    StructTASeg (StringTASeg s) -> Just $ mkAtomTree (String (TE.decodeUtf8 s))
+    BlockTASeg (StringTASeg s) -> Just $ mkAtomTree (String (TE.decodeUtf8 s))
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
 
@@ -629,11 +630,11 @@ iterRepTree t opt =
             ( case t of
                 IsAtom _ -> []
                 _ ->
-                  (if treeRecurClosed t then "t_#," else "")
-                    ++ (if isJust (treeExpr t) then "" else "t_N,")
-                    ++ (if treeIsRootOfSubTree t then "t_R," else "")
-                    ++ (if treeIsCyclic t then "t_C," else "")
-                    ++ printf "t_v:%d," (treeVersion t)
+                  (if treeRecurClosed t then "#," else "")
+                    ++ (if isJust (treeExpr t) then "" else "N,")
+                    ++ (if treeIsRootOfSubTree t then "R," else "")
+                    ++ (if treeIsCyclic t then "C," else "")
+                    ++ printf "vers:%d," (treeVersion t)
             )
               ++ trMeta trf
         , trFields = trFields trf
@@ -644,81 +645,72 @@ buildRepTreeTN t tn opt = case tn of
   TNAtom leaf -> consRep (show leaf, mempty, [], [])
   -- TODO: segment
   TNBounds b -> consRep (mempty, show b, [], [])
-  TNBlock es@(Block{blkStruct = s}) ->
-    let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
-        attr :: LabelAttr -> String
-        attr a = case lbAttrCnstr a of
-          SFCRegular -> mempty
-          SFCRequired -> "!"
-          SFCOptional -> "?"
-
-        isVar :: LabelAttr -> String
-        isVar a =
-          if lbAttrIsIdent a
-            then ",v"
-            else mempty
-
-        staticlFieldAttr :: Field -> String
-        staticlFieldAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
-
-        staticFieldMeta :: Field -> String
-        staticFieldMeta sf =
-          staticlFieldAttr sf
-            <> maybe mempty (\raw -> ",raw:" ++ showTreeSymbol raw) (ssfBaseRaw sf)
-            <> ",objs:"
-            <> show (Set.toList $ ssfObjects sf)
-
-        dlabelAttr :: DynamicField -> String
-        dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
-
-        -- The tuple is (field name, field meta, field value)
-        fields :: [(String, String, Tree)]
-        fields =
-          map
-            ( \k ->
-                maybe
-                  (T.unpack k, "", mkBottomTree "not found")
-                  (\sf -> (T.unpack k, staticFieldMeta sf, ssfValue sf))
-                  (lookupStructField k s)
-            )
-            (stcOrdLabels s)
-            ++ map
-              ( \(k, lb) ->
-                  (show (StructTASeg $ LetTASeg (TE.encodeUtf8 k)), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
-              )
-              (Map.toList (stcLets s))
-            ++ map
-              ( \(j, k) -> (show (StructTASeg $ PatternTASeg j 0), ",cns_val:" ++ showTreeSymbol (scsValue k), scsPattern k)
-              )
-              (IntMap.toList $ stcCnstrs s)
-            ++ foldr
-              ( \(j, dsf) acc ->
-                  (show (StructTASeg $ DynFieldTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
-              )
-              []
-              (IntMap.toList $ stcDynFields s)
-            ++ map
-              ( \(j, v) ->
-                  ( show (StructTASeg $ EmbedTASeg j)
-                  , mempty
-                  , embValue v
-                  )
-              )
-              (IntMap.toList $ blkEmbeds es)
-            ++ maybe [] (\ev -> [(show SubValTASeg, mempty, ev)]) (blkNonStructValue es)
-
-        metas :: [(String, String)]
-        metas =
-          [ ("idents", show $ Set.toList $ stcBlockIdents s)
-          , ("perms", show $ stcPerms s)
-          , ("isConcrete", show $ stcIsConcrete s)
-          ]
-     in consRep
-          ( (if stcClosed s then "#" else mempty) <> symbol
-          , ordLabels <> ",sid:" <> show (stcID s)
-          , consFields fields
-          , consMetas metas
+  TNBlock blk ->
+    let
+      -- The tuple is (field name, field meta, field value)
+      phFields :: [(String, String, Tree)]
+      phFields =
+        foldr
+          ( \(j, dsf) acc ->
+              (show (BlockTASeg $ DynFieldTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
           )
+          []
+          (IntMap.toList $ blkDynFields blk)
+          ++ map
+            ( \(k, lb) ->
+                (show (BlockTASeg $ LetTASeg (TE.encodeUtf8 k)), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
+            )
+            (Map.toList (blkBindings blk))
+          ++ map
+            ( \(j, k) -> (show (BlockTASeg $ PatternTASeg j 0), ",cns_val:" ++ showTreeSymbol (scsValue k), scsPattern k)
+            )
+            (IntMap.toList $ blkCnstrs blk)
+          ++ map
+            ( \(j, v) ->
+                ( show (BlockTASeg $ EmbedTASeg j)
+                , mempty
+                , embValue v
+                )
+            )
+            (IntMap.toList $ blkEmbeds blk)
+
+      metas :: Struct -> [(String, String)]
+      metas s =
+        [ ("ord", intercalate ", " (map show $ blkOrdLabels blk))
+        , ("perms", show $ stcPerms s)
+        , ("isConcrete", show $ stcIsConcrete s)
+        , ("orig_fields", show $ Map.keys $ blkStaticFields blk)
+        ]
+     in
+      case blk of
+        IsBlockEmbed ev ->
+          consRep
+            ( symbol
+            , "bid:" <> show (blkID blk)
+            , consFields (phFields ++ [(show SubValTASeg, mempty, ev)])
+            , []
+            )
+        IsBlockStruct s ->
+          consRep
+            ( (if stcClosed s then "#" else mempty) <> symbol
+            , "bid:" <> show (blkID blk)
+            , consFields
+                ( foldr
+                    ( \label acc -> case label of
+                        BlockFieldLabel l -> buildFieldRep s l : acc
+                        BlockDynFieldOID oid ->
+                          let dsf = blkDynFields blk IntMap.! oid
+                           in case rtrString $ dsfLabel dsf of
+                                Just l -> buildFieldRep s l : acc
+                                Nothing -> acc
+                    )
+                    []
+                    (blkOrdLabels blk)
+                    ++ phFields
+                )
+            , consMetas (metas s)
+            )
+        _ -> error "buildRepTreeTN: unexpected block type"
   TNList vs ->
     let fields = zipWith (\j v -> (show (IndexTASeg j), mempty, v)) [0 ..] (lstSubs vs)
      in consRep (symbol, mempty, consFields fields, [])
@@ -737,107 +729,78 @@ buildRepTreeTN t tn opt = case tn of
       , []
       )
   TNRefCycle p -> consRep (symbol, printf "ref-cycle %s" (show p), [], [])
-  TNMutable mut@(Mutable op _) -> case op of
-    RegOp rop ->
-      let
-        args =
-          if trboShowMutArgs opt
-            then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ ropArgs rop)
-            else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
-       in
-        consRep
-          ( symbol
-          , ropName rop
-              <> ( printf ", args:%s" (show . length $ ropArgs rop)
-                 )
-          , consFields (args ++ val)
-          , []
-          )
-    Ref ref ->
-      let
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
-       in
-        consRep
-          ( symbol
-          , showRefArg
-              (refArg ref)
-              (\x -> listToMaybe $ catMaybes [T.unpack <$> rtrString x, show <$> rtrInt x])
-              <> maybe mempty (\from -> ", from:" <> show from) (refOrigAddrs ref)
-              <> (", vers:" <> maybe "N" show (refVers ref))
-          , consFields val
-          , []
-          )
-    Compreh cph ->
-      let
-        clauses =
-          map
-            ( \(i, cl) ->
-                ( show (ComprehTASeg (ComprehIterClauseValTASeg i))
-                , mempty
-                , getValFromIterClause cl
-                )
+  TNMutable mut@(Mutable op _) ->
+    let
+      args =
+        if trboShowMutArgs opt
+          then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ getMutArgs mut)
+          else []
+      val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
+     in
+      case op of
+        RegOp rop -> consRep (symbol, ropName rop, consFields (args ++ val), [])
+        Ref ref ->
+          consRep
+            ( symbol
+            , showRefArg
+                (refArg ref)
+                (\x -> listToMaybe $ catMaybes [T.unpack <$> rtrString x, show <$> rtrInt x])
+                <> maybe mempty (\from -> ", from:" <> show from) (refOrigAddrs ref)
+                <> (", vers:" <> maybe "N" show (refVers ref))
+            , consFields val
+            , []
             )
-            (zip [0 ..] (cphIterClauses cph))
-        struct = [(show "struct", mempty, cphStruct cph)]
-       in
-        consRep
-          ( symbol
-          , ""
-          , consFields (clauses ++ struct)
-          , []
-          )
-    DisjOp d ->
-      let
-        terms =
-          if trboShowMutArgs opt
-            then
-              zipWith
-                ( \j v ->
-                    (show (MutArgTASeg j), if dstMarked v then ",*" else "", dstValue v)
-                )
-                [0 ..]
-                (toList $ djoTerms d)
-            else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
-       in
-        consRep
-          ( symbol
-          , mempty
-          , consFields (terms ++ val)
-          , []
-          )
-    UOp u ->
-      let
-        conjuncts =
-          if trboShowMutArgs opt
-            then
-              zipWith
-                (\j v -> (show (MutArgTASeg j), mempty, v))
-                [0 ..]
-                (toList $ ufConjuncts u)
-            else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
-       in
-        consRep (symbol, "", consFields (conjuncts ++ val), [])
-    Itp itp ->
-      let
-        exprs =
-          if trboShowMutArgs opt
-            then
-              zipWith
-                (\j v -> (show (MutArgTASeg j), mempty, v))
-                [0 ..]
-                (toList $ itpExprs itp)
-            else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
-       in
-        consRep (symbol, "", consFields (exprs ++ val), [])
+        Compreh _ -> consRep (symbol, "", consFields (args ++ val), [])
+        DisjOp d ->
+          let
+            terms =
+              if trboShowMutArgs opt
+                then
+                  zipWith
+                    ( \j v ->
+                        (show (MutArgTASeg j), if dstMarked v then ",*" else "", dstValue v)
+                    )
+                    [0 ..]
+                    (toList $ djoTerms d)
+                else []
+           in
+            consRep (symbol, mempty, consFields (terms ++ val), [])
+        _ -> consRep (symbol, "", consFields (args ++ val), [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
  where
   symbol :: String
   symbol = showTreeSymbol t
+
+  attr :: LabelAttr -> String
+  attr a = case lbAttrCnstr a of
+    SFCRegular -> mempty
+    SFCRequired -> "!"
+    SFCOptional -> "?"
+
+  isVar :: LabelAttr -> String
+  isVar a =
+    if lbAttrIsIdent a
+      then ",v"
+      else mempty
+
+  staticlFieldAttr :: Field -> String
+  staticlFieldAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
+
+  staticFieldMeta :: Field -> String
+  staticFieldMeta sf =
+    staticlFieldAttr sf
+      <> ",objs:"
+      <> show (Set.toList $ ssfObjects sf)
+
+  dlabelAttr :: DynamicField -> String
+  dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
+
+  buildFieldRep :: Struct -> T.Text -> (String, String, Tree)
+  buildFieldRep s label =
+    case lookupStructField label s of
+      Just sf -> (T.unpack label, staticFieldMeta sf, ssfValue sf)
+      Nothing -> (T.unpack label, "", mkBottomTree "not found")
 
   consRep :: (String, String, [TreeRepField], [TreeRepMeta]) -> TreeRep
   consRep (s, m, f, l) = TreeRep s m f l

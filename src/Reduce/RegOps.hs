@@ -89,10 +89,12 @@ execRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
           -- Tops are incomplete.
           | IsTop <- t1 -> return Nothing
           | IsTop <- t2 -> return Nothing
+          | IsRefCycle _ <- t1 -> return Nothing
+          | IsRefCycle _ <- t2 -> return Nothing
           -- When both trees are atoms.
           | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ Just $ calc op (d1, a1) (d2, a2)
-          -- When both trees are Singular values.
-          | Just _ <- rtrCUESingular t1, Just _ <- rtrCUESingular t2 -> return $ Just $ mismatch op t1 t2
+          -- When both trees are non-union values.
+          | Just _ <- rtrNonUnion t1, Just _ <- rtrNonUnion t2 -> return $ Just $ mismatch op t1 t2
         _ -> return Nothing
     | otherwise ->
         throwErrSt $
@@ -120,8 +122,8 @@ cmp cmpEqu (d1, t1M) (d2, t2M) =
       , Just a2 <- rtrAtom t2 ->
           Just $ mkAtomTree (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
       -- When both trees are Singular values.
-      | Just _ <- rtrCUESingular t1
-      , Just _ <- rtrCUESingular t2 ->
+      | Just _ <- rtrNonUnion t1
+      , Just _ <- rtrNonUnion t2 ->
           Just $ mkBottomTree $ printf "%s and %s are not comparable" (show t1) (show t2)
     _ -> Nothing
 
