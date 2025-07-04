@@ -321,7 +321,7 @@ evalUnaryExpr ue = do
 builtinOpNameTable :: [(String, Tree)]
 builtinOpNameTable =
   -- bounds
-  map (\b -> (show b, mkBoundsTree [BdType b])) [minBound :: BdType .. maxBound :: BdType]
+  map (\b -> (show b, mkBoundsTreeFromList [BdType b])) [minBound :: BdType .. maxBound :: BdType]
     -- built-in function names
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable

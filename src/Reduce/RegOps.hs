@@ -43,8 +43,8 @@ execUnaryOp op tM = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> retVal (mkBoundsTree [BdStrMatch $ BdReMatch p])
-        (AST.ReNotMatch, String p) -> retVal (mkBoundsTree [BdStrMatch $ BdReNotMatch p])
+        (AST.ReMatch, String p) -> retVal (mkBoundsTreeFromList [BdStrMatch $ BdReMatch p])
+        (AST.ReNotMatch, String p) -> retVal (mkBoundsTreeFromList [BdStrMatch $ BdReNotMatch p])
         _ -> returnErr t
       _ -> returnErr t
     _ -> return Nothing
@@ -55,11 +55,11 @@ execUnaryOp op tM = do
 
   fa a f = retVal (mkAtomTree (Float $ f a))
 
-  mkb b = retVal (mkBoundsTree [b])
+  mkb b = retVal (mkBoundsTreeFromList [b])
 
-  mkib uop i = retVal (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
+  mkib uop i = retVal (mkBoundsTreeFromList [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
 
-  mkfb uop f = retVal (mkBoundsTree [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
+  mkfb uop f = retVal (mkBoundsTreeFromList [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
 
 -- * Regular Binary Ops
 

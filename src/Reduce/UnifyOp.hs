@@ -424,7 +424,7 @@ mergeLeftBound (b1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2})
            in
             case snd r of
               Just a -> retTr (mkAtomTree a)
-              Nothing -> retTr (mkBoundsTree (fst r))
+              Nothing -> retTr (mkBoundsTreeFromList (fst r))
     TNBlock s2 -> mergeLeftBlock (s2, ut2) ut1 unifyTC
     _ -> mergeLeftOther ut2 ut1 unifyTC
 

@@ -409,8 +409,11 @@ mkAtomTree a = mkNewTree (TNAtom a)
 mkBottomTree :: String -> Tree
 mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
 
-mkBoundsTree :: [Bound] -> Tree
-mkBoundsTree bs = mkNewTree (TNBounds $ Bounds{bdsList = bs})
+mkBoundsTree :: Bounds -> Tree
+mkBoundsTree bs = mkNewTree (TNBounds bs)
+
+mkBoundsTreeFromList :: [Bound] -> Tree
+mkBoundsTreeFromList bs = mkBoundsTree (Bounds{bdsList = bs})
 
 mkCnstrTree :: Atom -> AST.Expression -> Tree
 mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a e

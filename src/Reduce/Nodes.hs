@@ -1160,8 +1160,8 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
 The pattern is expected to be an Atom or a Bounds.
 -}
 patMatchLabel :: (ReduceMonad s r m) => Tree -> T.Text -> TrCur -> m Bool
-patMatchLabel pat name tc = do
-  let r = listToMaybe $ catMaybes [rtrAtom pat >> return pat, rtrBounds pat >> return pat]
+patMatchLabel pat name tc = debugSpanRM "patMatchLabel" (const Nothing) tc $ do
+  let r = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match r
  where
   match :: (ReduceMonad s r m) => Tree -> m Bool
