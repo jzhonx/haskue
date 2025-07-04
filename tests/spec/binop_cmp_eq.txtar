@@ -25,6 +25,9 @@ n3: null == {}
 n4: {} == null
 n5: null == (*1 | 2)
 n6: (*1 | 2) == null
+
+d1: (1 | 2) == _|_
+d2: (1 | 2) != _|_
 -- exp --
 i0: false
 i1: true
@@ -48,3 +51,5 @@ n3: false
 n4: false
 n5: false
 n6: false
+d1: false
+d2: true

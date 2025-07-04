@@ -14,7 +14,7 @@ import Common (
   RuntimeParams (RuntimeParams, rpCreateCnstr),
  )
 import Control.Monad (foldM, forM, when)
-import Control.Monad.Reader (asks, local)
+import Control.Monad.Reader (asks)
 import Cursor
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
@@ -33,7 +33,7 @@ import Reduce.RMonad (
   debugSpanRM,
  )
 import Reduce.RefSys (searchTCIdent)
-import {-# SOURCE #-} Reduce.Root (reduce, reduceToNonMut, reduceUnifyConj)
+import {-# SOURCE #-} Reduce.Root (reduceToNonMut, reduceUnifyConj)
 import Text.Printf (printf)
 import Value
 
@@ -200,7 +200,7 @@ normalizeConjunct tc = debugSpanRM "normalizeConjunct" (const Nothing) tc $ do
     Just conj -> do
       let conjTC = conj `setTCFocus` tc
       case treeNode conj of
-        TNMutable (UOp u) ->
+        TNMutable (MutOp (UOp u)) ->
           foldM
             ( \acc (i, _) -> do
                 subConjTC <- goDownTCSegMust (MutArgTASeg i) conjTC
@@ -350,7 +350,7 @@ mergeLeftCnstredVal (c1, ut1) ut2@UTree{utTC = tc2} unifyTC = do
     -- ut2 is CnstredVal, we need to merge original expressions.
     TNCnstredVal c2 -> return $ cnsedOrigExpr c2
     -- ut2 is not CnstredVal, we need to build the original expression.
-    _ -> Just <$> buildASTExpr False t2
+    _ -> Just <$> buildASTExpr t2
 
   e <- case catMaybes [cnsedOrigExpr c1, eM2] of
     -- If only one side has an original expression, we can use it directly.
@@ -403,7 +403,7 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
         -- Notice: Unifying an atom with a marked disjunction will not get the same atom. So we do not create a
         -- constraint. Another way is to add a field in Constraint to store whether the constraint is created from a
         -- marked disjunction.
-        | (DisjOp _) <- mut2 -> mergeLeftOther ut2 ut1 unifyTC
+        | (MutOp (DisjOp _)) <- mut2 -> mergeLeftOther ut2 ut1 unifyTC
         | otherwise -> mkCnstrOrOther t2
       (_, TNRefCycle _) -> mkCnstrOrOther t2
       (_, TNBlock s2) -> mergeLeftBlock (s2, ut2) ut1 unifyTC
@@ -429,7 +429,7 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
 mkCnstr :: (ReduceMonad s r m) => Atom -> Tree -> m Tree
 mkCnstr a cnstr = do
   let op = mkMutableTree $ mkUnifyOp [mkAtomTree a, cnstr]
-  e <- buildASTExpr False op
+  e <- buildASTExpr op
   return $ mkCnstrTree a e
 
 mergeLeftBound :: (ReduceMonad s r m) => (Bounds, UTree) -> UTree -> TrCur -> m (Maybe Tree)
@@ -665,11 +665,11 @@ mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
   let t1 = tcFocus tc1
   case treeNode t1 of
     TNRefCycle _ -> throwErrSt "ref cycle should not be used in merge"
-    (TNMutable mut) -> case mut of
+    (TNMutable (Mutable mop _)) -> case mop of
       Ref _ -> throwErrSt "ref should not be used in merge"
       DisjOp _ -> throwErrSt "disjoin should not be used in merge"
       _ -> do
-        case mut of
+        case mop of
           RegOp _ -> return ()
           Compreh _ -> return ()
           _ -> throwErrSt (printf "unexpected tree node: %s" (showTreeSymbol t1))
@@ -945,8 +945,8 @@ _validateRefIdents _tc =
   snd <$> traverseTC _extAllSubNodes find (_tc, Nothing)
  where
   find (tc, acc) = do
-    case treeNode (tcFocus tc) of
-      TNMutable (Ref (Reference{refArg = RefPath ident _})) -> do
+    case tc of
+      TCFocus (IsRef _ (Reference{refArg = RefPath ident _})) -> do
         m <- searchTCIdent ident tc
         -- logDebugStrRM $ printf "_validateRefIdents: ident: %s, m: %s" ident (show m)
         maybe
@@ -967,8 +967,8 @@ _appendSIDToLetRef blockAddr sid _tc =
  where
   rewrite tc =
     let focus = tcFocus tc
-     in case treeNode focus of
-          TNMutable (Ref ref@(Reference{refArg = RefPath ident _})) -> do
+     in case focus of
+          IsRef mut ref@(Reference{refArg = RefPath ident _}) -> do
             m <- searchTCIdent ident tc
             -- logDebugStrRM $ printf "_appendSIDToLetRef: ident: %s, m: %s" ident (show m)
 
@@ -983,7 +983,7 @@ _appendSIDToLetRef blockAddr sid _tc =
                   --     (show addr)
                   if isLB && (Just blockAddr == initTreeAddr addr)
                     then do
-                      let newFocus = setTN focus (TNMutable $ Ref $ append ref)
+                      let newFocus = setTN focus (TNMutable $ setMutOp (Ref $ append ref) mut)
                       return newFocus
                     else return focus
               )
@@ -1090,121 +1090,3 @@ treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
         return $ Just $ mkDisjTree $ emptyDisj{dsjDefIndexes = defIndexes, dsjDisjuncts = disjuncts}
     )
     (sequence disjunctsM)
-
-{- | Check the labels' permission.
-
-The focus of the tree must be a struct.
--}
-checkLabelsPerm ::
-  (ReduceMonad s r m) =>
-  Set.Set T.Text ->
-  IntMap.IntMap StructCnstr ->
-  Bool ->
-  Bool ->
-  Set.Set T.Text ->
-  TrCur ->
-  m TrCur
-checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded labelsSet tc =
-  foldM
-    ( \acc opLabel ->
-        case tcFocus acc of
-          IsBottom _ -> return acc
-          _ ->
-            checkPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded opLabel acc
-              >>= maybe
-                (return acc)
-                -- If the checkPerm returns a bottom, update the bottom to the struct.
-                (\err -> return (err `setTCFocus` acc))
-    )
-    tc
-    labelsSet
-
-checkPerm ::
-  (ReduceMonad s r m) =>
-  Set.Set T.Text ->
-  IntMap.IntMap StructCnstr ->
-  Bool ->
-  Bool ->
-  T.Text ->
-  TrCur ->
-  m (Maybe Tree)
-checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
-  debugSpanArgsRM
-    "checkPerm"
-    ( printf
-        "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s"
-        (show newLabel)
-        (show $ Set.toList baseLabels)
-        (show $ IntMap.toList baseAllCnstrs)
-        (show isBaseClosed)
-        (show isEitherEmbedded)
-    )
-    id
-    tc
-    $ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
-
-_checkPerm ::
-  (ReduceMonad s r m) =>
-  Set.Set T.Text ->
-  IntMap.IntMap StructCnstr ->
-  Bool ->
-  Bool ->
-  T.Text ->
-  TrCur ->
-  m (Maybe Tree)
-_checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
-  | not isBaseClosed || isEitherEmbedded = return Nothing
-  | newLabel `Set.member` baseLabels = return Nothing
-  | otherwise = do
-      -- A "new" field is allowed if there is at least one pattern that matches the field.
-      allowed <-
-        foldM
-          ( \acc cnstr ->
-              if acc
-                then return acc
-                else do
-                  let pat = scsPattern cnstr
-                  patMatchLabel pat newLabel tc
-          )
-          -- By default, "new" label is not allowed.
-          False
-          (IntMap.elems baseAllCnstrs)
-
-      -- A field is disallowed if no pattern exists or no pattern matches the label.
-      if allowed
-        then return Nothing
-        else return . Just $ mkBottomTree $ printf "%s is not allowed" newLabel
-
--- | Returns whether the pattern matches the label.
-patMatchLabel :: (ReduceMonad s r m) => Tree -> T.Text -> TrCur -> m Bool
-patMatchLabel pat name tc = case treeNode pat of
-  TNMutable mut
-    -- If the mutable is a reference or an index, then we should try to use the value of the mutable.
-    | Nothing <- getSFuncFromMutable mut ->
-        maybe
-          (return False)
-          -- The lable mutable might be a reference. The pending element should not be marked as deleted.
-          match
-          (getMutVal mut)
-  _ -> match pat
- where
-  match :: (ReduceMonad s r m) => Tree -> m Bool
-  match v = do
-    let
-      segOp = mkMutableTree $ mkUnifyOp [mkAtomTree $ String name, v]
-    -- Since segOps a list of unify nodes that unify the string with the bounds, we can use inDiscardSubTM to
-    -- evaluate the unify nodes and get the strings.
-    r <-
-      -- We should not create constraints in this context because we should not delay the evaluation of the
-      -- pattern.
-      local
-        ( \r ->
-            let conf = getConfig r
-             in setConfig r conf{cfRuntimeParams = (cfRuntimeParams conf){rpCreateCnstr = False}}
-        )
-        $ reduce (segOp `setTCFocus` tc)
-    -- Filter the strings from the results. Non-string results are ignored meaning the fields do not match the
-    -- pattern.
-    case rtrAtom r of
-      Just (String _) -> return True
-      _ -> return False

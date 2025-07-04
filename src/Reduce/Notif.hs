@@ -41,6 +41,7 @@ drainRefSysQueue :: (ReduceMonad s r m) => TrCur -> m TrCur
 drainRefSysQueue tc = do
   q <- getRMReadyQ
   graph <- Common.ctxNotifGraph <$> getRMContext
+  debugInstantRM "drainRefSysQueue" (printf "t: %s" (show $ tcFocus tc)) tc
   (res, more) <- debugSpanArgsRM
     "drainRefSysQueue"
     (printf "q: %s, graph: %s" (show q) (show $ Map.toList graph))
@@ -52,11 +53,7 @@ drainRefSysQueue tc = do
         Nothing -> return (tc, False)
         Just addr -> do
           dstTCM <- goTCAbsAddr2 addr tc
-          r <-
-            maybe
-              (return tc)
-              (\dstTC -> notify dstTC)
-              dstTCM
+          r <- maybe (return tc) notify dstTCM
           return (r, True)
 
   if more
@@ -140,6 +137,7 @@ bfsLoopQ tc = do
               -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
               -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
               delRefSysRecvPrefix addr
+              debugInstantRM "bfsLoopQ" (printf "%s is not found, tc:%s" (show addr) (show tc)) tc
               return tc
           )
           ( \dstTC ->
@@ -214,6 +212,8 @@ loopAddDeps tc = do
 
       let srcVers = treeVersion (tcFocus tc)
 
+      debugInstantRM "loopAddDeps" (printf "found recvs: %s" (show recvs)) tc
+
       -- Add the receivers to the visited list and the queue.
       modify $ \st ->
         let bfsState = getBFSState st
@@ -249,11 +249,11 @@ reduceImParMut srcVers tc = debugSpanRM "reduceImParMut" (Just <$> tcFocus) tc $
   let focus = tcFocus tc
   (utc, toReduce) <- case treeNode focus of
     TNMutable mut
-      | Just ref <- getRefFromMutable mut ->
+      | MutOp (Ref ref) <- mut ->
           if maybe True (< srcVers) (refVers ref)
             then do
               let newRef = ref{refVers = Just srcVers}
-              return (setTCFocusTN (TNMutable $ Ref newRef) tc, True)
+              return (setTCFocusTN (TNMutable $ setMutOp (Ref newRef) mut) tc, True)
             else do
               debugInstantRM "reduceImParMut" (printf "reduceImParMut: ref %s is already up to date" (show ref)) tc
               return (tc, False)
@@ -265,9 +265,10 @@ reduceImParMut srcVers tc = debugSpanRM "reduceImParMut" (Just <$> tcFocus) tc $
       -- Locate immediate parent mutable to trigger the re-evaluation of the parent mutable.
       -- Notice the tree focus now changes to the Im mutable.
       mtc <- locateImMutable utc
+      debugInstantRM "reduceImParMut" (printf "reduceImParMut: re-evaluate") mtc
       case treeNode (tcFocus mtc) of
         TNMutable mut
-          | Just _ <- getRefFromMutable mut -> do
+          | MutOp (Ref _) <- mut -> do
               r <- reduce mtc
               return $ setTCFocus r mtc
           -- re-evaluate the mutable when it is not a reference.

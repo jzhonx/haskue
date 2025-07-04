@@ -14,7 +14,6 @@ data Comprehension = Comprehension
   , cphIterBindings :: [ComprehIterBinding]
   -- ^ Bindings are temporary on each iteration.
   , cphIterVal :: Maybe Tree
-  , cphValue :: Maybe Tree
   }
   deriving (Generic)
 
@@ -32,7 +31,6 @@ mkComprehension isListCompreh clauses sv =
     , cphStruct = sv
     , cphIterBindings = []
     , cphIterVal = Nothing
-    , cphValue = Nothing
     }
 
 getValFromIterClause :: IterClause -> Tree

@@ -11,9 +11,8 @@ be created correctly.
 
 Its value should be a Disj or other single value.
 -}
-data DisjoinOp = DisjoinOp
+newtype DisjoinOp = DisjoinOp
   { djoTerms :: Seq.Seq DisjTerm
-  , djoValue :: Maybe Tree
   }
   deriving (Generic)
 

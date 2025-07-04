@@ -13,11 +13,10 @@ The op tree can be flattened to a list of conjuncts.
 It is used to handle reference unifications, so that when values of references change, the new unification can be
 created correctly.
 -}
-data UnifyOp = UnifyOp
+newtype UnifyOp = UnifyOp
   { ufConjuncts :: Seq.Seq Tree
-  , ufValue :: Maybe Tree
   }
   deriving (Generic)
 
 emptyUnifyOp :: UnifyOp
-emptyUnifyOp = UnifyOp Seq.empty Nothing
+emptyUnifyOp = UnifyOp Seq.empty

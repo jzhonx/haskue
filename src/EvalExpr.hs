@@ -37,22 +37,22 @@ tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
 evalExpr :: (EvalEnv r s m) => Expression -> m Tree
 evalExpr e = do
-  t <- case wpVal e of
+  t <- case anVal e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
   return $ setExpr t (Just e)
 
 evalLiteral :: (EvalEnv r s m) => Literal -> m Tree
-evalLiteral (wpVal -> LitStructLit s) = evalStructLit s
-evalLiteral (wpVal -> ListLit l) = evalListLit l
-evalLiteral (wpVal -> StringLit (wpVal -> SimpleStringL s)) = do
+evalLiteral (anVal -> LitStructLit s) = evalStructLit s
+evalLiteral (anVal -> ListLit l) = evalListLit l
+evalLiteral (anVal -> StringLit (anVal -> SimpleStringL s)) = do
   rE <- simpleStringLitToStr s
   return $ case rE of
     Left t -> t
     Right str -> mkAtomTree $ String str
 evalLiteral lit = return v
  where
-  v = case wpVal lit of
+  v = case anVal lit of
     IntLit i -> mkAtomTree $ Int i
     FloatLit a -> mkAtomTree $ Float a
     BoolLit b -> mkAtomTree $ Bool b
@@ -62,12 +62,12 @@ evalLiteral lit = return v
     _ -> error "evalLiteral: invalid literal"
 
 evalStructLit :: (EvalEnv r s m) => StructLit -> m Tree
-evalStructLit (wpVal -> StructLit decls) = do
+evalStructLit (anVal -> StructLit decls) = do
   sid <- allocOID
   foldM evalDecl (mkStructTree (emptyStruct{stcID = sid})) decls
 
 simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either Tree T.Text)
-simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
+simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
   (asM, aSegs, aExprs) <-
     foldM
       ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
@@ -78,7 +78,7 @@ simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
               , accItpSegs
               , accItpExprs
               )
-          InterpolationStr (wpVal -> AST.Interpolation e) -> do
+          InterpolationStr (anVal -> AST.Interpolation e) -> do
             t <- evalExpr e
             -- First append the current string segment to the accumulator if the current string segment exists, then
             -- append the interpolation segment. Finally reset the current string segment to Nothing.
@@ -102,61 +102,62 @@ simpleStringLitToStr (wpVal -> SimpleStringLit segs) = do
 evalDecl :: (EvalEnv r s m) => Tree -> Declaration -> m Tree
 evalDecl x decl = case treeNode x of
   TNBottom _ -> return x
-  TNBlock block -> case wpVal decl of
+  TNBlock block -> case anVal decl of
     AST.Embedding ed -> do
       v <- evalEmbedding False ed
       oid <- allocOID
       let adder = EmbedSAdder oid v
       addNewBlockElem adder block
-    EllipsisDecl (wpVal -> Ellipsis cM) ->
+    EllipsisDecl (anVal -> Ellipsis cM) ->
       maybe
         (return (mkBlockTree block))
         (\_ -> throwError "default constraints are not implemented yet")
         cM
-    FieldDecl (wpVal -> AST.Field ls e) -> do
+    FieldDecl (anVal -> AST.Field ls e) -> do
       sfa <- evalFDeclLabels ls e
       addNewBlockElem sfa block
-    DeclLet (wpVal -> LetClause ident binde) -> do
+    DeclLet (anVal -> LetClause ident binde) -> do
       val <- evalExpr binde
-      let adder = LetSAdder (wpVal ident) val
+      let adder = LetSAdder (anVal ident) val
       addNewBlockElem adder block
   _ -> throwErrSt "invalid struct"
 
 evalEmbedding :: (EvalEnv r s m) => Bool -> AST.Embedding -> m Tree
-evalEmbedding _ (wpVal -> AliasExpr e) = evalExpr e
+evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
 evalEmbedding
   isListCompreh
-  ( wpVal ->
+  ( anVal ->
       EmbedComprehension
-        (wpVal -> AST.Comprehension (wpVal -> Clauses (wpVal -> GuardClause ge) cls) lit)
+        (anVal -> AST.Comprehension (anVal -> Clauses (anVal -> GuardClause ge) cls) lit)
     ) = do
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    return $ mkMutableTree $ Compreh $ mkComprehension isListCompreh (IterClauseIf gev : clsv) sv
+    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (IterClauseIf gev : clsv) sv
 evalEmbedding
   isListCompreh
-  ( wpVal ->
-      EmbedComprehension (wpVal -> AST.Comprehension (wpVal -> Clauses (wpVal -> ForClause i jM fe) cls) lit)
+  ( anVal ->
+      EmbedComprehension (anVal -> AST.Comprehension (anVal -> Clauses (anVal -> ForClause i jM fe) cls) lit)
     ) = do
     fev <- evalExpr fe
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
     return $
       mkMutableTree $
-        Compreh $
-          mkComprehension isListCompreh (IterClauseFor (wpVal i) (wpVal <$> jM) fev : clsv) sv
+        withEmptyMutFrame $
+          Compreh $
+            mkComprehension isListCompreh (IterClauseFor (anVal i) (anVal <$> jM) fev : clsv) sv
 evalEmbedding _ _ = throwErrSt "invalid embedding"
 
 evalClause :: (EvalEnv r s m) => Clause -> m IterClause
-evalClause c = case wpVal c of
-  ClauseStartClause (wpVal -> GuardClause e) -> do
+evalClause c = case anVal c of
+  ClauseStartClause (anVal -> GuardClause e) -> do
     t <- evalExpr e
     return $ IterClauseIf t
-  ClauseStartClause (wpVal -> ForClause (wpVal -> i) jM e) -> do
+  ClauseStartClause (anVal -> ForClause (anVal -> i) jM e) -> do
     t <- evalExpr e
-    return $ IterClauseFor i (wpVal <$> jM) t
-  ClauseLetClause (wpVal -> LetClause (wpVal -> ident) le) -> do
+    return $ IterClauseFor i (anVal <$> jM) t
+  ClauseLetClause (anVal -> LetClause (anVal -> ident) le) -> do
     lt <- evalExpr le
     return $ IterClauseLet ident lt
   _ -> throwErrSt $ printf "invalid clause: %s" (show c)
@@ -177,7 +178,7 @@ evalFDeclLabels lbls e =
         mkAdder l1 val
  where
   mkAdder :: (EvalEnv r s m) => Label -> Tree -> m BlockElemAdder
-  mkAdder (wpVal -> Label le) val = case wpVal le of
+  mkAdder (anVal -> Label le) val = case anVal le of
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
        in case ln of
@@ -202,15 +203,15 @@ evalFDeclLabels lbls e =
 
   -- Returns the label name and the whether the label is static.
   toIDentLabel :: LabelName -> Maybe T.Text
-  toIDentLabel (wpVal -> LabelID (wpVal -> ident)) = Just ident
+  toIDentLabel (anVal -> LabelID (anVal -> ident)) = Just ident
   toIDentLabel _ = Nothing
 
   toDynLabel :: LabelName -> Maybe AST.Expression
-  toDynLabel (wpVal -> LabelNameExpr lne) = Just lne
+  toDynLabel (anVal -> LabelNameExpr lne) = Just lne
   toDynLabel _ = Nothing
 
   toSStrLabel :: LabelName -> Maybe AST.SimpleStringLit
-  toSStrLabel (wpVal -> LabelString ls) = Just ls
+  toSStrLabel (anVal -> LabelString ls) = Just ls
   toSStrLabel _ = Nothing
 
   cnstrFrom :: AST.LabelConstraint -> StructFieldCnstr
@@ -220,7 +221,7 @@ evalFDeclLabels lbls e =
     RequiredLabel -> SFCRequired
 
   isVar :: LabelName -> Bool
-  isVar (wpVal -> LabelID _) = True
+  isVar (anVal -> LabelID _) = True
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
@@ -306,13 +307,13 @@ addNewBlockElem adder block@(Block{blkStruct = struct}) = case adder of
       _ -> Nothing
 
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m Tree
-evalListLit (wpVal -> AST.EmbeddingList es) = do
+evalListLit (anVal -> AST.EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
   return $ mkListTree xs
 
 evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m Tree
 evalUnaryExpr ue = do
-  t <- case wpVal ue of
+  t <- case anVal ue of
     UnaryExprPrimaryExpr primExpr -> evalPrimExpr primExpr
     UnaryExprUnaryOp op e -> evalUnaryOp op e
   return $ setExpr t (Just (AST.ExprUnaryExpr ue <$ ue))
@@ -326,12 +327,12 @@ builtinOpNameTable =
     ++ builtinMutableTable
 
 evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m Tree
-evalPrimExpr e = case wpVal e of
-  (PrimExprOperand op) -> case wpVal op of
+evalPrimExpr e = case anVal e of
+  (PrimExprOperand op) -> case anVal op of
     OpLiteral lit -> evalLiteral lit
-    OperandName (wpVal -> Identifier (wpVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
+    OperandName (anVal -> Identifier (anVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
       Just v -> return v
-      Nothing -> return $ mkMutableTree $ Ref $ emptyIdentRef ident
+      Nothing -> return $ mkMutableTree $ withEmptyMutFrame $ Ref $ emptyIdentRef ident
     OpExpression expr -> do
       x <- evalExpr expr
       return $ x{treeIsRootOfSubTree = True}
@@ -349,12 +350,12 @@ evalPrimExpr e = case wpVal e of
 -- | Creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: (MonadError String m) => Tree -> [Tree] -> m Tree
 replaceFuncArgs t args = case t of
-  IsRegOp fn ->
+  IsRegOp mut fn ->
     return . setTN t $
-      TNMutable . RegOp $
-        fn
-          { ropArgs = Seq.fromList args
-          }
+      TNMutable $
+        setMutOp
+          (RegOp $ fn{ropArgs = Seq.fromList args})
+          mut
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
@@ -369,8 +370,8 @@ evalSelector ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
 evalSelector _ astSel oprnd = do
   let f sel = appendSelToRefTree oprnd (mkAtomTree (String sel))
-  case wpVal astSel of
-    IDSelector ident -> return $ f (wpVal ident)
+  case anVal astSel of
+    IDSelector ident -> return $ f (anVal ident)
     AST.StringSelector s -> do
       rE <- simpleStringLitToStr s
       case rE of
@@ -379,7 +380,7 @@ evalSelector _ astSel oprnd = do
 
 evalIndex ::
   (EvalEnv r s m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
-evalIndex _ (wpVal -> AST.Index e) oprnd = do
+evalIndex _ (anVal -> AST.Index e) oprnd = do
   sel <- evalExpr e
   return $ appendSelToRefTree oprnd sel
 
@@ -399,12 +400,12 @@ left is always before right.
 -}
 evalBinary :: (EvalEnv r s m) => BinaryOp -> Expression -> Expression -> m Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-evalBinary (wpVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
+evalBinary (anVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
   case op of
-    (wpVal -> AST.Unify) -> return $ flattenUnify lt rt
+    (anVal -> AST.Unify) -> return $ flattenUnify lt rt
     _ -> return $ mkNewTree (TNMutable $ mkBinaryOp op lt rt)
 
 flattenUnify :: Tree -> Tree -> Tree
@@ -414,23 +415,23 @@ flattenUnify l r = case getLeftAcc of
  where
   getLeftAcc = case treeNode l of
     -- The left tree is an accumulator only if it is a unify op.
-    TNMutable (UOp u) -> Just (ufConjuncts u)
+    TNMutable (MutOp (UOp u)) -> Just (ufConjuncts u)
     _ -> Nothing
 
 evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m Tree
 evalDisj e1 e2 = do
-  ((isLStar, lt), (isRStar, rt)) <- case (wpVal e1, wpVal e2) of
-    ( ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se1)
-      , ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se2)
+  ((isLStar, lt), (isRStar, rt)) <- case (anVal e1, anVal e2) of
+    ( ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1)
+      , ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se2)
       ) -> do
         l <- evalUnaryExpr se1
         r <- evalUnaryExpr se2
         return ((,) True l, (,) True r)
-    (ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se1), _) -> do
+    (ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1), _) -> do
       l <- evalUnaryExpr se1
       r <- evalExpr e2
       return ((,) True l, (,) False r)
-    (_, ExprUnaryExpr (wpVal -> UnaryExprUnaryOp (wpVal -> Star) se2)) -> do
+    (_, ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se2)) -> do
       l <- evalExpr e1
       r <- evalUnaryExpr se2
       return ((,) False l, (,) True r)
@@ -463,7 +464,7 @@ flattenDisj l r = case getLeftAcc of
   Nothing -> mkMutableTree $ mkDisjoinOp (Seq.fromList [l, r])
  where
   getLeftAcc = case treeNode (dstValue l) of
-    TNMutable (DisjOp dj)
+    TNMutable (MutOp (DisjOp dj))
       -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
       -- If the left term is a marked term, it implies that it is a root.
       | not (dstMarked l) && not (treeIsRootOfSubTree (dstValue l)) -> Just (djoTerms dj)

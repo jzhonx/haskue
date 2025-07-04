@@ -246,7 +246,7 @@ putTMCursor tc = modify $ \s -> setTreeCursor s tc
 
 -- Crumbs
 
-getTMCrumbs :: (ReduceTCMonad r s m) => m [TreeCrumb Tree]
+getTMCrumbs :: (ReduceTCMonad r s m) => m [TreeCrumb]
 getTMCrumbs = tcCrumbs <$> getTMCursor
 
 -- Tree
@@ -477,7 +477,7 @@ spanTreeMsgs t = do
     then return ("", "")
     else do
       r <- canonicalizeTree t
-      e <- buildASTExpr False r
+      e <- buildASTExprDebug r
       return (show r, BS.unpack $ toLazyByteString (AST.exprBld e))
 
 debugSpanTM :: (ReduceTCMonad r s m, Show a) => String -> m a -> m a

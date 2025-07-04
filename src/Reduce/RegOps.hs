@@ -27,7 +27,7 @@ execUnaryOp :: (ReduceMonad s r m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree
 execUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
-    Just t | Just a <- rtrAtom t -> case (AST.wpVal op, a) of
+    Just t | Just a <- rtrAtom t -> case (AST.anVal op, a) of
       (AST.Plus, Int i) -> ia i id
       (AST.Plus, Float i) -> fa i id
       (AST.Minus, Int i) -> ia i negate
@@ -68,7 +68,7 @@ execRegBinOp ::
 execRegBinOp op t1M t2M opTC = do
   debugInstantOpRM
     "execRegBinDir"
-    (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.wpVal op) (show t1M) (show t2M))
+    (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
     (tcCanAddr opTC)
   execRegBinDir op (L, t1M) (R, t2M)
 
@@ -78,7 +78,7 @@ execRegBinDir ::
   (BinOpDirect, Maybe Tree) ->
   (BinOpDirect, Maybe Tree) ->
   m (Maybe Tree)
-execRegBinDir op@(AST.wpVal -> opv) (d1, t1M) (d2, t2M) = do
+execRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
   if
     | opv `elem` cmpOps -> return $ cmp (opv == AST.Equ) (d1, t1M) (d2, t2M)
     | opv `elem` arithOps -> case (t1M, t2M) of
@@ -91,12 +91,12 @@ execRegBinDir op@(AST.wpVal -> opv) (d1, t1M) (d2, t2M) = do
           | IsTop <- t2 -> return Nothing
           -- When both trees are atoms.
           | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ Just $ calc op (d1, a1) (d2, a2)
-          -- When both trees are core CUE values.
+          -- When both trees are Singular values.
           | Just _ <- rtrCUESingular t1, Just _ <- rtrCUESingular t2 -> return $ Just $ mismatch op t1 t2
         _ -> return Nothing
     | otherwise ->
         throwErrSt $
-          printf "regular binary op %s is not supported for %s and %s" (show $ AST.wpVal op) (show t1M) (show t2M)
+          printf "regular binary op %s is not supported for %s and %s" (show $ AST.anVal op) (show t1M) (show t2M)
  where
   cmpOps = [AST.Equ, AST.BinRelOp AST.NE]
   arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
@@ -119,7 +119,7 @@ cmp cmpEqu (d1, t1M) (d2, t2M) =
       | Just a1 <- rtrAtom t1
       , Just a2 <- rtrAtom t2 ->
           Just $ mkAtomTree (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
-      -- When both trees are core CUE values.
+      -- When both trees are Singular values.
       | Just _ <- rtrCUESingular t1
       , Just _ <- rtrCUESingular t2 ->
           Just $ mkBottomTree $ printf "%s and %s are not comparable" (show t1) (show t2)
@@ -133,7 +133,7 @@ cmpNull cmpEqu t =
     | otherwise -> mkAtomTree (Bool $ not cmpEqu)
 
 calc :: AST.BinaryOp -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Tree
-calc op@(AST.wpVal -> opv) (L, a1) (_, a2) =
+calc op@(AST.anVal -> opv) (L, a1) (_, a2) =
   case a1 of
     Int i1
       | Int i2 <- a2, Just f <- lookup opv regIntOps -> ri (f i1 i2)
@@ -154,4 +154,4 @@ calc op@(AST.wpVal -> opv) (L, a1) (_, a2) =
 calc op x@(R, _) y = calc op y x
 
 mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> Tree
-mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show $ AST.wpVal op) (show x) (show y)
+mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show $ AST.anVal op) (show x) (show y)

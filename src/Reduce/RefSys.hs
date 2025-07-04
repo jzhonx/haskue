@@ -54,8 +54,8 @@ derefResFromValue v = DerefResult (Just v) False
 
 -- | Resolve the reference value.
 resolveTCIfRef :: (ReduceMonad s r m) => TrCur -> m DerefResult
-resolveTCIfRef tc = case treeNode (tcFocus tc) of
-  TNMutable (Ref ref) -> index ref tc
+resolveTCIfRef tc = case tc of
+  TCFocus (IsRef _ ref) -> index ref tc
   _ -> return $ derefResFromValue (tcFocus tc)
 
 {- | Index the tree with the segments.
@@ -75,12 +75,12 @@ index argRef@Reference{refArg = (RefPath var sels), refOrigAddrs = origAddrsM} t
   debugSpanRM (printf "index: var: %s" var) drValue tc $ do
     lbM <- searchLetBindValue var tc
     case lbM of
-      Just (IsRef rf)
+      Just (IsRef mut rf)
         -- Let value is an index. For example, let x = ({a:1}).a
         | Just segs <- getIndexSegs rf -> do
             let newRef = (mkIndexRef (segs Seq.>< sels)){refOrigAddrs = origAddrsM}
                 -- build the new reference tree.
-                refTC = setTCFocusTN (TNMutable $ Ref newRef) tc
+                refTC = setTCFocusTN (TNMutable $ setMutOp (Ref newRef) mut) tc
             resolveTCIfRef refTC
       Just lb -> do
         -- If the let value is not a reference, but a regular expression.
@@ -88,7 +88,7 @@ index argRef@Reference{refArg = (RefPath var sels), refOrigAddrs = origAddrsM} t
         let
           newRef = (mkIndexRef (lb Seq.<| sels)){refOrigAddrs = origAddrsM}
           -- build the new reference tree.
-          refTC = setTCFocusTN (TNMutable $ Ref newRef) tc
+          refTC = setTCFocusTN (TNMutable $ withEmptyMutFrame (Ref newRef)) tc
         resolveTCIfRef refTC
 
       -- Rest of the cases. For cases such as { let x = a.b, a: b: {}, c: x } where let value is a refernece, it can be handled.
@@ -141,7 +141,7 @@ refTCFromRef Reference{refArg = arg@(RefPath var _), refOrigAddrs = origAddrsM} 
         let
           newRefValPath = ValPath $ StringSel (TE.encodeUtf8 var) : reducedSels
           -- build the new reference tree.
-          refTC = setTCFocusTN (TNMutable $ Ref newRef{refOrigAddrs = origAddrsM}) tc
+          refTC = setTCFocusTN (TNMutable $ withEmptyMutFrame (Ref newRef{refOrigAddrs = origAddrsM})) tc
         return $ Just (refTC, newRefValPath)
     )
     refRestPathM
@@ -248,8 +248,8 @@ tryFollow ::
   TrCur ->
   m (Maybe TrCur)
 tryFollow trail tarTC refEnv =
-  case treeNode (tcFocus tarTC) of
-    TNMutable (Ref ref)
+  case tarTC of
+    TCFocus (IsRef _ ref)
       | refHasRefPath ref -> debugSpanArgsRM "tryFollow" (printf "ref: %s" (show ref)) (fmap tcFocus) refEnv $ do
           -- If ref has unresolved path, we should resolve it with the target tree.
           refTCM <- refTCFromRef ref tarTC
@@ -472,7 +472,7 @@ copyRefVal tar = do
     TNRefCycle _ -> return tar
     TNAtomCnstr c -> return (mkAtomTree $ cnsAtom c)
     _ -> do
-      e <- maybe (buildASTExpr False tar) return (treeExpr tar)
+      e <- maybe (buildASTExpr tar) return (treeExpr tar)
       evalExprRM e
 
 {- | Copy the value from the target cursor.
@@ -583,9 +583,9 @@ markOuterIdents srcAddr ptc = do
   mark blockAddr tc = do
     let focus = tcFocus tc
     rM <- case focus of
-      IsRef rf -> return $ do
+      IsRef mut rf -> return $ do
         newValPath <- valPathFromRef rtrAtom rf
-        return (newValPath, \as -> setTN focus $ TNMutable . Ref $ rf{refOrigAddrs = Just as})
+        return (newValPath, \as -> setTN focus $ TNMutable $ setMutOp (Ref $ rf{refOrigAddrs = Just as}) mut)
       _ -> return Nothing
     maybe
       (return focus)
@@ -703,7 +703,7 @@ goTCLAAddr valPath tc = do
   ident <- selToIdent fstSel
   searchTCIdent ident tc >>= \case
     Nothing -> do
-      errMsg <- notFoundMsg ident (treeExpr (tcFocus tc) >>= AST.wpPos)
+      errMsg <- notFoundMsg ident (treeExpr (tcFocus tc) >>= AST.anPos)
       return . Left $
         mkBottomTree errMsg
     Just (identTC, _) -> do
@@ -854,7 +854,7 @@ searchTCIdent name tc = do
                       , False
                       )
               else return Nothing
-      TNMutable (Compreh c) -> do
+      TNMutable (MutOp (Compreh c)) -> do
         let binds = cphIterBindings c
         debugInstantRM
           "searchTCIdent"

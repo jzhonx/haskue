@@ -141,37 +141,6 @@ data BlockElemAdder
   | LetSAdder T.Text Tree
   | EmbedSAdder !Int Tree
 
--- instance (Eq t) => Eq (Struct) where
---   (==) :: (Eq t) => Struct -> Struct -> Bool
---   (==) s1 s2 =
---     stcOrdLabels s1 == stcOrdLabels s2
---       && stcFields s1 == stcFields s2
---       -- && stcCnstrs s1 == stcCnstrs s2
---       -- && stcDynFields s1 == stcDynFields s2
---       && stcClosed s1 == stcClosed s2
-
--- instance (Show t) => Show (Struct) where
---   show s =
---     "Struct {"
---       ++ "stcID="
---       ++ show (stcID s)
---       ++ ", stcOrdLabels="
---       ++ show (stcOrdLabels s)
---       ++ "}"
-
--- instance (Eq t) => Eq (StructCnstr t) where
---   (==) f1 f2 = scsPattern f1 == scsPattern f2 && scsValue f1 == scsValue f2
-
--- instance (Eq t) => Eq (DynamicField) where
---   (==) f1 f2 =
---     dsfValue f1 == dsfValue f2
---       && dsfAttr f1 == dsfAttr f2
---       && dsfLabel f1 == dsfLabel f2
---       && dsfLabelIsInterp f1 == dsfLabelIsInterp f2
-
--- instance (Eq t) => Eq (Field) where
---   (==) f1 f2 = ssfValue f1 == ssfValue f2 && ssfAttr f1 == ssfAttr f2
-
 {- | Permission item stores permission information for the static fields and dynamic fields of a struct.
 
 The permission information is used to check if the opposite labels and dynamic fields are allowed when the base struct

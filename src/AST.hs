@@ -15,6 +15,7 @@ import Data.ByteString.Builder (
   string7,
   toLazyByteString,
  )
+import Data.List (intersperse)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
@@ -40,27 +41,29 @@ noPosition :: Position
 noPosition = Position (SourcePos 0 0) (SourcePos 0 0) Nothing
 
 -- | Annotate an AST node with position information
-data WithPos a = WithPos
-  { wpPos :: Maybe Position
-  , wpVal :: a
+data ASTN a = ASTN
+  { anPos :: Maybe Position
+  , anComments :: [T.Text]
+  -- ^ Comments associated with the AST node
+  , anVal :: a
   }
   deriving (Eq, Show, Functor, Generic, NFData)
 
-instance (Ord a) => Ord (WithPos a) where
-  WithPos _ v1 `compare` WithPos _ v2 = v1 `compare` v2
+instance (Ord a) => Ord (ASTN a) where
+  ASTN _ _ v1 `compare` ASTN _ _ v2 = v1 `compare` v2
 
-instance Applicative WithPos where
-  pure = WithPos Nothing
-  WithPos _ f <*> WithPos pos x = WithPos pos (f x)
+instance Applicative ASTN where
+  pure = ASTN Nothing []
+  ASTN _ _ f <*> ASTN pos c x = ASTN pos c (f x)
 
-withPos :: Position -> a -> WithPos a
-withPos pos = WithPos (Just pos)
+withPos :: Position -> a -> ASTN a
+withPos pos = ASTN (Just pos) []
 
-(<^>) :: (WithPos a -> b) -> WithPos a -> WithPos b
-(<^>) f a@(WithPos pos _) = WithPos pos (f a)
+(<^>) :: (ASTN a -> b) -> ASTN a -> ASTN b
+(<^>) f a@(ASTN pos c _) = ASTN pos c (f a)
 
-(<<^>>) :: (WithPos b -> c) -> (WithPos a -> b) -> WithPos a -> c
-(<<^>>) f g a = wpVal $ f <^> (g <^> a)
+(<<^>>) :: (ASTN b -> c) -> (ASTN a -> b) -> ASTN a -> c
+(<<^>>) f g a = anVal $ f <^> (g <^> a)
 
 newtype SourceFile = SourceFile
   { sfDecls :: [Declaration]
@@ -72,14 +75,14 @@ data ExprNode
   | ExprBinaryOp BinaryOp Expression Expression
   deriving (Eq, Show, Generic, NFData)
 
-type Expression = WithPos ExprNode
+type Expression = ASTN ExprNode
 
 data UnaryExprNode
   = UnaryExprPrimaryExpr PrimaryExpr
   | UnaryExprUnaryOp UnaryOp UnaryExpr
   deriving (Eq, Show, Generic, NFData)
 
-type UnaryExpr = WithPos UnaryExprNode
+type UnaryExpr = ASTN UnaryExprNode
 
 data PrimaryExprNode
   = PrimExprOperand Operand
@@ -88,18 +91,18 @@ data PrimaryExprNode
   | PrimExprArguments PrimaryExpr [Expression]
   deriving (Eq, Show, Generic, NFData)
 
-type PrimaryExpr = WithPos PrimaryExprNode
+type PrimaryExpr = ASTN PrimaryExprNode
 
 data SelectorNode
   = IDSelector Identifier
   | StringSelector SimpleStringLit
   deriving (Eq, Show, Generic, NFData)
 
-type Selector = WithPos SelectorNode
+type Selector = ASTN SelectorNode
 
 newtype IndexNode = Index Expression deriving (Eq, Show, Generic, NFData)
 
-type Index = WithPos IndexNode
+type Index = ASTN IndexNode
 
 data OperandNode
   = OpLiteral Literal
@@ -107,7 +110,7 @@ data OperandNode
   | OperandName OperandName
   deriving (Eq, Show, Generic, NFData)
 
-type Operand = WithPos OperandNode
+type Operand = ASTN OperandNode
 
 data LiteralNode
   = StringLit StringLit
@@ -121,11 +124,11 @@ data LiteralNode
   | ListLit ElementList
   deriving (Eq, Show, Generic, NFData)
 
-type Literal = WithPos LiteralNode
+type Literal = ASTN LiteralNode
 
 newtype StructLitNode = StructLit [Declaration] deriving (Eq, Show, Generic, NFData)
 
-type StructLit = WithPos StructLitNode
+type StructLit = ASTN StructLitNode
 
 data DeclarationNode
   = FieldDecl FieldDecl
@@ -134,31 +137,31 @@ data DeclarationNode
   | DeclLet LetClause
   deriving (Eq, Show, Generic, NFData)
 
-type Declaration = WithPos DeclarationNode
+type Declaration = ASTN DeclarationNode
 
 data FieldDeclNode
   = Field [Label] Expression
   deriving (Eq, Show, Generic, NFData)
 
-type FieldDecl = WithPos FieldDeclNode
+type FieldDecl = ASTN FieldDeclNode
 
 newtype EllipsisDeclNode = Ellipsis (Maybe Expression) deriving (Eq, Show, Generic, NFData)
 
-type EllipsisDecl = WithPos EllipsisDeclNode
+type EllipsisDecl = ASTN EllipsisDeclNode
 
 newtype ElementListNode = EmbeddingList [Embedding] deriving (Eq, Show, Generic, NFData)
 
-type ElementList = WithPos ElementListNode
+type ElementList = ASTN ElementListNode
 
 newtype OperandNameNode = Identifier Identifier deriving (Eq, Show, Generic, NFData)
 
-type OperandName = WithPos OperandNameNode
+type OperandName = ASTN OperandNameNode
 
 newtype StringLitNode = SimpleStringL SimpleStringLit deriving (Eq, Show, Generic, NFData)
 
-type StringLit = WithPos StringLitNode
+type StringLit = ASTN StringLitNode
 
-type SimpleStringLit = WithPos SimpleStringLitNode
+type SimpleStringLit = ASTN SimpleStringLitNode
 
 newtype SimpleStringLitNode = SimpleStringLit [SimpleStringLitSeg]
   deriving (Eq, Show, Generic, NFData)
@@ -170,18 +173,18 @@ data SimpleStringLitSeg
 
 newtype InterpolationNode = Interpolation Expression deriving (Eq, Show, Generic, NFData)
 
-type Interpolation = WithPos InterpolationNode
+type Interpolation = ASTN InterpolationNode
 
 newtype LabelNode = Label LabelExpr deriving (Eq, Show, Generic, NFData)
 
-type Label = WithPos LabelNode
+type Label = ASTN LabelNode
 
 data LabelExprNode
   = LabelName LabelName LabelConstraint
   | LabelPattern Expression
   deriving (Eq, Show, Generic, NFData)
 
-type LabelExpr = WithPos LabelExprNode
+type LabelExpr = ASTN LabelExprNode
 
 data LabelConstraint
   = RegularLabel
@@ -195,11 +198,11 @@ data LabelNameNode
   | LabelNameExpr Expression
   deriving (Eq, Show, Generic, NFData)
 
-type LabelName = WithPos LabelNameNode
+type LabelName = ASTN LabelNameNode
 
 type IdentifierNode = T.Text
 
-type Identifier = WithPos IdentifierNode
+type Identifier = ASTN IdentifierNode
 
 data RelOpNode
   = NE
@@ -220,21 +223,21 @@ instance Show RelOpNode where
   show ReMatch = "=~"
   show ReNotMatch = "!~"
 
-type RelOp = WithPos RelOpNode
+type RelOp = ASTN RelOpNode
 
 data EmbeddingNode = EmbedComprehension Comprehension | AliasExpr Expression
   deriving (Eq, Show, Generic, NFData)
 
-type Embedding = WithPos EmbeddingNode
+type Embedding = ASTN EmbeddingNode
 
 data ComprehensionNode = Comprehension Clauses StructLit
   deriving (Eq, Show, Generic, NFData)
 
-type Comprehension = WithPos ComprehensionNode
+type Comprehension = ASTN ComprehensionNode
 
 data ClausesNode = Clauses StartClause [Clause] deriving (Eq, Show, Generic, NFData)
 
-type Clauses = WithPos ClausesNode
+type Clauses = ASTN ClausesNode
 
 data StartClauseNode
   = -- | GuardClause is an "if" expression
@@ -243,19 +246,19 @@ data StartClauseNode
     ForClause Identifier (Maybe Identifier) Expression
   deriving (Eq, Show, Generic, NFData)
 
-type StartClause = WithPos StartClauseNode
+type StartClause = ASTN StartClauseNode
 
 data ClauseNode
   = ClauseStartClause StartClause
   | ClauseLetClause LetClause
   deriving (Eq, Show, Generic, NFData)
 
-type Clause = WithPos ClauseNode
+type Clause = ASTN ClauseNode
 
 data LetClauseNode = LetClause Identifier Expression
   deriving (Eq, Show, Generic, NFData)
 
-type LetClause = WithPos LetClauseNode
+type LetClause = ASTN LetClauseNode
 
 data BinaryOpNode
   = Unify
@@ -268,7 +271,7 @@ data BinaryOpNode
   | BinRelOp RelOpNode
   deriving (Eq, Ord, Generic, NFData)
 
-type BinaryOp = WithPos BinaryOpNode
+type BinaryOp = ASTN BinaryOpNode
 
 instance Show BinaryOpNode where
   show Unify = "&"
@@ -288,7 +291,7 @@ data UnaryOpNode
   | UnaRelOp RelOpNode
   deriving (Eq, Ord, Generic, NFData)
 
-type UnaryOp = WithPos UnaryOpNode
+type UnaryOp = ASTN UnaryOpNode
 
 instance Show UnaryOpNode where
   show Plus = "+"
@@ -321,7 +324,7 @@ idCons :: Identifier -> Expression
 idCons x = ExprUnaryExpr <<^>> UnaryExprPrimaryExpr <<^>> PrimExprOperand <<^>> OperandName <<^>> Identifier <^> x
 
 unaryOpCons :: UnaryOp -> Expression -> Maybe Expression
-unaryOpCons op (WithPos{wpVal = ExprUnaryExpr e}) =
+unaryOpCons op (ASTN{anVal = ExprUnaryExpr e}) =
   Just $ pure . ExprUnaryExpr . pure $ UnaryExprUnaryOp op e
 unaryOpCons _ _ = Nothing
 
@@ -337,55 +340,56 @@ exprBld :: Expression -> Builder
 exprBld = exprBldIdent 0
 
 exprBldIdent :: Int -> Expression -> Builder
-exprBldIdent ident e =
-  case wpVal e of
-    ExprUnaryExpr ue -> unaryBld ident ue
+exprBldIdent indent e@ASTN{anComments = cmts} = b <> commentsBld indent True cmts
+ where
+  b = case anVal e of
+    ExprUnaryExpr ue -> unaryBld indent ue
     ExprBinaryOp op e1 e2 ->
-      exprBldIdent ident e1
+      exprBldIdent indent e1
         <> char7 ' '
         <> binopBld op
         <> char7 ' '
-        <> exprBldIdent ident e2
+        <> exprBldIdent indent e2
 
 binopBld :: BinaryOp -> Builder
-binopBld op = string7 (show (wpVal op :: BinaryOpNode))
+binopBld op = string7 (show (anVal op :: BinaryOpNode))
 
 unaryBld :: Int -> UnaryExpr -> Builder
-unaryBld ident e = case wpVal e of
-  UnaryExprPrimaryExpr pe -> primBld ident pe
-  UnaryExprUnaryOp op ue -> unaryOpBld op <> unaryBld ident ue
+unaryBld indent e = case anVal e of
+  UnaryExprPrimaryExpr pe -> primBld indent pe
+  UnaryExprUnaryOp op ue -> unaryOpBld op <> unaryBld indent ue
 
 unaryOpBld :: UnaryOp -> Builder
-unaryOpBld op = string7 (show (wpVal op :: UnaryOpNode))
+unaryOpBld op = string7 (show (anVal op :: UnaryOpNode))
 
 primBld :: Int -> PrimaryExpr -> Builder
-primBld ident e = case wpVal e of
-  PrimExprOperand op -> opndBld ident op
-  PrimExprSelector pe sel -> primBld ident pe <> string7 "." <> selBld sel
-  PrimExprIndex pe (WithPos{wpVal = Index ie}) -> primBld ident pe <> string7 "[" <> exprBldIdent ident ie <> string7 "]"
+primBld indent e = case anVal e of
+  PrimExprOperand op -> opndBld indent op
+  PrimExprSelector pe sel -> primBld indent pe <> string7 "." <> selBld sel
+  PrimExprIndex pe (ASTN{anVal = Index ie}) -> primBld indent pe <> string7 "[" <> exprBldIdent indent ie <> string7 "]"
   PrimExprArguments pe es ->
-    primBld ident pe
+    primBld indent pe
       <> string7 "("
       <> foldr (\x acc -> exprBld x <> string7 ", " <> acc) mempty es
       <> string7 ")"
 
 selBld :: Selector -> Builder
-selBld e = case wpVal e of
-  IDSelector is -> byteString $ TE.encodeUtf8 (wpVal is)
+selBld e = case anVal e of
+  IDSelector is -> byteString $ TE.encodeUtf8 (anVal is)
   StringSelector s -> simpleStrLitBld s
 
 opndBld :: Int -> Operand -> Builder
-opndBld ident op = case wpVal op of
-  OpLiteral lit -> litBld ident lit
-  OperandName on -> opNameBld ident on
-  OpExpression e -> exprBldIdent ident e
+opndBld indent op = case anVal op of
+  OpLiteral lit -> litBld indent lit
+  OperandName on -> opNameBld indent on
+  OpExpression e -> exprBldIdent indent e
 
 opNameBld :: Int -> OperandName -> Builder
-opNameBld _ e = case wpVal e of
-  Identifier i -> byteString $ TE.encodeUtf8 (wpVal i)
+opNameBld _ e = case anVal e of
+  Identifier i -> byteString $ TE.encodeUtf8 (anVal i)
 
 litBld :: Int -> Literal -> Builder
-litBld ident e = case wpVal e of
+litBld indent e = case anVal e of
   StringLit s -> strLitBld s
   IntLit i -> integerDec i
   FloatLit f -> string7 (show f)
@@ -393,63 +397,61 @@ litBld ident e = case wpVal e of
   TopLit -> string7 "_"
   BottomLit -> string7 "_|_"
   NullLit -> string7 "null"
-  LitStructLit l -> structLitBld ident l
+  LitStructLit l -> structLitBld indent l
   ListLit l -> listBld l
 
 strLitBld :: StringLit -> Builder
-strLitBld (wpVal -> SimpleStringL s) = char7 '"' <> simpleStrLitBld s <> char7 '"'
+strLitBld (anVal -> SimpleStringL s) = char7 '"' <> simpleStrLitBld s <> char7 '"'
 
 simpleStrLitBld :: SimpleStringLit -> Builder
-simpleStrLitBld (WithPos{wpVal = SimpleStringLit segs}) =
+simpleStrLitBld (ASTN{anVal = SimpleStringLit segs}) =
   foldr (\seg acc -> simpleStrLitSegBld seg <> acc) mempty segs
 
 simpleStrLitSegBld :: SimpleStringLitSeg -> Builder
 simpleStrLitSegBld (UnicodeVal s) = charUtf8 s
-simpleStrLitSegBld (InterpolationStr (wpVal -> Interpolation e)) =
+simpleStrLitSegBld (InterpolationStr (anVal -> Interpolation e)) =
   string7 "\\(" <> exprBldIdent 0 e <> char7 ')'
 
 structLitBld :: Int -> StructLit -> Builder
-structLitBld ident (WithPos{wpVal = StructLit decls}) =
+structLitBld indent (ASTN{anVal = StructLit decls}) =
   if null decls
     then string7 "{}"
     else
       string7 "{\n"
-        <> declsBld (ident + 1) decls
-        <> string7 (replicate (ident * tabSize) ' ')
+        <> declsBld (indent + 1) decls
+        <> indentBld indent
         <> char7 '}'
-
-tabSize :: Int
-tabSize = 4
 
 declsBld :: Int -> [Declaration] -> Builder
 declsBld _ [] = string7 ""
-declsBld ident (x : xs) =
-  string7 (replicate (ident * tabSize) ' ')
-    <> declBld ident x
+declsBld indent (x : xs) =
+  commentsBld indent True (anComments x)
+    <> indentBld indent
+    <> declBld indent x
     <> char7 '\n'
-    <> declsBld ident xs
+    <> declsBld indent xs
 
 declBld :: Int -> Declaration -> Builder
-declBld i e = case wpVal e of
+declBld i e = case anVal e of
   FieldDecl f -> fieldDeclBld i f
-  EllipsisDecl (WithPos{wpVal = Ellipsis _}) -> string7 "..."
+  EllipsisDecl (ASTN{anVal = Ellipsis _}) -> string7 "..."
   Embedding eb -> embeddingBld i eb
-  DeclLet (WithPos{wpVal = LetClause ident binde}) ->
-    string7 "let" <> byteString (TE.encodeUtf8 $ wpVal ident) <> string7 " = " <> exprBldIdent 0 binde
+  DeclLet (ASTN{anVal = LetClause ident binde}) ->
+    string7 "let" <> byteString (TE.encodeUtf8 $ anVal ident) <> string7 " = " <> exprBldIdent 0 binde
 
 fieldDeclBld :: Int -> FieldDecl -> Builder
-fieldDeclBld ident e = case wpVal e of
+fieldDeclBld indent e = case anVal e of
   Field ls fe ->
     foldr (\l acc -> labelBld l <> string7 ": " <> acc) mempty ls
-      <> exprBldIdent ident fe
+      <> exprBldIdent indent fe
 
 embeddingBld :: Int -> Embedding -> Builder
-embeddingBld ident e = case wpVal e of
+embeddingBld indent e = case anVal e of
   EmbedComprehension _ -> string7 "<undefined>"
-  AliasExpr ex -> exprBldIdent ident ex
+  AliasExpr ex -> exprBldIdent indent ex
 
 listBld :: ElementList -> Builder
-listBld (WithPos{wpVal = EmbeddingList l}) = string7 "[" <> goList l
+listBld (ASTN{anVal = EmbeddingList l}) = string7 "[" <> goList l
  where
   goList :: [Embedding] -> Builder
   goList [] = string7 "]"
@@ -457,10 +459,10 @@ listBld (WithPos{wpVal = EmbeddingList l}) = string7 "[" <> goList l
   goList (x : xs) = embeddingBld 0 x <> string7 ", " <> goList xs
 
 labelBld :: Label -> Builder
-labelBld (WithPos{wpVal = Label e}) = labelExprBld e
+labelBld (ASTN{anVal = Label e}) = labelExprBld e
 
 labelExprBld :: LabelExpr -> Builder
-labelExprBld e = case wpVal e of
+labelExprBld e = case anVal e of
   LabelName ln cnstr -> case cnstr of
     RegularLabel -> labelNameBld ln
     OptionalLabel -> labelNameBld ln <> string7 "?"
@@ -469,7 +471,26 @@ labelExprBld e = case wpVal e of
   LabelPattern le -> string7 "[" <> exprBldIdent 0 le <> string7 "]"
 
 labelNameBld :: LabelName -> Builder
-labelNameBld e = case wpVal e of
-  LabelID i -> byteString $ TE.encodeUtf8 (wpVal i)
+labelNameBld e = case anVal e of
+  LabelID i -> byteString $ TE.encodeUtf8 (anVal i)
   LabelString s -> simpleStrLitBld s
   LabelNameExpr ex -> char7 '(' <> exprBldIdent 0 ex <> char7 ')'
+
+indentBld :: Int -> Builder
+indentBld indent = string7 (replicate (indent * tabSize) ' ')
+
+tabSize :: Int
+tabSize = 4
+
+commentBld :: T.Text -> Builder
+commentBld c = string7 "// " <> string7 (T.unpack c)
+
+{- | Build comments for an AST node.
+
+If `forceNLBefore` is `True`, it will always make comments start on a new line before the node.
+-}
+commentsBld :: Int -> Bool -> [T.Text] -> Builder
+commentsBld _ _ [] = mempty
+commentsBld indent forceNLBefore cs
+  | not forceNLBefore && length cs < 2 = char7 ' ' <> commentBld (head cs)
+  | otherwise = mconcat (map (\c -> indentBld indent <> commentBld c <> char7 '\n') cs)

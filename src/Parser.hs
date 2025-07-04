@@ -81,7 +81,7 @@ data WithTokenInfo a = WithTokenInfo
   }
   deriving (Show, Functor)
 
-type WithTokenPos a = WithTokenInfo (WithPos a)
+type WithTokenPos a = WithTokenInfo (ASTN a)
 
 emptyLexeme :: WithTokenInfo ()
 emptyLexeme = WithTokenInfo () TokenNone False
@@ -169,7 +169,7 @@ expr = do
     Parser (WithTokenInfo Expression -> WithTokenInfo Expression -> WithTokenInfo Expression)
   precedence op = do
     opTp@WithTokenInfo{wtVal = opWp} <- lexeme "binOp" (binOpAdapt op)
-    let _op = fmap (fromJust (lookup (wpVal opWp) binopTable) <$) opTp
+    let _op = fmap (fromJust (lookup (anVal opWp) binopTable) <$) opTp
     -- return the rightmost token type and newline status.
     return $ \l r -> betweenTokenInfos l (ExprBinaryOp (wtVal _op) (wtVal l) (wtVal r)) r
 
@@ -199,7 +199,7 @@ unaryExpr = do
     Just opStrTp@WithTokenInfo{wtVal = op} -> do
       ul <- unaryExpr
       let
-        opTp = fmap (fromJust (lookup (wpVal op) unaryOpTable) <$) opStrTp
+        opTp = fmap (fromJust (lookup (anVal op) unaryOpTable) <$) opStrTp
         ue = UnaryExprUnaryOp (wtVal opTp) (wtVal ul)
       return $ betweenTokenInfos opTp ue ul
 
@@ -461,20 +461,22 @@ comprehension = do
     cls =
       if length restClauses == 0
         then
-          WithPos
-            { wpVal = Clauses (wtVal stNode) []
-            , wpPos = wpPos $ wtVal stNode
+          ASTN
+            { anVal = Clauses (wtVal stNode) []
+            , anPos = anPos $ wtVal stNode
+            , anComments = []
             }
         else
-          WithPos
-            { wpVal = Clauses (wtVal stNode) (map wtVal restClauses)
-            , wpPos =
+          ASTN
+            { anVal = Clauses (wtVal stNode) (map wtVal restClauses)
+            , anPos =
                 Just
                   ( Position
-                      (posStart $ fromJust $ wpPos $ wtVal stNode)
-                      (posEnd $ fromJust $ wpPos $ wtVal (last restClauses))
-                      (posFile $ fromJust $ wpPos $ wtVal stNode)
+                      (posStart $ fromJust $ anPos $ wtVal stNode)
+                      (posEnd $ fromJust $ anPos $ wtVal (last restClauses))
+                      (posFile $ fromJust $ anPos $ wtVal stNode)
                   )
+            , anComments = []
             }
     c = Comprehension cls (wtVal structNode)
 
@@ -631,8 +633,8 @@ lexeme name p = do
   wp <- wrapPos p
   skip name wp
 
-skip :: String -> WithPos (TokAttr a) -> Parser (WithTokenPos a)
-skip _ (WithPos{wpVal = (x, ltok), wpPos = posM}) = do
+skip :: String -> ASTN (TokAttr a) -> Parser (WithTokenPos a)
+skip _ (ASTN{anVal = (x, ltok), anPos = posM}) = do
   hasnl <- (eof >> return True) <|> skippable <?> "failed to parse skippable"
   -- According to the cuelang spec, a comma is added to the last token of a line if the token is
   -- - an identifier, keyword, or bottom
@@ -684,14 +686,14 @@ ptraced s p = do
   i <- getState
   parserTraced (printf "id=%s, %s" (show i) s) p
 
-wrapPos :: Parser a -> Parser (WithPos a)
+wrapPos :: Parser a -> Parser (ASTN a)
 wrapPos p = do
   startPos <- getPosition
   x <- p
   endPos <- getPosition
   return $
-    WithPos
-      { wpPos =
+    ASTN
+      { anPos =
           Just
             ( Position
                 ( SourcePos
@@ -704,18 +706,20 @@ wrapPos p = do
                 )
                 (let n = sourceName startPos in if length n == 0 then Nothing else Just n)
             )
-      , wpVal = x
+      , anComments = []
+      , anVal = x
       }
 
 -- | Attach a position to WithTokenInfo.
-annotatePos :: Position -> WithTokenInfo a -> WithTokenInfo (WithPos a)
+annotatePos :: Position -> WithTokenInfo a -> WithTokenInfo (ASTN a)
 annotatePos pos = fmap (withPos pos)
 
--- | fmap a function over a node that only has one sub-node and turns it into a WithPos node of new type.
-fmapSingleNode :: (WithPos a -> b) -> WithTokenInfo (WithPos a) -> WithTokenInfo (WithPos b)
-fmapSingleNode f = fmap (\x -> withPos (fromJust $ wpPos x) (f x))
+-- | fmap a function over a node that only has one sub-node and turns it into a ASTN node of new type.
+fmapSingleNode :: (ASTN a -> b) -> WithTokenInfo (ASTN a) -> WithTokenInfo (ASTN b)
+fmapSingleNode f = fmap (\x -> withPos (fromJust $ anPos x) (f x))
 
-betweenTokenInfos :: WithTokenInfo (WithPos a) -> b -> WithTokenInfo (WithPos c) -> WithTokenInfo (WithPos b)
+betweenTokenInfos ::
+  WithTokenInfo (ASTN a) -> b -> WithTokenInfo (ASTN c) -> WithTokenInfo (ASTN b)
 betweenTokenInfos startTokInfo v endTokInfo =
   fmap
     ( const $
@@ -729,5 +733,5 @@ betweenTokenInfos startTokInfo v endTokInfo =
     )
     endTokInfo
 
-getPos :: WithTokenInfo (WithPos a) -> Position
-getPos WithTokenInfo{wtVal = WithPos{wpPos = pos}} = fromJust pos
+getPos :: WithTokenInfo (ASTN a) -> Position
+getPos WithTokenInfo{wtVal = ASTN{anPos = pos}} = fromJust pos

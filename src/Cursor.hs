@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Cursor where
 
@@ -27,15 +28,6 @@ class HasTreeCursor s where
   getTreeCursor :: s -> TrCur
   setTreeCursor :: s -> TrCur -> s
 
-type TreeCrumb t = (TASeg, t)
-
-addrFromCrumbs :: [TreeCrumb t] -> TreeAddr
-addrFromCrumbs crumbs = addrFromList $ go crumbs []
- where
-  go :: [TreeCrumb t] -> [TASeg] -> [TASeg]
-  go [] acc = acc
-  go ((n, _) : cs) acc = go cs (n : acc)
-
 {- | TreeCursor is a pair of a value and a list of crumbs.
 For example,
 {
@@ -50,7 +42,7 @@ Suppose the cursor is at the struct that contains the value 42. The cursor is
 -}
 data TrCur = TrCur
   { tcFocus :: Tree
-  , tcCrumbs :: [TreeCrumb Tree]
+  , tcCrumbs :: [TreeCrumb]
   }
   deriving (Eq, Generic, NFData)
 
@@ -58,7 +50,17 @@ data TrCur = TrCur
 instance Show TrCur where
   show = show . tcFocus
 
--- type TrCur = TreeCursor Tree
+pattern TCFocus :: Tree -> TrCur
+pattern TCFocus t <- TrCur{tcFocus = t}
+
+type TreeCrumb = (TASeg, Tree)
+
+addrFromCrumbs :: [TreeCrumb] -> TreeAddr
+addrFromCrumbs crumbs = addrFromList $ go crumbs []
+ where
+  go :: [TreeCrumb] -> [TASeg] -> [TASeg]
+  go [] acc = acc
+  go ((n, _) : cs) acc = go cs (n : acc)
 
 setTCFocus :: Tree -> TrCur -> TrCur
 setTCFocus t (TrCur _ cs) = TrCur t cs

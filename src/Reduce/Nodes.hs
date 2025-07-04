@@ -9,6 +9,7 @@ module Reduce.Nodes where
 
 import qualified Common
 import Control.Monad (foldM, unless, void, when)
+import Control.Monad.Reader (local)
 import Cursor
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
@@ -32,7 +33,7 @@ import Reduce.RMonad (
  )
 import Reduce.RefSys (searchTCIdentInPar)
 import {-# SOURCE #-} Reduce.Root (reduce, reduceToNonMut)
-import Reduce.UnifyOp (patMatchLabel, unifyTCs)
+import Reduce.UnifyOp (unifyTCs)
 import Text.Printf (printf)
 import Value
 
@@ -616,10 +617,10 @@ reduceList l tc = do
       ( \acc (i, origElem) -> do
           let elemTC = mkSubTC (IndexTASeg i) origElem tc
           r <- reduce elemTC
-          case treeNode origElem of
+          case origElem of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
-            TNMutable (Compreh cph)
+            IsMutable (MutOp (Compreh cph))
               | cphIsListCompreh cph
               , Just rList <- rtrList r ->
                   return $ acc ++ lstSubs rList
@@ -920,7 +921,7 @@ reduceClause i cph tc iterCtx
                     cph
                       { cphIterBindings = cphIterBindings cph ++ [newBind]
                       }
-                  newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
+                  newTC = setTCFocusTN (TNMutable $ withEmptyMutFrame $ Compreh newCompreh) tc
                 reduceClause (i + 1) newCompreh newTC iterCtx
               IterClauseFor k vM _ ->
                 if
@@ -942,7 +943,7 @@ reduceClause i cph tc iterCtx
                                 cph
                                   { cphIterBindings = cphIterBindings cph ++ newBinds
                                   }
-                              newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
+                              newTC = setTCFocusTN (TNMutable $ withEmptyMutFrame $ Compreh newCompreh) tc
 
                             reduceClause (i + 1) newCompreh newTC acc
                         )
@@ -965,7 +966,7 @@ reduceClause i cph tc iterCtx
                                 cph
                                   { cphIterBindings = cphIterBindings cph ++ newBinds
                                   }
-                              newTC = setTCFocusTN (TNMutable $ Compreh newCompreh) tc
+                              newTC = setTCFocusTN (TNMutable $ withEmptyMutFrame $ Compreh newCompreh) tc
 
                             reduceClause (i + 1) newCompreh newTC acc
                         )
@@ -990,7 +991,7 @@ newIterStruct bindings rawStruct _tc =
     Just
     _tc
     $ do
-      se <- buildASTExpr False rawStruct
+      se <- buildASTExpr rawStruct
       structT <- evalExprRM se
       let sTC = mkSubTC (ComprehTASeg ComprehIterValTASeg) structT _tc
       r <- reduce sTC
@@ -1008,8 +1009,8 @@ newIterStruct bindings rawStruct _tc =
           (\x -> subNodes x ++ rawNodes x)
           ( \tc -> do
               let focus = tcFocus tc
-              case treeNode focus of
-                TNMutable (Ref ref)
+              case focus of
+                IsRef _ ref
                   -- oirgAddrs should be empty because the reference should not be copied from other places.
                   | Nothing <- refOrigAddrs ref
                   , RefPath var rest <- refArg ref -> do
@@ -1026,7 +1027,7 @@ newIterStruct bindings rawStruct _tc =
                                       Just $
                                         setTN
                                           focus
-                                          (TNMutable $ Ref $ mkIndexRef (cphBindValue bind Seq.<| rest))
+                                          (TNMutable $ withEmptyMutFrame $ Ref $ mkIndexRef (cphBindValue bind Seq.<| rest))
                                 | otherwise -> return acc
                           )
                           Nothing
@@ -1037,8 +1038,8 @@ newIterStruct bindings rawStruct _tc =
           (TrCur ripped [])
       return $ tcFocus x
  where
-  isComprehension emb = case treeNode (embValue emb) of
-    TNMutable (Compreh _) -> True
+  isComprehension emb = case (embValue emb) of
+    IsMutable (MutOp (Compreh _)) -> True
     _ -> False
 
 reduceInterpolation :: (ReduceMonad s r m) => Interpolation -> TrCur -> m (Maybe Tree)
@@ -1072,3 +1073,123 @@ reduceInterpolation l tc = do
   case r of
     Left err -> return $ Just err
     Right res -> return $ Just $ mkAtomTree (String res)
+
+{- | Check the labels' permission.
+
+The focus of the tree must be a struct.
+-}
+checkLabelsPerm ::
+  (ReduceMonad s r m) =>
+  Set.Set T.Text ->
+  IntMap.IntMap StructCnstr ->
+  Bool ->
+  Bool ->
+  Set.Set T.Text ->
+  TrCur ->
+  m TrCur
+checkLabelsPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded labelsSet tc =
+  foldM
+    ( \acc opLabel ->
+        case tcFocus acc of
+          IsBottom _ -> return acc
+          _ ->
+            checkPerm baseLabels baseCnstrs isBaseClosed isEitherEmbedded opLabel acc
+              >>= maybe
+                (return acc)
+                -- If the checkPerm returns a bottom, update the bottom to the struct.
+                (\err -> return (err `setTCFocus` acc))
+    )
+    tc
+    labelsSet
+
+checkPerm ::
+  (ReduceMonad s r m) =>
+  Set.Set T.Text ->
+  IntMap.IntMap StructCnstr ->
+  Bool ->
+  Bool ->
+  T.Text ->
+  TrCur ->
+  m (Maybe Tree)
+checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
+  debugSpanArgsRM
+    "checkPerm"
+    ( printf
+        "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s"
+        (show newLabel)
+        (show $ Set.toList baseLabels)
+        (show $ IntMap.toList baseAllCnstrs)
+        (show isBaseClosed)
+        (show isEitherEmbedded)
+    )
+    id
+    tc
+    $ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
+
+_checkPerm ::
+  (ReduceMonad s r m) =>
+  Set.Set T.Text ->
+  IntMap.IntMap StructCnstr ->
+  Bool ->
+  Bool ->
+  T.Text ->
+  TrCur ->
+  m (Maybe Tree)
+_checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
+  | not isBaseClosed || isEitherEmbedded = return Nothing
+  | newLabel `Set.member` baseLabels = return Nothing
+  | otherwise = do
+      -- A "new" field is allowed if there is at least one pattern that matches the field.
+      allowed <-
+        foldM
+          ( \acc cnstr ->
+              if acc
+                then return acc
+                else do
+                  let pat = scsPattern cnstr
+                  patMatchLabel pat newLabel tc
+          )
+          -- By default, "new" label is not allowed.
+          False
+          (IntMap.elems baseAllCnstrs)
+
+      -- A field is disallowed if no pattern exists or no pattern matches the label.
+      if allowed
+        then return Nothing
+        else return . Just $ mkBottomTree $ printf "%s is not allowed" newLabel
+
+-- | Returns whether the pattern matches the label.
+patMatchLabel :: (ReduceMonad s r m) => Tree -> T.Text -> TrCur -> m Bool
+patMatchLabel pat name tc = case treeNode pat of
+  TNMutable mut@(Mutable mop _)
+    -- If the mutable is a reference or an index, then we should try to use the value of the mutable.
+    -- TODO: use IsRef
+    | RegOp _ <- mop -> match pat
+    | _ <- mop ->
+        maybe
+          (return False)
+          -- The lable mutable might be a reference. The pending element should not be marked as deleted.
+          match
+          (getMutVal mut)
+  _ -> match pat
+ where
+  match :: (ReduceMonad s r m) => Tree -> m Bool
+  match v = do
+    let
+      segOp = mkMutableTree $ mkUnifyOp [mkAtomTree $ String name, v]
+    -- Since segOps a list of unify nodes that unify the string with the bounds, we can use inDiscardSubTM to
+    -- evaluate the unify nodes and get the strings.
+    r <-
+      -- We should not create constraints in this context because we should not delay the evaluation of the
+      -- pattern.
+      local
+        ( \r ->
+            let conf = Common.getConfig r
+             in Common.setConfig r conf{Common.cfRuntimeParams = (Common.cfRuntimeParams conf){Common.rpCreateCnstr = False}}
+        )
+        $ reduce (segOp `setTCFocus` tc)
+    -- Filter the strings from the results. Non-string results are ignored meaning the fields do not match the
+    -- pattern.
+    case rtrAtom r of
+      Just (String _) -> return True
+      _ -> return False

@@ -54,7 +54,7 @@ if [[ "$1" == "run" ]]; then
   if [[ -z "$maxTreeDepth" ]]; then
     cabal run haskue -- -d --trace --trace-filter=""  --show-mutable-args $input > _debug/t.log
   else
-    cabal run haskue -- -d --trace --trace-filter=""  --show-mutable-args --max-tree-depth $maxTreeDepth $input > _debug/t.log
+    cabal run haskue -- -d --trace --trace-filter="" --trace-print-tree --show-mutable-args --max-tree-depth $maxTreeDepth $input > _debug/t.log
   fi
 
   echo ""

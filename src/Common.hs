@@ -38,20 +38,6 @@ class HasContext s where
   setContext :: s -> Context -> s
   modifyContext :: s -> (Context -> Context) -> s
 
--- class BuildASTExpr a where
---   -- The first argument is a flag to indicate whether the expression is required to be concrete.
---   buildASTExpr :: (Env r s m) => Bool -> a -> m AST.Expression
-
--- class TreeOp a where
---   isTreeAtom :: a -> Bool
---   isTreeBottom :: a -> Bool
---   isTreeCnstr :: a -> Bool
-
---   isTreeMutable :: a -> Bool
-
---   -- TODO: rename
---   treeHasAtom :: a -> Bool
-
 data Config = Config
   { cfSettings :: Settings
   , cfRuntimeParams :: RuntimeParams

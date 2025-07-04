@@ -95,8 +95,8 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
   let orig = tcFocus tc
 
   r <- case treeNode orig of
-    TNMutable mut -> do
-      (r, isIterBinding) <- case mut of
+    TNMutable mut@(Mutable mop _) -> do
+      (r, isIterBinding) <- case mop of
         Ref ref -> do
           (DerefResult rM isIterBinding) <- index ref tc
           maybe
@@ -116,7 +116,7 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
             )
             rM
         _ -> do
-          r <- case mut of
+          r <- case mop of
             RegOp rop -> case ropOpType rop of
               InvalidOpType -> throwErrSt "invalid op type"
               UnaryOpType op -> do
@@ -189,7 +189,11 @@ setMutRes isIterBinding mut rM tc = do
   -- update the mutval for the mutable tree. If the mutable tree is a reference, we update the reference value and
   -- version.
   updateMutVal m mutT = case mutT of
-    IsRef ref -> setTN mutT (TNMutable $ Ref ref{refValue = m, refVers = treeVersion <$> m})
+    IsRef _ ref ->
+      let
+        newMut = setMutOp (Ref ref{refVers = treeVersion <$> m}) mut
+       in
+        setTN mutT (TNMutable $ setMutVal m newMut)
     _ -> setTN mutT (TNMutable $ setMutVal m mut)
 
 {- | Check whether the mutator is reducible.
@@ -206,7 +210,7 @@ isMutableReducible mut = not $ mutHasRefAsImChild mut
 node, such as a struct or a list.
 -}
 mutHasRefAsImChild :: Mutable -> Bool
-mutHasRefAsImChild (Ref _) = True
+mutHasRefAsImChild (MutOp (Ref _)) = True
 mutHasRefAsImChild mut = any go (getMutArgs mut)
  where
   go argT = case treeNode argT of
@@ -222,14 +226,14 @@ reduceUnifyConj tc = debugSpanRM "reduceUnifyConj" id tc $ withTreeDepthLimit tc
   let orig = tcFocus tc
   case treeNode orig of
     TNMutable mut
-      | Ref ref <- mut -> do
+      | MutOp (Ref ref) <- mut -> do
           (DerefResult rM _) <- index ref tc
           -- If the ref is reduced to another mutable tree, we further reduce it.
           maybe
             (return Nothing)
             (\r -> reduceUnifyConj (r `setTCFocus` tc))
             rM
-      | DisjOp disjOp <- mut -> reduceDisjOp True disjOp tc
+      | MutOp (DisjOp disjOp) <- mut -> reduceDisjOp True disjOp tc
     _ -> return $ Just $ Cursor.tcFocus tc
 
 -- | Reduce the tree cursor to non-mutable.

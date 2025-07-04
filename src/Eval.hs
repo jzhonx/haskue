@@ -91,17 +91,17 @@ runIO eStr conf = do
   case r of
     Left err -> return $ string7 err
     Right
-      ( wpVal ->
+      ( anVal ->
           AST.ExprUnaryExpr
-            ( wpVal ->
+            ( anVal ->
                 AST.UnaryExprPrimaryExpr
-                  ( wpVal ->
+                  ( anVal ->
                       AST.PrimExprOperand
-                        ( wpVal ->
+                        ( anVal ->
                             AST.OpLiteral
-                              ( wpVal ->
+                              ( anVal ->
                                   AST.LitStructLit
-                                    (wpVal -> AST.StructLit decls)
+                                    (anVal -> AST.StructLit decls)
                                 )
                           )
                     )
@@ -119,7 +119,7 @@ runStr s conf = do
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> evalStateT (runReaderT (buildASTExpr False t) emptyRunner) emptyTrace
+    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyRunner) emptyTrace
 
 strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m Tree
 strToCUEVal s conf = do

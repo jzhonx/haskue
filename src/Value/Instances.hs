@@ -37,6 +37,8 @@ deriving instance Eq DisjTerm
 deriving instance Eq UnifyOp
 
 deriving instance Eq Mutable
+deriving instance Eq MutOp
+deriving instance Eq MutFrame
 deriving instance Eq RegularOp
 
 deriving instance Eq Block
@@ -97,6 +99,8 @@ deriving instance Show DisjTerm
 deriving instance Show UnifyOp
 
 deriving instance Show Mutable
+deriving instance Show MutOp
+deriving instance Show MutFrame
 deriving instance Show RegularOp
 
 deriving instance Show Block
@@ -133,6 +137,8 @@ deriving instance NFData DisjTerm
 deriving instance NFData UnifyOp
 
 deriving instance NFData Mutable
+deriving instance NFData MutOp
+deriving instance NFData MutFrame
 deriving instance NFData RegularOp
 
 deriving instance NFData Block

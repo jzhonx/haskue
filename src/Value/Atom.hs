@@ -37,7 +37,7 @@ instance Eq Atom where
 
 aToLiteral :: Atom -> AST.Literal
 aToLiteral a = pure $ case a of
-  String s -> AST.wpVal $ AST.strToLit s
+  String s -> AST.anVal $ AST.strToLit s
   Int i -> AST.IntLit i
   Float f -> AST.FloatLit f
   Bool b -> AST.BoolLit b

@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -19,7 +20,13 @@ import {-# SOURCE #-} Value.Tree
 import Value.UnifyOp
 
 -- | Mutable is a tree node whose value can be changed.
-data Mutable
+data Mutable = Mutable MutOp MutFrame
+  deriving (Generic)
+
+setMutOp :: MutOp -> Mutable -> Mutable
+setMutOp op (Mutable _ frame) = Mutable op frame
+
+data MutOp
   = RegOp RegularOp
   | Ref Reference
   | Compreh Comprehension
@@ -28,80 +35,73 @@ data Mutable
   | Itp Interpolation
   deriving (Generic)
 
-data OpType
+pattern MutOp :: MutOp -> Mutable
+pattern MutOp op <- Mutable op _
+
+newtype MutFrame = MutFrame
+  { mfValue :: Maybe Tree
+  }
+  deriving (Generic)
+
+emptyMutFrame :: MutFrame
+emptyMutFrame = MutFrame{mfValue = Nothing}
+
+withEmptyMutFrame :: MutOp -> Mutable
+withEmptyMutFrame op = Mutable op emptyMutFrame
+
+getMutVal :: Mutable -> Maybe Tree
+getMutVal (Mutable _ (MutFrame v)) = v
+
+setMutVal :: Maybe Tree -> Mutable -> Mutable
+setMutVal m (Mutable op frame) = Mutable op (frame{mfValue = m})
+
+getMutArgs :: Mutable -> Seq.Seq Tree
+getMutArgs (Mutable op _) = mutOpArgs op
+
+mutOpArgs :: MutOp -> Seq.Seq Tree
+mutOpArgs (RegOp rop) = ropArgs rop
+mutOpArgs (Ref ref) = subRefArgs $ refArg ref
+mutOpArgs (Compreh _) = Seq.empty
+mutOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
+mutOpArgs (UOp u) = ufConjuncts u
+mutOpArgs (Itp itp) = itpExprs itp
+
+updateMutArg :: Int -> Tree -> Mutable -> Mutable
+updateMutArg i t (Mutable op frame) = Mutable (updateMutOpArg i t op) frame
+
+updateMutOpArg :: Int -> Tree -> MutOp -> MutOp
+updateMutOpArg i t (RegOp mut) = RegOp $ mut{ropArgs = Seq.update i t (ropArgs mut)}
+updateMutOpArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
+updateMutOpArg _ _ (Compreh c) = Compreh c
+updateMutOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
+updateMutOpArg i t (UOp u) = UOp $ u{ufConjuncts = Seq.update i t (ufConjuncts u)}
+updateMutOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
+
+modifyRegMut :: (RegularOp -> RegularOp) -> Mutable -> Mutable
+modifyRegMut f (Mutable (RegOp m) frame) = Mutable (RegOp $ f m) frame
+modifyRegMut _ r = r
+
+-- getMutCachedArg :: Int -> Mutable -> Maybe Tree
+-- getMutCachedArg i (Mutable _ (MutFrame cachedArgs _)) = join $ cachedArgs Seq.!? i
+
+-- setMutCachedArgs :: [Maybe Tree] -> Mutable -> Mutable
+-- setMutCachedArgs ts (Mutable op frame) = Mutable op (frame{mfCachedArgs = Seq.fromList ts})
+
+-- | RegularOp is a tree node that represents a function.
+data RegularOp = RegularOp
+  { ropName :: String
+  , ropOpType :: RegOpType
+  , ropArgs :: Seq.Seq Tree
+  -- ^ Args stores the arguments that may or may not need to be evaluated.
+  }
+  deriving (Generic)
+
+data RegOpType
   = UnaryOpType AST.UnaryOp
   | BinOpType AST.BinaryOp
   | CloseFunc
   | InvalidOpType
   deriving (Eq, Show, Generic, NFData)
-
-getRefFromMutable :: Mutable -> Maybe Reference
-getRefFromMutable mut = case mut of
-  Ref ref -> Just ref
-  _ -> Nothing
-
-getSFuncFromMutable :: Mutable -> Maybe RegularOp
-getSFuncFromMutable mut = case mut of
-  RegOp s -> Just s
-  _ -> Nothing
-
-requireMutableConcrete :: RegularOp -> Bool
-requireMutableConcrete mut = ropName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
-
-getMutName :: Mutable -> (Tree -> Maybe String) -> String
-getMutName (RegOp mut) _ = ropName mut
-getMutName (Ref ref) f = "ref_" ++ showRefArg (refArg ref) f
-getMutName (Compreh _) _ = "comprehend"
-getMutName (DisjOp _) _ = "disjoin"
-getMutName (UOp _) _ = "unify"
-getMutName (Itp _) _ = "inter"
-
-getMutVal :: Mutable -> Maybe Tree
-getMutVal (RegOp mut) = ropValue mut
-getMutVal (Ref ref) = refValue ref
-getMutVal (Compreh c) = cphValue c
-getMutVal (DisjOp d) = djoValue d
-getMutVal (UOp u) = ufValue u
-getMutVal (Itp i) = itpValue i
-
-setMutVal :: Maybe Tree -> Mutable -> Mutable
-setMutVal m (RegOp mut) = RegOp $ mut{ropValue = m}
-setMutVal m (Ref ref) = Ref $ ref{refValue = m}
-setMutVal m (Compreh c) = Compreh $ c{cphValue = m}
-setMutVal m (DisjOp d) = DisjOp $ d{djoValue = m}
-setMutVal m (UOp u) = UOp $ u{ufValue = m}
-setMutVal m (Itp i) = Itp $ i{itpValue = m}
-
-getMutArgs :: Mutable -> Seq.Seq Tree
-getMutArgs (RegOp rop) = ropArgs rop
-getMutArgs (Ref ref) = subRefArgs $ refArg ref
-getMutArgs (Compreh _) = Seq.empty
-getMutArgs (DisjOp d) = fmap dstValue (djoTerms d)
-getMutArgs (UOp u) = ufConjuncts u
-getMutArgs (Itp itp) = itpExprs itp
-
-updateMutArg :: Int -> Tree -> Mutable -> Mutable
-updateMutArg i t (RegOp mut) = RegOp $ mut{ropArgs = Seq.update i t (ropArgs mut)}
-updateMutArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
-updateMutArg _ _ (Compreh c) = Compreh c
-updateMutArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
-updateMutArg i t (UOp u) = UOp $ u{ufConjuncts = Seq.update i t (ufConjuncts u)}
-updateMutArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
-
-modifyRegMut :: (RegularOp -> RegularOp) -> Mutable -> Mutable
-modifyRegMut f (RegOp m) = RegOp $ f m
-modifyRegMut _ r = r
-
--- | RegularOp is a tree node that represents a function.
-data RegularOp = RegularOp
-  { ropName :: String
-  , ropOpType :: OpType
-  , ropArgs :: Seq.Seq Tree
-  -- ^ Args stores the arguments that may or may not need to be evaluated.
-  , ropValue :: Maybe Tree
-  -- ^ ropValue stores the non-atom, non-Mutable (isTreeValue true) value.
-  }
-  deriving (Generic)
 
 emptyRegularOp :: RegularOp
 emptyRegularOp =
@@ -109,34 +109,36 @@ emptyRegularOp =
     { ropName = ""
     , ropOpType = InvalidOpType
     , ropArgs = Seq.empty
-    , ropValue = Nothing
     }
+
+requireMutableConcrete :: RegularOp -> Bool
+requireMutableConcrete mut = ropName mut `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
 mkUnaryOp :: AST.UnaryOp -> Tree -> Mutable
 mkUnaryOp op n =
-  RegOp $
-    RegularOp
-      { ropName = show op
-      , ropOpType = UnaryOpType op
-      , ropArgs = Seq.fromList [n]
-      , ropValue = Nothing
-      }
+  withEmptyMutFrame $
+    RegOp $
+      RegularOp
+        { ropName = show op
+        , ropOpType = UnaryOpType op
+        , ropArgs = Seq.fromList [n]
+        }
 
 mkBinaryOp :: AST.BinaryOp -> Tree -> Tree -> Mutable
 mkBinaryOp op l r =
-  RegOp $
-    RegularOp
-      { ropName = show op
-      , ropOpType = BinOpType op
-      , ropArgs = Seq.fromList [l, r]
-      , ropValue = Nothing
-      }
+  withEmptyMutFrame $
+    RegOp $
+      RegularOp
+        { ropName = show op
+        , ropOpType = BinOpType op
+        , ropArgs = Seq.fromList [l, r]
+        }
 
 mkDisjoinOp :: Seq.Seq DisjTerm -> Mutable
-mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts, djoValue = Nothing}
+mkDisjoinOp ts = withEmptyMutFrame $ DisjOp $ DisjoinOp{djoTerms = ts}
 
 mkUnifyOp :: [Tree] -> Mutable
-mkUnifyOp ts = UOp $ emptyUnifyOp{ufConjuncts = Seq.fromList ts}
+mkUnifyOp ts = withEmptyMutFrame $ UOp $ emptyUnifyOp{ufConjuncts = Seq.fromList ts}
 
 mkItpMutable :: [IplSeg] -> [Tree] -> Mutable
-mkItpMutable segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
+mkItpMutable segs exprs = withEmptyMutFrame $ Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}

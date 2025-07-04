@@ -17,6 +17,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import Path
+import Reduce.Nodes (checkLabelsPerm)
 import Reduce.RMonad (
   ReduceMonad,
   ReduceTCMonad,
@@ -41,7 +42,6 @@ import Reduce.RMonad (
  )
 import Reduce.RefSys (goTCLAAddr)
 import Reduce.Root (reduce)
-import Reduce.UnifyOp (checkLabelsPerm)
 import Text.Printf (printf)
 import Value
 
@@ -163,7 +163,7 @@ replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
   replace cnstrAddr tc = do
     let focus = tcFocus tc
     rfM <- case focus of
-      IsRef rf -> return $ valPathFromRef rtrAtom rf
+      IsRef _ rf -> return $ valPathFromRef rtrAtom rf
       _ -> return Nothing
 
     maybe

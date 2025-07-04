@@ -25,7 +25,6 @@ data Reference = Reference
   -- The address is the abs address of the value in the subtree.
   , refVers :: Maybe Int
   -- ^ refVers records the version of the referenced value.
-  , refValue :: Maybe Tree
   }
   deriving (Generic)
 
@@ -84,7 +83,6 @@ mkIndexRef :: Seq.Seq Tree -> Reference
 mkIndexRef ts =
   Reference
     { refArg = RefIndex ts
-    , refValue = Nothing
     , refOrigAddrs = Nothing
     , refVers = Nothing
     }
@@ -94,7 +92,6 @@ emptyIdentRef ident =
   Reference
     { refArg = RefPath ident Seq.empty
     , refOrigAddrs = Nothing
-    , refValue = Nothing
     , refVers = Nothing
     }
 
@@ -113,7 +110,6 @@ mkRefFromValPath aToTree var (ValPath xs) = do
   return $
     Reference
       { refArg = RefPath var (Seq.fromList ys)
-      , refValue = Nothing
       , refOrigAddrs = Nothing
       , refVers = Nothing
       }

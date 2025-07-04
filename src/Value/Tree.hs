@@ -125,11 +125,11 @@ pattern IsCnstredVal cv <- TN (TNCnstredVal cv)
 pattern IsMutable :: Mutable -> Tree
 pattern IsMutable mut <- TN (TNMutable mut)
 
-pattern IsRef :: Reference -> Tree
-pattern IsRef ref <- IsMutable (Ref ref)
+pattern IsRef :: Mutable -> Reference -> Tree
+pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
 
-pattern IsRegOp :: RegularOp -> Tree
-pattern IsRegOp rop <- IsMutable (RegOp rop)
+pattern IsRegOp :: Mutable -> RegularOp -> Tree
+pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
 
 {- | descend into the tree with the given segment.
 
@@ -152,9 +152,9 @@ subTree seg t = case (seg, treeNode t) of
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
     | MutArgTASeg i <- seg -> getMutArgs mut Seq.!? i
-    | (ComprehTASeg (ComprehIterClauseValTASeg i), Compreh c) <- (seg, mut) ->
+    | (ComprehTASeg (ComprehIterClauseValTASeg i), MutOp (Compreh c)) <- (seg, mut) ->
         getValFromIterClause <$> (cphIterClauses c `indexList` i)
-    | (ComprehTASeg ComprehIterValTASeg, Compreh c) <- (seg, mut) -> cphIterVal c
+    | (ComprehTASeg ComprehIterValTASeg, MutOp (Compreh c)) <- (seg, mut) -> cphIterVal c
     | SubValTASeg <- seg -> getMutVal mut
   (_, TNDisj d)
     | DisjDefTASeg <- seg -> dsjDefault d
@@ -177,13 +177,15 @@ setSubTree seg subT parT = do
     (_, TNMutable mut)
       | MutArgTASeg i <- seg -> return $ TNMutable $ updateMutArg i subT mut
       | ComprehTASeg ComprehIterValTASeg <- seg
-      , Compreh c <- mut ->
-          return $ TNMutable $ Compreh c{cphIterVal = Just subT}
+      , MutOp (Compreh c) <- mut ->
+          return $ TNMutable $ setMutOp (Compreh c{cphIterVal = Just subT}) mut
       | ComprehTASeg (ComprehIterClauseValTASeg i) <- seg
-      , Compreh c <- mut -> do
+      , MutOp (Compreh c) <- mut -> do
           let clauses = cphIterClauses c
               clause = setValInIterClause subT (clauses !! i)
-          return $ TNMutable $ Compreh c{cphIterClauses = take i clauses ++ [clause] ++ drop (i + 1) clauses}
+          return $
+            TNMutable $
+              setMutOp (Compreh c{cphIterClauses = take i clauses ++ [clause] ++ drop (i + 1) clauses}) mut
       | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
     (_, TNDisj d)
       | DisjDefTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
@@ -382,7 +384,7 @@ rawNodes t = case treeNode t of
       ++ [(StructTASeg $ DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ stcDynFields struct]
       ++ [(StructTASeg $ LetTASeg (TE.encodeUtf8 s), lbValue lb) | (s, lb) <- Map.toList $ stcLets struct]
       ++ [(StructTASeg $ EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
-  TNMutable (Compreh c) ->
+  TNMutable (MutOp (Compreh c)) ->
     [ (ComprehTASeg (ComprehIterClauseValTASeg i), getValFromIterClause v)
     | (i, v) <- zip [0 ..] (cphIterClauses c)
     ]
@@ -437,10 +439,9 @@ mkCnstredValTree v m = mkNewTree (TNCnstredVal $ CnstredVal v m)
 -- | Create an index function node.
 appendSelToRefTree :: Tree -> Tree -> Tree
 appendSelToRefTree oprnd selArg = case treeNode oprnd of
-  TNMutable m
-    | Just ref <- getRefFromMutable m ->
-        mkMutableTree $ Ref $ ref{refArg = appendRefArg selArg (refArg ref)}
-  _ -> mkMutableTree $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
+  TNMutable mut@(MutOp (Ref ref)) ->
+    mkMutableTree $ setMutOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
+  _ -> mkMutableTree $ withEmptyMutFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
 treesToValPath :: [Tree] -> Maybe ValPath
 treesToValPath ts = ValPath <$> mapM treeToSel ts
@@ -477,20 +478,22 @@ builtinMutableTable :: [(String, Tree)]
 builtinMutableTable =
   [
     ( "close"
-    , mkMutableTree . RegOp $
-        -- built-in close does not recursively close the struct.
-        emptyRegularOp
-          { ropName = "close"
-          , ropArgs = Seq.fromList [mkNewTree TNTop]
-          , ropOpType = CloseFunc
-          }
+    , mkMutableTree $
+        withEmptyMutFrame $
+          RegOp $
+            -- built-in close does not recursively close the struct.
+            emptyRegularOp
+              { ropName = "close"
+              , ropArgs = Seq.fromList [mkNewTree TNTop]
+              , ropOpType = CloseFunc
+              }
     )
   ]
 
 -- = TreeRep =
 
 instance Show Tree where
-  show = treeToSubStr 0 True
+  show = treeFullStr 0
 
 treeToSubStr :: Int -> Bool -> Tree -> String
 treeToSubStr toff moreSub t =
@@ -644,13 +647,7 @@ buildRepTreeTN :: Tree -> TreeNode -> TreeRepBuildOption -> TreeRep
 buildRepTreeTN t tn opt = case tn of
   TNAtom leaf -> consRep (show leaf, mempty, [], [])
   -- TODO: segment
-  TNBounds b ->
-    consRep
-      ( mempty
-      , show b
-      , []
-      , []
-      )
+  TNBounds b -> consRep (mempty, show b, [], [])
   TNBlock es@(Block{blkStruct = s}) ->
     let ordLabels = printf "ord:[%s]" $ intercalate ", " (map show $ stcOrdLabels s)
         attr :: LabelAttr -> String
@@ -744,26 +741,26 @@ buildRepTreeTN t tn opt = case tn of
       , []
       )
   TNRefCycle p -> consRep (symbol, printf "ref-cycle %s" (show p), [], [])
-  TNMutable m -> case m of
-    RegOp mut ->
+  TNMutable mut@(Mutable op _) -> case op of
+    RegOp rop ->
       let
         args =
           if trboShowMutArgs opt
-            then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ ropArgs mut)
+            then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ ropArgs rop)
             else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ropValue mut)
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep
           ( symbol
-          , ropName mut
-              <> ( printf ", args:%s" (show . length $ ropArgs mut)
+          , ropName rop
+              <> ( printf ", args:%s" (show . length $ ropArgs rop)
                  )
           , consFields (args ++ val)
           , []
           )
     Ref ref ->
       let
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (refValue ref)
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep
           ( symbol
@@ -806,7 +803,7 @@ buildRepTreeTN t tn opt = case tn of
                 [0 ..]
                 (toList $ djoTerms d)
             else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (djoValue d)
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep
           ( symbol
@@ -824,7 +821,7 @@ buildRepTreeTN t tn opt = case tn of
                 [0 ..]
                 (toList $ ufConjuncts u)
             else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (ufValue u)
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep (symbol, "", consFields (conjuncts ++ val), [])
     Itp itp ->
@@ -837,7 +834,7 @@ buildRepTreeTN t tn opt = case tn of
                 [0 ..]
                 (toList $ itpExprs itp)
             else []
-        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (itpValue itp)
+        val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
        in
         consRep (symbol, "", consFields (exprs ++ val), [])
   TNCnstredVal c -> consRep (symbol, "", consFields [(show SubValTASeg, "", cnsedVal c)], [])
@@ -865,7 +862,7 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle _ -> "RC"
-  TNMutable m -> case m of
+  TNMutable (Mutable op _) -> case op of
     RegOp _ -> "fn"
     Ref _ -> "ref"
     Compreh _ -> "compreh"
