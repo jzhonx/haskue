@@ -119,11 +119,16 @@ reduceTCFocus tc = withTreeDepthLimit tc $ do
           r <- case mut of
             RegOp rop -> case ropOpType rop of
               InvalidOpType -> throwErrSt "invalid op type"
-              UnaryOpType op -> RegOps.regUnaryOp op tc
+              UnaryOpType op -> do
+                uTC <- goDownTCSegMust unaryOpTASeg tc
+                a <- reduceToNonMut uTC
+                RegOps.execUnaryOp op a
               BinOpType op -> do
                 lTC <- goDownTCSegMust binOpLeftTASeg tc
                 rTC <- goDownTCSegMust binOpRightTASeg tc
-                RegOps.regBin op lTC rTC
+                a0 <- reduceToNonMut lTC
+                a1 <- reduceToNonMut rTC
+                RegOps.execRegBinOp op a0 a1 tc
               CloseFunc -> close (toList $ ropArgs rop) tc
             Compreh compreh -> do
               rM <- reduceCompreh compreh tc

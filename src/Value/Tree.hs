@@ -259,9 +259,9 @@ setTN t n = t{treeNode = n}
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
 
--- | Retrieve the CUE value from the tree.
-rtrCUE :: Tree -> Maybe Tree
-rtrCUE t = case treeNode t of
+-- | Retrieve the basic value from the tree.
+rtrBase :: Tree -> Maybe Tree
+rtrBase t = case treeNode t of
   TNAtom _ -> Just t
   TNBottom _ -> Just t
   TNTop -> Just t
@@ -269,28 +269,35 @@ rtrCUE t = case treeNode t of
   TNList _ -> Just t
   TNDisj _ -> Just t
   TNBlock block
-    | let v = blkNonStructValue block
-    , Just ev <- v ->
-        rtrCUE ev
+    | Just ev <- blkNonStructValue block -> rtrBase ev
     | otherwise -> Just t
   TNAtomCnstr c -> Just $ mkAtomTree (cnsAtom c)
-  TNCnstredVal c -> rtrCUE $ cnsedVal c
-  TNMutable mut -> getMutVal mut >>= rtrCUE
+  TNCnstredVal c -> rtrBase $ cnsedVal c
+  TNMutable mut -> getMutVal mut >>= rtrBase
   TNRefCycle _ -> Nothing
+
+-- | Retrieve the singular value which is not a disjunction.
+rtrCUESingular :: Tree -> Maybe Tree
+rtrCUESingular t = do
+  v <- rtrBase t
+  case treeNode v of
+    TNAtom _ -> Just v
+    TNBottom _ -> Just v
+    TNTop -> Just v
+    TNList _ -> Just v
+    TNBlock _ -> Just v
+    TNDisj d | Just df <- dsjDefault d -> rtrCUESingular df
+    _ -> Nothing
 
 -- | Retrieve the concrete value from the tree.
 rtrConcrete :: Tree -> Maybe Tree
 rtrConcrete t = do
-  v <- rtrWithDefault <$> rtrCUE t
+  v <- rtrCUESingular t
   case v of
     IsAtom _ -> Just v
     -- There is only struct value after retrieving concrete value.
     IsBlock (Block{blkStruct = s}) -> if stcIsConcrete s then Just v else Nothing
     _ -> Nothing
-
-rtrWithDefault :: Tree -> Tree
-rtrWithDefault (IsDisj d) | Just df <- dsjDefault d = df
-rtrWithDefault t = t
 
 rtrNonMut :: Tree -> Maybe Tree
 rtrNonMut (IsMutable mut) = getMutVal mut >>= rtrNonMut
@@ -298,7 +305,7 @@ rtrNonMut t = return t
 
 rtrAtom :: Tree -> Maybe Atom
 rtrAtom t = do
-  v <- rtrWithDefault <$> rtrCUE t
+  v <- rtrCUESingular t
   case v of
     IsAtom a -> Just a
     _ -> Nothing
@@ -321,7 +328,7 @@ rtrFloat _ = Nothing
 
 rtrBottom :: Tree -> Maybe Bottom
 rtrBottom t = do
-  v <- rtrWithDefault <$> rtrCUE t
+  v <- rtrCUESingular t
   case v of
     IsBottom b -> Just b
     _ -> Nothing
@@ -332,21 +339,21 @@ It stops at the first disjunction found. It does not go deeper to the default va
 -}
 rtrDisj :: Tree -> Maybe Disj
 rtrDisj t = do
-  v <- rtrCUE t
+  v <- rtrBase t
   case v of
     IsDisj d -> Just d
     _ -> Nothing
 
 rtrList :: Tree -> Maybe List
 rtrList t = do
-  v <- rtrWithDefault <$> rtrCUE t
+  v <- rtrCUESingular t
   case v of
     IsList l -> Just l
     _ -> Nothing
 
 rtrStruct :: Tree -> Maybe Struct
 rtrStruct t = do
-  v <- rtrWithDefault <$> rtrCUE t
+  v <- rtrCUESingular t
   case v of
     IsBlock Block{blkStruct = struct} -> Just struct
     _ -> Nothing
