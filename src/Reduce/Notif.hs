@@ -53,7 +53,7 @@ drainRefSysQueue tc = do
         Nothing -> return (tc, False)
         Just addr -> do
           dstTCM <- goTCAbsAddr2 addr tc
-          r <- maybe (return tc) notify dstTCM
+          r <- maybe (return tc) startNotify dstTCM
           return (r, True)
 
   if more
@@ -69,8 +69,8 @@ propagates to the dependents of the visiting node and the dependents of its ance
 
 The propagation starts from the current focus.
 -}
-notify :: (ReduceMonad s r m) => TrCur -> m TrCur
-notify tc = debugSpanRM "notify" (Just <$> tcFocus) tc $ do
+startNotify :: (ReduceMonad s r m) => TrCur -> m TrCur
+startNotify tc = debugSpanRM "startNotify" (Just <$> tcFocus) tc $ do
   origRefSysEnabled <- getRMNotifEnabled
   -- Disable the notification to avoid notifying the same node multiple times.
   setRMNotifEnabled False
@@ -82,7 +82,7 @@ notify tc = debugSpanRM "notify" (Just <$> tcFocus) tc $ do
     q = Seq.fromList [(addr, False, treeVersion t)]
 
   s <- get
-  (r, ns) <- runStateT (bfsLoopQ tc) (WithBFSState (BFSState visiting q) s)
+  (r, ns) <- runStateT (fetchNotifyLoop tc) (WithBFSState (BFSState visiting q) s)
   put (wbOther ns)
   setRMNotifEnabled origRefSysEnabled
   return r
@@ -119,13 +119,13 @@ instance (Common.HasContext s) => Common.HasContext (WithBFSState s) where
   setContext s ctx = s{wbOther = Common.setContext (wbOther s) ctx}
   modifyContext s f = s{wbOther = Common.modifyContext (wbOther s) f}
 
-bfsLoopQ :: (ReduceMonad r s m, HasBFSState s) => TrCur -> m TrCur
-bfsLoopQ tc = do
+fetchNotifyLoop :: (ReduceMonad r s m, HasBFSState s) => TrCur -> m TrCur
+fetchNotifyLoop tc = do
   state@(BFSState{bfsQueue = q}) <- gets getBFSState
   case q of
     Seq.Empty -> return tc
     ((addr, toReduce, srcVers) Seq.:<| xs) -> do
-      r <- debugSpanArgsRM "bfsLoopQ" (printf "q:%s" (show q)) (Just <$> tcFocus) tc $ do
+      r <- debugSpanArgsRM "fetchNotifyLoop" (printf "q:%s" (show q)) (Just <$> tcFocus) tc $ do
         -- pop the first element of the queue.
         modify $ \s -> setBFSState s state{bfsQueue = xs}
 
@@ -137,7 +137,7 @@ bfsLoopQ tc = do
               -- example, the receiver could first be reduced in a unifying function reducing arguments phase with
               -- addr a/fa0. Then the receiver is relocated to "/a" due to unifying fields.
               delRefSysRecvPrefix addr
-              debugInstantRM "bfsLoopQ" (printf "%s is not found, tc:%s" (show addr) (show tc)) tc
+              debugInstantRM "fetchNotifyLoop" (printf "%s is not found, tc:%s" (show addr) (show tc)) tc
               return tc
           )
           ( \dstTC ->
@@ -147,11 +147,11 @@ bfsLoopQ tc = do
                     then reduceImParMut srcVers dstTC
                     else return dstTC
                 -- Adding new deps should be in the exact environment of the result of the reduceImParMut.
-                loopAddDeps utc
+                addAncDepsLoops utc
           )
           dstTCM
 
-      bfsLoopQ r
+      fetchNotifyLoop r
 
 goTCAbsAddr2 :: (ReduceMonad r s m) => TreeAddr -> TrCur -> m (Maybe TrCur)
 goTCAbsAddr2 dst tc = do
@@ -189,15 +189,15 @@ propUpTC2 tc = do
 
 -- Add the dependents of the current focus and its ancestors to the visited list and the queue.
 -- Notice that it changes the tree focus. After calling the function, the caller should restore the focus.
-loopAddDeps :: (ReduceMonad r s m, HasBFSState s) => TrCur -> m TrCur
-loopAddDeps tc = do
+addAncDepsLoops :: (ReduceMonad r s m, HasBFSState s) => TrCur -> m TrCur
+addAncDepsLoops tc = do
   let cs = tcCrumbs tc
-  -- We should not use root value to notify.
+  -- We should not use root value to startNotify.
   if length cs <= 1
     then return tc
     else do
       recvs <- do
-        notifyG <- Common.ctxNotifGraph <$> getRMContext
+        startNotifyG <- Common.ctxNotifGraph <$> getRMContext
         -- We need to use the finalized addr to find the notifiers so that some dependents that reference on the
         -- finalized address can be notified.
         -- For example, { a: r, r: y:{}, p: a.y}. p's a.y references the finalized address while a's value might
@@ -207,12 +207,12 @@ loopAddDeps tc = do
             []
             ( do
                 srcFinalizedAddr <- getReferableAddr (tcCanAddr tc)
-                Map.lookup srcFinalizedAddr notifyG
+                Map.lookup srcFinalizedAddr startNotifyG
             )
 
       let srcVers = treeVersion (tcFocus tc)
 
-      debugInstantRM "loopAddDeps" (printf "found recvs: %s" (show recvs)) tc
+      debugInstantRM "addAncDepsLoops" (printf "found recvs: %s" (show recvs)) tc
 
       -- Add the receivers to the visited list and the queue.
       modify $ \st ->
@@ -228,7 +228,7 @@ loopAddDeps tc = do
                 recvs
          in setBFSState st newBFSState
 
-      propFocusUpWithPostHandling tc >>= loopAddDeps
+      propFocusUpWithPostHandling tc >>= addAncDepsLoops
 
 propFocusUpWithPostHandling :: (ReduceMonad s r m) => TrCur -> m TrCur
 propFocusUpWithPostHandling subTC = do
