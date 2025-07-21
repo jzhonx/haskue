@@ -12,7 +12,7 @@ import Cursor
 import Exception (throwErrSt)
 import Path
 import Reduce.RMonad (
-  ReduceMonad,
+  ResolveMonad,
   debugInstantOpRM,
  )
 import Text.Printf (printf)
@@ -20,11 +20,11 @@ import Value
 
 -- * Regular Unary Ops
 
-retVal :: (ReduceMonad s r m) => Tree -> m (Maybe Tree)
+retVal :: (ResolveMonad s r m) => Tree -> m (Maybe Tree)
 retVal = return . Just
 
-execUnaryOp :: (ReduceMonad s r m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
-execUnaryOp op tM = do
+resolveUnaryOp :: (ResolveMonad s r m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
+resolveUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
     Just t | Just a <- rtrAtom t -> case (AST.anVal op, a) of
@@ -63,22 +63,22 @@ execUnaryOp op tM = do
 
 -- * Regular Binary Ops
 
-execRegBinOp ::
-  (ReduceMonad s r m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
-execRegBinOp op t1M t2M opTC = do
+resolveRegBinOp ::
+  (ResolveMonad s r m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
+resolveRegBinOp op t1M t2M opTC = do
   debugInstantOpRM
-    "execRegBinDir"
+    "resolveRegBinOp"
     (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
     (tcCanAddr opTC)
-  execRegBinDir op (L, t1M) (R, t2M)
+  resolveRegBinDir op (L, t1M) (R, t2M)
 
-execRegBinDir ::
-  (ReduceMonad s r m) =>
+resolveRegBinDir ::
+  (ResolveMonad s r m) =>
   AST.BinaryOp ->
   (BinOpDirect, Maybe Tree) ->
   (BinOpDirect, Maybe Tree) ->
   m (Maybe Tree)
-execRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
+resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
   if
     | opv `elem` cmpOps -> return $ cmp (opv == AST.Equ) (d1, t1M) (d2, t2M)
     | opv `elem` arithOps -> case (t1M, t2M) of
@@ -89,8 +89,10 @@ execRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
           -- Tops are incomplete.
           | IsTop <- t1 -> return Nothing
           | IsTop <- t2 -> return Nothing
-          | IsRefCycle _ <- t1 -> return Nothing
-          | IsRefCycle _ <- t2 -> return Nothing
+          | IsRefCycle <- t1 -> return Nothing
+          | IsRefCycle <- t2 -> return Nothing
+          | IsUnifyWithRC <- t1 -> return Nothing
+          | IsUnifyWithRC <- t2 -> return Nothing
           -- When both trees are atoms.
           | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ Just $ calc op (d1, a1) (d2, a2)
           -- When both trees are non-union values.

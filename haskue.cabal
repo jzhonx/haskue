@@ -23,6 +23,7 @@ library
         Exception,
         Parser,
         Path,
+        NotifGraph,
         Reduce,
         Reduce.Nodes,
         Reduce.Notif,
@@ -102,6 +103,7 @@ Test-Suite haskue-unit-test
   main-is: Main.hs
   other-modules:
     SpecTest,
+    NotifGraphTest,
   build-depends:
         base ^>=4.17.0.0,
         tasty >= 0.7,

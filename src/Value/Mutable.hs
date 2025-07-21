@@ -53,6 +53,7 @@ getMutVal :: Mutable -> Maybe Tree
 getMutVal (Mutable _ (MutFrame v)) = v
 
 setMutVal :: Maybe Tree -> Mutable -> Mutable
+setMutVal m (Mutable (Ref rf) frame) = Mutable (Ref rf{refVers = treeVersion <$> m}) (frame{mfValue = m})
 setMutVal m (Mutable op frame) = Mutable op (frame{mfValue = m})
 
 getMutArgs :: Mutable -> Seq.Seq Tree
@@ -80,12 +81,6 @@ updateMutOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp
 modifyRegMut :: (RegularOp -> RegularOp) -> Mutable -> Mutable
 modifyRegMut f (Mutable (RegOp m) frame) = Mutable (RegOp $ f m) frame
 modifyRegMut _ r = r
-
--- getMutCachedArg :: Int -> Mutable -> Maybe Tree
--- getMutCachedArg i (Mutable _ (MutFrame cachedArgs _)) = join $ cachedArgs Seq.!? i
-
--- setMutCachedArgs :: [Maybe Tree] -> Mutable -> Mutable
--- setMutCachedArgs ts (Mutable op frame) = Mutable op (frame{mfCachedArgs = Seq.fromList ts})
 
 -- | RegularOp is a tree node that represents a function.
 data RegularOp = RegularOp

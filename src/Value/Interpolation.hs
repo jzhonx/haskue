@@ -9,13 +9,21 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Tree
 
+{- | An Interpolation is made up of string segments and expressions.
+
+For example, "hello, \(name)" is make up of the string segment "hello, " and the expression `name`.
+-}
 data Interpolation = Interpolation
   { itpSegs :: [IplSeg]
   , itpExprs :: Seq.Seq Tree
   }
   deriving (Generic)
 
-data IplSeg = IplSegExpr !Int | IplSegStr T.Text
+-- | Interpolation segments can be either expressions or string literals.
+data IplSeg
+  = -- | Index of the expression in `itpExprs`
+    IplSegExpr !Int
+  | IplSegStr T.Text
   deriving (Eq, Show, Generic, NFData)
 
 emptyInterpolation :: Interpolation

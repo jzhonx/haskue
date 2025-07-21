@@ -89,19 +89,37 @@ buildASTExprExt t = case treeNode t of
         disjunctsToAST (dsjDisjuncts dj)
       else
         disjunctsToAST (defDisjunctsFromDisj dj)
-  TNMutable mut@(Mutable mop _) -> case mop of
-    RegOp op -> buildRegOpASTExpr mut op
-    Ref _ -> maybe (throwErrSt $ printf "expression not found for reference: %s" (show t)) return (treeExpr t)
-    Compreh cph -> do
-      ce <- buildComprehASTExpr cph
-      return $
-        AST.litCons $
-          AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
-    DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
-    UOp u -> maybe (buildUnifyOpASTExpr u) return (treeExpr t)
-    Itp _ -> maybe (throwErrSt "expression not found for interpolation") return (treeExpr t)
-  TNAtomCnstr c -> maybe (return $ cnsValidator c) return (treeExpr t)
-  TNRefCycle _ -> return $ AST.litCons (pure AST.TopLit)
+  TNMutable mut@(Mutable mop _)
+    | Just v <- getMutVal mut -> buildASTExprExt v
+    | otherwise -> case mop of
+        RegOp op -> maybe (buildRegOpASTExpr op) return (treeExpr t)
+        Ref _ -> maybe (throwErrSt $ printf "expression not found for reference: %s" (show t)) return (treeExpr t)
+        Compreh cph -> do
+          ce <- buildComprehASTExpr cph
+          return $
+            AST.litCons $
+              AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
+        DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
+        UOp u -> maybe (buildUnifyOpASTExpr u) return (treeExpr t)
+        Itp _ -> maybe (throwErrSt "expression not found for interpolation") return (treeExpr t)
+  TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
+  TNRefCycle -> buildRCASTExpr "RC" t
+  TNUnifyWithRC _ -> buildRCASTExpr "URC" t
+  TNRefSubCycle _ -> maybe (throwErrSt $ printf "expression not found for sub cycle reference: %s" (show t)) return (treeExpr t)
+  TNNoValRef -> maybe (throwErrSt $ printf "expression not found for no val reference: %s" (show t)) return (treeExpr t)
+
+buildRCASTExpr :: (BEnv r s m) => String -> Tree -> m AST.Expression
+buildRCASTExpr s t =
+  maybe
+    ( do
+        isDebug <- asks getIsDebug
+        if isDebug
+          then return $ AST.litCons (AST.strToLit $ T.pack s)
+          else
+            throwErrSt $ printf "expression not found for %s: %s" s (show t)
+    )
+    return
+    (treeExpr t)
 
 buildStructASTExpr :: (BEnv r s m) => Block -> m AST.Expression
 buildStructASTExpr block@(IsBlockStruct s) = do
@@ -323,24 +341,17 @@ buildUnifyOpASTExpr op
         rest
   | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
-buildRegOpASTExpr :: (BEnv r s m) => Mutable -> RegularOp -> m AST.Expression
-buildRegOpASTExpr mut op = do
-  if requireMutableConcrete op
-    -- If the expression must be concrete, but due to incomplete evaluation, we need to use original expression.
-    then build
-    else maybe build buildASTExprExt (getMutVal mut)
- where
-  build = case ropOpType op of
-    UnaryOpType uop
-      | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
-    BinOpType bop
-      | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-    CloseFunc -> return $ AST.litCons (AST.strToLit (T.pack "close func"))
-    _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
+buildRegOpASTExpr :: (BEnv r s m) => RegularOp -> m AST.Expression
+buildRegOpASTExpr op = case ropOpType op of
+  UnaryOpType uop
+    | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
+  BinOpType bop
+    | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
+  CloseFunc -> return $ AST.litCons (AST.strToLit (T.pack "close func"))
+  _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
 buildUnaryExpr :: (BEnv r s m) => AST.UnaryOp -> Tree -> m AST.Expression
 buildUnaryExpr op t = do
-  -- let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   te <- buildASTExprExt t
   case AST.anVal te of
     (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr AST.<<^>> AST.UnaryExprUnaryOp op AST.<^> ue
@@ -355,7 +366,6 @@ buildUnaryExpr op t = do
 
 buildBinaryExpr :: (BEnv r s m) => AST.BinaryOp -> Tree -> Tree -> m AST.Expression
 buildBinaryExpr op l r = do
-  -- let c = show op `elem` map show [AST.Add, AST.Sub, AST.Mul, AST.Div]
   xe <- buildASTExprExt l
   ye <- buildASTExprExt r
   return $ pure $ AST.ExprBinaryOp op xe ye

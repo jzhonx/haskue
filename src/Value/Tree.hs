@@ -26,10 +26,10 @@ import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import Path (
   BlockTASeg (..),
+  FieldPath (FieldPath),
   Selector (..),
   TASeg (..),
   TreeAddr,
-  ValPath (ValPath),
   addrToList,
  )
 import Text.Printf (printf)
@@ -58,12 +58,17 @@ data TreeNode
   | TNList List
   | TNDisj Disj
   | TNAtomCnstr AtomCnstr
-  | -- | TNRefCycle represents the result of a field referencing itself or its sub field.
-    -- It also represents recursion, which is mostly disallowed in the CUE.
-    -- If a field references itself, the address is the same as the field reference. For example: x: x.
-    -- If a field references its sub field, the address is the sub field address. For example: x: x.a.
-    TNRefCycle TreeAddr
+  | -- | TNRefCycle is used to represent a reference cycle, which should be resolved in a field value node.
+    TNRefCycle
+  | -- | TNUnifyWithRC represents the result of a unification operation with a reference cycle.
+    -- It contains the address of the target pointed by the reference cycle and the tree value.
+    TNUnifyWithRC Tree
+  | -- | TNRefCycle represents the result of a field referencing its sub field.
+    TNRefSubCycle TreeAddr
   | TNMutable Mutable
+  | -- | TNNoValRef is used to represent a reference that is copied from another expression but has no value
+    -- yet.
+    TNNoValRef
   deriving (Generic)
 
 -- Some rules:
@@ -114,14 +119,17 @@ pattern IsDisj d <- TN (TNDisj d)
 pattern IsAtomCnstr :: AtomCnstr -> Tree
 pattern IsAtomCnstr c <- TN (TNAtomCnstr c)
 
-pattern IsRefCycle :: TreeAddr -> Tree
-pattern IsRefCycle addr <- TN (TNRefCycle addr)
-
 pattern IsMutable :: Mutable -> Tree
 pattern IsMutable mut <- TN (TNMutable mut)
 
 pattern IsRef :: Mutable -> Reference -> Tree
 pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
+
+pattern IsRefCycle :: Tree
+pattern IsRefCycle <- TN TNRefCycle
+
+pattern IsUnifyWithRC :: Tree
+pattern IsUnifyWithRC <- TN (TNUnifyWithRC _)
 
 pattern IsRegOp :: Mutable -> RegularOp -> Tree
 pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
@@ -255,7 +263,10 @@ rtrDeterministic t = case treeNode t of
   TNBounds _ -> Just t
   TNList _ -> Just t
   TNDisj _ -> Just t
-  TNRefCycle _ -> Just t
+  TNRefCycle -> Just t
+  TNUnifyWithRC _ -> Just t
+  TNRefSubCycle _ -> Just t
+  TNNoValRef -> Just t
   TNBlock block
     | IsBlockEmbed ev <- block -> rtrDeterministic ev
     | otherwise -> Just t
@@ -275,7 +286,8 @@ rtrNonUnion t = do
     TNTop -> Just v
     TNList _ -> Just v
     TNBlock _ -> Just v
-    TNRefCycle _ -> Just v
+    TNRefCycle -> Just v
+    TNUnifyWithRC _ -> Just v
     TNDisj d | Just df <- dsjDefault d -> rtrNonUnion df
     _ -> Nothing
 
@@ -407,6 +419,9 @@ mkNewTree n = emptyTree{treeNode = n}
 mkAtomTree :: Atom -> Tree
 mkAtomTree a = mkNewTree (TNAtom a)
 
+mkAtomCnstrTree :: AtomCnstr -> Tree
+mkAtomCnstrTree c = mkNewTree (TNAtomCnstr c)
+
 mkBottomTree :: String -> Tree
 mkBottomTree msg = mkNewTree (TNBottom $ Bottom{btmMsg = msg})
 
@@ -416,7 +431,7 @@ mkBoundsTree bs = mkNewTree (TNBounds bs)
 mkBoundsTreeFromList :: [Bound] -> Tree
 mkBoundsTreeFromList bs = mkBoundsTree (Bounds{bdsList = bs})
 
-mkCnstrTree :: Atom -> AST.Expression -> Tree
+mkCnstrTree :: Atom -> Tree -> Tree
 mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a e
 
 mkDisjTree :: Disj -> Tree
@@ -441,14 +456,13 @@ appendSelToRefTree oprnd selArg = case treeNode oprnd of
     mkMutableTree $ setMutOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
   _ -> mkMutableTree $ withEmptyMutFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
-treesToValPath :: [Tree] -> Maybe ValPath
-treesToValPath ts = ValPath <$> mapM treeToSel ts
+treesToFieldPath :: [Tree] -> Maybe FieldPath
+treesToFieldPath ts = FieldPath <$> mapM treeToSel ts
 
 treeToSel :: Tree -> Maybe Selector
-treeToSel t = case treeNode t of
+treeToSel t = case rtrNonMut t of
   -- TODO: Think about changing mutval.
-  TNMutable mut
-    | Just v <- getMutVal mut -> concreteToSel v
+  Just v -> concreteToSel v
   _ -> concreteToSel t
 
 concreteToSel :: Tree -> Maybe Selector
@@ -634,7 +648,7 @@ iterRepTree t opt =
                     ++ (if isJust (treeExpr t) then "" else "N,")
                     ++ (if treeIsRootOfSubTree t then "R," else "")
                     ++ (if treeIsCyclic t then "C," else "")
-                    ++ printf "vers:%d," (treeVersion t)
+                    ++ printf "V:%d," (treeVersion t)
             )
               ++ trMeta trf
         , trFields = trFields trf
@@ -728,14 +742,16 @@ buildRepTreeTN t tn opt = case tn of
           ]
       , []
       )
-  TNRefCycle p -> consRep (symbol, printf "ref-cycle %s" (show p), [], [])
+  TNRefCycle -> consRep (symbol, "ref-cycle", [], [])
+  TNUnifyWithRC v -> consRep (symbol, "unify-with-rc", [], [TreeRepMeta "v" (show v)])
+  TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
   TNMutable mut@(Mutable op _) ->
     let
       args =
         if trboShowMutArgs opt
           then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ getMutArgs mut)
           else []
-      val = maybe mempty (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
+      val = maybe [] (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
      in
       case op of
         RegOp rop -> consRep (symbol, ropName rop, consFields (args ++ val), [])
@@ -745,8 +761,7 @@ buildRepTreeTN t tn opt = case tn of
             , showRefArg
                 (refArg ref)
                 (\x -> listToMaybe $ catMaybes [T.unpack <$> rtrString x, show <$> rtrInt x])
-                <> maybe mempty (\from -> ", from:" <> show from) (refOrigAddrs ref)
-                <> (", vers:" <> maybe "N" show (refVers ref))
+                <> (", ref_vers:" <> maybe "N" show (refVers ref))
             , consFields val
             , []
             )
@@ -768,6 +783,7 @@ buildRepTreeTN t tn opt = case tn of
         _ -> consRep (symbol, "", consFields (args ++ val), [])
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
+  TNNoValRef -> consRep (symbol, mempty, [], [])
  where
   symbol :: String
   symbol = showTreeSymbol t
@@ -819,7 +835,9 @@ showTreeSymbol t = case treeNode t of
   TNList{} -> "[]"
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
-  TNRefCycle _ -> "RC"
+  TNRefCycle -> "RC"
+  TNUnifyWithRC _ -> "URC"
+  TNRefSubCycle _ -> "RSC"
   TNMutable (Mutable op _) -> case op of
     RegOp _ -> "fn"
     Ref _ -> "ref"
@@ -829,6 +847,7 @@ showTreeSymbol t = case treeNode t of
     Itp _ -> "inter"
   TNBottom _ -> "_|_"
   TNTop -> "_"
+  TNNoValRef -> "pref"
 
 showValueType :: (Env r s m) => Tree -> m String
 showValueType t = case treeNode t of

@@ -9,10 +9,10 @@ import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
-import Path (TreeAddr)
+import NotifGraph
+import Path (TreeAddr, emptyTreeAddr)
 import Util (HasTrace (..), Trace, emptyTrace)
 
 type Env r s m =
@@ -104,11 +104,12 @@ data Context = Context
   { ctxObjID :: !Int
   , ctxGlobalVers :: !Int
   , ctxReduceStack :: [TreeAddr]
-  , ctxNotifEnabled :: !Bool
-  , ctxNotifGraph :: Map.Map TreeAddr [TreeAddr]
+  , ctxIsNotifying :: !Bool
+  , ctxNotifGraph :: NotifGraph
   , ctxReadyQueue :: [TreeAddr]
   -- ^ The ready queue is a queue of addresses that have been reduced and can notify their dependents.
   , ctxLetMap :: Map.Map TreeAddr Bool
+  , ctxRefCycleDetected :: Maybe RefCycleDesp
   , ctxTrace :: Trace
   }
   deriving (Eq, Show)
@@ -132,27 +133,28 @@ emptyContext =
     { ctxObjID = 0
     , ctxGlobalVers = 0
     , ctxReduceStack = []
-    , ctxNotifGraph = Map.empty
+    , ctxIsNotifying = False
+    , ctxNotifGraph = emptyNotifGraph
     , ctxReadyQueue = []
-    , ctxNotifEnabled = True
     , ctxLetMap = Map.empty
+    , ctxRefCycleDetected = Nothing
     , ctxTrace = emptyTrace
     }
 
-{- | Add a notification pair to the context.
+{- | Describes a reference cycle detected during reduction.
 
-The first element is the source addr, which is the addr that is being watched.
-The second element is the dependent addr, which is the addr that is watching the source addr.
+It should be created when the last node of the cycle is reduced. Evaluation should handle the cycle by the end of the
+reduction.
 -}
-addCtxNotifPair :: Context -> (TreeAddr, TreeAddr) -> Context
-addCtxNotifPair ctx (src, dep) = ctx{ctxNotifGraph = Map.insert src newDepList oldMap}
- where
-  oldMap = ctxNotifGraph ctx
-  depList = fromMaybe [] $ Map.lookup src oldMap
-  newDepList = if dep `elem` depList then depList else dep : depList
+data RefCycleDesp = RefCycleDesp
+  { rcdRCAddrs :: [TreeAddr]
+  -- ^ The referable addresses that are part of the cycle.
+  , rcdIsReducingRCs :: Bool
+  }
+  deriving (Eq, Show)
 
-hasCtxNotifSender :: TreeAddr -> Context -> Bool
-hasCtxNotifSender addr ctx = Map.member addr (ctxNotifGraph ctx)
+emptyRefCycleDesp :: RefCycleDesp
+emptyRefCycleDesp = RefCycleDesp{rcdRCAddrs = [], rcdIsReducingRCs = False}
 
 showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
 showRefNotifiers notifiers =

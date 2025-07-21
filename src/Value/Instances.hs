@@ -6,14 +6,15 @@ module Value.Instances where
 
 import Control.DeepSeq (NFData (..))
 import Data.Maybe (fromJust, isNothing)
+import Value.Block
 import Value.Comprehension
+import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
 import Value.Interpolation
 import Value.List
 import Value.Mutable
 import Value.Reference
-import Value.Block
 import Value.Tree
 import Value.UnifyOp
 
@@ -53,6 +54,8 @@ deriving instance Eq List
 
 deriving instance Eq Disj
 
+deriving instance Eq AtomCnstr
+
 instance Eq TreeNode where
   (==) (TNBlock s1) (TNBlock s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
@@ -68,7 +71,8 @@ instance Eq TreeNode where
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
-  (==) (TNRefCycle a1) (TNRefCycle a2) = a1 == a2
+  (==) TNRefCycle TNRefCycle = True
+  (==) (TNUnifyWithRC v1) (TNUnifyWithRC v2) = v1 == v2
   (==) _ _ = False
 
 instance Eq Tree where
@@ -112,6 +116,8 @@ deriving instance Show List
 
 deriving instance Show Disj
 
+deriving instance Show AtomCnstr
+
 -----
 -- NFData
 -----
@@ -146,6 +152,8 @@ deriving instance NFData Embedding
 deriving instance NFData List
 
 deriving instance NFData Disj
+
+deriving instance NFData AtomCnstr
 
 deriving instance NFData TreeNode
 deriving instance NFData Tree

@@ -114,7 +114,7 @@ testGetDstTC =
     ( do
         let s = "{a: {b: c: d: e: f: 1}, b: c: d: e: f: g: h: i: j: k: l: m: n: o: p: q: r: s: t: u: v: w: x: y: z: 2}}"
         rE <- runExceptT $ Eval.strToCUEVal s Eval.emptyEvalConfig
-        let !vp = valPathFromString "a.b.c.d"
+        let !vp = fieldPathFromString "a.b.c.d"
         runRM $ do
           root <- case rE of
             Left err -> throwError err

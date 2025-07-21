@@ -1,7 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -11,16 +10,16 @@ import Common (ctxNotifGraph)
 import Control.Monad (when)
 import Cursor
 import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
+import NotifGraph
 import Path
 import Reduce.Nodes (checkLabelsPerm)
 import Reduce.RMonad (
   ReduceMonad,
-  ReduceTCMonad,
+  ResolveMonad,
   debugInstantRM,
   debugInstantTM,
   debugSpanArgsTM,
@@ -45,11 +44,11 @@ import Reduce.Root (reduce)
 import Text.Printf (printf)
 import Value
 
-postValidation :: (ReduceTCMonad s r m) => m ()
+postValidation :: (ReduceMonad s r m) => m ()
 postValidation = debugSpanTM "postValidation" $ do
   ctx <- getRMContext
   -- remove all notifiers.
-  putRMContext $ ctx{ctxNotifGraph = Map.empty}
+  putRMContext $ ctx{ctxNotifGraph = emptyNotifGraph}
 
   -- rewrite all functions to their results if the results exist.
   snapshotRM
@@ -77,7 +76,7 @@ postValidation = debugSpanTM "postValidation" $ do
 1. Replace the Mutable node with the result of the mutator if it exists, otherwise the original mutator node is kept.
 2. Extract the embedded value from the block.
 -}
-snapshotRM :: (ReduceTCMonad s r m) => m ()
+snapshotRM :: (ReduceMonad s r m) => m ()
 snapshotRM = debugSpanTM "snapshotRM" $ do
   traverseTM $ withTree $ \t -> case extract t of
     Just r -> modifyTMNodeWithTree r
@@ -95,7 +94,7 @@ snapshotRM = debugSpanTM "snapshotRM" $ do
 1. Check struct permission and empty all stub value containers of the struct, which are constraints and
 embeddings. All the pending values should have been already applied to the static fields.
 -}
-simplifyRM :: (ReduceTCMonad s r m) => m ()
+simplifyRM :: (ReduceMonad s r m) => m ()
 simplifyRM = debugSpanTM "simplifyRM" $ do
   traverseTM $ do
     withTN $ \case
@@ -119,13 +118,13 @@ simplifyRM = debugSpanTM "simplifyRM" $ do
 It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: (ReduceTCMonad s r m) => AtomCnstr -> m ()
+validateCnstr :: (ReduceMonad s r m) => AtomCnstr -> m ()
 validateCnstr c = debugSpanTM "validateCnstr" $ do
   -- We can first assume that the tree value is an atom. Make sure the latest atom is created.
   let atomT = mkAtomTree $ cnsAtom c
   putTMTree atomT
 
-  raw <- evalExprRM (cnsValidator c)
+  let raw = cnsValidator c
   tc <- getTMCursor
   validator <- replaceSelfRef (mkAtomTree $ cnsAtom c) (raw `setTCFocus` tc)
   debugInstantTM "validateCnstr" $
@@ -133,22 +132,21 @@ validateCnstr c = debugSpanTM "validateCnstr" $ do
 
   -- Run the validator in a sub context of an atom value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- reduce (validator `setTCFocus` tc)
-  putTMTree $ case res of
-    IsBottom _ -> res
+  putTMTree validator
+  reduce
+  res <- getTMTree
+  case rtrNonMut res of
+    Just (IsBottom _) -> putTMTree res
     -- The result is valid.
-    IsAtom _ -> atomT
-    IsMutable mut
-      -- The result might be a mutable due to an atom unifying with a mutable.
-      | Just a <- getMutVal mut, IsAtom _ <- a -> atomT
-      -- incomplete case
-      | otherwise -> res
-    _ -> mkBottomTree $ printf "constraint not satisfied, %s" (show res)
+    Just (IsAtom _) -> putTMTree atomT
+    -- Incomplete case.
+    Nothing -> return ()
+    _ -> putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" (show res)
 
 {- | Replace any reference in the validator of the atom constraint that references the constraint and forms a vertical
 cycle with the constraint's atom.
 -}
-replaceSelfRef :: (ReduceMonad s r m) => Tree -> TrCur -> m Tree
+replaceSelfRef :: (ResolveMonad s r m) => Tree -> TrCur -> m Tree
 replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
   let cnstrAddr = tcCanAddr cnstrTC
   utc <- traverseTCSimple subNodes (replace cnstrAddr) cnstrTC
@@ -157,7 +155,7 @@ replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
   replace cnstrAddr tc = do
     let focus = tcFocus tc
     rfM <- case focus of
-      IsRef _ rf -> return $ valPathFromRef rtrAtom rf
+      IsRef _ rf -> return $ fieldPathFromRef rtrAtom rf
       _ -> return Nothing
 
     maybe
@@ -177,7 +175,7 @@ replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
       )
       rfM
 
-validateStructPerm :: (ReduceTCMonad s r m) => m ()
+validateStructPerm :: (ReduceMonad s r m) => m ()
 validateStructPerm = debugSpanTM "validateStructPerm" $ do
   t <- getTMTree
   case treeNode t of
@@ -191,7 +189,7 @@ A struct must be provided so that dynamic fields and constraints can be found.
 
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
-validatePermItem :: (ReduceTCMonad s r m) => Block -> PermItem -> m ()
+validatePermItem :: (ReduceMonad s r m) => Block -> PermItem -> m ()
 validatePermItem blk p = debugSpanTM "validatePermItem" $ do
   let
     labelsM = mapM labelToText $ Set.toList $ piLabels p

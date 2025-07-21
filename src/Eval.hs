@@ -164,7 +164,7 @@ evalToTree f conf = do
           let
             rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
             cv = mkRTState rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
-          execStateT Reduce.fullReduce cv
+          execStateT Reduce.reduce cv
       )
       runner
 

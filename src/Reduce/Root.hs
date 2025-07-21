@@ -1,81 +1,107 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.Root where
 
 import Common (
-  Context (Context, ctxReduceStack),
-  hasCtxNotifSender,
+  Config (..),
+  Context (..),
+  HasConfig (..),
+  RefCycleDesp (..),
+  RuntimeParams (..),
+  emptyRefCycleDesp,
  )
-import Control.Monad (when)
+import Control.Monad (foldM, when)
+import Control.Monad.Reader (asks)
 import Cursor
 import Data.Foldable (toList)
-import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
+import qualified Data.IntMap.Strict as IntMap
+import Data.Maybe (catMaybes, fromJust, isJust)
 import Exception (throwErrSt)
+
+import NotifGraph (lookupSCCAddr)
 import Path
 import Reduce.Nodes (
-  close,
   reduceBlock,
   reduceCompreh,
   reduceDisj,
-  reduceDisjOp,
-  reduceInterpolation,
   reduceList,
+  resolveCloseFunc,
+  resolveDisjOp,
+  resolveInterpolation,
  )
-import qualified Reduce.Notif as Notif
+import Reduce.Notif (startNotify)
 import Reduce.RMonad (
   ReduceMonad,
-  ReduceTCMonad,
-  addToRMReadyQ,
+  ResolveMonad,
   debugInstantRM,
-  debugSpanRM,
+  debugInstantTM,
+  debugSpanArgsTM,
   debugSpanTM,
   delMutValRecvs,
+  deleteTMRCDesp,
   getRMContext,
   getRMGlobalVers,
-  getRMNotifEnabled,
+  getTMAbsAddr,
   getTMCursor,
+  getTMRCDesp,
+  getTMTree,
+  inRemoteTM,
+  inSubTM,
   modifyRMContext,
+  modifyTMTN,
+  modifyTMTree,
+  putRMContext,
   putTMCursor,
   putTMTree,
+  setIsReducingRC,
   treeDepthCheck,
+  withResolveMonad,
  )
-import Reduce.RefSys (DerefResult (DerefResult), index)
+import Reduce.RefSys (
+  CycleDetection (..),
+  DerefResult (DerefResult),
+  index,
+  locateRef,
+  populateRCRefs,
+  populateRCRefsWithTop,
+ )
 import qualified Reduce.RegOps as RegOps
-import Reduce.UnifyOp (unify)
+import Reduce.UnifyOp (unifyTCs)
 import Text.Printf (printf)
 import Value
 
-fullReduce :: (ReduceTCMonad s r m) => m ()
-fullReduce = debugSpanTM "fullReduce" $ do
-  tc <- getTMCursor
-  r <- reduce tc
-  putTMTree r
-  ntc <- getTMCursor
-  rtc <- Notif.drainRefSysQueue ntc
-  putTMCursor rtc
-
 -- | Reduce the tree to the lowest form.
-reduce :: (ReduceMonad s r m) => TrCur -> m Tree
-reduce tc = debugSpanRM "reduce" Just tc $ do
-  let addr = tcCanAddr tc
-  result <- reduceTCFocus tc
+reduce :: (ReduceMonad s r m) => m ()
+reduce = debugSpanTM "reduce" $ do
+  origAddr <- getTMAbsAddr
+  reduceTCFocus
 
-  notifyEnabled <- getRMNotifEnabled
-  isSender <- hasCtxNotifSender addr <$> getRMContext
-  -- Only notify dependents when we are not in a temporary node.
-  let refAddrM = getReferableAddr addr
-  when (isSender && notifyEnabled && isJust refAddrM) $ do
-    let refAddr = fromJust refAddrM
-    addToRMReadyQ refAddr
+  let origRfbAddr = trimToReferable origAddr
+  when (origRfbAddr == origAddr) $ do
+    ctx <- getRMContext
+    case ctxRefCycleDetected ctx of
+      -- If there is a reference cycle description, we should handle it immediately when we are in the node with
+      -- referable address.
+      Just rcDesp
+        | not (rcdIsReducingRCs rcDesp) -> reduceRefCycles (rcdRCAddrs rcDesp)
+      Nothing -> do
+        let ng = Common.ctxNotifGraph ctx
+        case lookupSCCAddr origRfbAddr ng of
+          Just sccAddr
+            | not (ctxIsNotifying ctx) -> startNotify sccAddr
+          _ -> return ()
+      _ -> return ()
 
   vers <- getRMGlobalVers
-  return $ result{treeVersion = vers}
+  modifyTMTree (\t -> t{treeVersion = vers})
 
-withTreeDepthLimit :: (ReduceMonad s r m) => TrCur -> m a -> m a
-withTreeDepthLimit tc f = do
+withTreeDepthLimit :: (ReduceMonad s r m) => m a -> m a
+withTreeDepthLimit f = do
+  tc <- getTMCursor
   let addr = tcCanAddr tc
   treeDepthCheck tc
   push addr
@@ -88,110 +114,164 @@ withTreeDepthLimit tc f = do
 
   pop = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
-reduceTCFocus :: (ReduceMonad s r m) => TrCur -> m Tree
-reduceTCFocus tc = withTreeDepthLimit tc $ do
-  let orig = tcFocus tc
+reduceTCFocus :: (ReduceMonad s r m) => m ()
+reduceTCFocus = withTreeDepthLimit $ do
+  orig <- getTMTree
 
-  r <- case treeNode orig of
-    TNMutable mut@(Mutable mop _) -> do
-      (r, isIterBinding) <- case mop of
-        Ref ref -> do
-          (DerefResult rM isIterBinding) <- index ref tc
-          maybe
-            (return (Nothing, False))
-            ( \r -> do
-                -- If the target is cyclic, and it is not used to only reduce mutable, we should return structural
-                -- cycle.
-                -- This handles two cases:
-                -- 1. The ref had not been marked as cyclic. For example, f: {out: null | f}, the inner f.
-                -- 2. The ref had been marked as cyclic. For example, reducing f when reducing the y.
-                -- { f: {out: null | f },  y: f }
-                if treeIsCyclic r
-                  then return (Just $ mkBottomTree "structural cycle", False)
-                  else do
-                    res <- reduceTCFocus (r `setTCFocus` tc)
-                    return (Just res, isIterBinding)
-            )
-            rM
-        _ -> do
-          r <- case mop of
-            RegOp rop -> case ropOpType rop of
-              InvalidOpType -> throwErrSt "invalid op type"
-              UnaryOpType op -> do
-                uTC <- goDownTCSegMust unaryOpTASeg tc
-                a <- reduceToNonMut uTC
-                RegOps.execUnaryOp op a
-              BinOpType op -> do
-                lTC <- goDownTCSegMust binOpLeftTASeg tc
-                rTC <- goDownTCSegMust binOpRightTASeg tc
-                a0 <- reduceToNonMut lTC
-                a1 <- reduceToNonMut rTC
-                RegOps.execRegBinOp op a0 a1 tc
-              CloseFunc -> close (toList $ ropArgs rop) tc
-            Compreh compreh -> do
-              rM <- reduceCompreh compreh tc
-              -- the result of the comprehension could be an un-reduced tree or a unification op tree.
-              maybe
-                (return Nothing)
-                (\r -> Just <$> reduceTCFocus (r `setTCFocus` tc))
-                rM
-            DisjOp disjOp -> do
-              rM <- reduceDisjOp False disjOp tc
-              maybe
-                (return Nothing)
-                (\r -> Just <$> reduceTCFocus (r `setTCFocus` tc))
-                rM
-            UOp u -> do
-              rM <- unify (toList $ ufConjuncts u) tc
-              maybe
-                (return Nothing)
-                (\r -> Just <$> reduceTCFocus (r `setTCFocus` tc))
-                rM
-            Itp itp -> do
-              reduceInterpolation itp tc
-          return (r, False)
-      setMutRes isIterBinding mut r tc
-    TNBlock _ -> reduceBlock tc
-    TNList l -> reduceList l tc
-    TNDisj d -> reduceDisj d tc
-    _ -> return orig
+  case treeNode orig of
+    TNMutable mut -> reduceMutable mut
+    TNBlock _ -> reduceBlock
+    TNList l -> reduceList l
+    TNDisj d -> reduceDisj d
+    _ -> return ()
 
-  -- Overwrite the treenode of the raw with the reduced tree's TreeNode to preserve tree attributes.
-  return $ setTN orig (treeNode r)
+  modifyTMTree $ \t ->
+    (setTN orig (treeNode t))
+      { treeIsCyclic = treeIsCyclic orig || treeIsCyclic t
+      }
 
-setMutRes :: (ReduceMonad s r m) => Bool -> Mutable -> Maybe Tree -> TrCur -> m Tree
-setMutRes isIterBinding mut rM tc = do
-  let
-    mutT = tcFocus tc
-    addr = tcCanAddr tc
-
-  -- If the rM is another mutable tree, we need to check if the mutval exists by trying to get it.
-  r <- case listToMaybe (catMaybes [rM >>= rtrNonMut, rM]) of
-    -- Result is not found.
-    Nothing -> do
-      -- We still remove receivers in case some refs have been reduced.
-      delMutValRecvs addr
-      return $ updateMutVal Nothing mutT
-    Just r
-      -- If the value does not have immediate references or it is an iter binding, we can just return the reduced value.
-      | isMutableReducible mut || isIterBinding -> do
-          -- TODO: change receivers
-          return r
+reduceMutable :: (ReduceMonad s r m) => Mutable -> m ()
+reduceMutable (Mutable mop _) = case mop of
+  Ref ref -> do
+    (_, isReady) <- reduceArgs reduce rtrNonMut
+    oldDespM <- getTMRCDesp
+    if
+      | not isReady -> return ()
+      | Just oldDesp <- oldDespM
+      , rcdIsReducingRCs oldDesp -> do
+          -- Since the value of the reference was populated without reducing it, we need to reduce it now.
+          inSubTM SubValTASeg reduce
       | otherwise -> do
+          tc <- getTMCursor
+          (DerefResult rM tarAddr cd isIterBinding) <- index ref tc
+          case cd of
+            NoCycleDetected -> handleRefRes isIterBinding rM
+            SCDetected _ -> do
+              -- If the target is cyclic, and it is not used to only reduce mutable, we should return structural
+              -- cycle.
+              -- This handles two cases:
+              -- 1. The ref had not been marked as cyclic. For example, f: {out: null | f}, the inner f.
+              -- 2. The ref had been marked as cyclic. For example, reducing f when reducing the y.
+              -- { f: {out: null | f },  y: f }
+              handleRefRes isIterBinding (Just $ mkBottomTree "structural cycle")
+              modifyTMTree $ \t -> t{treeIsCyclic = True}
+            RCDetected rcs -> do
+              debugInstantTM "reduceMutable" (printf "detected ref cycle: %s, oldDesp: %s" (show rcs) (show oldDespM))
+              -- If we are not in the reducing reference cycles, this contains two cases:
+              -- 1. No oldDesp
+              -- 2. OldDesp has been added but in the unfinished expression evaluation, we find a new reference cycle.
+              --    But this new reference cycle should not contain new info about the SCC as they are the same SCC.
+              -- we should treat the reference cycle as an incomplete result.
+              ctx <- getRMContext
+              putRMContext ctx{ctxRefCycleDetected = Just $ emptyRefCycleDesp{rcdRCAddrs = rcs}}
+              handleRefRes isIterBinding Nothing
+  RegOp rop -> do
+    (as, isReady) <- reduceArgs reduce rtrNonMut
+    r <-
+      case ropOpType rop of
+        InvalidOpType -> throwErrSt "invalid op type"
+        UnaryOpType op -> RegOps.resolveUnaryOp op (head as)
+        -- Operands of the binary operation can be incomplete.
+        BinOpType op -> getTMCursor >>= RegOps.resolveRegBinOp op (head as) (as !! 1)
+        CloseFunc
+          | isReady -> getTMCursor >>= resolveCloseFunc (catMaybes as)
+        _ -> return Nothing
+    handleMutRes r False
+  Itp itp -> do
+    (_, isReady) <- reduceArgs reduce rtrNonMut
+    r <-
+      if isReady
+        then resolveInterpolation itp
+        else return Nothing
+    handleMutRes r False
+  Compreh compreh -> do
+    r <- getTMCursor >>= reduceCompreh compreh
+    -- the result of the comprehension could be an un-reduced tree or a unification op tree.
+    handleMutRes r True
+  DisjOp disjOp -> do
+    (_, _) <- reduceArgs reduce rtrNonMut
+    r <- getTMCursor >>= resolveDisjOp False disjOp
+    handleMutRes r True
+  UOp _ -> do
+    pconjs <- discoverPConjs
+    tc <- getTMCursor
+    resolvePendingConjuncts pconjs tc >>= handleResolvedPConjsForUnifyMut
+
+handleRefRes :: (ReduceMonad s r m) => Bool -> Maybe Tree -> m ()
+handleRefRes _ Nothing = return ()
+handleRefRes isIterBinding (Just result) = do
+  tc <- getTMCursor
+  case tc of
+    TCFocus t@(IsRef mut ref) -> do
+      let addr = tcCanAddr tc
+
+      case rtrNonMut result of
+        -- No concrete value is found.
+        Nothing -> return ()
+        Just v
+          -- If it is an iter binding, we can just return the reduced value.
+          | isIterBinding -> do
+              -- TODO: change dependents addresses from /sv to non-sv.
+              delMutValRecvs addr
+              putTMTree v
+          | otherwise -> do
+              delMutValRecvs addr
+              let
+                newMut = setMutOp (Ref ref{refVers = Just (treeVersion v)}) mut
+                newT = setTN t (TNMutable $ setMutVal (Just v) newMut)
+              putTMCursor $ newT `setTCFocus` tc
+
+      rtc <- getTMCursor
+      debugInstantRM
+        "handleRefRes"
+        (printf "result: %s, mut: %s, res: %s" (show result) (show $ mkMutableTree mut) (show $ tcFocus rtc))
+        tc
+    _ -> throwErrSt $ printf "handleRefRes: not a reference tree cursor, got %s" (show tc)
+
+handleMutRes :: (ReduceMonad s r m) => Maybe Tree -> Bool -> m ()
+handleMutRes Nothing _ = return ()
+handleMutRes (Just result) furtherReduce = do
+  tc <- getTMCursor
+  case tc of
+    (TCFocus (IsRef _ _)) -> throwErrSt "handleMutRes: tree cursor can not be a reference"
+    (TCFocus (IsMutable mut)) -> do
+      let addr = tcCanAddr tc
+
+      next <-
+        if furtherReduce
+          then do
+            putValInMutVal (Just result)
+            inSubTM SubValTASeg (reduce >> getTMTree)
+          else return result
+      -- If the rM is another mutable tree, we need to check if the mutval exists by trying to get it.
+      case rtrNonMut next of
+        -- No concrete value is found.
+        Nothing -> do
+          -- We still remove receivers in case some refs have been reduced.
           delMutValRecvs addr
-          return $ updateMutVal (Just r) mutT
-  debugInstantRM "setMutRes" (printf "rM: %s, mut: %s, res: %s" (show rM) (show $ mkMutableTree mut) (show r)) tc
-  return r
- where
-  -- update the mutval for the mutable tree. If the mutable tree is a reference, we update the reference value and
-  -- version.
-  updateMutVal m mutT = case mutT of
-    IsRef _ ref ->
-      let
-        newMut = setMutOp (Ref ref{refVers = treeVersion <$> m}) mut
-       in
-        setTN mutT (TNMutable $ setMutVal m newMut)
-    _ -> setTN mutT (TNMutable $ setMutVal m mut)
+          putValInMutVal Nothing
+        Just v
+          -- If the value does not have immediate references or it is an iter binding, we can just return the reduced value.
+          | isMutableReducible mut -> do
+              -- TODO: change dependents addresses from /sv to non-sv.
+              putTMTree v
+          | otherwise -> do
+              delMutValRecvs addr
+              putValInMutVal (Just v)
+      debugInstantRM
+        "handleMutRes"
+        (printf "result: %s, mut: %s, next: %s" (show result) (show $ mkMutableTree mut) (show next))
+        tc
+    _ -> throwErrSt "handleMutRes: not a mutable tree"
+
+putValInMutVal :: (ReduceMonad s r m) => Maybe Tree -> m ()
+putValInMutVal m = do
+  tc <- getTMCursor
+  case tcFocus tc of
+    IsMutable mut -> do
+      let newMut = setMutVal m mut
+      putTMCursor (setTCFocusTN (TNMutable newMut) tc)
+    _ -> throwErrSt "putValInMutVal: not a mutable tree"
 
 {- | Check whether the mutator is reducible.
 
@@ -214,27 +294,181 @@ mutHasRefAsImChild mut = any go (getMutArgs mut)
     TNMutable mutArg -> mutHasRefAsImChild mutArg
     _ -> False
 
-{- | Reduce the conjunct for unification.
+{- | Reduce the arguments of a mutable tree.
 
-It only returns Nothing if the ref does not locate the reference.
+It writes the reduced arguments back to the mutable tree and returns the reduced tree cursor.
+It also returns the reduced arguments and whether the arguments are all reduced.
 -}
-reduceUnifyConj :: (ReduceMonad s r m) => TrCur -> m (Maybe Tree)
-reduceUnifyConj tc = debugSpanRM "reduceUnifyConj" id tc $ withTreeDepthLimit tc $ do
-  let orig = tcFocus tc
-  case treeNode orig of
-    TNMutable mut
-      | MutOp (Ref ref) <- mut -> do
-          (DerefResult rM _) <- index ref tc
-          -- If the ref is reduced to another mutable tree, we further reduce it.
-          maybe
-            (return Nothing)
-            (\r -> reduceUnifyConj (r `setTCFocus` tc))
-            rM
-      | MutOp (DisjOp disjOp) <- mut -> reduceDisjOp True disjOp tc
-    _ -> return $ Just $ Cursor.tcFocus tc
+reduceArgs :: (ReduceMonad s r m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
+reduceArgs f rtr = do
+  tc <- getTMCursor
+  case tcFocus tc of
+    IsMutable mut -> do
+      reducedArgs <-
+        foldM
+          ( \accArgs (i, _) -> do
+              r <- inSubTM (MutArgTASeg i) (reduceArg f (rtr . tcFocus))
+              return $ r : accArgs
+          )
+          []
+          (zip [0 ..] (toList $ getMutArgs mut))
 
--- | Reduce the tree cursor to non-mutable.
-reduceToNonMut :: (ReduceMonad s r m) => TrCur -> m (Maybe Tree)
-reduceToNonMut tc = do
-  r <- reduce tc
-  return $ rtrNonMut r
+      return (reverse reducedArgs, isJust $ sequence reducedArgs)
+    _ -> throwErrSt "reduceArgs: not a mutable tree"
+
+reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
+reduceArg f convert = do
+  tc <- getTMCursor
+  let arg = tcFocus tc
+  if treeVersion arg > 0
+    -- If the argument is already reduced, we can just return it.
+    then return (convert tc)
+    else do
+      f
+      convert <$> getTMCursor
+
+{- | Discover conjuncts from a tree node that contains conjuncts as its children.
+
+It reduces every conjunct node it finds.
+-}
+discoverPConjs :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConjs = debugSpanTM "discoverPConjs" $ do
+  conjTC <- getTMCursor
+  case tcFocus conjTC of
+    IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
+    IsBlock _ -> discoverPConsjFromBlkConj
+    _ -> do
+      reduce
+      vM <- rtrNonMut <$> getTMTree
+      return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
+
+{- | Discover pending conjuncts from a unify operation.
+
+It recursively discovers conjuncts from the unify operation and its arguments.
+
+It reduces any mutable argument it finds.
+-}
+discoverPConjsFromUnifyOp :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConjsFromUnifyOp = do
+  tc <- getTMCursor
+  case tc of
+    TCFocus (IsMutable mut@(MutOp (UOp _))) -> do
+      -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
+      foldM
+        ( \acc (i, _) -> do
+            subs <- inSubTM (MutArgTASeg i) discoverPConjs
+            return (acc ++ subs)
+        )
+        []
+        (zip [0 ..] (toList $ getMutArgs mut))
+    _ -> throwErrSt "discoverPConjsFromUnifyOp: not a mutable unify operation"
+
+discoverPConsjFromBlkConj :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConsjFromBlkConj = do
+  tc <- getTMCursor
+  case tc of
+    TCFocus (IsBlock blk) -> do
+      -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
+      -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b
+      -- If it is not, it can still have embedded values. For example, x: {a: 1, b} & {} -> x: {a:1} & b & {}
+      -- Either way, we try to normalize the embedded values.
+      embeds <-
+        foldM
+          ( \acc i -> do
+              subs <- inSubTM (BlockTASeg (EmbedTASeg i)) discoverPConjs
+              return (acc ++ subs)
+          )
+          []
+          (IntMap.keys $ blkEmbeds blk)
+
+      if hasEmptyFields blk && not (null $ blkEmbeds blk)
+        -- If the struct is an empty struct with only embedded values, we can just return the embedded values.
+        then return embeds
+        else do
+          -- Since we have normalized the embedded values, we need to remove them from the struct to prevent
+          -- normalizing them again, causing infinite loop.
+          let pureStructTC = setTCFocusTN (TNBlock $ blk{blkEmbeds = IntMap.empty}) tc
+          -- TODO: there seems no need to reduce the pure struct.
+          -- reducedPureStruct <- reduce pureStructTC
+          return (Just pureStructTC : embeds)
+    _ -> throwErrSt "discoverPConsjFromBlkConj: not a block"
+
+data ResolvedPConjuncts
+  = -- | AtomCnstrConj is created if one of the pending conjuncts is an atom and the runtime parameter
+    -- 'rpCreateCnstr' is True.
+    AtomCnstrConj AtomCnstr
+  | ResolvedConjuncts [TrCur]
+  | IncompleteConjuncts
+  deriving (Show)
+
+{- | Resolve pending conjuncts.
+
+The tree cursor must be the unify operation node.
+-}
+resolvePendingConjuncts :: (ResolveMonad s r m) => [Maybe TrCur] -> TrCur -> m ResolvedPConjuncts
+resolvePendingConjuncts pconjs tc = do
+  RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
+  let r =
+        foldr
+          ( \pconj acc -> case acc of
+              ResolvedConjuncts xs -> case tcFocus <$> pconj of
+                Nothing -> IncompleteConjuncts
+                Just (IsAtom a)
+                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
+                Just _ -> ResolvedConjuncts (fromJust pconj : xs)
+              _ -> acc
+          )
+          (ResolvedConjuncts [])
+          pconjs
+  debugInstantRM "resolvePendingConjuncts" (printf "resolved: %s" (show r)) tc
+  return r
+
+-- | Handle the resolved pending conjuncts for mutable trees.
+handleResolvedPConjsForUnifyMut :: (ReduceMonad s r m) => ResolvedPConjuncts -> m ()
+handleResolvedPConjsForUnifyMut IncompleteConjuncts = return ()
+handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = do
+  t <- getTMTree
+  case t of
+    IsMutable mut -> do
+      let
+        v = mkAtomCnstrTree ac
+        newMut = setMutVal (Just v) mut
+      modifyTMTN (TNMutable newMut)
+    _ -> throwErrSt "handleResolvedPConjsForUnifyMut: not a mutable tree"
+handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
+  tc <- getTMCursor
+  r <- unifyTCs conjs tc
+  handleMutRes (Just r) True
+
+-- | Handle the resolved pending conjuncts for mutable trees.
+handleResolvedPConjsForStruct :: (ResolveMonad s r m) => ResolvedPConjuncts -> TrCur -> m (Maybe Tree)
+handleResolvedPConjsForStruct IncompleteConjuncts _ = return Nothing
+handleResolvedPConjsForStruct (AtomCnstrConj ac) _ = return $ Just $ mkAtomCnstrTree ac
+handleResolvedPConjsForStruct (ResolvedConjuncts [conj]) _ = return $ Just $ tcFocus conj
+handleResolvedPConjsForStruct (ResolvedConjuncts conjs) tc = do
+  r <- unifyTCs conjs tc
+  return $ Just r
+
+reduceRefCycles :: (ReduceMonad s r m) => [TreeAddr] -> m ()
+reduceRefCycles [] = throwErrSt "reduceRefCycles: empty address list"
+reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
+  setIsReducingRC True
+  mapM_
+    ( \addr -> inRemoteTM addr $ do
+        withResolveMonad $ \tc -> do
+          rTC <- populateRCRefs addrs [tcCanAddr tc] tc
+          return (rTC, ())
+        reduce
+        withResolveMonad $ \tc -> do
+          rTC <- populateRCRefsWithTop tc
+          return (rTC, ())
+    )
+    addrs
+  deleteTMRCDesp
+  ctx <- getRMContext
+  origRfbAddr <- getTMAbsAddr
+  let ng = Common.ctxNotifGraph ctx
+  case lookupSCCAddr origRfbAddr ng of
+    Just sccAddr
+      | not (ctxIsNotifying ctx) -> startNotify sccAddr
+    _ -> return ()

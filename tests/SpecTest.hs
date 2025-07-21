@@ -71,4 +71,4 @@ specTests = do
           )
           []
           files
-  return $ testGroup "Spec tests" cases
+  return $ testGroup "spec_tests" cases

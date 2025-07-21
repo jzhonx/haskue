@@ -17,12 +17,6 @@ import {-# SOURCE #-} Value.Tree
 
 data Reference = Reference
   { refArg :: RefArg
-  , refOrigAddrs :: Maybe TreeAddr
-  -- ^ refOrigAddrs indicates whether the reference is in a scope that is copied and evaluated from another
-  -- expression.
-  -- If it is, the address of the scope is stored here.
-  -- When dereferencing the reference, the correct scope is the one stored in refOrigAddrs.
-  -- The address is the abs address of the value in the subtree.
   , refVers :: Maybe Int
   -- ^ refVers records the version of the referenced value.
   }
@@ -49,8 +43,8 @@ getIndexSegs r = case refArg r of
   RefPath _ _ -> Nothing
   RefIndex xs -> Just xs
 
-valPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe ValPath
-valPathFromRefArg treeToA arg = case arg of
+fieldPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe FieldPath
+fieldPathFromRefArg treeToA arg = case arg of
   RefPath var xs -> do
     sels <-
       mapM
@@ -60,12 +54,12 @@ valPathFromRefArg treeToA arg = case arg of
             _ -> Nothing
         )
         (toList xs)
-    return $ ValPath (StringSel (TE.encodeUtf8 var) : sels)
+    return $ FieldPath (StringSel (TE.encodeUtf8 var) : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
 
-valPathFromRef :: (Tree -> Maybe Atom) -> Reference -> Maybe ValPath
-valPathFromRef treeToA ref = valPathFromRefArg treeToA (refArg ref)
+fieldPathFromRef :: (Tree -> Maybe Atom) -> Reference -> Maybe FieldPath
+fieldPathFromRef treeToA ref = fieldPathFromRefArg treeToA (refArg ref)
 
 appendRefArg :: Tree -> RefArg -> RefArg
 appendRefArg y (RefPath s xs) = RefPath s (xs Seq.|> y)
@@ -83,7 +77,6 @@ mkIndexRef :: Seq.Seq Tree -> Reference
 mkIndexRef ts =
   Reference
     { refArg = RefIndex ts
-    , refOrigAddrs = Nothing
     , refVers = Nothing
     }
 
@@ -91,12 +84,11 @@ emptyIdentRef :: T.Text -> Reference
 emptyIdentRef ident =
   Reference
     { refArg = RefPath ident Seq.empty
-    , refOrigAddrs = Nothing
     , refVers = Nothing
     }
 
-mkRefFromValPath :: (Common.Env r s m) => (Atom -> Tree) -> T.Text -> ValPath -> m Reference
-mkRefFromValPath aToTree var (ValPath xs) = do
+mkRefFromFieldPath :: (Common.Env r s m) => (Atom -> Tree) -> T.Text -> FieldPath -> m Reference
+mkRefFromFieldPath aToTree var (FieldPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
@@ -110,6 +102,5 @@ mkRefFromValPath aToTree var (ValPath xs) = do
   return $
     Reference
       { refArg = RefPath var (Seq.fromList ys)
-      , refOrigAddrs = Nothing
       , refVers = Nothing
       }

@@ -78,9 +78,13 @@ parentTCMust :: (Env r s m) => TrCur -> m TrCur
 parentTCMust tc = maybe (throwErrSt "already top") return (parentTC tc)
 
 -- | Get the segment paired with the focus of the cursor.
-focusTCSeg :: (Env r s m) => TrCur -> m TASeg
-focusTCSeg (TrCur _ []) = throwErrSt "already at the top"
-focusTCSeg tc = return $ fst . head $ tcCrumbs tc
+tcFocusSeg :: TrCur -> Maybe TASeg
+tcFocusSeg (TrCur _ []) = Nothing
+tcFocusSeg tc = return $ fst . head $ tcCrumbs tc
+
+-- | Get the segment paired with the focus of the cursor.
+tcFocusSegMust :: (Env r s m) => TrCur -> m TASeg
+tcFocusSegMust tc = maybe (throwErrSt "already top") return (tcFocusSeg tc)
 
 isTCTop :: TrCur -> Bool
 isTCTop (TrCur _ []) = True
@@ -110,12 +114,11 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
 mkSubTC :: TASeg -> Tree -> TrCur -> TrCur
 mkSubTC seg a tc = TrCur a ((seg, tcFocus tc) : tcCrumbs tc)
 
-setTCFocusTN :: TreeNode -> TrCur -> TrCur
-setTCFocusTN tn tc = let focus = tcFocus tc in setTN focus tn `setTCFocus` tc
+modifyTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
+modifyTCFocus f (TrCur t cs) = TrCur (f t) cs
 
-getTCFocusSeg :: (Env r s m) => TrCur -> m TASeg
-getTCFocusSeg (TrCur _ []) = throwErrSt "already at the top"
-getTCFocusSeg (TrCur _ ((seg, _) : _)) = return seg
+setTCFocusTN :: TreeNode -> TrCur -> TrCur
+setTCFocusTN tn = modifyTCFocus (`setTN` tn)
 
 goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
 goDownTCAddr a = go (addrToList a)

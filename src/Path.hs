@@ -17,54 +17,54 @@ import GHC.Generics (Generic)
 data Selector = StringSel B.ByteString | IntSel !Int
   deriving (Eq, Ord, Generic, NFData)
 
-{- ValPath is a list of selectors.
+{- FieldPath is a list of selectors.
 
 The selectors are not stored in reverse order.
 -}
-newtype ValPath = ValPath {getRefSels :: [Selector]}
+newtype FieldPath = FieldPath {getRefSels :: [Selector]}
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show Selector where
   show (StringSel s) = show s
   show (IntSel i) = show i
 
-instance Show ValPath where
-  show :: ValPath -> String
-  show (ValPath sels) = intercalate "." (map show sels)
+instance Show FieldPath where
+  show :: FieldPath -> String
+  show (FieldPath sels) = intercalate "." (map show sels)
 
-emptyValPath :: ValPath
-emptyValPath = ValPath []
+emptyFieldPath :: FieldPath
+emptyFieldPath = FieldPath []
 
-headSel :: ValPath -> Maybe Selector
-headSel (ValPath []) = Nothing
-headSel (ValPath sels) = Just $ sels !! 0
+headSel :: FieldPath -> Maybe Selector
+headSel (FieldPath []) = Nothing
+headSel (FieldPath sels) = Just $ sels !! 0
 
-tailValPath :: ValPath -> Maybe ValPath
-tailValPath (ValPath []) = Nothing
-tailValPath (ValPath sels) = Just $ ValPath (tail sels)
+tailFieldPath :: FieldPath -> Maybe FieldPath
+tailFieldPath (FieldPath []) = Nothing
+tailFieldPath (FieldPath sels) = Just $ FieldPath (tail sels)
 
-appendValPaths ::
+appendFieldPaths ::
   -- | front
-  ValPath ->
+  FieldPath ->
   -- | back
-  ValPath ->
-  ValPath
-appendValPaths (ValPath xs) (ValPath ys) = ValPath (xs ++ ys)
+  FieldPath ->
+  FieldPath
+appendFieldPaths (FieldPath xs) (FieldPath ys) = FieldPath (xs ++ ys)
 
-isValPathEmpty :: ValPath -> Bool
-isValPathEmpty (ValPath []) = True
-isValPathEmpty _ = False
+isFieldPathEmpty :: FieldPath -> Bool
+isFieldPathEmpty (FieldPath []) = True
+isFieldPathEmpty _ = False
 
-valPathToAddr :: ValPath -> TreeAddr
-valPathToAddr (ValPath sels) = addrFromList $ map selToTASeg sels
+fieldPathToAddr :: FieldPath -> TreeAddr
+fieldPathToAddr (FieldPath sels) = addrFromList $ map selToTASeg sels
 
 selToTASeg :: Selector -> TASeg
 selToTASeg (StringSel s) = BlockTASeg $ StringTASeg s
 selToTASeg (IntSel i) = IndexTASeg i
 
-valPathFromString :: String -> ValPath
-valPathFromString s =
-  ValPath
+fieldPathFromString :: String -> FieldPath
+fieldPathFromString s =
+  FieldPath
     { getRefSels =
         map
           ( \x ->
