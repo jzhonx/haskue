@@ -566,9 +566,9 @@ applyMoreCnstr cnstr struct tc = debugSpanRM "applyMoreCnstr" (const Nothing) tc
 
 reduceDisj :: (ReduceMonad s r m) => Disj -> m ()
 reduceDisj d = do
-  mapM_
-    (\(i, _) -> inSubTM (DisjRegTASeg i) reduce)
-    (zip [0 ..] (dsjDisjuncts d))
+  -- mapM_
+  --   (\(i, _) -> inSubTM (DisjRegTASeg i) reduce)
+  --   (zip [0 ..] (dsjDisjuncts d))
   tc <- getTMCursor
   case treeNode (tcFocus tc) of
     TNDisj nd -> do

@@ -164,9 +164,24 @@ The new conjuncts are not necessarily ready.
 
 The order of the operands is preserved.
 -}
-unifyForNewConjs :: (ResolveMonad s r m) => UTree -> UTree -> TrCur -> m Tree
-unifyForNewConjs ut1@(UTree{utDir = L}) ut2 tc = unifyNormalizedTCs (map utTC [ut1, ut2]) tc
-unifyForNewConjs ut1@(UTree{utDir = R}) ut2 tc = unifyNormalizedTCs (map utTC [ut2, ut1]) tc
+unifyForNewBinConjs :: (ResolveMonad s r m) => UTree -> UTree -> TrCur -> m (Maybe Tree)
+unifyForNewBinConjs ut1@(UTree{utDir = L}) ut2 tc = unifyForNewConjs [ut1, ut2] tc
+unifyForNewBinConjs ut1@(UTree{utDir = R}) ut2 tc = unifyForNewConjs [ut2, ut1] tc
+
+unifyForNewConjs :: (ResolveMonad s r m) => [UTree] -> TrCur -> m (Maybe Tree)
+unifyForNewConjs uts tc = do
+  let xs =
+        map
+          ( \x ->
+              let y = utTC x
+               in case rtrNonMut (tcFocus y) of
+                    Just v -> Just (v `setTCFocus` y)
+                    Nothing -> Nothing
+          )
+          uts
+  case sequence xs of
+    Just ys -> Just <$> unifyNormalizedTCs ys tc
+    Nothing -> return Nothing
 
 mergeTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
 mergeTCs tcs unifyTC = debugSpanArgsRM "mergeTCs" (showTCList tcs) (const Nothing) unifyTC $ do
@@ -551,9 +566,11 @@ mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
     (TNAtomCnstr c1) -> do
-      na <- unifyForNewConjs (ut1{utTC = mkNewTree (TNAtom $ cnsAtom c1) `setTCFocus` tc1}) ut2 unifyTC
-      case treeNode na of
-        TNBottom _ -> retTr na
+      na <- unifyForNewBinConjs (ut1{utTC = mkNewTree (TNAtom $ cnsAtom c1) `setTCFocus` tc1}) ut2 unifyTC
+      -- Because the ut2 has been guaranteed to be a concrete tree cursor and the ut1 is an atom, so there must be a
+      -- result.
+      case treeNode (fromJust na) of
+        TNBottom _ -> retTr (fromJust na)
         _ -> retTr t1
     _ -> returnNotUnifiable ut1 ut2
 
@@ -870,11 +887,11 @@ mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir})) _ut2 unifyTC =
     if fstDir == L
       -- uts1 & ut2 generates a m x 1 matrix.
       then do
-        matrix <- mapM (\ut1 -> unifyForNewConjs ut1 _ut2 unifyTC) uts1
+        matrix <- mapM (\ut1 -> unifyForNewBinConjs ut1 _ut2 unifyTC) uts1
         treeFromMatrix (defIdxes1, []) (length uts1, 1) [matrix]
       -- ut2 & uts1 generates a 1 x m matrix.
       else do
-        matrix <- mapM (\ut1 -> unifyForNewConjs ut1 _ut2 unifyTC) uts1
+        matrix <- mapM (\ut1 -> unifyForNewBinConjs ut1 _ut2 unifyTC) uts1
         treeFromMatrix ([], defIdxes1) (1, length uts1) (map (: []) matrix)
 
 {- | Unify two disjuncts.
@@ -900,11 +917,11 @@ mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) unifyTC =
     if fstDir == L
       -- uts1 & uts2 generates a m x n matrix.
       then do
-        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyForNewConjs ut1 ut2 unifyTC) uts2) uts1
+        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyForNewBinConjs ut1 ut2 unifyTC) uts2) uts1
         treeFromMatrix (defIdxes1, defIdxes2) (length uts1, length uts2) matrix
       -- uts2 & uts1 generates a n x m matrix.
       else do
-        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyForNewConjs ut2 ut1 unifyTC) uts1) uts2
+        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyForNewBinConjs ut2 ut1 unifyTC) uts1) uts2
         treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
 
 utsFromDisjs :: (Env r s m) => Int -> UTree -> m [UTree]
@@ -916,7 +933,7 @@ utsFromDisjs n ut@(UTree{utTC = tc}) = do
     )
     [0 .. (n - 1)]
 
-treeFromMatrix :: (Env r s m) => ([Int], [Int]) -> (Int, Int) -> [[Tree]] -> m Tree
+treeFromMatrix :: (Env r s m) => ([Int], [Int]) -> (Int, Int) -> [[Maybe Tree]] -> m Tree
 treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
   let defIndexes = case (lDefIndexes, rDefIndexes) of
         ([], []) -> []
@@ -927,7 +944,25 @@ treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
         -- For each i in the left default indexes, we have one default value, x<i,j>.
         (ls, rs) -> concatMap (\i -> map (+ (i * n)) rs) ls
       disjuncts = concat matrix
-  return $ mkDisjTree $ emptyDisj{dsjDefIndexes = defIndexes, dsjDisjuncts = disjuncts}
+      (newDefIndexes, newDisjuncts) = removeIncompleteDisjuncts defIndexes disjuncts
+  return $ mkDisjTree $ emptyDisj{dsjDefIndexes = newDefIndexes, dsjDisjuncts = newDisjuncts}
+
+-- | TODO: efficient implementation
+removeIncompleteDisjuncts :: [Int] -> [Maybe Tree] -> ([Int], [Tree])
+removeIncompleteDisjuncts defIdxes ts =
+  let (x, y, _) =
+        foldl
+          ( \(accIdxes, accDjs, removeCnt) (i, dj) -> case dj of
+              Nothing -> (accIdxes, accDjs, removeCnt + 1)
+              Just v ->
+                ( if i `elem` defIdxes then accIdxes ++ [i - removeCnt] else accIdxes
+                , accDjs ++ [v]
+                , removeCnt
+                )
+          )
+          ([], [], 0)
+          (zip [0 ..] ts)
+   in (x, y)
 
 consolidateRefs :: (ResolveMonad s r m) => TrCur -> m Tree
 consolidateRefs ptc = do
