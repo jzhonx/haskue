@@ -366,7 +366,7 @@ handleStructMutObjChange seg = do
                   IsBlock (IsBlockStruct resStruct) -> Map.keys $ stcFields resStruct
                   _ -> []
 
-    -- merged <- unifyTCs [structTC] structTC
+    -- merged <- unifyNormalizedTCs [structTC] structTC
     -- utc <- handleBlockReducedRes (tcFocus structTC) (merged `setTCFocus` structTC)
     -- return
     --   ( utc
@@ -569,11 +569,11 @@ reduceDisj d = do
   mapM_
     (\(i, _) -> inSubTM (DisjRegTASeg i) reduce)
     (zip [0 ..] (dsjDisjuncts d))
-  t <- getTMTree
-  case treeNode t of
+  tc <- getTMCursor
+  case treeNode (tcFocus tc) of
     TNDisj nd -> do
       let disjuncts = dsjDisjuncts nd
-      newDisjT <- normalizeDisj (d{dsjDisjuncts = disjuncts})
+      newDisjT <- normalizeDisj (d{dsjDisjuncts = disjuncts}) tc
       modifyTMTN (treeNode newDisjT)
     _ -> return ()
 
@@ -619,24 +619,26 @@ closeTree a =
     -- TNMutable _ -> throwErrSt "TODO"
     _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-resolveDisjOp :: (ResolveMonad s r m) => Bool -> DisjoinOp -> TrCur -> m (Maybe Tree)
-resolveDisjOp asConj disjOp disjOpTC = debugSpanRM "resolveDisjOp" id disjOpTC $ do
-  let terms = toList $ djoTerms disjOp
-  when (length terms < 2) $
-    throwErrSt $
-      printf "disjunction operation requires at least 2 terms, got %d" (length terms)
+resolveDisjOp :: (ResolveMonad s r m) => Bool -> TrCur -> m (Maybe Tree)
+resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
+  debugSpanRM "resolveDisjOp" id disjOpTC $ do
+    let terms = toList $ djoTerms disjOp
+    when (length terms < 2) $
+      throwErrSt $
+        printf "disjunction operation requires at least 2 terms, got %d" (length terms)
 
-  debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
-  disjuncts <- procMarkedTerms asConj terms
+    debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
+    disjuncts <- procMarkedTerms asConj terms
 
-  debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
-  if null disjuncts
-    -- If none of the disjuncts are ready, return Nothing.
-    then return Nothing
-    else do
-      let d = emptyDisj{dsjDisjuncts = disjuncts}
-      r <- normalizeDisj d
-      return $ Just r
+    debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
+    if null disjuncts
+      -- If none of the disjuncts are ready, return Nothing.
+      then return Nothing
+      else do
+        let d = emptyDisj{dsjDisjuncts = disjuncts}
+        r <- normalizeDisj d disjOpTC
+        return $ Just r
+resolveDisjOp _ _ = throwErrSt "resolveDisjOp: focus is not a disjunction operation"
 
 {- | Normalize the disjunction.
 
@@ -646,10 +648,10 @@ resolveDisjOp asConj disjOp disjOpTC = debugSpanRM "resolveDisjOp" id disjOpTC $
 4. If the disjunct is left with only one element, return the value.
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
-normalizeDisj :: (Common.Env r s m) => Disj -> m Tree
-normalizeDisj d = do
+normalizeDisj :: (Common.Env r s m) => Disj -> TrCur -> m Tree
+normalizeDisj d tc = do
   flattened <- flattenDisjunction d
-  final <- removeUnwantedDisjuncts flattened
+  final <- rewriteUnwantedDisjuncts flattened tc
   let
     finalDisjs = dsjDisjuncts final
    in
@@ -712,20 +714,35 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
           , accDs ++ [t]
           )
 
-{- | Remove the duplicate default disjuncts, duplicate disjuncts and bottom disjuncts.
+{- | Remove or rewrite unwanted disjuncts.
+
+Unwanted disjuncts include
+
+* duplicate default disjuncts
+* duplicate disjuncts
+* bottom disjuncts
+* RC disjuncts
 
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
-removeUnwantedDisjuncts :: (Common.Env r s m) => Disj -> m Disj
-removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) = do
+rewriteUnwantedDisjuncts :: (Common.Env r s m) => Disj -> TrCur -> m Disj
+rewriteUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) tc = do
   let (newIndexes, newDisjs) = foldl go ([], []) (zip [0 ..] disjuncts)
    in return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
  where
   defValues = map (disjuncts !!) dfIdxes
   origDefIdxesSet = Set.fromList dfIdxes
 
-  go (accIs, accXs) (idx, x) =
+  go (accIs, accXs) (idx, _x) =
     let
+      x = case treeNode _x of
+        TNUnifyWithRC v
+          | Just True <- do
+              seg <- tcFocusSeg tc
+              return $ isSegReferable seg ->
+              v
+        _ -> _x
+
       notAddedDisj = not (x `elem` accXs)
       -- If the disjunct is equal to the default value. Note that it does not mean the disjunct is the original default
       -- value.
@@ -738,7 +755,11 @@ removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}
       -- The second condition makes sure the relative order of the default disjuncts is kept.
       -- For example, *b | c | a | b | *a should be reduced to <b | c | a, 0|2>.
       keepDisjunct =
-        (case x of IsBottom _ -> False; _ -> True)
+        ( case x of
+            IsBottom _ -> False
+            IsRefCycle -> False
+            _ -> True
+        )
           && notAddedDisj
           && (not isValEqDef || idx `Set.member` origDefIdxesSet)
       -- The disjunct is default if it is one of the default disjuncts and it is not seen before.
@@ -749,7 +770,7 @@ removeUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}
       , if keepDisjunct then accXs ++ [x] else accXs
       )
 
-{- | Construct a disjunction from the disjunction terms.
+{- | Construct a list of disjuncts from the disjunction terms.
 
 It filters out incomplete disjuncts.
 

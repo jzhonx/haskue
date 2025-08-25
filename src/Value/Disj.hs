@@ -8,7 +8,10 @@ module Value.Disj where
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Tree
 
--- | Disjuntion
+{- | Disjuntion represents the result of disjuncting values.
+
+It is only created during reducing a disjunction operation (DisjOp).
+-}
 data Disj = Disj
   { dsjDefault :: Maybe Tree
   -- ^ Default value of the disjunction.

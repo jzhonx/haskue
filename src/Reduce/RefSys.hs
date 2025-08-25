@@ -620,8 +620,13 @@ populateRCRefs rcAddrs populatingRCs = traverseTCSimple (\x -> subNodes x ++ raw
                     let rM = case tcFocus rTC of
                           IsRef{} -> rtrNonMut (tcFocus rTC)
                           _ -> Just $ tcFocus rTC
-                    let newMut = setMutVal rM mut
+                        newMut = setMutVal rM mut
                     return $ setTN (tcFocus tc) (TNMutable newMut)
+    -- Invalidate the mutable so that later reduce can re-reduce it.
+    IsMutable mut -> do
+      let newMut = setMutVal Nothing mut
+          newTree = setTN (tcFocus tc) (TNMutable newMut)
+      return newTree
     _ -> return $ tcFocus tc
 
 -- | Populate the references that are part of the reference cycles with either RefCycle or the actual value.

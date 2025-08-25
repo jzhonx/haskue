@@ -70,7 +70,7 @@ import Reduce.RefSys (
   populateRCRefsWithTop,
  )
 import qualified Reduce.RegOps as RegOps
-import Reduce.UnifyOp (unifyTCs)
+import Reduce.UnifyOp (unifyNormalizedTCs)
 import Text.Printf (printf)
 import Value
 
@@ -188,9 +188,10 @@ reduceMutable (Mutable mop _) = case mop of
     r <- getTMCursor >>= reduceCompreh compreh
     -- the result of the comprehension could be an un-reduced tree or a unification op tree.
     handleMutRes r True
-  DisjOp disjOp -> do
+  DisjOp _ -> do
+    -- Disjunction operation can have incomplete arguments.
     (_, _) <- reduceArgs reduce rtrNonMut
-    r <- getTMCursor >>= resolveDisjOp False disjOp
+    r <- getTMCursor >>= resolveDisjOp False
     handleMutRes r True
   UOp _ -> do
     pconjs <- discoverPConjs
@@ -300,7 +301,7 @@ It writes the reduced arguments back to the mutable tree and returns the reduced
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
 reduceArgs :: (ReduceMonad s r m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
-reduceArgs f rtr = do
+reduceArgs f rtr = debugSpanTM "reduceArgs" $ do
   tc <- getTMCursor
   case tcFocus tc of
     IsMutable mut -> do
@@ -319,13 +320,14 @@ reduceArgs f rtr = do
 reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
 reduceArg f convert = do
   tc <- getTMCursor
+  oldDespM <- getTMRCDesp
   let arg = tcFocus tc
-  if treeVersion arg > 0
+  -- If the argument is not reduced, or we are in the middle of reducing reference cycles, we need to reduce it.
+  -- TODO: treeVersion is not needed, only treeIsEvaled is needed.
+  if treeVersion arg == 0 || maybe False rcdIsReducingRCs oldDespM
+    then f >> convert <$> getTMCursor
     -- If the argument is already reduced, we can just return it.
-    then return (convert tc)
-    else do
-      f
-      convert <$> getTMCursor
+    else return (convert tc)
 
 {- | Discover conjuncts from a tree node that contains conjuncts as its children.
 
@@ -437,7 +439,7 @@ handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = do
     _ -> throwErrSt "handleResolvedPConjsForUnifyMut: not a mutable tree"
 handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
   tc <- getTMCursor
-  r <- unifyTCs conjs tc
+  r <- unifyNormalizedTCs conjs tc
   handleMutRes (Just r) True
 
 -- | Handle the resolved pending conjuncts for mutable trees.
@@ -446,7 +448,7 @@ handleResolvedPConjsForStruct IncompleteConjuncts _ = return Nothing
 handleResolvedPConjsForStruct (AtomCnstrConj ac) _ = return $ Just $ mkAtomCnstrTree ac
 handleResolvedPConjsForStruct (ResolvedConjuncts [conj]) _ = return $ Just $ tcFocus conj
 handleResolvedPConjsForStruct (ResolvedConjuncts conjs) tc = do
-  r <- unifyTCs conjs tc
+  r <- unifyNormalizedTCs conjs tc
   return $ Just r
 
 reduceRefCycles :: (ReduceMonad s r m) => [TreeAddr] -> m ()
@@ -457,7 +459,17 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
     ( \addr -> inRemoteTM addr $ do
         withResolveMonad $ \tc -> do
           rTC <- populateRCRefs addrs [tcCanAddr tc] tc
+
+          debugInstantRM
+            "reduceRefCycles"
+            (printf "new populated-tc: %s" (show $ tcFocus rTC))
+            rTC
+
           return (rTC, ())
+        x <- getTMCursor
+        debugInstantTM
+          "reduceRefCycles"
+          (printf "new populated: %s" (show $ tcFocus x))
         reduce
         withResolveMonad $ \tc -> do
           rTC <- populateRCRefsWithTop tc

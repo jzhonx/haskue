@@ -236,7 +236,14 @@ traverseTCSimple ::
   TrCur ->
   m TrCur
 traverseTCSimple subs f tc = do
-  (r, _) <- traverseTC subs (\(x, _) -> f x >>= \y -> return (y `setTCFocus` x, ())) (tc, ())
+  (r, _) <-
+    traverseTC
+      subs
+      ( \(x, _) -> do
+          r <- f x
+          return (r `setTCFocus` x, ())
+      )
+      (tc, ())
   return r
 
 inSubTC :: (Env r s m) => TASeg -> (TrCur -> m Tree) -> TrCur -> m TrCur

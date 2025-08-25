@@ -92,7 +92,7 @@ showTCList (x : xs) =
       ""
       xs
 
-{- | Unify a list of trees.
+{- | Unify a list of trees that are ready after preprocessing.
 
 It handles the following cases:
 1. If all trees are structurally cyclic, return a bottom tree.
@@ -102,15 +102,15 @@ The order of the unification is the same as the order of the trees.
 
 The tree cursor is only used to know where the unification is happening.
 -}
-unifyTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
-unifyTCs tcs unifyTC = debugSpanArgsRM "unifyTCs" (showTCList tcs) (const Nothing) unifyTC $ do
+unifyNormalizedTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
+unifyNormalizedTCs tcs unifyTC = debugSpanArgsRM "unifyNormalizedTCs" (showTCList tcs) (const Nothing) unifyTC $ do
   when (length tcs < 2) $ throwErrSt "not enough arguments for unification"
 
   let isAllCyclic = all (treeIsCyclic . tcFocus) tcs
   if isAllCyclic
     then return $ mkBottomTree "structural cycle"
     else do
-      debugInstantRM "unifyTCs" (printf "normalized: %s" (show tcs)) unifyTC
+      debugInstantRM "unifyNormalizedTCs" (printf "normalized: %s" (show tcs)) unifyTC
       let (revRegs, rcs) =
             foldr
               ( \tc (accRegs, accRCs) ->
@@ -158,13 +158,15 @@ canCancelRC unifyTC =
         return (seg, ptc)
     )
 
-{- | Unify two UTrees.
+{- | Unify two UTrees that are discovered in the merging process.
 
-It is called in the mergeBin functions so that the order of the operands can be preserved.
+The new conjuncts are not necessarily ready.
+
+The order of the operands is preserved.
 -}
-unifyBinUTrees :: (ResolveMonad s r m) => UTree -> UTree -> TrCur -> m Tree
-unifyBinUTrees ut1@(UTree{utDir = L}) ut2 tc = unifyTCs (map utTC [ut1, ut2]) tc
-unifyBinUTrees ut1@(UTree{utDir = R}) ut2 tc = unifyTCs (map utTC [ut2, ut1]) tc
+unifyForNewConjs :: (ResolveMonad s r m) => UTree -> UTree -> TrCur -> m Tree
+unifyForNewConjs ut1@(UTree{utDir = L}) ut2 tc = unifyNormalizedTCs (map utTC [ut1, ut2]) tc
+unifyForNewConjs ut1@(UTree{utDir = R}) ut2 tc = unifyNormalizedTCs (map utTC [ut2, ut1]) tc
 
 mergeTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
 mergeTCs tcs unifyTC = debugSpanArgsRM "mergeTCs" (showTCList tcs) (const Nothing) unifyTC $ do
@@ -179,9 +181,7 @@ mergeTCs tcs unifyTC = debugSpanArgsRM "mergeTCs" (showTCList tcs) (const Nothin
       (tail tcs)
   return $ tcFocus (utTC r)
 
--- maybe (return Nothing) (\r -> return $ Just $ tcFocus (utTC r)) rM
-
-{- | Merge Two UTrees.
+{- | Merge Two UTrees that are not of type mutable.
 
 The special case is the struct. If two operands are structs, we must not immediately reduce the operands. Instead, we
 should combine both fields and reduce sub-fields. The reason is stated in the spec,
@@ -290,7 +290,6 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
         -- marked disjunction.
         | (MutOp (DisjOp _)) <- mut2 -> mergeLeftOther ut2 ut1 unifyTC
         | otherwise -> mergeLeftOther ut2 ut1 unifyTC
-      -- (_, TNRefCycle{}) -> mergeLeftOther ut2 ut1 unifyTC
       (_, TNBlock s2) -> mergeLeftBlock (s2, ut2) ut1 unifyTC
       _ -> mergeLeftOther ut1 ut2 unifyTC
  where
@@ -552,7 +551,7 @@ mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
     (TNAtomCnstr c1) -> do
-      na <- unifyBinUTrees (ut1{utTC = mkNewTree (TNAtom $ cnsAtom c1) `setTCFocus` tc1}) ut2 unifyTC
+      na <- unifyForNewConjs (ut1{utTC = mkNewTree (TNAtom $ cnsAtom c1) `setTCFocus` tc1}) ut2 unifyTC
       case treeNode na of
         TNBottom _ -> retTr na
         _ -> retTr t1
@@ -871,11 +870,11 @@ mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir})) _ut2 unifyTC =
     if fstDir == L
       -- uts1 & ut2 generates a m x 1 matrix.
       then do
-        matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 unifyTC) uts1
+        matrix <- mapM (\ut1 -> unifyForNewConjs ut1 _ut2 unifyTC) uts1
         treeFromMatrix (defIdxes1, []) (length uts1, 1) [matrix]
       -- ut2 & uts1 generates a 1 x m matrix.
       else do
-        matrix <- mapM (\ut1 -> unifyBinUTrees ut1 _ut2 unifyTC) uts1
+        matrix <- mapM (\ut1 -> unifyForNewConjs ut1 _ut2 unifyTC) uts1
         treeFromMatrix ([], defIdxes1) (1, length uts1) (map (: []) matrix)
 
 {- | Unify two disjuncts.
@@ -901,11 +900,11 @@ mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) unifyTC =
     if fstDir == L
       -- uts1 & uts2 generates a m x n matrix.
       then do
-        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyBinUTrees ut1 ut2 unifyTC) uts2) uts1
+        matrix <- mapM (\ut1 -> mapM (\ut2 -> unifyForNewConjs ut1 ut2 unifyTC) uts2) uts1
         treeFromMatrix (defIdxes1, defIdxes2) (length uts1, length uts2) matrix
       -- uts2 & uts1 generates a n x m matrix.
       else do
-        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyBinUTrees ut2 ut1 unifyTC) uts1) uts2
+        matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyForNewConjs ut2 ut1 unifyTC) uts1) uts2
         treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
 
 utsFromDisjs :: (Env r s m) => Int -> UTree -> m [UTree]

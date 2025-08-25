@@ -468,7 +468,8 @@ traverseSub :: forall s r m. (ReduceMonad r s m) => m () -> m ()
 traverseSub f = withTree $ \_t -> do
   mapM_ (\(seg, _) -> inSubTM seg f) (subNodes _t)
 
-  t <- getTMTree
+  tc <- getTMCursor
+  let t = tcFocus tc
   case treeNode t of
     -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
     TNBlock (IsBlockStruct struct) -> do
@@ -484,7 +485,7 @@ traverseSub f = withTree $ \_t -> do
               (stcFields struct)
       maybe (return ()) putTMTree errM
     TNDisj dj -> do
-      newDjT <- normalizeDisj dj
+      newDjT <- normalizeDisj dj tc
       modifyTMNodeWithTree newDjT
     _ -> return ()
 
