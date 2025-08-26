@@ -107,7 +107,7 @@ runIO eStr conf = do
                     )
               )
         ) ->
-        return (declsBld 0 decls)
+        return (declsToBuilder decls)
     _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree

@@ -54,7 +54,7 @@ data ChromeStartTraceArgs = ChromeStartTraceArgs
   deriving (Eq, Show)
 
 data ChromeEndTraceArgs = ChromeEndTraceArgs
-  { cetaResVal :: String
+  { cetaResVal :: Value
   , cetaFocus :: Value
   }
   deriving (Eq, Show)
@@ -137,17 +137,18 @@ instance ToJSON ChromeInstantTraceArgs where
              )
       )
 debugSpan ::
-  (MonadState s m, MonadIO m, HasTrace s, Show a) =>
+  (MonadState s m, MonadIO m, HasTrace s) =>
   Bool ->
   String ->
   String ->
   Maybe Value ->
   Value ->
+  (a -> Value) ->
   m (a, Value) ->
   m a
-debugSpan enable name addr args bTraced f = do
+debugSpan enable name addr args bTraced g f = do
   _ <- debugSpanStart enable name addr args bTraced
-  debugSpanExec enable name addr f
+  debugSpanExec enable name addr g f
 
 debugSpanStart ::
   (MonadState s m, HasTrace s, MonadIO m) =>
@@ -170,13 +171,14 @@ debugSpanStart enable name addr args bTraced = do
   return tr
 
 debugSpanExec ::
-  (MonadState s m, HasTrace s, MonadIO m, Show a) =>
+  (MonadState s m, HasTrace s, MonadIO m) =>
   Bool ->
   String ->
   String ->
+  (a -> Value) ->
   m (a, Value) ->
   m a
-debugSpanExec enable name addr f = do
+debugSpanExec enable name addr g f = do
   let msg = printf "%s, at:%s" name addr
   (res, focus) <- f
   tr <- newTrace
@@ -184,7 +186,7 @@ debugSpanExec enable name addr f = do
   dumpTrace enable $
     unpack
       ( encodeToLazyText
-          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus)
+          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (g res) focus)
           )
       )
   return res

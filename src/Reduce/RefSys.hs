@@ -9,8 +9,10 @@ module Reduce.RefSys where
 
 import qualified AST
 import qualified Common
-import Control.Monad (foldM, unless, when)
+import Control.Monad (unless, when)
 import Cursor
+import Data.Aeson (toJSON)
+import Data.Aeson.Types (Value)
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe)
@@ -24,7 +26,7 @@ import Reduce.RMonad (
   ReduceMonad,
   ResolveMonad,
   debugInstantRM,
-  debugSpanRM,
+  debugSpanAdaptRM,
   descendTM,
   getRMContext,
   getTMAbsAddr,
@@ -44,6 +46,12 @@ data DerefResult = DerefResult
   -- ^ Whether the dereferenced value is part of a let binding.
   }
   deriving (Show)
+
+adaptDRFetch :: DerefResult -> Maybe Tree
+adaptDRFetch = const Nothing
+
+adaptDRRep :: DerefResult -> Value
+adaptDRRep dr = toJSON (oneLinerStringOfCurTreeState <$> drValue dr, drTargetAddr dr, drIsInBinding dr)
 
 notFound :: DerefResult
 notFound = DerefResult Nothing Nothing NoCycleDetected False
@@ -70,7 +78,7 @@ arguments are the segments.
 -}
 index :: (ResolveMonad s r m) => Reference -> TrCur -> m DerefResult
 index argRef@Reference{refArg = (RefPath var sels)} tc =
-  debugSpanRM (printf "index: var: %s" var) drValue tc $ do
+  debugSpanAdaptRM (printf "index: var: %s" var) adaptDRFetch adaptDRRep tc $ do
     lbM <- searchTCIdent var tc
     case lbM of
       Just (TCFocus (IsRef mut rf), True)
@@ -100,7 +108,7 @@ index argRef@Reference{refArg = (RefPath var sels)} tc =
           refTCM
 
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index Reference{refArg = arg@(RefIndex _)} tc = debugSpanRM "index" drValue tc $ do
+index Reference{refArg = arg@(RefIndex _)} tc = debugSpanAdaptRM "index" adaptDRFetch adaptDRRep tc $ do
   operandTC <- goDownTCSegMust (MutArgTASeg 0) tc
   let
     reducedOperandM = rtrNonMut (tcFocus operandTC)
@@ -153,7 +161,7 @@ getDstTC :: (ResolveMonad s r m) => FieldPath -> TrCur -> m DerefResult
 getDstTC fieldPath _env = do
   -- Make deref see the latest tree, even with unreduced nodes.
   env <- syncTC _env
-  debugSpanRM "getDstTC" (const Nothing) env $ do
+  debugSpanAdaptRM "getDstTC" adaptDRFetch adaptDRRep env $ do
     lr <- locateRef fieldPath env
     case lr of
       LRIdentNotFound err -> return (DerefResult (Just err) Nothing NoCycleDetected False)
@@ -249,7 +257,7 @@ We have to mark all descendants as cyclic here instead of just marking the focus
 it is immediately unified with a non-cyclic value, the descendants of the merged value, which does not have the
 cyclic attribute, would lose the cyclic attribute.
 -}
-markCyclic :: (Common.Env r s m) => Tree -> m Tree
+markCyclic :: (Common.EnvIO r s m) => Tree -> m Tree
 markCyclic val = do
   utc <- traverseTCSimple subNodes mark valTC
   return $ tcFocus utc
@@ -257,7 +265,7 @@ markCyclic val = do
   -- Create a tree cursor based on the value.
   valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
 
-  mark :: (Common.Env r s m) => TrCur -> m Tree
+  mark :: (Common.EnvIO r s m) => TrCur -> m Tree
   mark tc = do
     let focus = tcFocus tc
     return $ focus{treeIsCyclic = True}
@@ -318,14 +326,14 @@ isInnerScope fieldPath originAddr tAddr tc = do
     resM <- searchTCIdent ident xtc
     return $ tcCanAddr . fst <$> resM
 
-markRecurClosed :: (Common.Env r s m) => Tree -> m Tree
+markRecurClosed :: (Common.EnvIO r s m) => Tree -> m Tree
 markRecurClosed val = do
   utc <- traverseTCSimple subNodes mark valTC
   return $ tcFocus utc
  where
   -- Create a tree cursor based on the value.
   valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
-  mark :: (Common.Env r s m) => TrCur -> m Tree
+  mark :: (Common.EnvIO r s m) => TrCur -> m Tree
   mark tc = do
     let focus = tcFocus tc
     return $
@@ -357,7 +365,7 @@ getRefIdentAddr fieldPath origAddrsM tc = do
     )
     origAddrsM
 
-notFoundMsg :: (Common.Env r s m) => T.Text -> Maybe AST.Position -> m String
+notFoundMsg :: (Common.EnvIO r s m) => T.Text -> Maybe AST.Position -> m String
 notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
   return $
     printf
@@ -459,7 +467,7 @@ addrHasDef p =
     )
     $ addrToList p
 
-selToIdent :: (Common.Env r s m) => Selector -> m T.Text
+selToIdent :: (Common.EnvIO r s m) => Selector -> m T.Text
 selToIdent (StringSel s) = return $ TE.decodeUtf8 s
 selToIdent _ = throwErrSt "invalid selector"
 
@@ -515,7 +523,7 @@ searchTCIdent name tc = do
     searchTCIdent name ptc
 
   -- TODO: findIdent for default disjunct?
-  findIdent :: (Common.Env r s m) => T.Text -> TrCur -> m (Maybe (TrCur, Bool))
+  findIdent :: (Common.EnvIO r s m) => T.Text -> TrCur -> m (Maybe (TrCur, Bool))
   findIdent ident blockTC = do
     case treeNode (tcFocus blockTC) of
       TNBlock blk@(IsBlockStruct struct) -> do
@@ -563,7 +571,7 @@ searchTCIdent name tc = do
 
 The tree must have all the latest changes.
 -}
-goTCAbsAddr :: (Common.Env r s m) => TreeAddr -> TrCur -> m (Maybe TrCur)
+goTCAbsAddr :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> m (Maybe TrCur)
 goTCAbsAddr dst tc = do
   when (headSeg dst /= Just RootTASeg) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))
@@ -571,7 +579,7 @@ goTCAbsAddr dst tc = do
   let dstNoRoot = fromJust $ tailTreeAddr dst
   return $ goDownTCAddr dstNoRoot top
 
-goTCAbsAddrMust :: (Common.Env r s m) => TreeAddr -> TrCur -> m TrCur
+goTCAbsAddrMust :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> m TrCur
 goTCAbsAddrMust dst tc = do
   tarM <- goTCAbsAddr dst tc
   maybe (throwErrSt $ printf "failed to go to the addr %s" (show dst)) return tarM
@@ -580,7 +588,7 @@ goTCAbsAddrMust dst tc = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrTCMust :: (Common.Env r s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
+inAbsAddrTCMust :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
 inAbsAddrTCMust p tc f = do
   tarM <- goTCAbsAddr p tc
   maybe (throwErrSt $ printf "%s is not found" (show p)) f tarM

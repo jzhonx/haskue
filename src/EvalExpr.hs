@@ -23,7 +23,7 @@ import Exception (throwErrSt)
 import Text.Printf (printf)
 import Value
 
-type EvalEnv r s m = (Common.Env r s m, Common.IDStore s)
+type EvalEnv r s m = (Common.EnvIO r s m, Common.IDStore s)
 
 evalSourceFile :: (EvalEnv r s m) => SourceFile -> m Tree
 evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
@@ -228,7 +228,7 @@ evalFDeclLabels lbls e =
 {- | Insert a new element into the struct. If the field is already in the struct, then unify the field with the new
 field.
 -}
-addNewBlockElem :: (Common.Env r s m) => BlockElemAdder -> Block -> m Tree
+addNewBlockElem :: (Common.EnvIO r s m) => BlockElemAdder -> Block -> m Tree
 addNewBlockElem adder block@(IsBlockStruct struct) = case adder of
   (StaticSAdder name sf) ->
     maybe

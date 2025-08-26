@@ -6,4 +6,4 @@ import qualified Common
 import Cursor
 import Value
 
-normalizeDisj :: (Common.Env r s m) => Disj -> TrCur -> m Tree
+normalizeDisj :: (Common.EnvIO r s m) => Disj -> TrCur -> m Tree

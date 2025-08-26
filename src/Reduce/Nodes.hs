@@ -27,9 +27,12 @@ import Reduce.RMonad (
   addRMUnreferredLet,
   debugInstantRM,
   debugInstantTM,
-  debugSpanArgsRM,
-  debugSpanRM,
+  debugSpanMTreeArgsRM,
+  debugSpanMTreeRM,
+  debugSpanSimpleRM,
   debugSpanTM,
+  debugSpanTreeArgsRM,
+  debugSpanTreeRM,
   getRMUnreferredLets,
   getTMCursor,
   getTMTree,
@@ -480,7 +483,7 @@ Returns the updated struct and the list of labels whose fields are affected.
 This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 -}
 removeAppliedObject :: (ResolveMonad s r m) => Int -> Block -> TrCur -> m (Struct, [T.Text])
-removeAppliedObject objID blk@(IsBlockStruct struct) tc = debugSpanRM "removeAppliedObject" (Just . mkStructTree . fst) tc $ do
+removeAppliedObject objID blk@(IsBlockStruct struct) tc = debugSpanSimpleRM "removeAppliedObject" tc $ do
   (remAffFields, removedLabels) <-
     foldM
       ( \(accUpdated, accRemoved) (name, field) -> do
@@ -544,13 +547,8 @@ removeAppliedObject objID blk@(IsBlockStruct struct) tc = debugSpanRM "removeApp
 removeAppliedObject _ _ _ = throwErrSt "removeAppliedObject: focus is not a struct"
 
 -- | Apply the additional constraint to the fields.
-applyMoreCnstr ::
-  (ResolveMonad s r m) =>
-  StructCnstr ->
-  Struct ->
-  TrCur ->
-  m (Struct, [T.Text])
-applyMoreCnstr cnstr struct tc = debugSpanRM "applyMoreCnstr" (const Nothing) tc $ do
+applyMoreCnstr :: (ResolveMonad s r m) => StructCnstr -> Struct -> TrCur -> m (Struct, [T.Text])
+applyMoreCnstr cnstr struct tc = debugSpanSimpleRM "applyMoreCnstr" tc $ do
   (addAffFields, addAffLabels) <-
     foldM
       ( \(accFields, accLabels) (name, field) -> do
@@ -621,7 +619,7 @@ closeTree a =
 
 resolveDisjOp :: (ResolveMonad s r m) => Bool -> TrCur -> m (Maybe Tree)
 resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
-  debugSpanRM "resolveDisjOp" id disjOpTC $ do
+  debugSpanMTreeRM "resolveDisjOp" disjOpTC $ do
     let terms = toList $ djoTerms disjOp
     when (length terms < 2) $
       throwErrSt $
@@ -648,7 +646,7 @@ resolveDisjOp _ _ = throwErrSt "resolveDisjOp: focus is not a disjunction operat
 4. If the disjunct is left with only one element, return the value.
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
-normalizeDisj :: (Common.Env r s m) => Disj -> TrCur -> m Tree
+normalizeDisj :: (Common.EnvIO r s m) => Disj -> TrCur -> m Tree
 normalizeDisj d tc = do
   flattened <- flattenDisjunction d
   final <- rewriteUnwantedDisjuncts flattened tc
@@ -682,7 +680,7 @@ D2: ⟨v1, d1⟩ | ⟨v2, d2⟩ => ⟨v1|v2, d1|d2⟩
 
 TODO: more efficiency
 -}
-flattenDisjunction :: (Common.Env r s m) => Disj -> m Disj
+flattenDisjunction :: (Common.EnvIO r s m) => Disj -> m Disj
 flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
   (newIndexes, newDisjs) <- foldM flatten ([], []) (zip [0 ..] disjuncts)
@@ -725,7 +723,7 @@ Unwanted disjuncts include
 
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
-rewriteUnwantedDisjuncts :: (Common.Env r s m) => Disj -> TrCur -> m Disj
+rewriteUnwantedDisjuncts :: (Common.EnvIO r s m) => Disj -> TrCur -> m Disj
 rewriteUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) tc = do
   let (newIndexes, newDisjs) = foldl go ([], []) (zip [0 ..] disjuncts)
    in return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
@@ -827,7 +825,7 @@ procMarkedTerms asConj terms = do
       concreteTerms
 
 reduceCompreh :: (ResolveMonad s r m) => Comprehension -> TrCur -> m (Maybe Tree)
-reduceCompreh cph tc = debugSpanRM "reduceCompreh" id tc $ do
+reduceCompreh cph tc = debugSpanMTreeRM "reduceCompreh" tc $ do
   r <- comprehend 0 cph tc (IterCtx 0 Map.empty (Right []))
   case icRes r of
     Left Nothing -> return Nothing
@@ -856,13 +854,8 @@ bindings and adds the struct to the result list.
 comprehend :: (ResolveMonad s r m) => Int -> Comprehension -> TrCur -> IterCtx -> m IterCtx
 comprehend i cph tc iterCtx
   -- The leaf case where the iteration is done.
-  | i == length (cphClauses cph) = debugSpanRM
+  | i == length (cphClauses cph) = debugSpanSimpleRM
       (printf "reduceIterVal iter:%s" (show $ icCnt iterCtx))
-      ( \x -> case icRes x of
-          Left v -> v
-          Right [] -> Nothing
-          Right vs -> Just $ last vs
-      )
       tc
       $ do
         let s = cphBlock cph
@@ -876,7 +869,7 @@ reduceClause = undefined
 
 -- -- | Reduce the ith clause of the comprehension in the depth-first manner.
 -- reduceClause :: (ResolveMonad s r m) => Int -> Comprehension -> TrCur -> IterCtx -> m IterCtx
--- reduceClause i cph tc iterCtx = debugSpanArgsRM
+-- reduceClause i cph tc iterCtx = debugSpanTreeArgsRM
 --   (printf "reduceClause ith-clause: %s, iter:%s" (show i) (show $ icCnt iterCtx))
 --   (printf "iterCtx: %s" (show iterCtx))
 --   ( \x -> case icRes x of
@@ -1062,7 +1055,7 @@ checkPerm ::
   TrCur ->
   m (Maybe Tree)
 checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
-  debugSpanArgsRM
+  debugSpanMTreeArgsRM
     "checkPerm"
     ( printf
         "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s, isBaseClosed: %s, isEitherEmbedded: %s"
@@ -1072,7 +1065,6 @@ checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc =
         (show isBaseClosed)
         (show isEitherEmbedded)
     )
-    id
     tc
     $ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
 
@@ -1113,7 +1105,7 @@ _checkPerm baseLabels baseAllCnstrs isBaseClosed isEitherEmbedded newLabel tc
 The pattern is expected to be an Atom or a Bounds.
 -}
 patMatchLabel :: (ResolveMonad s r m) => Tree -> T.Text -> TrCur -> m Bool
-patMatchLabel pat name tc = debugSpanRM "patMatchLabel" (const Nothing) tc $ do
+patMatchLabel pat name tc = debugSpanSimpleRM "patMatchLabel" tc $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match vM

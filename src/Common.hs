@@ -12,12 +12,16 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
 import NotifGraph
-import Path (TreeAddr, emptyTreeAddr)
+import Path (TreeAddr)
 import Util (HasTrace (..), Trace, emptyTrace)
 
-type Env r s m =
+type ErrorEnv m =
   ( MonadError String m
   , HasCallStack
+  )
+
+type EnvIO r s m =
+  ( ErrorEnv m
   , MonadReader r m
   , HasConfig r
   , MonadState s m

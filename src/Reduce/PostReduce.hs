@@ -23,8 +23,8 @@ import Reduce.RMonad (
   debugInstantRM,
   debugInstantTM,
   debugSpanArgsTM,
-  debugSpanRM,
   debugSpanTM,
+  debugSpanTreeRM,
   evalExprRM,
   getRMContext,
   getRMUnreferredLets,
@@ -147,7 +147,7 @@ validateCnstr c = debugSpanTM "validateCnstr" $ do
 cycle with the constraint's atom.
 -}
 replaceSelfRef :: (ResolveMonad s r m) => Tree -> TrCur -> m Tree
-replaceSelfRef atomT cnstrTC = debugSpanRM "replaceSelfRef" Just cnstrTC $ do
+replaceSelfRef atomT cnstrTC = debugSpanTreeRM "replaceSelfRef" cnstrTC $ do
   let cnstrAddr = tcCanAddr cnstrTC
   utc <- traverseTCSimple subNodes (replace cnstrAddr) cnstrTC
   return (tcFocus utc)

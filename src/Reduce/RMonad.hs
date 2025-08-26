@@ -31,10 +31,11 @@ import {-# SOURCE #-} Reduce.Nodes (normalizeDisj)
 import Text.Printf (printf)
 import Util (HasTrace (..), Trace, debugInstant, debugSpan)
 import Value
+import Value.Util.TreeRep
 
 -- ResolveMonad is the environment for reducing the tree.
 type ResolveMonad r s m =
-  ( Common.Env r s m
+  ( Common.EnvIO r s m
   , Common.HasContext s
   )
 
@@ -506,17 +507,17 @@ withResolveMonad f = do
   putTMCursor r
   return a
 
-data TraceTree = TraceFullTree Tree | TraceTree Tree
+-- data TraceTree = TraceFullTree Tree | TraceTree Tree
 
-instance ToJSON TraceTree where
-  toJSON (TraceFullTree t) =
-    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
-     in toJSON rep
-  toJSON (TraceTree t) =
-    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = False})
-     in toJSON rep
+-- instance ToJSON TraceTree where
+--   toJSON (TraceFullTree t) =
+--     let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+--      in toJSON rep
+--   toJSON (TraceTree t) =
+--     let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = False})
+--      in toJSON rep
 
-whenTraceEnabled :: (Common.Env r s m) => String -> m a -> m a -> m a
+whenTraceEnabled :: (Common.EnvIO r s m) => String -> m a -> m a -> m a
 whenTraceEnabled name f traced = do
   Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec, Common.stTraceFilter = tFilter}} <-
     asks Common.getConfig
@@ -524,28 +525,32 @@ whenTraceEnabled name f traced = do
     then traced
     else f
 
-spanTreeMsgs :: (Common.Env r s m) => Tree -> m Value
-spanTreeMsgs t = do
+spanTreeMsgs :: (Common.EnvIO r s m) => Bool -> Tree -> m Value
+spanTreeMsgs isTreeRoot t = do
   Common.Config{Common.cfSettings = Common.Settings{Common.stTracePrintTree = tracePrintTree}} <- asks Common.getConfig
   return $
     if not tracePrintTree
       then ""
       else
-        let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+        let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = isTreeRoot})
          in toJSON rep
 
-debugSpanTM :: (ReduceMonad r s m, Show a) => String -> m a -> m a
-debugSpanTM name = _traceActionTM name Nothing
+debugSpanTM :: (ReduceMonad r s m, ToJSON a) => String -> m a -> m a
+debugSpanTM name = _traceActionTM name Nothing toJSON
 
-debugSpanArgsTM :: (ReduceMonad r s m, Show a) => String -> String -> m a -> m a
-debugSpanArgsTM name args = _traceActionTM name (Just args)
+debugSpanArgsTM :: (ReduceMonad r s m, ToJSON a) => String -> String -> m a -> m a
+debugSpanArgsTM name args = _traceActionTM name (Just args) toJSON
 
-_traceActionTM :: (ReduceMonad r s m, Show a) => String -> Maybe String -> m a -> m a
-_traceActionTM name argsM f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
-  bTraced <- getTMTree >>= spanTreeMsgs
-  debugSpan True name (show addr) (toJSON <$> argsM) bTraced $ do
+debugSpanAdaptTM :: (ReduceMonad r s m) => String -> (a -> Value) -> m a -> m a
+debugSpanAdaptTM name = _traceActionTM name Nothing
+
+_traceActionTM :: (ReduceMonad r s m) => String -> Maybe String -> (a -> Value) -> m a -> m a
+_traceActionTM name argsM jsonfy f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
+  let isRoot = addr == rootTreeAddr
+  bTraced <- getTMTree >>= spanTreeMsgs isRoot
+  debugSpan True name (show addr) (toJSON <$> argsM) bTraced jsonfy $ do
     res <- f
-    traced <- getTMTree >>= spanTreeMsgs
+    traced <- getTMTree >>= spanTreeMsgs isRoot
     return (res, traced)
 
 debugInstantTM :: (ReduceMonad r s m) => String -> String -> m ()
@@ -553,43 +558,55 @@ debugInstantTM name args = whenTraceEnabled name (return ()) $
   withAddrAndFocus $
     \addr _ -> debugInstant True name (show addr) (Just $ toJSON args)
 
-debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe Tree) -> TrCur -> m a -> m a
-debugSpanRM name = _traceActionRM name Nothing
+debugSpanSimpleRM :: (Common.EnvIO r s m) => String -> TrCur -> m a -> m a
+debugSpanSimpleRM name = _traceActionRM name Nothing (const Nothing) (const (toJSON ()))
 
-debugSpanArgsRM :: (Common.Env r s m, Show a) => String -> String -> (a -> Maybe Tree) -> TrCur -> m a -> m a
-debugSpanArgsRM name args = _traceActionRM name (Just args)
+debugSpanTreeRM :: (Common.EnvIO r s m) => String -> TrCur -> m Tree -> m Tree
+debugSpanTreeRM name =
+  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
+  _traceActionRM name Nothing Just (const (toJSON ()))
+
+debugSpanMTreeRM :: (Common.EnvIO r s m) => String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
+debugSpanMTreeRM name =
+  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
+  _traceActionRM name Nothing id (const (toJSON ()))
+
+debugSpanTreeArgsRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m Tree -> m Tree
+debugSpanTreeArgsRM name args =
+  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
+  _traceActionRM name (Just args) Just (const (toJSON ()))
+
+debugSpanMTreeArgsRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
+debugSpanMTreeArgsRM name args =
+  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
+  _traceActionRM name (Just args) id (const (toJSON ()))
+
+debugSpanAdaptRM :: (Common.EnvIO r s m) => String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+debugSpanAdaptRM name = _traceActionRM name Nothing
+
+debugSpanArgsAdaptRM ::
+  (Common.EnvIO r s m) => String -> String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+debugSpanArgsAdaptRM name args = _traceActionRM name (Just args)
 
 _traceActionRM ::
-  (Common.Env r s m, Show a) => String -> Maybe String -> (a -> Maybe Tree) -> TrCur -> m a -> m a
-_traceActionRM name argsM g tc f = whenTraceEnabled name f $ do
+  (Common.EnvIO r s m) => String -> Maybe String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+_traceActionRM name argsM g conv tc action = whenTraceEnabled name action $ do
   let
     addr = tcCanAddr tc
     bfocus = tcFocus tc
-  bTraced <- spanTreeMsgs bfocus
-  debugSpan True name (show addr) (toJSON <$> argsM) bTraced $ do
-    res <- f
-    traced <- maybe (return "") spanTreeMsgs (g res)
+    isRoot = addr == rootTreeAddr
+
+  bTraced <- spanTreeMsgs isRoot bfocus
+  debugSpan True name (show addr) (toJSON <$> argsM) bTraced conv $ do
+    res <- action
+    traced <- maybe (return "") (spanTreeMsgs isRoot) (g res)
     return (res, traced)
 
--- | Trace the operation.
-debugSpanOpRM :: (Common.Env r s m, Show a) => String -> TreeAddr -> m a -> m a
-debugSpanOpRM name = _traceOpActionRM name Nothing
-
--- | Trace the operation.
-debugSpanArgsOpRM :: (Common.Env r s m, Show a) => String -> String -> TreeAddr -> m a -> m a
-debugSpanArgsOpRM name args = _traceOpActionRM name (Just args)
-
-_traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> TreeAddr -> m a -> m a
-_traceOpActionRM name argsM addr f = whenTraceEnabled name f $ do
-  debugSpan True name (show addr) (toJSON <$> argsM) "" $ do
-    res <- f
-    return (res, "")
-
-debugInstantRM :: (Common.Env r s m) => String -> String -> TrCur -> m ()
+debugInstantRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m ()
 debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
   let addr = tcCanAddr tc
   debugInstant True name (show addr) (Just $ toJSON args)
 
-debugInstantOpRM :: (Common.Env r s m) => String -> String -> TreeAddr -> m ()
+debugInstantOpRM :: (Common.EnvIO r s m) => String -> String -> TreeAddr -> m ()
 debugInstantOpRM name args addr = whenTraceEnabled name (return ()) $ do
   debugInstant True name (show addr) (Just $ toJSON args)

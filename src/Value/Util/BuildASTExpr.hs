@@ -15,9 +15,9 @@ module Value.Util.BuildASTExpr (
 where
 
 import qualified AST
-import Common (Env, HasConfig (..))
+import Common (ErrorEnv, HasConfig (..))
 import Control.Monad (foldM)
-import Control.Monad.Reader (ask, asks, runReaderT)
+import Control.Monad.Reader (MonadReader, ask, asks, runReaderT)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isJust)
@@ -35,30 +35,32 @@ import Value.List
 import Value.Mutable
 import Value.Tree
 import Value.UnifyOp
+import Value.Util.TreeRep
 
-buildASTExpr :: (Env r s m) => Tree -> m AST.Expression
+buildASTExpr :: (ErrorEnv m, MonadReader r m) => Tree -> m AST.Expression
 buildASTExpr t = do
   conf <- ask
   runReaderT (buildASTExprExt t) (BuildConfig False conf)
 
-buildASTExprDebug :: (Env r s m) => Tree -> m AST.Expression
-buildASTExprDebug t = do
-  conf <- ask
-  runReaderT (buildASTExprExt t) (BuildConfig True conf)
+buildASTExprDebug :: (ErrorEnv m) => Tree -> m AST.Expression
+buildASTExprDebug t = runReaderT (buildASTExprExt t) (BuildConfig True ())
 
 class HasBuildConfig r where
   getIsDebug :: r -> Bool
 
-type BEnv r s m = (Env r s m, HasBuildConfig r)
+type BEnv r s m = (ErrorEnv m, MonadReader r m, HasBuildConfig r)
 
-data BuildConfig a = BuildConfig Bool a
+data BuildConfig a = BuildConfig
+  { bcIsDebug :: Bool
+  , bcOther :: a
+  }
 
 instance HasBuildConfig (BuildConfig a) where
-  getIsDebug (BuildConfig e _) = e
+  getIsDebug = bcIsDebug
 
 instance (HasConfig a) => HasConfig (BuildConfig a) where
-  getConfig (BuildConfig _ r) = getConfig r
-  setConfig (BuildConfig e r) c = BuildConfig e (setConfig r c)
+  getConfig bc = getConfig (bcOther bc)
+  setConfig bc c = bc{bcOther = setConfig (bcOther bc) c}
 
 buildASTExprExt :: (BEnv r s m) => Tree -> m AST.Expression
 buildASTExprExt t = case treeNode t of
@@ -93,20 +95,25 @@ buildASTExprExt t = case treeNode t of
     | Just v <- getMutVal mut -> buildASTExprExt v
     | otherwise -> case mop of
         RegOp op -> maybe (buildRegOpASTExpr op) return (treeExpr t)
-        Ref _ -> maybe (throwErrSt $ printf "expression not found for reference: %s" (show t)) return (treeExpr t)
+        Ref _ -> maybe (throwExprNotFound t) return (treeExpr t)
         Compreh cph -> do
           ce <- buildComprehASTExpr cph
           return $
             AST.litCons $
               AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
-        DisjOp _ -> maybe (throwErrSt "expression not found for disjunction") return (treeExpr t)
+        DisjOp _ -> maybe (throwExprNotFound t) return (treeExpr t)
         UOp u -> maybe (buildUnifyOpASTExpr u) return (treeExpr t)
-        Itp _ -> maybe (throwErrSt "expression not found for interpolation") return (treeExpr t)
+        Itp _ -> maybe (throwExprNotFound t) return (treeExpr t)
   TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
   TNRefCycle -> buildRCASTExpr "RC" t
   TNUnifyWithRC _ -> buildRCASTExpr "URC" t
-  TNRefSubCycle _ -> maybe (throwErrSt $ printf "expression not found for sub cycle reference: %s" (show t)) return (treeExpr t)
-  TNNoValRef -> maybe (throwErrSt $ printf "expression not found for no val reference: %s" (show t)) return (treeExpr t)
+  TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
+  TNNoValRef -> maybe (throwExprNotFound t) return (treeExpr t)
+
+throwExprNotFound :: (ErrorEnv m) => Tree -> m a
+throwExprNotFound t = do
+  let rep = buildRepTree t defaultTreeRepBuildOption
+  throwErrSt $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
 
 buildRCASTExpr :: (BEnv r s m) => String -> Tree -> m AST.Expression
 buildRCASTExpr s t =
@@ -114,9 +121,8 @@ buildRCASTExpr s t =
     ( do
         isDebug <- asks getIsDebug
         if isDebug
-          then return $ AST.litCons (AST.strToLit $ T.pack s)
-          else
-            throwErrSt $ printf "expression not found for %s: %s" s (show t)
+          then return (AST.idCons $ pure $ T.pack s)
+          else throwExprNotFound t
     )
     return
     (treeExpr t)

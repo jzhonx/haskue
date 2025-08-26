@@ -50,6 +50,7 @@ library
         Value.Tree,
         Value.UnifyOp,
         Value.Util.BuildASTExpr,
+        Value.Util.TreeRep,
         Value.Instances,
 
     other-modules:

@@ -87,7 +87,7 @@ emptyIdentRef ident =
     , refVers = Nothing
     }
 
-mkRefFromFieldPath :: (Common.Env r s m) => (Atom -> Tree) -> T.Text -> FieldPath -> m Reference
+mkRefFromFieldPath :: (Common.EnvIO r s m) => (Atom -> Tree) -> T.Text -> FieldPath -> m Reference
 mkRefFromFieldPath aToTree var (FieldPath xs) = do
   ys <-
     mapM

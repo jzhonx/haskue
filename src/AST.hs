@@ -1,11 +1,15 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module AST where
 
 import Control.DeepSeq (NFData (..))
+import Control.Monad (foldM)
+import Control.Monad.State (MonadState, evalState, get, gets, modify)
 import Data.ByteString.Builder (
   Builder,
   byteString,
@@ -335,148 +339,240 @@ binaryOpCons op e1 e2 = pure $ ExprBinaryOp op e1 e2
 
 -- == Below are functions for pretty printing the AST ==
 
-exprStr :: Expression -> String
-exprStr e = show $ toLazyByteString $ exprBldIdent 0 e
+exprToStr :: Expression -> String
+exprToStr e = show $ toLazyByteString $ exprToBuilder False e
 
-exprBld :: Expression -> Builder
-exprBld = exprBldIdent 0
+exprToOneLinerStr :: Expression -> String
+exprToOneLinerStr e = show $ toLazyByteString $ exprToBuilder True e
 
-exprBldIdent :: Int -> Expression -> Builder
-exprBldIdent indent e@ASTN{anComments = cmts} = b <> commentsBld indent True cmts
+exprToBuilder :: Bool -> Expression -> Builder
+exprToBuilder oneLiner e = evalState (exprBld e) (ASTBuilderState 0 oneLiner)
+
+exprToOneLinerBuilder :: Expression -> Builder
+exprToOneLinerBuilder = exprToBuilder True
+
+declsToBuilder :: [Declaration] -> Builder
+declsToBuilder decls = evalState (declsBld decls) (ASTBuilderState 0 False)
+
+data ASTBuilderState = ASTBuilderState
+  { absIndent :: Int
+  , absOneLiner :: Bool
+  }
+  deriving (Eq, Show)
+
+type M = MonadState ASTBuilderState
+
+getIndent :: (M m) => m Int
+getIndent = gets absIndent
+
+getOneLiner :: (M m) => m Bool
+getOneLiner = gets absOneLiner
+
+withIncIndent :: (M m) => m a -> m a
+withIncIndent action = do
+  indent <- getIndent
+  modify (\s -> s{absIndent = indent + 1})
+  r <- action
+  modify (\s -> s{absIndent = indent})
+  return r
+
+exprBld :: (M m) => Expression -> m Builder
+exprBld e@ASTN{anComments = cmts} = do
+  cmt <- commentsBld True cmts
+  b <- buildForE
+  return $ b <> cmt
  where
-  b = case anVal e of
-    ExprUnaryExpr ue -> unaryBld indent ue
-    ExprBinaryOp op e1 e2 ->
-      exprBldIdent indent e1
-        <> char7 ' '
-        <> binopBld op
-        <> char7 ' '
-        <> exprBldIdent indent e2
+  buildForE = case anVal e of
+    ExprUnaryExpr ue -> unaryBld ue
+    ExprBinaryOp op e1 e2 -> do
+      b1 <- exprBld e1
+      b2 <- exprBld e2
+      return $
+        b1 <> char7 ' ' <> binopBld op <> char7 ' ' <> b2
 
 binopBld :: BinaryOp -> Builder
 binopBld op = string7 (show (anVal op :: BinaryOpNode))
 
-unaryBld :: Int -> UnaryExpr -> Builder
-unaryBld indent e = case anVal e of
-  UnaryExprPrimaryExpr pe -> primBld indent pe
-  UnaryExprUnaryOp op ue -> unaryOpBld op <> unaryBld indent ue
+unaryBld :: (M m) => UnaryExpr -> m Builder
+unaryBld e = case anVal e of
+  UnaryExprPrimaryExpr pe -> primBld pe
+  UnaryExprUnaryOp op ue -> do
+    b <- unaryBld ue
+    return $ unaryOpBld op <> b
 
 unaryOpBld :: UnaryOp -> Builder
 unaryOpBld op = string7 (show (anVal op :: UnaryOpNode))
 
-primBld :: Int -> PrimaryExpr -> Builder
-primBld indent e = case anVal e of
-  PrimExprOperand op -> opndBld indent op
-  PrimExprSelector pe sel -> primBld indent pe <> string7 "." <> selBld sel
-  PrimExprIndex pe (ASTN{anVal = Index ie}) -> primBld indent pe <> string7 "[" <> exprBldIdent indent ie <> string7 "]"
-  PrimExprArguments pe es ->
-    primBld indent pe
-      <> string7 "("
-      <> foldr (\x acc -> exprBld x <> string7 ", " <> acc) mempty es
-      <> string7 ")"
+primBld :: (M m) => PrimaryExpr -> m Builder
+primBld e = case anVal e of
+  PrimExprOperand op -> opndBld op
+  PrimExprSelector pe sel -> do
+    b <- primBld pe
+    b2 <- selBld sel
+    return $ b <> string7 "." <> b2
+  PrimExprIndex pe (ASTN{anVal = Index ie}) -> do
+    b1 <- primBld pe
+    b2 <- exprBld ie
+    return $ b1 <> string7 "[" <> b2 <> string7 "]"
+  PrimExprArguments pe es -> do
+    b <- primBld pe
+    (argsB, _) <-
+      foldM
+        ( \(acc, started) x -> do
+            xb <- exprBld x
+            return (if not started then xb else acc <> string7 ", " <> xb, True)
+        )
+        (mempty, False)
+        es
+    return $ b <> string7 "(" <> argsB <> string7 ")"
 
-selBld :: Selector -> Builder
+selBld :: (M m) => Selector -> m Builder
 selBld e = case anVal e of
-  IDSelector is -> byteString $ TE.encodeUtf8 (anVal is)
+  IDSelector is -> return $ byteString $ TE.encodeUtf8 (anVal is)
   StringSelector s -> simpleStrLitBld s
 
-opndBld :: Int -> Operand -> Builder
-opndBld indent op = case anVal op of
-  OpLiteral lit -> litBld indent lit
-  OperandName on -> opNameBld indent on
-  OpExpression e -> exprBldIdent indent e
+opndBld :: (M m) => Operand -> m Builder
+opndBld op = case anVal op of
+  OpLiteral lit -> litBld lit
+  OperandName on -> return $ opNameBld on
+  OpExpression e -> exprBld e
 
-opNameBld :: Int -> OperandName -> Builder
-opNameBld _ e = case anVal e of
+opNameBld :: OperandName -> Builder
+opNameBld e = case anVal e of
   Identifier i -> byteString $ TE.encodeUtf8 (anVal i)
 
-litBld :: Int -> Literal -> Builder
-litBld indent e = case anVal e of
+litBld :: (M m) => Literal -> m Builder
+litBld e = case anVal e of
   StringLit s -> strLitBld s
-  IntLit i -> integerDec i
-  FloatLit f -> string7 (show f)
-  BoolLit b -> if b then string7 "true" else string7 "false"
-  TopLit -> string7 "_"
-  BottomLit -> string7 "_|_"
-  NullLit -> string7 "null"
-  LitStructLit l -> structLitBld indent l
+  IntLit i -> return $ integerDec i
+  FloatLit f -> return $ string7 (show f)
+  BoolLit b -> return $ if b then string7 "true" else string7 "false"
+  TopLit -> return $ string7 "_"
+  BottomLit -> return $ string7 "_|_"
+  NullLit -> return $ string7 "null"
+  LitStructLit l -> structLitBld l
   ListLit l -> listBld l
 
-strLitBld :: StringLit -> Builder
-strLitBld (anVal -> SimpleStringL s) = char7 '"' <> simpleStrLitBld s <> char7 '"'
+strLitBld :: (M m) => StringLit -> m Builder
+strLitBld (anVal -> SimpleStringL s) = do
+  b <- simpleStrLitBld s
+  return $ char7 '"' <> b <> char7 '"'
 
-simpleStrLitBld :: SimpleStringLit -> Builder
+-- | TODO: efficiency
+simpleStrLitBld :: (M m) => SimpleStringLit -> m Builder
 simpleStrLitBld (ASTN{anVal = SimpleStringLit segs}) =
-  foldr (\seg acc -> simpleStrLitSegBld seg <> acc) mempty segs
+  foldM
+    ( \acc seg -> do
+        b <- simpleStrLitSegBld seg
+        return $ acc <> b
+    )
+    mempty
+    segs
 
-simpleStrLitSegBld :: SimpleStringLitSeg -> Builder
-simpleStrLitSegBld (UnicodeVal s) = charUtf8 s
-simpleStrLitSegBld (InterpolationStr (anVal -> Interpolation e)) =
-  string7 "\\(" <> exprBldIdent 0 e <> char7 ')'
+simpleStrLitSegBld :: (M m) => SimpleStringLitSeg -> m Builder
+simpleStrLitSegBld (UnicodeVal s) = return $ charUtf8 s
+simpleStrLitSegBld (InterpolationStr (anVal -> Interpolation e)) = do
+  b <- exprBld e
+  return $ string7 "\\(" <> b <> char7 ')'
 
-structLitBld :: Int -> StructLit -> Builder
-structLitBld indent (ASTN{anVal = StructLit decls}) =
-  if null decls
-    then string7 "{}"
-    else
-      string7 "{\n"
-        <> declsBld (indent + 1) decls
-        <> indentBld indent
-        <> char7 '}'
+structLitBld :: (M m) => StructLit -> m Builder
+structLitBld (ASTN{anVal = StructLit decls})
+  | null decls = return $ string7 "{}"
+  | otherwise = do
+      indent <- getIndent
+      oneLiner <- getOneLiner
+      if oneLiner
+        then do
+          -- When one-liner is set, we do not add new lines or indentation.
+          declsB <- declsBld decls
+          return $ string7 "{" <> declsB <> string7 "}"
+        else do
+          declsB <- withIncIndent $ declsBld decls
+          return $ string7 "{\n" <> declsB <> indentBld indent <> char7 '}'
 
-declsBld :: Int -> [Declaration] -> Builder
-declsBld _ [] = string7 ""
-declsBld indent (x : xs) =
-  commentsBld indent True (anComments x)
-    <> indentBld indent
-    <> declBld indent x
-    <> char7 '\n'
-    <> declsBld indent xs
+declsBld :: (M m) => [Declaration] -> m Builder
+declsBld [] = return $ string7 ""
+declsBld (x : xs) = do
+  b <- declBld x
+  rest <- declsBld xs
+  oneLiner <- getOneLiner
+  if oneLiner
+    then
+      -- When one-liner is set, we do not add new lines or indentation.
+      return $ b <> (if null xs then mempty else string7 ",") <> rest
+    else do
+      cmt <- commentsBld True (anComments x)
+      indent <- getIndent
+      return $
+        cmt <> indentBld indent <> b <> char7 '\n' <> rest
 
-declBld :: Int -> Declaration -> Builder
-declBld i e = case anVal e of
-  FieldDecl f -> fieldDeclBld i f
-  EllipsisDecl (ASTN{anVal = Ellipsis _}) -> string7 "..."
-  Embedding eb -> embeddingBld i eb
-  DeclLet (ASTN{anVal = LetClause ident binde}) ->
-    string7 "let" <> byteString (TE.encodeUtf8 $ anVal ident) <> string7 " = " <> exprBldIdent 0 binde
+declBld :: (M m) => Declaration -> m Builder
+declBld e = case anVal e of
+  FieldDecl f -> fieldDeclBld f
+  EllipsisDecl (ASTN{anVal = Ellipsis _}) -> return $ string7 "..."
+  Embedding eb -> embeddingBld eb
+  DeclLet (ASTN{anVal = LetClause ident binde}) -> do
+    b <- exprBld binde
+    return $ string7 "let" <> byteString (TE.encodeUtf8 $ anVal ident) <> string7 " = " <> b
 
-fieldDeclBld :: Int -> FieldDecl -> Builder
-fieldDeclBld indent e = case anVal e of
-  Field ls fe ->
-    foldr (\l acc -> labelBld l <> string7 ": " <> acc) mempty ls
-      <> exprBldIdent indent fe
+fieldDeclBld :: (M m) => FieldDecl -> m Builder
+fieldDeclBld e = case anVal e of
+  Field ls fe -> do
+    declB <- exprBld fe
+    labels <-
+      foldM
+        ( \acc l -> do
+            lb <- labelBld l
+            return $ acc <> lb <> string7 ": "
+        )
+        mempty
+        ls
+    return $ labels <> declB
 
-embeddingBld :: Int -> Embedding -> Builder
-embeddingBld indent e = case anVal e of
-  EmbedComprehension _ -> string7 "<undefined>"
-  AliasExpr ex -> exprBldIdent indent ex
+embeddingBld :: (M m) => Embedding -> m Builder
+embeddingBld e = case anVal e of
+  EmbedComprehension _ -> return $ string7 "<undefined>"
+  AliasExpr ex -> exprBld ex
 
-listBld :: ElementList -> Builder
-listBld (ASTN{anVal = EmbeddingList l}) = string7 "[" <> goList l
+listBld :: (M m) => ElementList -> m Builder
+listBld (ASTN{anVal = EmbeddingList l}) = do
+  b <- goList l
+  return $ string7 "[" <> b
  where
-  goList :: [Embedding] -> Builder
-  goList [] = string7 "]"
-  goList [x] = embeddingBld 0 x <> string7 "]"
-  goList (x : xs) = embeddingBld 0 x <> string7 ", " <> goList xs
+  goList [] = return $ string7 "]"
+  goList [x] = do
+    b <- embeddingBld x
+    return $ b <> string7 "]"
+  goList (x : xs) = do
+    b <- embeddingBld x
+    rest <- goList xs
+    return $ b <> string7 ", " <> rest
 
-labelBld :: Label -> Builder
+labelBld :: (M m) => Label -> m Builder
 labelBld (ASTN{anVal = Label e}) = labelExprBld e
 
-labelExprBld :: LabelExpr -> Builder
+labelExprBld :: (M m) => LabelExpr -> m Builder
 labelExprBld e = case anVal e of
   LabelName ln cnstr -> case cnstr of
     RegularLabel -> labelNameBld ln
-    OptionalLabel -> labelNameBld ln <> string7 "?"
-    RequiredLabel -> labelNameBld ln <> string7 "!"
+    OptionalLabel -> do
+      b <- labelNameBld ln
+      return $ b <> string7 "?"
+    RequiredLabel -> do
+      b <- labelNameBld ln
+      return $ b <> string7 "!"
   -- The LabelPattern should not be exported.
-  LabelPattern le -> string7 "[" <> exprBldIdent 0 le <> string7 "]"
+  LabelPattern le -> do
+    b <- exprBld le
+    return $ string7 "[" <> b <> string7 "]"
 
-labelNameBld :: LabelName -> Builder
+labelNameBld :: (M m) => LabelName -> m Builder
 labelNameBld e = case anVal e of
-  LabelID i -> byteString $ TE.encodeUtf8 (anVal i)
+  LabelID i -> return $ byteString $ TE.encodeUtf8 (anVal i)
   LabelString s -> simpleStrLitBld s
-  LabelNameExpr ex -> char7 '(' <> exprBldIdent 0 ex <> char7 ')'
+  LabelNameExpr ex -> do
+    b <- exprBld ex
+    return $ char7 '(' <> b <> char7 ')'
 
 indentBld :: Int -> Builder
 indentBld indent = string7 (replicate (indent * tabSize) ' ')
@@ -491,8 +587,10 @@ commentBld c = string7 "// " <> string7 (T.unpack c)
 
 If `forceNLBefore` is `True`, it will always make comments start on a new line before the node.
 -}
-commentsBld :: Int -> Bool -> [T.Text] -> Builder
-commentsBld _ _ [] = mempty
-commentsBld indent forceNLBefore cs
-  | not forceNLBefore && length cs < 2 = char7 ' ' <> commentBld (head cs)
-  | otherwise = mconcat (map (\c -> indentBld indent <> commentBld c <> char7 '\n') cs)
+commentsBld :: (M m) => Bool -> [T.Text] -> m Builder
+commentsBld _ [] = return mempty
+commentsBld forceNLBefore cs
+  | not forceNLBefore && length cs < 2 = return $ char7 ' ' <> commentBld (head cs)
+  | otherwise = do
+      indent <- getIndent
+      return $ mconcat (map (\c -> indentBld indent <> commentBld c <> char7 '\n') cs)

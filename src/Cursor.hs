@@ -7,7 +7,7 @@
 
 module Cursor where
 
-import Common (Env)
+import Common (ErrorEnv)
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import Data.ByteString.Builder (
@@ -17,7 +17,7 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import qualified Data.Vector as V
+import Data.Maybe (fromMaybe)
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import Path
@@ -74,7 +74,7 @@ parentTC :: TrCur -> Maybe TrCur
 parentTC (TrCur _ []) = Nothing
 parentTC (TrCur _ ((_, t) : cs)) = Just $ TrCur t cs
 
-parentTCMust :: (Env r s m) => TrCur -> m TrCur
+parentTCMust :: (ErrorEnv m) => TrCur -> m TrCur
 parentTCMust tc = maybe (throwErrSt "already top") return (parentTC tc)
 
 -- | Get the segment paired with the focus of the cursor.
@@ -83,7 +83,7 @@ tcFocusSeg (TrCur _ []) = Nothing
 tcFocusSeg tc = return $ fst . head $ tcCrumbs tc
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSegMust :: (Env r s m) => TrCur -> m TASeg
+tcFocusSegMust :: (ErrorEnv m) => TrCur -> m TASeg
 tcFocusSegMust tc = maybe (throwErrSt "already top") return (tcFocusSeg tc)
 
 isTCTop :: TrCur -> Bool
@@ -132,7 +132,7 @@ goDownTCAddr a = go (addrToList a)
 goDownTAddr :: TreeAddr -> Tree -> Maybe TrCur
 goDownTAddr addr starT = goDownTCAddr addr (TrCur starT [])
 
-goDownTCAddrMust :: (Env r s m) => TreeAddr -> TrCur -> m TrCur
+goDownTCAddrMust :: (ErrorEnv m) => TreeAddr -> TrCur -> m TrCur
 goDownTCAddrMust addr tc =
   maybe
     (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcCanAddr tc))
@@ -159,7 +159,7 @@ goDownTCSeg seg tc = do
         _ -> Nothing
       goDownTCSeg seg $ mkSubTC nextSeg nextTree tc
 
-goDownTCSegMust :: (Env r s m) => TASeg -> TrCur -> m TrCur
+goDownTCSegMust :: (ErrorEnv m) => TASeg -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
     (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcCanAddr tc))
@@ -177,7 +177,7 @@ goDownTSeg seg startT = goDownTCSeg seg (TrCur startT [])
 
 It stops at the root.
 -}
-propUpTC :: (Env r s m) => TrCur -> m TrCur
+propUpTC :: (ErrorEnv m) => TrCur -> m TrCur
 propUpTC (TrCur _ []) = throwErrSt "already at the top"
 propUpTC tc@(TrCur _ [(RootTASeg, _)]) = return tc
 propUpTC (TrCur subT ((seg, parT) : cs)) = do
@@ -187,7 +187,7 @@ propUpTC (TrCur subT ((seg, parT) : cs)) = do
 {- | Surface evaluated values up until the root and return the updated tree cursor with the original cursor
 position.
 -}
-syncTC :: (Env r s m) => TrCur -> m TrCur
+syncTC :: (ErrorEnv m) => TrCur -> m TrCur
 syncTC a = go a []
  where
   go (TrCur _ []) _ = throwErrSt "already at the top"
@@ -202,7 +202,7 @@ syncTC a = go a []
     go parTC ((subT, seg) : acc)
 
 -- | Get the top cursor of the tree. No propagation is involved.
-topTC :: (Env r s m) => TrCur -> m TrCur
+topTC :: (ErrorEnv m) => TrCur -> m TrCur
 topTC (TrCur _ []) = throwErrSt "already at the top"
 topTC tc@(TrCur _ ((RootTASeg, _) : _)) = return tc
 topTC (TrCur _ ((_, parT) : cs)) = topTC $ TrCur parT cs
@@ -212,7 +212,7 @@ topTC (TrCur _ ((_, parT) : cs)) = topTC $ TrCur parT cs
 It does not re-constrain struct fields.
 -}
 traverseTC ::
-  (Env r s m) =>
+  (ErrorEnv m) =>
   (Tree -> [(TASeg, Tree)]) ->
   ((TrCur, a) -> m (TrCur, a)) ->
   (TrCur, a) ->
@@ -230,7 +230,7 @@ traverseTC subs f x = do
 
 -- | A simple version of the traverseTC function that does not return a custom value.
 traverseTCSimple ::
-  (Env r s m) =>
+  (ErrorEnv m) =>
   (Tree -> [(TASeg, Tree)]) ->
   (TrCur -> m Tree) ->
   TrCur ->
@@ -246,13 +246,13 @@ traverseTCSimple subs f tc = do
       (tc, ())
   return r
 
-inSubTC :: (Env r s m) => TASeg -> (TrCur -> m Tree) -> TrCur -> m TrCur
+inSubTC :: (ErrorEnv m) => TASeg -> (TrCur -> m Tree) -> TrCur -> m TrCur
 inSubTC seg f tc = do
   subTC <- goDownTCSegMust seg tc
   r <- f subTC
   propUpTC (r `setTCFocus` subTC)
 
-snapshotTC :: (Env r s m) => TrCur -> m TrCur
+snapshotTC :: (ErrorEnv m) => TrCur -> m TrCur
 snapshotTC tc = do
   let
     rewrite xtc =
@@ -260,7 +260,7 @@ snapshotTC tc = do
        in return $ case treeNode focus of
             TNBlock block
               | IsBlockEmbed ev <- block -> ev
-            TNMutable m -> maybe focus id (getMutVal m)
+            TNMutable m -> fromMaybe focus (getMutVal m)
             _ -> focus
 
   traverseTCSimple subNodes rewrite tc

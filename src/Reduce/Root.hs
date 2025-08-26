@@ -22,6 +22,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (catMaybes, fromJust, isJust)
 import Exception (throwErrSt)
 
+import Data.Aeson (ToJSON (..), encode)
 import NotifGraph (lookupSCCAddr)
 import Path
 import Reduce.Nodes (
@@ -39,6 +40,7 @@ import Reduce.RMonad (
   ResolveMonad,
   debugInstantRM,
   debugInstantTM,
+  debugSpanAdaptTM,
   debugSpanArgsTM,
   debugSpanTM,
   delMutValRecvs,
@@ -65,7 +67,6 @@ import Reduce.RefSys (
   CycleDetection (..),
   DerefResult (DerefResult),
   index,
-  locateRef,
   populateRCRefs,
   populateRCRefsWithTop,
  )
@@ -301,7 +302,7 @@ It writes the reduced arguments back to the mutable tree and returns the reduced
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
 reduceArgs :: (ReduceMonad s r m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
-reduceArgs f rtr = debugSpanTM "reduceArgs" $ do
+reduceArgs f rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
   tc <- getTMCursor
   case tcFocus tc of
     IsMutable mut -> do
@@ -316,6 +317,8 @@ reduceArgs f rtr = debugSpanTM "reduceArgs" $ do
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwErrSt "reduceArgs: not a mutable tree"
+ where
+  adapt (xs, b) = toJSON (map (fmap oneLinerStringOfCurTreeState) xs, b)
 
 reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
 reduceArg f convert = do
@@ -334,7 +337,7 @@ reduceArg f convert = do
 It reduces every conjunct node it finds.
 -}
 discoverPConjs :: (ReduceMonad s r m) => m [Maybe TrCur]
-discoverPConjs = debugSpanTM "discoverPConjs" $ do
+discoverPConjs = debugSpanAdaptTM "discoverPConjs" adapt $ do
   conjTC <- getTMCursor
   case tcFocus conjTC of
     IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
@@ -343,6 +346,8 @@ discoverPConjs = debugSpanTM "discoverPConjs" $ do
       reduce
       vM <- rtrNonMut <$> getTMTree
       return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
+ where
+  adapt xs = toJSON (map (fmap (oneLinerStringOfCurTreeState . tcFocus)) xs)
 
 {- | Discover pending conjuncts from a unify operation.
 

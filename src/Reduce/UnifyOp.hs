@@ -9,7 +9,7 @@ module Reduce.UnifyOp where
 import qualified AST
 import Common (
   Config (..),
-  Env,
+  EnvIO,
   HasConfig (..),
   RuntimeParams (RuntimeParams, rpCreateCnstr),
  )
@@ -28,8 +28,8 @@ import Reduce.RMonad (
   ResolveMonad,
   allocRMObjID,
   debugInstantRM,
-  debugSpanArgsRM,
-  debugSpanRM,
+  debugSpanTreeArgsRM,
+  debugSpanTreeRM,
  )
 import Reduce.RefSys (searchTCIdent, selToIdent)
 import Text.Printf (printf)
@@ -103,7 +103,7 @@ The order of the unification is the same as the order of the trees.
 The tree cursor is only used to know where the unification is happening.
 -}
 unifyNormalizedTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
-unifyNormalizedTCs tcs unifyTC = debugSpanArgsRM "unifyNormalizedTCs" (showTCList tcs) (const Nothing) unifyTC $ do
+unifyNormalizedTCs tcs unifyTC = debugSpanTreeArgsRM "unifyNormalizedTCs" (showTCList tcs) unifyTC $ do
   when (length tcs < 2) $ throwErrSt "not enough arguments for unification"
 
   let isAllCyclic = all (treeIsCyclic . tcFocus) tcs
@@ -184,7 +184,7 @@ unifyForNewConjs uts tc = do
     Nothing -> return Nothing
 
 mergeTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
-mergeTCs tcs unifyTC = debugSpanArgsRM "mergeTCs" (showTCList tcs) (const Nothing) unifyTC $ do
+mergeTCs tcs unifyTC = debugSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
   when (null tcs) $ throwErrSt "not enough arguments"
   r <-
     foldM
@@ -237,7 +237,7 @@ mergeBinUTrees :: (ResolveMonad s r m) => UTree -> UTree -> TrCur -> m Tree
 mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = tcFocus tc1
       t2 = tcFocus tc2
-  debugSpanArgsRM
+  debugSpanTreeArgsRM
     "mergeBinUTrees"
     ( printf
         ("merging %s, %s" ++ "\n" ++ "with %s, %s")
@@ -246,7 +246,6 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
         (show $ utDir ut2)
         (show t2)
     )
-    (const Nothing)
     unifyTC
     $ do
       -- Each case should handle embedded case when the left value is embedded.
@@ -279,7 +278,7 @@ mergeLeftTop _ ut2 = do
 
 mergeLeftAtom :: (ResolveMonad s r m) => (Atom, UTree) -> UTree -> TrCur -> m Tree
 mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) unifyTC =
-  debugSpanRM "mergeLeftAtom" (const Nothing) unifyTC $ do
+  debugSpanTreeRM "mergeLeftAtom" unifyTC $ do
     let t2 = tcFocus tc2
     case (v1, treeNode t2) of
       (String x, TNAtom s)
@@ -551,7 +550,9 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
      in if r then return [b2] else Left conflict
 
   conflict :: String
-  conflict = let conv x = AST.exprStr $ buildBoundASTExpr x in printf "bounds %s and %s conflict" (conv b1) (conv b2)
+  conflict =
+    let conv x = AST.exprToOneLinerStr $ buildBoundASTExpr x
+     in printf "bounds %s and %s conflict" (conv b1) (conv b2)
 
   newOrdBounds :: [Bound]
   newOrdBounds = if d1 == L then [b1, b2] else [b2, b1]
@@ -621,10 +622,9 @@ mergeBlocks (s1, ut1@UTree{utDir = L}) (s2, ut2) unifyTC =
     eidM2 = getEmbeddedOID ut2
     utAddr2 = tcCanAddr . utTC $ ut2
    in
-    debugSpanArgsRM
+    debugSpanTreeArgsRM
       "mergeBlocks"
       (printf "eidM1: %s, addr1: %s, eidM2: %s, addr2: %s" (show eidM1) (show utAddr1) (show eidM2) (show utAddr2))
-      (const Nothing)
       unifyTC
       $ do
         checkRes <- do
@@ -881,7 +881,7 @@ mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
 -- In current CUE's implementation, CUE puts the fields of the single value first.
 mergeDisjWithVal :: (ResolveMonad s r m) => (Disj, UTree) -> UTree -> TrCur -> m Tree
 mergeDisjWithVal (dj1, _ut1@(UTree{utDir = fstDir})) _ut2 unifyTC =
-  debugSpanRM "mergeDisjWithVal" (const Nothing) unifyTC $ do
+  debugSpanTreeRM "mergeDisjWithVal" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     let defIdxes1 = dsjDefIndexes dj1
     if fstDir == L
@@ -907,7 +907,7 @@ U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj :: (ResolveMonad s r m) => (Disj, UTree) -> (Disj, UTree) -> TrCur -> m Tree
 mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) unifyTC =
-  debugSpanRM "mergeDisjWithDisj" (const Nothing) unifyTC $ do
+  debugSpanTreeRM "mergeDisjWithDisj" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     uts2 <- utsFromDisjs (length $ dsjDisjuncts dj2) _ut2
     let
@@ -924,7 +924,7 @@ mergeDisjWithDisj (dj1, _ut1@(UTree{utDir = fstDir})) (dj2, _ut2) unifyTC =
         matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyForNewBinConjs ut2 ut1 unifyTC) uts1) uts2
         treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
 
-utsFromDisjs :: (Env r s m) => Int -> UTree -> m [UTree]
+utsFromDisjs :: (EnvIO r s m) => Int -> UTree -> m [UTree]
 utsFromDisjs n ut@(UTree{utTC = tc}) = do
   mapM
     ( \i -> do
@@ -933,7 +933,7 @@ utsFromDisjs n ut@(UTree{utTC = tc}) = do
     )
     [0 .. (n - 1)]
 
-treeFromMatrix :: (Env r s m) => ([Int], [Int]) -> (Int, Int) -> [[Maybe Tree]] -> m Tree
+treeFromMatrix :: (EnvIO r s m) => ([Int], [Int]) -> (Int, Int) -> [[Maybe Tree]] -> m Tree
 treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
   let defIndexes = case (lDefIndexes, rDefIndexes) of
         ([], []) -> []

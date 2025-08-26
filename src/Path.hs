@@ -6,6 +6,8 @@
 module Path where
 
 import Control.DeepSeq (NFData (..))
+import Data.Aeson (ToJSON)
+import Data.Aeson.Types (ToJSON (..))
 import qualified Data.ByteString as B
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
@@ -92,7 +94,7 @@ data TASeg
     MutArgTASeg !Int
   | -- | EphemeralTASeg is used to represent the ephemeral value, which can be temporary iteration binding.
     EphemeralTASeg
-  deriving (Eq, Ord, Generic, NFData)
+  deriving (Eq, Ord, Generic, NFData, ToJSON)
 
 instance Show TASeg where
   show RootTASeg = "/"
@@ -128,6 +130,9 @@ instance Show BlockTASeg where
   show (LetTASeg s) = "let_" ++ show s
   show (EmbedTASeg i) = "emb_" ++ show i
 
+instance ToJSON BlockTASeg where
+  toJSON seg = toJSON $ show seg
+
 getStrFromSeg :: BlockTASeg -> Maybe String
 getStrFromSeg (StringTASeg s) = Just (show s)
 getStrFromSeg (LetTASeg s) = Just (show s)
@@ -160,7 +165,7 @@ instance Show BinOpDirect where
 the list.
 -}
 newtype TreeAddr = TreeAddr {getTreeAddrSegs :: V.Vector TASeg}
-  deriving (Eq, Ord, Generic, NFData)
+  deriving (Eq, Ord, Generic, NFData, ToJSON)
 
 instance Show TreeAddr where
   show = showTreeAddr
