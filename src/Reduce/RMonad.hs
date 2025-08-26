@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -16,6 +17,7 @@ import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (get, gets, modify, runStateT)
 import Cursor
+import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Map.Strict as Map
@@ -504,11 +506,15 @@ withResolveMonad f = do
   putTMCursor r
   return a
 
-data ShowTree = ShowFullTree Tree | ShowTree Tree
+data TraceTree = TraceFullTree Tree | TraceTree Tree
 
-instance Show ShowTree where
-  show (ShowFullTree t) = treeFullStr 0 t
-  show (ShowTree t) = treeToSubStr 0 True t
+instance ToJSON TraceTree where
+  toJSON (TraceFullTree t) =
+    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+     in toJSON rep
+  toJSON (TraceTree t) =
+    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = False})
+     in toJSON rep
 
 whenTraceEnabled :: (Common.Env r s m) => String -> m a -> m a -> m a
 whenTraceEnabled name f traced = do
@@ -518,14 +524,15 @@ whenTraceEnabled name f traced = do
     then traced
     else f
 
-spanTreeMsgs :: (Common.Env r s m) => Tree -> m (String, String)
+spanTreeMsgs :: (Common.Env r s m) => Tree -> m Value
 spanTreeMsgs t = do
   Common.Config{Common.cfSettings = Common.Settings{Common.stTracePrintTree = tracePrintTree}} <- asks Common.getConfig
-  if not tracePrintTree
-    then return ("", "")
-    else do
-      e <- buildASTExprDebug t
-      return (show t, BS.unpack $ toLazyByteString (AST.exprBld e))
+  return $
+    if not tracePrintTree
+      then ""
+      else
+        let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+         in toJSON rep
 
 debugSpanTM :: (ReduceMonad r s m, Show a) => String -> m a -> m a
 debugSpanTM name = _traceActionTM name Nothing
@@ -536,15 +543,15 @@ debugSpanArgsTM name args = _traceActionTM name (Just args)
 _traceActionTM :: (ReduceMonad r s m, Show a) => String -> Maybe String -> m a -> m a
 _traceActionTM name argsM f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
   bTraced <- getTMTree >>= spanTreeMsgs
-  debugSpan True name (show addr) argsM bTraced $ do
+  debugSpan True name (show addr) (toJSON <$> argsM) bTraced $ do
     res <- f
     traced <- getTMTree >>= spanTreeMsgs
-    return (res, fst traced, snd traced)
+    return (res, traced)
 
 debugInstantTM :: (ReduceMonad r s m) => String -> String -> m ()
 debugInstantTM name args = whenTraceEnabled name (return ()) $
   withAddrAndFocus $
-    \addr _ -> debugInstant True name (show addr) (Just args)
+    \addr _ -> debugInstant True name (show addr) (Just $ toJSON args)
 
 debugSpanRM :: (Common.Env r s m, Show a) => String -> (a -> Maybe Tree) -> TrCur -> m a -> m a
 debugSpanRM name = _traceActionRM name Nothing
@@ -559,10 +566,10 @@ _traceActionRM name argsM g tc f = whenTraceEnabled name f $ do
     addr = tcCanAddr tc
     bfocus = tcFocus tc
   bTraced <- spanTreeMsgs bfocus
-  debugSpan True name (show addr) argsM bTraced $ do
+  debugSpan True name (show addr) (toJSON <$> argsM) bTraced $ do
     res <- f
-    traced <- maybe (return ("", "")) spanTreeMsgs (g res)
-    return (res, fst traced, snd traced)
+    traced <- maybe (return "") spanTreeMsgs (g res)
+    return (res, traced)
 
 -- | Trace the operation.
 debugSpanOpRM :: (Common.Env r s m, Show a) => String -> TreeAddr -> m a -> m a
@@ -574,15 +581,15 @@ debugSpanArgsOpRM name args = _traceOpActionRM name (Just args)
 
 _traceOpActionRM :: (Common.Env r s m, Show a) => String -> Maybe String -> TreeAddr -> m a -> m a
 _traceOpActionRM name argsM addr f = whenTraceEnabled name f $ do
-  debugSpan True name (show addr) argsM ("", "") $ do
+  debugSpan True name (show addr) (toJSON <$> argsM) "" $ do
     res <- f
-    return (res, "", "")
+    return (res, "")
 
 debugInstantRM :: (Common.Env r s m) => String -> String -> TrCur -> m ()
 debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
   let addr = tcCanAddr tc
-  debugInstant True name (show addr) (Just args)
+  debugInstant True name (show addr) (Just $ toJSON args)
 
 debugInstantOpRM :: (Common.Env r s m) => String -> String -> TreeAddr -> m ()
 debugInstantOpRM name args addr = whenTraceEnabled name (return ()) $ do
-  debugInstant True name (show addr) (Just args)
+  debugInstant True name (show addr) (Just $ toJSON args)

@@ -1,7 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,6 +12,8 @@ module Value.Tree where
 import qualified AST
 import Common (Env)
 import Control.Monad.Except (MonadError)
+import Data.Aeson (ToJSON, object, toJSON, (.=))
+import qualified Data.Aeson.Key as Key
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
@@ -505,142 +507,101 @@ builtinMutableTable =
 -- = TreeRep =
 
 instance Show Tree where
-  show = treeFullStr 0
-
-treeToSubStr :: Int -> Bool -> Tree -> String
-treeToSubStr toff moreSub t =
-  let TreeRep symbol meta fields listedMetas = iterRepTree t defaultTreeRepBuildOption
-   in "("
-        <> ( if
-              | null symbol -> meta
-              | null meta -> symbol
-              | otherwise -> symbol <> " " <> meta
-           )
-        <> ( if null fields
-              then mempty
-              else
-                -- we need to add a newline for the fields block.
-                "\n"
-                  <> foldl
-                    ( \acc (TreeRepField label attr sub) ->
-                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
-                         in acc
-                              <> pre
-                              <> ( if moreSub
-                                    then
-                                      treeToSubStr
-                                        (length pre)
-                                        -- Some nodes can have one more level of sub-tree.
-                                        ( case treeNode sub of
-                                            TNMutable _ -> True
-                                            TNAtomCnstr _ -> True
-                                            _ -> False
-                                        )
-                                        sub
-                                    else showTreeSymbol sub
-                                 )
-                              <> ")"
-                              <> "\n"
-                    )
-                    mempty
-                    fields
-                  -- reserve spaces for the closing parenthesis.
-                  <> replicate toff ' '
-           )
-        <> ( if null listedMetas
-              then mempty
-              else
-                "\n"
-                  <> foldl
-                    ( \acc (TreeRepMeta label lmeta) ->
-                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
-                         in acc
-                              <> pre
-                              <> lmeta
-                              <> ")"
-                              <> "\n"
-                    )
-                    mempty
-                    listedMetas
-                  <> replicate toff ' '
-           )
-        <> ")"
-
-treeFullStr :: Int -> Tree -> String
-treeFullStr toff t =
-  let TreeRep symbol meta fields listedMetas = iterRepTree t defaultTreeRepBuildOption
-   in "("
-        <> ( if
-              | null symbol -> meta
-              | null meta -> symbol
-              | otherwise -> symbol <> " " <> meta
-           )
-        <> ( if null fields
-              then mempty
-              else
-                -- we need to add a newline for the fields block.
-                "\n"
-                  <> foldl
-                    ( \acc (TreeRepField label attr sub) ->
-                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
-                         in acc
-                              <> pre
-                              <> treeFullStr (length pre) sub
-                              <> ")"
-                              <> "\n"
-                    )
-                    mempty
-                    fields
-                  -- reserve spaces for the closing parenthesis.
-                  <> replicate toff ' '
-           )
-        <> ( if null listedMetas
-              then mempty
-              else
-                "\n"
-                  <> foldl
-                    ( \acc (TreeRepMeta label lmeta) ->
-                        let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
-                         in acc
-                              <> pre
-                              <> lmeta
-                              <> ")"
-                              <> "\n"
-                    )
-                    mempty
-                    listedMetas
-                  <> replicate toff ' '
-           )
-        <> ")"
-
-newtype TreeRepBuildOption = TreeRepBuildOption {trboShowMutArgs :: Bool}
-
-defaultTreeRepBuildOption :: TreeRepBuildOption
-defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True}
+  show t =
+    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+     in repToString 0 rep
 
 data TreeRep = TreeRep
-  { trSymbol :: String
-  , trMeta :: String
+  { trInfo :: String
+  , trExtraMetas :: [(String, String)]
   , trFields :: [TreeRepField]
-  , trMetas :: [TreeRepMeta]
   }
+instance ToJSON TreeRep where
+  toJSON (TreeRep info [] []) = toJSON info
+  toJSON (TreeRep info em []) = object ["__t" .= info, "__tmetas" .= mergeExtraMetas em]
+  toJSON (TreeRep info em fields) =
+    object
+      ( ["__t" .= info]
+          ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
+          ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfValue f of
+              TreeRepFieldValueSimple s -> toJSON s
+              TreeRepFieldValueRegular r -> toJSON r
+             | f <- fields
+             ]
+      )
+mergeExtraMetas :: [(String, String)] -> String
+mergeExtraMetas metas =
+  intercalate ", " [k <> ":" <> v | (k, v) <- metas]
+
+repToString :: Int -> TreeRep -> String
+repToString toff (TreeRep meta extraMetas fields) =
+  "("
+    <> meta
+    <> ( if null fields
+          then mempty
+          else
+            -- we need to add a newline for the fields block.
+            "\n"
+              <> foldl
+                ( \acc (TreeRepField label attr sub) ->
+                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> attr <> " "
+                     in acc
+                          <> pre
+                          <> ( case sub of
+                                TreeRepFieldValueSimple s -> s
+                                TreeRepFieldValueRegular r ->
+                                  repToString
+                                    (length pre)
+                                    r
+                             )
+                          <> ")"
+                          <> "\n"
+                )
+                mempty
+                fields
+              -- reserve spaces for the closing parenthesis.
+              <> replicate toff ' '
+       )
+    <> ( if null extraMetas
+          then mempty
+          else
+            "\n"
+              <> foldl
+                ( \acc (label, lmeta) ->
+                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
+                     in acc
+                          <> pre
+                          <> lmeta
+                          <> ")"
+                          <> "\n"
+                )
+                mempty
+                extraMetas
+              <> replicate toff ' '
+       )
+    <> ")"
 
 data TreeRepField = TreeRepField
   { trfLabel :: String
   , trfAttr :: String
-  , trfValue :: Tree
+  , trfValue :: TreeRepFieldValue
   }
 
-data TreeRepMeta = TreeRepMeta
-  { trmLabel :: String
-  , trmAttr :: String
+data TreeRepFieldValue = TreeRepFieldValueRegular TreeRep | TreeRepFieldValueSimple String
+
+data TreeRepBuildOption = TreeRepBuildOption
+  { trboShowMutArgs :: Bool
+  , trboRepSubFields :: Bool
   }
 
-iterRepTree :: Tree -> TreeRepBuildOption -> TreeRep
-iterRepTree t opt =
+defaultTreeRepBuildOption :: TreeRepBuildOption
+defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True, trboRepSubFields = False}
+
+buildRepTree :: Tree -> TreeRepBuildOption -> TreeRep
+buildRepTree t opt =
   let trf = buildRepTreeTN t (treeNode t) opt
    in trf
-        { trMeta =
+        { trInfo =
             ( case t of
                 IsAtom _ -> []
                 _ ->
@@ -650,41 +611,51 @@ iterRepTree t opt =
                     ++ (if treeIsCyclic t then "C," else "")
                     ++ printf "V:%d," (treeVersion t)
             )
-              ++ trMeta trf
+              ++ trInfo trf
         , trFields = trFields trf
         }
 
 buildRepTreeTN :: Tree -> TreeNode -> TreeRepBuildOption -> TreeRep
-buildRepTreeTN t tn opt = case tn of
+buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case tn of
   TNAtom leaf -> consRep (show leaf, mempty, [], [])
   -- TODO: segment
   TNBounds b -> consRep (mempty, show b, [], [])
   TNBlock blk ->
     let
-      -- The tuple is (field name, field meta, field value)
-      phFields :: [(String, String, Tree)]
+      phFields :: [TreeRepField]
       phFields =
         foldr
           ( \(j, dsf) acc ->
-              (show (BlockTASeg $ DynFieldTASeg j 0), dlabelAttr dsf, dsfLabel dsf) : acc
+              TreeRepField
+                (show (BlockTASeg $ DynFieldTASeg j 0))
+                (dlabelAttr dsf)
+                (buildFieldRepValue (dsfLabel dsf))
+                : acc
           )
           []
           (IntMap.toList $ blkDynFields blk)
           ++ map
             ( \(k, lb) ->
-                (show (BlockTASeg $ LetTASeg (TE.encodeUtf8 k)), printf ",r:%s" (show $ lbReferred lb), lbValue lb)
+                TreeRepField
+                  (show (BlockTASeg $ LetTASeg (TE.encodeUtf8 k)))
+                  (printf ",r:%s" (show $ lbReferred lb))
+                  (buildFieldRepValue (lbValue lb))
             )
             (Map.toList (blkBindings blk))
           ++ map
-            ( \(j, k) -> (show (BlockTASeg $ PatternTASeg j 0), ",cns_val:" ++ showTreeSymbol (scsValue k), scsPattern k)
+            ( \(j, k) ->
+                TreeRepField
+                  (show (BlockTASeg $ PatternTASeg j 0))
+                  (",cns_val:" ++ showTreeSymbol (scsValue k))
+                  (buildFieldRepValue (scsPattern k))
             )
             (IntMap.toList $ blkCnstrs blk)
           ++ map
             ( \(j, v) ->
-                ( show (BlockTASeg $ EmbedTASeg j)
-                , mempty
-                , embValue v
-                )
+                TreeRepField
+                  (show (BlockTASeg $ EmbedTASeg j))
+                  mempty
+                  (buildFieldRepValue (embValue v))
             )
             (IntMap.toList $ blkEmbeds blk)
 
@@ -692,8 +663,8 @@ buildRepTreeTN t tn opt = case tn of
       metas s =
         [ ("ord", intercalate ", " (map show $ blkOrdLabels blk))
         , ("perms", show $ stcPerms s)
-        , ("isConcrete", show $ stcIsConcrete s)
-        , ("orig_fields", show $ Map.keys $ blkStaticFields blk)
+        , ("isConc", show $ stcIsConcrete s)
+        , ("orig_fs", show $ Map.keys $ blkStaticFields blk)
         ]
      in
       case blk of
@@ -701,49 +672,47 @@ buildRepTreeTN t tn opt = case tn of
           consRep
             ( symbol
             , "bid:" <> show (blkID blk)
-            , consFields (phFields ++ [(show SubValTASeg, mempty, ev)])
             , []
+            , phFields ++ [TreeRepField (show SubValTASeg) mempty (buildFieldRepValue ev)]
             )
         IsBlockStruct s ->
           consRep
             ( (if stcClosed s then "#" else mempty) <> symbol
             , "bid:" <> show (blkID blk)
-            , consFields
-                ( foldr
-                    ( \label acc -> case label of
-                        BlockFieldLabel l -> buildFieldRep s l : acc
-                        BlockDynFieldOID oid ->
-                          let dsf = blkDynFields blk IntMap.! oid
-                           in case rtrString $ dsfLabel dsf of
-                                Just l -> buildFieldRep s l : acc
-                                Nothing -> acc
-                    )
-                    []
-                    (blkOrdLabels blk)
-                    ++ phFields
+            , metas s
+            , foldr
+                ( \label acc -> case label of
+                    BlockFieldLabel l -> buildFieldRep s l : acc
+                    BlockDynFieldOID oid ->
+                      let dsf = blkDynFields blk IntMap.! oid
+                       in case rtrString $ dsfLabel dsf of
+                            Just l -> buildFieldRep s l : acc
+                            Nothing -> acc
                 )
-            , consMetas (metas s)
+                []
+                (blkOrdLabels blk)
+                ++ phFields
             )
         _ -> error "buildRepTreeTN: unexpected block type"
   TNList vs ->
     let fields = zipWith (\j v -> (show (IndexTASeg j), mempty, v)) [0 ..] (lstSubs vs)
-     in consRep (symbol, mempty, consFields fields, [])
+     in consRep (symbol, mempty, [], consFields fields)
   TNDisj d ->
     let dfField = maybe [] (\v -> [(show DisjDefTASeg, mempty, v)]) (dsjDefault d)
         djFields = zipWith (\j v -> (show $ DisjRegTASeg j, mempty, v)) [0 ..] (dsjDisjuncts d)
-     in consRep (symbol, printf "dis:%s" (show $ dsjDefIndexes d), consFields dfField ++ consFields djFields, [])
+     in consRep (symbol, printf "dis:%s" (show $ dsjDefIndexes d), [], consFields dfField ++ consFields djFields)
   TNAtomCnstr c ->
     consRep
       ( symbol
       , mempty
+      , []
       , consFields
           [ ("atom", mempty, mkAtomTree (cnsAtom c))
           , ("validator", mempty, mkAtomTree $ String (T.pack $ show $ cnsValidator c))
           ]
-      , []
       )
-  TNRefCycle -> consRep (symbol, "ref-cycle", [], [])
-  TNUnifyWithRC v -> consRep (symbol, "unify-with-rc", [], [TreeRepMeta "v" (show v)])
+  TNRefCycle -> consRep (symbol, "", [], [])
+  TNUnifyWithRC v -> consRep (symbol, "", [], consFields [("rest_val", mempty, v)])
   TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
   TNMutable mut@(Mutable op _) ->
     let
@@ -754,7 +723,7 @@ buildRepTreeTN t tn opt = case tn of
       val = maybe [] (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
      in
       case op of
-        RegOp rop -> consRep (symbol, ropName rop, consFields (args ++ val), [])
+        RegOp rop -> consRep (symbol, ropName rop, [], consFields (args ++ val))
         Ref ref ->
           consRep
             ( symbol
@@ -762,10 +731,10 @@ buildRepTreeTN t tn opt = case tn of
                 (refArg ref)
                 (\x -> listToMaybe $ catMaybes [T.unpack <$> rtrString x, show <$> rtrInt x])
                 <> (", ref_vers:" <> maybe "N" show (refVers ref))
-            , consFields val
             , []
+            , consFields val
             )
-        Compreh _ -> consRep (symbol, "", consFields (args ++ val), [])
+        Compreh _ -> consRep (symbol, "", [], consFields (args ++ val))
         DisjOp d ->
           let
             terms =
@@ -779,8 +748,8 @@ buildRepTreeTN t tn opt = case tn of
                     (toList $ djoTerms d)
                 else []
            in
-            consRep (symbol, mempty, consFields (terms ++ val), [])
-        _ -> consRep (symbol, "", consFields (args ++ val), [])
+            consRep (symbol, mempty, [], consFields (terms ++ val))
+        _ -> consRep (symbol, "", [], consFields (args ++ val))
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
   TNNoValRef -> consRep (symbol, mempty, [], [])
@@ -812,20 +781,23 @@ buildRepTreeTN t tn opt = case tn of
   dlabelAttr :: DynamicField -> String
   dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 
-  buildFieldRep :: Struct -> T.Text -> (String, String, Tree)
+  buildFieldRep :: Struct -> T.Text -> TreeRepField
   buildFieldRep s label =
     case lookupStructField label s of
-      Just sf -> (T.unpack label, staticFieldMeta sf, ssfValue sf)
-      Nothing -> (T.unpack label, "", mkBottomTree "not found")
+      Just sf -> TreeRepField (T.unpack label) (staticFieldMeta sf) (buildFieldRepValue (ssfValue sf))
+      Nothing -> TreeRepField (T.unpack label) "" (buildFieldRepValue $ mkBottomTree "not found")
 
-  consRep :: (String, String, [TreeRepField], [TreeRepMeta]) -> TreeRep
-  consRep (s, m, f, l) = TreeRep s m f l
+  consRep :: (String, String, [(String, String)], [TreeRepField]) -> TreeRep
+  consRep (s, m, em, f) = TreeRep (s <> ", " <> m) em f
 
   consFields :: [(String, String, Tree)] -> [TreeRepField]
-  consFields = map (\(l, a, v) -> TreeRepField l a v)
+  consFields = map (\(l, a, v) -> TreeRepField l a (buildFieldRepValue v))
 
-  consMetas :: [(String, String)] -> [TreeRepMeta]
-  consMetas = map (\(l, a) -> TreeRepMeta l a)
+  buildFieldRepValue :: Tree -> TreeRepFieldValue
+  buildFieldRepValue fv =
+    if recurOnSub
+      then TreeRepFieldValueRegular (buildRepTree fv opt)
+      else TreeRepFieldValueSimple (showTreeSymbol fv)
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of

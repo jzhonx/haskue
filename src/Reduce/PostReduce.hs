@@ -55,7 +55,7 @@ postValidation = debugSpanTM "postValidation" $ do
   simplifyRM
 
   t <- getTMTree
-  debugSpanArgsTM "validate" (treeFullStr 0 t) $ do
+  debugSpanArgsTM "validate" (show t) $ do
     -- then validate all constraints.
     traverseTM $ withTN $ \case
       TNAtomCnstr c -> validateCnstr c
@@ -128,7 +128,7 @@ validateCnstr c = debugSpanTM "validateCnstr" $ do
   tc <- getTMCursor
   validator <- replaceSelfRef (mkAtomTree $ cnsAtom c) (raw `setTCFocus` tc)
   debugInstantTM "validateCnstr" $
-    printf "raw: %s, validator: %s" (treeFullStr 0 raw) (treeFullStr 0 validator)
+    printf "raw: %s, validator: %s" (show raw) (show validator)
 
   -- Run the validator in a sub context of an atom value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.

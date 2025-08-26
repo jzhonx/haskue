@@ -5,7 +5,7 @@ module Util where
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.State (MonadState, gets, modify)
-import Data.Aeson (ToJSON, object, toJSON, (.=))
+import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
 import Data.Text.Lazy (unpack)
@@ -48,16 +48,14 @@ data ChromeEndTrace = ChromeEndTrace
 data ChromeStartTraceArgs = ChromeStartTraceArgs
   { cstaTraceID :: Int
   , cstaAddr :: String
-  , cstaBeforeFocus :: String
-  , cstaBeforeFocusCUEVal :: String
-  , cstaCustomVal :: Maybe String
+  , cstaBeforeFocus :: Value
+  , cstaCustomVal :: Maybe Value
   }
   deriving (Eq, Show)
 
 data ChromeEndTraceArgs = ChromeEndTraceArgs
   { cetaResVal :: String
-  , cetaFocus :: String
-  , cetaFocusCUEVal :: String
+  , cetaFocus :: Value
   }
   deriving (Eq, Show)
 
@@ -71,7 +69,7 @@ data ChromeInstantTrace = ChromeInstantTrace
 data ChromeInstantTraceArgs = ChromeInstantTraceArgs
   { ctiTraceID :: Int
   , ctiAddr :: String
-  , ctiCustomVal :: Maybe String
+  , ctiCustomVal :: Maybe Value
   }
   deriving (Eq, Show)
 
@@ -102,7 +100,6 @@ instance ToJSON ChromeStartTraceArgs where
       ( [ "traceid" .= show (cstaTraceID cta)
         , "addr" .= cstaAddr cta
         , "bfcs" .= cstaBeforeFocus cta
-        , "bfcsCue" .= cstaBeforeFocusCUEVal cta
         ]
           ++ ( if isNothing (cstaCustomVal cta)
                 then []
@@ -115,7 +112,6 @@ instance ToJSON ChromeEndTraceArgs where
     object
       [ "res" .= cetaResVal cta
       , "fcs" .= cetaFocus cta
-      , "fcsCue" .= cetaFocusCUEVal cta
       ]
 
 instance ToJSON ChromeInstantTrace where
@@ -145,12 +141,12 @@ debugSpan ::
   Bool ->
   String ->
   String ->
-  Maybe String ->
-  (String, String) ->
-  m (a, String, String) ->
+  Maybe Value ->
+  Value ->
+  m (a, Value) ->
   m a
-debugSpan enable name addr args (bTraced, bTracedCUEVal) f = do
-  _ <- debugSpanStart enable name addr args bTraced bTracedCUEVal
+debugSpan enable name addr args bTraced f = do
+  _ <- debugSpanStart enable name addr args bTraced
   debugSpanExec enable name addr f
 
 debugSpanStart ::
@@ -158,44 +154,43 @@ debugSpanStart ::
   Bool ->
   String ->
   String ->
-  Maybe String ->
-  String ->
-  String ->
+  Maybe Value ->
+  Value ->
   m Trace
-debugSpanStart enable name addr args bTraced bTracedCUEVal = do
+debugSpanStart enable name addr args bTraced = do
   let msg = printf "%s, at:%s" name addr
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace enable $
     unpack
       ( encodeToLazyText
-          ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced bTracedCUEVal args)
+          ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced args)
           )
       )
   return tr
 
 debugSpanExec ::
-  (MonadState s m, HasTrace s, Show a, MonadIO m) =>
+  (MonadState s m, HasTrace s, MonadIO m, Show a) =>
   Bool ->
   String ->
   String ->
-  m (a, String, String) ->
+  m (a, Value) ->
   m a
 debugSpanExec enable name addr f = do
   let msg = printf "%s, at:%s" name addr
-  (res, focus, focusCUEVal) <- f
+  (res, focus) <- f
   tr <- newTrace
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace enable $
     unpack
       ( encodeToLazyText
-          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus focusCUEVal)
+          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (show res) focus)
           )
       )
   return res
 
 debugInstant ::
-  (MonadState s m, HasTrace s, MonadIO m) => Bool -> String -> String -> Maybe String -> m ()
+  (MonadState s m, HasTrace s, MonadIO m) => Bool -> String -> String -> Maybe Value -> m ()
 debugInstant enable name addr args = do
   start <- lastTraceID
   tr <- gets getTrace
