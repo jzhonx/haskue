@@ -57,9 +57,6 @@ data TreeNode
   | TNAtomCnstr AtomCnstr
   | -- | TNRefCycle is used to represent a reference cycle, which should be resolved in a field value node.
     TNRefCycle
-  | -- | TNUnifyWithRC represents the result of a unification operation with a reference cycle.
-    -- It contains the address of the target pointed by the reference cycle and the tree value.
-    TNUnifyWithRC Tree
   | -- | TNRefCycle represents the result of a field referencing its sub field.
     TNRefSubCycle TreeAddr
   | TNMutable Mutable
@@ -127,9 +124,6 @@ pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
 
 pattern IsRefCycle :: Tree
 pattern IsRefCycle <- TN TNRefCycle
-
-pattern IsUnifyWithRC :: Tree
-pattern IsUnifyWithRC <- TN (TNUnifyWithRC _)
 
 pattern IsRegOp :: Mutable -> RegularOp -> Tree
 pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
@@ -264,7 +258,6 @@ rtrDeterministic t = case treeNode t of
   TNList _ -> Just t
   TNDisj _ -> Just t
   TNRefCycle -> Just t
-  TNUnifyWithRC _ -> Just t
   TNRefSubCycle _ -> Just t
   TNNoValRef -> Just t
   TNBlock block
@@ -287,7 +280,6 @@ rtrNonUnion t = do
     TNList _ -> Just v
     TNBlock _ -> Just v
     TNRefCycle -> Just v
-    TNUnifyWithRC _ -> Just v
     TNDisj d | Just df <- dsjDefault d -> rtrNonUnion df
     _ -> Nothing
 
@@ -509,27 +501,22 @@ oneLinerStringOfCurTreeState t =
         s <- snapshotTree t
         buildASTExprDebug s
    in case runExcept astE of
-        Left err -> error (show err)
+        Left err -> show err
         Right expr -> exprToOneLinerStr expr
 
 -- | Create a snapshot of the tree by consolidating all mutable values to their cached values.
 snapshotTree :: (ErrorEnv m) => Tree -> m Tree
-snapshotTree t = case treeNode t of
-  TNMutable mut
-    | Just v <- getMutVal mut -> snapshotTree v
-  _ -> do
-    let subTs = subNodes t ++ rawNodes t
-    newSubTs <-
-      mapM
-        ( \(seg, st) -> do
-            r <- snapshotTree st
-            return (seg, r)
-        )
-        subTs
-    foldM
-      (\acc (seg, st) -> setSubTree seg st acc)
-      t
-      newSubTs
+snapshotTree (IsMutable mut)
+  | Just t <- getMutVal mut = snapshotTree t
+snapshotTree t = do
+  let subTs = subNodes t ++ rawNodes t
+  foldM
+    ( \acc (seg, st) -> do
+        r <- snapshotTree st
+        setSubTree seg r acc
+    )
+    t
+    subTs
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
@@ -540,7 +527,6 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle -> "RC"
-  TNUnifyWithRC _ -> "URC"
   TNRefSubCycle _ -> "RSC"
   TNMutable (Mutable op _) -> case op of
     RegOp _ -> "fn"

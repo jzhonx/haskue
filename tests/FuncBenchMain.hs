@@ -20,11 +20,10 @@ import Eval (
  )
 import qualified Eval
 import Path
-import Reduce.Mutate
 import Reduce.RMonad
 import Reduce.RefSys
-import qualified TCOps
 import qualified Value as VT
+import Value.Tree
 
 tData :: Map.Map TreeAddr [TreeAddr]
 tData =
@@ -119,9 +118,9 @@ testGetDstTC =
           root <- case rE of
             Left err -> throwError err
             Right v -> return v
-          let rootTC = TreeCursor root [(RootTASeg, mkNewTree TNTop)]
+          let rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
           let addr = addrFromString "b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
-          !startTC <- TCOps.goDownTCAddrMust addr rootTC
+          !startTC <- Cursor.goDownTCAddrMust addr rootTC
           return (vp, startTC)
     )
     ( \ ~(vp, startTC) -> bench "base" $ nfIO $ do
@@ -149,6 +148,10 @@ main =
             ]
         , bgroup
             "getDstTC"
+            [ testGetDstTC
+            ]
+        , bgroup
+            "snapshotTree"
             [ testGetDstTC
             ]
         ]

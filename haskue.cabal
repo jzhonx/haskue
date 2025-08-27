@@ -105,6 +105,7 @@ Test-Suite haskue-unit-test
   other-modules:
     SpecTest,
     NotifGraphTest,
+    TreeTest,
   build-depends:
         base ^>=4.17.0.0,
         tasty >= 0.7,
@@ -115,6 +116,8 @@ Test-Suite haskue-unit-test
         containers,
         transformers,
         directory,
+        text,
+        aeson,
   default-language: Haskell2010
 
 

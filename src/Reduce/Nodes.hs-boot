@@ -4,6 +4,7 @@ module Reduce.Nodes where
 
 import qualified Common
 import Cursor
+import Reduce.RMonad (ResolveMonad)
 import Value
 
-normalizeDisj :: (Common.EnvIO r s m) => Disj -> TrCur -> m Tree
+normalizeDisj :: (ResolveMonad r s m) => Disj -> TrCur -> m Tree

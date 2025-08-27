@@ -1,7 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -17,9 +16,7 @@ import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (get, gets, modify, runStateT)
 import Cursor
-import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
-import Data.ByteString.Builder (toLazyByteString)
-import qualified Data.ByteString.Lazy.Char8 as BS
+import Data.Aeson (ToJSON, Value, toJSON)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust, isNothing)
 import qualified Data.Set as Set
@@ -27,7 +24,6 @@ import qualified EvalExpr
 import Exception (throwErrSt)
 import NotifGraph
 import Path
-import {-# SOURCE #-} Reduce.Nodes (normalizeDisj)
 import Text.Printf (printf)
 import Util (HasTrace (..), Trace, debugInstant, debugSpan)
 import Value
@@ -45,7 +41,7 @@ type ReduceMonad r s m =
   , HasTreeCursor s
   )
 
-data RTCState = RTCstate
+data RTCState = RTCState
   { rtsTC :: TrCur
   , rtsCtx :: Common.Context
   }
@@ -69,7 +65,7 @@ instance Common.IDStore RTCState where
 
 mkRTState :: TrCur -> Int -> Trace -> RTCState
 mkRTState tc oid trace =
-  RTCstate
+  RTCState
     { rtsTC = tc
     , rtsCtx =
         Common.emptyContext
@@ -461,44 +457,6 @@ mustMutable :: (ReduceMonad r s m) => (Mutable -> m a) -> m a
 mustMutable f = withTree $ \t -> case treeNode t of
   TNMutable fn -> f fn
   _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
-
-{- | Traverse all the one-level sub nodes of the tree.
-
-For the bottom handling:
-1. It surfaces the bottom as field value.
--}
-traverseSub :: forall s r m. (ReduceMonad r s m) => m () -> m ()
-traverseSub f = withTree $ \_t -> do
-  mapM_ (\(seg, _) -> inSubTM seg f) (subNodes _t)
-
-  tc <- getTMCursor
-  let t = tcFocus tc
-  case treeNode t of
-    -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
-    TNBlock (IsBlockStruct struct) -> do
-      let errM =
-            foldl
-              ( \acc field ->
-                  if
-                    | isJust acc -> acc
-                    | IsBottom _ <- (ssfValue field) -> Just (ssfValue field)
-                    | otherwise -> Nothing
-              )
-              Nothing
-              (stcFields struct)
-      maybe (return ()) putTMTree errM
-    TNDisj dj -> do
-      newDjT <- normalizeDisj dj tc
-      modifyTMNodeWithTree newDjT
-    _ -> return ()
-
-{- | Traverse the leaves of the tree cursor in the following order
-
-1. Traverse the current node.
-2. Traverse the sub-tree with the segment.
--}
-traverseTM :: (ReduceMonad r s m) => m () -> m ()
-traverseTM f = f >> traverseSub (traverseTM f)
 
 withResolveMonad :: (ReduceMonad r s m) => (forall n. (ResolveMonad r s n) => TrCur -> n (TrCur, a)) -> m a
 withResolveMonad f = do

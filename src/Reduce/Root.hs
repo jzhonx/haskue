@@ -10,22 +10,25 @@ import Common (
   Config (..),
   Context (..),
   HasConfig (..),
+  HasContext (..),
   RefCycleDesp (..),
   RuntimeParams (..),
   emptyRefCycleDesp,
  )
 import Control.Monad (foldM, when)
 import Control.Monad.Reader (asks)
+import Control.Monad.State.Strict (get, modify, put, runStateT)
 import Cursor
+import Data.Aeson (ToJSON (..), encode)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (catMaybes, fromJust, isJust)
 import Exception (throwErrSt)
-
-import Data.Aeson (ToJSON (..), encode)
 import NotifGraph (lookupSCCAddr)
 import Path
 import Reduce.Nodes (
+  ResolvedPConjuncts (..),
+  discoverPConjs,
   reduceBlock,
   reduceCompreh,
   reduceDisj,
@@ -33,9 +36,11 @@ import Reduce.Nodes (
   resolveCloseFunc,
   resolveDisjOp,
   resolveInterpolation,
+  resolvePendingConjuncts,
  )
 import Reduce.Notif (startNotify)
 import Reduce.RMonad (
+  RTCState (..),
   ReduceMonad,
   ResolveMonad,
   debugInstantRM,
@@ -332,104 +337,6 @@ reduceArg f convert = do
     -- If the argument is already reduced, we can just return it.
     else return (convert tc)
 
-{- | Discover conjuncts from a tree node that contains conjuncts as its children.
-
-It reduces every conjunct node it finds.
--}
-discoverPConjs :: (ReduceMonad s r m) => m [Maybe TrCur]
-discoverPConjs = debugSpanAdaptTM "discoverPConjs" adapt $ do
-  conjTC <- getTMCursor
-  case tcFocus conjTC of
-    IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
-    IsBlock _ -> discoverPConsjFromBlkConj
-    _ -> do
-      reduce
-      vM <- rtrNonMut <$> getTMTree
-      return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
- where
-  adapt xs = toJSON (map (fmap (oneLinerStringOfCurTreeState . tcFocus)) xs)
-
-{- | Discover pending conjuncts from a unify operation.
-
-It recursively discovers conjuncts from the unify operation and its arguments.
-
-It reduces any mutable argument it finds.
--}
-discoverPConjsFromUnifyOp :: (ReduceMonad s r m) => m [Maybe TrCur]
-discoverPConjsFromUnifyOp = do
-  tc <- getTMCursor
-  case tc of
-    TCFocus (IsMutable mut@(MutOp (UOp _))) -> do
-      -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
-      foldM
-        ( \acc (i, _) -> do
-            subs <- inSubTM (MutArgTASeg i) discoverPConjs
-            return (acc ++ subs)
-        )
-        []
-        (zip [0 ..] (toList $ getMutArgs mut))
-    _ -> throwErrSt "discoverPConjsFromUnifyOp: not a mutable unify operation"
-
-discoverPConsjFromBlkConj :: (ReduceMonad s r m) => m [Maybe TrCur]
-discoverPConsjFromBlkConj = do
-  tc <- getTMCursor
-  case tc of
-    TCFocus (IsBlock blk) -> do
-      -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
-      -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b
-      -- If it is not, it can still have embedded values. For example, x: {a: 1, b} & {} -> x: {a:1} & b & {}
-      -- Either way, we try to normalize the embedded values.
-      embeds <-
-        foldM
-          ( \acc i -> do
-              subs <- inSubTM (BlockTASeg (EmbedTASeg i)) discoverPConjs
-              return (acc ++ subs)
-          )
-          []
-          (IntMap.keys $ blkEmbeds blk)
-
-      if hasEmptyFields blk && not (null $ blkEmbeds blk)
-        -- If the struct is an empty struct with only embedded values, we can just return the embedded values.
-        then return embeds
-        else do
-          -- Since we have normalized the embedded values, we need to remove them from the struct to prevent
-          -- normalizing them again, causing infinite loop.
-          let pureStructTC = setTCFocusTN (TNBlock $ blk{blkEmbeds = IntMap.empty}) tc
-          -- TODO: there seems no need to reduce the pure struct.
-          -- reducedPureStruct <- reduce pureStructTC
-          return (Just pureStructTC : embeds)
-    _ -> throwErrSt "discoverPConsjFromBlkConj: not a block"
-
-data ResolvedPConjuncts
-  = -- | AtomCnstrConj is created if one of the pending conjuncts is an atom and the runtime parameter
-    -- 'rpCreateCnstr' is True.
-    AtomCnstrConj AtomCnstr
-  | ResolvedConjuncts [TrCur]
-  | IncompleteConjuncts
-  deriving (Show)
-
-{- | Resolve pending conjuncts.
-
-The tree cursor must be the unify operation node.
--}
-resolvePendingConjuncts :: (ResolveMonad s r m) => [Maybe TrCur] -> TrCur -> m ResolvedPConjuncts
-resolvePendingConjuncts pconjs tc = do
-  RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
-  let r =
-        foldr
-          ( \pconj acc -> case acc of
-              ResolvedConjuncts xs -> case tcFocus <$> pconj of
-                Nothing -> IncompleteConjuncts
-                Just (IsAtom a)
-                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
-                Just _ -> ResolvedConjuncts (fromJust pconj : xs)
-              _ -> acc
-          )
-          (ResolvedConjuncts [])
-          pconjs
-  debugInstantRM "resolvePendingConjuncts" (printf "resolved: %s" (show r)) tc
-  return r
-
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: (ReduceMonad s r m) => ResolvedPConjuncts -> m ()
 handleResolvedPConjsForUnifyMut IncompleteConjuncts = return ()
@@ -444,17 +351,8 @@ handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = do
     _ -> throwErrSt "handleResolvedPConjsForUnifyMut: not a mutable tree"
 handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
   tc <- getTMCursor
-  r <- unifyNormalizedTCs conjs tc
-  handleMutRes (Just r) True
-
--- | Handle the resolved pending conjuncts for mutable trees.
-handleResolvedPConjsForStruct :: (ResolveMonad s r m) => ResolvedPConjuncts -> TrCur -> m (Maybe Tree)
-handleResolvedPConjsForStruct IncompleteConjuncts _ = return Nothing
-handleResolvedPConjsForStruct (AtomCnstrConj ac) _ = return $ Just $ mkAtomCnstrTree ac
-handleResolvedPConjsForStruct (ResolvedConjuncts [conj]) _ = return $ Just $ tcFocus conj
-handleResolvedPConjsForStruct (ResolvedConjuncts conjs) tc = do
-  r <- unifyNormalizedTCs conjs tc
-  return $ Just r
+  rM <- unifyNormalizedTCs conjs tc
+  handleMutRes rM True
 
 reduceRefCycles :: (ReduceMonad s r m) => [TreeAddr] -> m ()
 reduceRefCycles [] = throwErrSt "reduceRefCycles: empty address list"
@@ -464,17 +362,17 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
     ( \addr -> inRemoteTM addr $ do
         withResolveMonad $ \tc -> do
           rTC <- populateRCRefs addrs [tcCanAddr tc] tc
-
           debugInstantRM
             "reduceRefCycles"
             (printf "new populated-tc: %s" (show $ tcFocus rTC))
             rTC
-
           return (rTC, ())
+
         x <- getTMCursor
         debugInstantTM
           "reduceRefCycles"
-          (printf "new populated: %s" (show $ tcFocus x))
+          (printf "tree with RCs has been populated to: %s" (show $ tcFocus x))
+
         reduce
         withResolveMonad $ \tc -> do
           rTC <- populateRCRefsWithTop tc

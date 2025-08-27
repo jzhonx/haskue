@@ -31,6 +31,7 @@ import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
 import Value.Disj
+import Value.DisjoinOp
 import Value.List
 import Value.Mutable
 import Value.Tree
@@ -101,12 +102,11 @@ buildASTExprExt t = case treeNode t of
           return $
             AST.litCons $
               AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
-        DisjOp _ -> maybe (throwExprNotFound t) return (treeExpr t)
+        DisjOp dop -> maybe (buildDisjoinOpASTExpr dop t) return (treeExpr t)
         UOp u -> maybe (buildUnifyOpASTExpr u) return (treeExpr t)
         Itp _ -> maybe (throwExprNotFound t) return (treeExpr t)
   TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
-  TNRefCycle -> buildRCASTExpr "RC" t
-  TNUnifyWithRC _ -> buildRCASTExpr "URC" t
+  TNRefCycle -> buildRCASTExpr t
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
   TNNoValRef -> maybe (throwExprNotFound t) return (treeExpr t)
 
@@ -115,13 +115,25 @@ throwExprNotFound t = do
   let rep = buildRepTree t defaultTreeRepBuildOption
   throwErrSt $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
 
-buildRCASTExpr :: (BEnv r s m) => String -> Tree -> m AST.Expression
-buildRCASTExpr s t =
+buildRCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
+buildRCASTExpr t =
   maybe
     ( do
         isDebug <- asks getIsDebug
         if isDebug
-          then return (AST.idCons $ pure $ T.pack s)
+          then return (AST.idCons $ pure $ T.pack "RC")
+          else throwExprNotFound t
+    )
+    return
+    (treeExpr t)
+
+buildURCASTExpr :: (BEnv r s m) => Tree -> Tree -> m AST.Expression
+buildURCASTExpr t inner =
+  maybe
+    ( do
+        isDebug <- asks getIsDebug
+        if isDebug
+          then buildUnifyOpASTExpr (UnifyOp $ Seq.fromList [mkNewTree TNRefCycle, inner])
           else throwExprNotFound t
     )
     return
@@ -346,6 +358,27 @@ buildUnifyOpASTExpr op
         leftMost
         rest
   | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
+
+buildDisjoinOpASTExpr :: (BEnv r s m) => DisjoinOp -> Tree -> m AST.Expression
+buildDisjoinOpASTExpr op t = do
+  isDebug <- asks getIsDebug
+  if isDebug
+    then go
+    else throwExprNotFound t
+ where
+  go
+    | fstDisj Seq.:<| rest <- djoTerms op
+    , -- The rest should be a non-empty sequence.
+      _ Seq.:|> _ <- rest = do
+        leftMost <- buildASTExprExt (dstValue fstDisj)
+        foldM
+          ( \acc x -> do
+              right <- buildASTExprExt (dstValue x)
+              return $ pure $ AST.ExprBinaryOp (pure AST.Disjoin) acc right
+          )
+          leftMost
+          rest
+    | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
 buildRegOpASTExpr :: (BEnv r s m) => RegularOp -> m AST.Expression
 buildRegOpASTExpr op = case ropOpType op of

@@ -72,7 +72,6 @@ instance Eq TreeNode where
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
   (==) TNRefCycle TNRefCycle = True
-  (==) (TNUnifyWithRC v1) (TNUnifyWithRC v2) = v1 == v2
   (==) _ _ = False
 
 instance Eq Tree where

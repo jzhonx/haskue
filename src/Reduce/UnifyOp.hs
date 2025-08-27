@@ -28,6 +28,7 @@ import Reduce.RMonad (
   ResolveMonad,
   allocRMObjID,
   debugInstantRM,
+  debugSpanMTreeArgsRM,
   debugSpanTreeArgsRM,
   debugSpanTreeRM,
  )
@@ -98,17 +99,19 @@ It handles the following cases:
 1. If all trees are structurally cyclic, return a bottom tree.
 2. Reference cycle.
 
+If RC can not be cancelled, then the result is Nothing.
+
 The order of the unification is the same as the order of the trees.
 
 The tree cursor is only used to know where the unification is happening.
 -}
-unifyNormalizedTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree
-unifyNormalizedTCs tcs unifyTC = debugSpanTreeArgsRM "unifyNormalizedTCs" (showTCList tcs) unifyTC $ do
+unifyNormalizedTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m (Maybe Tree)
+unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (showTCList tcs) unifyTC $ do
   when (length tcs < 2) $ throwErrSt "not enough arguments for unification"
 
   let isAllCyclic = all (treeIsCyclic . tcFocus) tcs
   if isAllCyclic
-    then return $ mkBottomTree "structural cycle"
+    then return $ Just $ mkBottomTree "structural cycle"
     else do
       debugInstantRM "unifyNormalizedTCs" (printf "normalized: %s" (show tcs)) unifyTC
       let (revRegs, rcs) =
@@ -116,7 +119,6 @@ unifyNormalizedTCs tcs unifyTC = debugSpanTreeArgsRM "unifyNormalizedTCs" (showT
               ( \tc (accRegs, accRCs) ->
                   case treeNode (tcFocus tc) of
                     TNRefCycle{} -> (accRegs, tc : accRCs)
-                    TNUnifyWithRC v -> ((v `setTCFocus` tc) : accRegs, (mkNewTree TNRefCycle `setTCFocus` tc) : accRCs)
                     _ -> (tc : accRegs, accRCs)
               )
               ([], [])
@@ -126,15 +128,15 @@ unifyNormalizedTCs tcs unifyTC = debugSpanTreeArgsRM "unifyNormalizedTCs" (showT
         | null revRegs, null rcs -> throwErrSt "no trees to unify"
         | null revRegs
         , canCancelRC unifyTC ->
-            return $ mkNewTree TNTop
+            return $ Just $ mkNewTree TNTop
         | null revRegs ->
             -- If there are no regular trees, we should return the first reference cycle.
-            return $ tcFocus (head rcs)
+            return $ Just $ tcFocus (head rcs)
         | otherwise -> do
             r <- mergeTCs (reverse revRegs) unifyTC
             if canCancelRC unifyTC
-              then return r
-              else return $ mkNewTree $ TNUnifyWithRC r
+              then return $ Just r
+              else return Nothing
 
 {- | Check if the reference cycle can be cancelled.
 
@@ -180,7 +182,7 @@ unifyForNewConjs uts tc = do
           )
           uts
   case sequence xs of
-    Just ys -> Just <$> unifyNormalizedTCs ys tc
+    Just ys -> unifyNormalizedTCs ys tc
     Nothing -> return Nothing
 
 mergeTCs :: (ResolveMonad s r m) => [TrCur] -> TrCur -> m Tree

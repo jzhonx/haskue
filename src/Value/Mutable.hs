@@ -132,6 +132,9 @@ mkBinaryOp op l r =
 mkDisjoinOp :: Seq.Seq DisjTerm -> Mutable
 mkDisjoinOp ts = withEmptyMutFrame $ DisjOp $ DisjoinOp{djoTerms = ts}
 
+mkDisjoinOpFromList :: [DisjTerm] -> Mutable
+mkDisjoinOpFromList ts = mkDisjoinOp (Seq.fromList ts)
+
 mkUnifyOp :: [Tree] -> Mutable
 mkUnifyOp ts = withEmptyMutFrame $ UOp $ emptyUnifyOp{ufConjuncts = Seq.fromList ts}
 

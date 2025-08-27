@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -10,13 +11,14 @@ import Common (ctxNotifGraph)
 import Control.Monad (when)
 import Cursor
 import qualified Data.IntMap.Strict as IntMap
+import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import NotifGraph
 import Path
-import Reduce.Nodes (checkLabelsPerm)
+import Reduce.Nodes (checkLabelsPerm, normalizeDisj)
 import Reduce.RMonad (
   ReduceMonad,
   ResolveMonad,
@@ -25,17 +27,16 @@ import Reduce.RMonad (
   debugSpanArgsTM,
   debugSpanTM,
   debugSpanTreeRM,
-  evalExprRM,
   getRMContext,
   getRMUnreferredLets,
   getTMCursor,
   getTMTree,
+  inSubTM,
   modifyTMNodeWithTree,
   modifyTMTN,
   putRMContext,
   putTMCursor,
   putTMTree,
-  traverseTM,
   withTN,
   withTree,
  )
@@ -209,3 +210,41 @@ validatePermItem blk p = debugSpanTM "validatePermItem" $ do
   labelToText (BlockDynFieldOID i) = do
     df <- IntMap.lookup i (blkDynFields blk)
     rtrString (dsfLabel df)
+
+{- | Traverse all the one-level sub nodes of the tree.
+
+For the bottom handling:
+1. It surfaces the bottom as field value.
+-}
+traverseSub :: forall s r m. (ReduceMonad r s m) => m () -> m ()
+traverseSub f = withTree $ \_t -> do
+  mapM_ (\(seg, _) -> inSubTM seg f) (subNodes _t)
+
+  tc <- getTMCursor
+  let t = tcFocus tc
+  case treeNode t of
+    -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
+    TNBlock (IsBlockStruct struct) -> do
+      let errM =
+            foldl
+              ( \acc field ->
+                  if
+                    | isJust acc -> acc
+                    | IsBottom _ <- (ssfValue field) -> Just (ssfValue field)
+                    | otherwise -> Nothing
+              )
+              Nothing
+              (stcFields struct)
+      maybe (return ()) putTMTree errM
+    TNDisj dj -> do
+      newDjT <- normalizeDisj dj tc
+      modifyTMNodeWithTree newDjT
+    _ -> return ()
+
+{- | Traverse the leaves of the tree cursor in the following order
+
+1. Traverse the current node.
+2. Traverse the sub-tree with the segment.
+-}
+traverseTM :: (ReduceMonad r s m) => m () -> m ()
+traverseTM f = f >> traverseSub (traverseTM f)

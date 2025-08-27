@@ -7,14 +7,19 @@
 
 module Reduce.Nodes where
 
+import Common (Config (..), HasConfig (..), HasContext (..), RuntimeParams (..))
 import qualified Common
 import Control.Monad (foldM, unless, void, when)
+import Control.Monad.Reader (asks)
+import Control.Monad.State.Strict (get, modify, put, runStateT)
+
 import Control.Monad.Reader (local)
 import Cursor
+import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -22,34 +27,43 @@ import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import Path
 import Reduce.RMonad (
+  RTCState (..),
   ReduceMonad,
   ResolveMonad,
   addRMUnreferredLet,
   debugInstantRM,
   debugInstantTM,
+  debugSpanAdaptTM,
+  debugSpanArgsTM,
   debugSpanMTreeArgsRM,
   debugSpanMTreeRM,
   debugSpanSimpleRM,
   debugSpanTM,
-  debugSpanTreeArgsRM,
   debugSpanTreeRM,
+  delMutValRecvs,
+  deleteTMRCDesp,
+  getRMContext,
+  getRMGlobalVers,
   getRMUnreferredLets,
+  getTMAbsAddr,
   getTMCursor,
+  getTMRCDesp,
   getTMTree,
+  inRemoteTM,
   inSubTM,
-  increaseRMGlobalVers,
+  modifyRMContext,
   modifyTMTN,
   modifyTMTree,
+  putRMContext,
+  putTMCursor,
   putTMTree,
+  setIsReducingRC,
+  treeDepthCheck,
+  withResolveMonad,
  )
 import Reduce.RefSys (searchTCIdentInPar)
-import {-# SOURCE #-} Reduce.Root (
-  discoverPConjs,
-  handleResolvedPConjsForStruct,
-  reduce,
-  resolvePendingConjuncts,
- )
-import Reduce.UnifyOp (UTree (..), mergeBinUTrees)
+import {-# SOURCE #-} Reduce.Root (reduce)
+import Reduce.UnifyOp (UTree (..), mergeBinUTrees, unifyNormalizedTCs)
 import Text.Printf (printf)
 import Value
 
@@ -85,6 +99,13 @@ reduceUnifiedBlock unified = do
         _ -> x
       reduce
   handleBlockReducedRes (tcFocus tc)
+
+-- | Handle the resolved pending conjuncts for mutable trees.
+handleResolvedPConjsForStruct :: (ResolveMonad s r m) => ResolvedPConjuncts -> TrCur -> m (Maybe Tree)
+handleResolvedPConjsForStruct IncompleteConjuncts _ = return Nothing
+handleResolvedPConjsForStruct (AtomCnstrConj ac) _ = return $ Just $ mkAtomCnstrTree ac
+handleResolvedPConjsForStruct (ResolvedConjuncts [conj]) _ = return $ Just $ tcFocus conj
+handleResolvedPConjsForStruct (ResolvedConjuncts conjs) tc = unifyNormalizedTCs conjs tc
 
 {- | Handle the result of the block reduction.
 
@@ -333,7 +354,7 @@ handleStructMutObjChange seg = do
       | EmbedTASeg i <- seg -> debugSpanTM
           (printf "handleStructMutObjChange, seg: %s" (show seg))
           $ do
-            void increaseRMGlobalVers
+            -- void increaseRMGlobalVers
             let embed = blkEmbeds blk IntMap.! i
             rmdEmbedStruct <- case embValue embed of
               IsBlock embBlock@(IsBlockStruct _) -> do
@@ -617,6 +638,119 @@ closeTree a =
     -- TNMutable _ -> throwErrSt "TODO"
     _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
+{- | Discover conjuncts from a tree node that contains conjuncts as its children.
+
+It reduces every conjunct node it finds.
+-}
+discoverPConjs :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConjs = discoverPConjsOpt True
+
+{- | Discover conjuncts from a tree node that contains conjuncts as its children without reducing them.
+
+It should be used after reduceArgs has been called.
+-}
+discoverPConjsFromTC :: (ResolveMonad s r m) => TrCur -> m [Maybe TrCur]
+discoverPConjsFromTC tc = do
+  curCtx <- getRMContext
+  (a, updated) <- runStateT (discoverPConjsOpt False) (RTCState tc curCtx)
+  modify $ \s -> setContext s (rtsCtx updated)
+  return a
+
+-- | Discover conjuncts from a tree node that contains conjuncts as its children.
+discoverPConjsOpt :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
+discoverPConjsOpt toReduce = debugSpanAdaptTM "discoverPConjs" adapt $ do
+  conjTC <- getTMCursor
+  case tcFocus conjTC of
+    IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp toReduce
+    IsBlock _ -> discoverPConsjFromBlkConj toReduce
+    _ -> do
+      when toReduce reduce
+      vM <- rtrNonMut <$> getTMTree
+      return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
+ where
+  adapt xs = toJSON (map (fmap (oneLinerStringOfCurTreeState . tcFocus)) xs)
+
+{- | Discover pending conjuncts from a unify operation.
+
+It recursively discovers conjuncts from the unify operation and its arguments.
+
+It reduces any mutable argument it finds.
+-}
+discoverPConjsFromUnifyOp :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
+discoverPConjsFromUnifyOp toReduce = do
+  tc <- getTMCursor
+  case tc of
+    TCFocus (IsMutable mut@(MutOp (UOp _))) -> do
+      -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
+      foldM
+        ( \acc (i, _) -> do
+            subs <- inSubTM (MutArgTASeg i) (discoverPConjsOpt toReduce)
+            return (acc ++ subs)
+        )
+        []
+        (zip [0 ..] (toList $ getMutArgs mut))
+    _ -> throwErrSt "discoverPConjsFromUnifyOp: not a mutable unify operation"
+
+discoverPConsjFromBlkConj :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
+discoverPConsjFromBlkConj toReduce = do
+  tc <- getTMCursor
+  case tc of
+    TCFocus (IsBlock blk) -> do
+      -- If the struct is a sole conjunct of a unify operation, it will have its embedded values as newly discovered
+      -- conjuncts. For example, x: {a: 1, b} -> x: {a: 1} & b
+      -- If it is not, it can still have embedded values. For example, x: {a: 1, b} & {} -> x: {a:1} & b & {}
+      -- Either way, we try to normalize the embedded values.
+      embeds <-
+        foldM
+          ( \acc i -> do
+              subs <- inSubTM (BlockTASeg (EmbedTASeg i)) (discoverPConjsOpt toReduce)
+              return (acc ++ subs)
+          )
+          []
+          (IntMap.keys $ blkEmbeds blk)
+
+      if hasEmptyFields blk && not (null $ blkEmbeds blk)
+        -- If the struct is an empty struct with only embedded values, we can just return the embedded values.
+        then return embeds
+        else do
+          -- Since we have normalized the embedded values, we need to remove them from the struct to prevent
+          -- normalizing them again, causing infinite loop.
+          let pureStructTC = setTCFocusTN (TNBlock $ blk{blkEmbeds = IntMap.empty}) tc
+          -- TODO: there seems no need to reduce the pure struct.
+          -- reducedPureStruct <- reduce pureStructTC
+          return (Just pureStructTC : embeds)
+    _ -> throwErrSt "discoverPConsjFromBlkConj: not a block"
+
+data ResolvedPConjuncts
+  = -- | AtomCnstrConj is created if one of the pending conjuncts is an atom and the runtime parameter
+    -- 'rpCreateCnstr' is True.
+    AtomCnstrConj AtomCnstr
+  | ResolvedConjuncts [TrCur]
+  | IncompleteConjuncts
+  deriving (Show)
+
+{- | Resolve pending conjuncts.
+
+The tree cursor must be the unify operation node.
+-}
+resolvePendingConjuncts :: (ResolveMonad s r m) => [Maybe TrCur] -> TrCur -> m ResolvedPConjuncts
+resolvePendingConjuncts pconjs tc = do
+  RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
+  let r =
+        foldr
+          ( \pconj acc -> case acc of
+              ResolvedConjuncts xs -> case tcFocus <$> pconj of
+                Nothing -> IncompleteConjuncts
+                Just (IsAtom a)
+                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
+                Just _ -> ResolvedConjuncts (fromJust pconj : xs)
+              _ -> acc
+          )
+          (ResolvedConjuncts [])
+          pconjs
+  debugInstantRM "resolvePendingConjuncts" (printf "resolved: %s" (show r)) tc
+  return r
+
 resolveDisjOp :: (ResolveMonad s r m) => Bool -> TrCur -> m (Maybe Tree)
 resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
   debugSpanMTreeRM "resolveDisjOp" disjOpTC $ do
@@ -646,8 +780,8 @@ resolveDisjOp _ _ = throwErrSt "resolveDisjOp: focus is not a disjunction operat
 4. If the disjunct is left with only one element, return the value.
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
-normalizeDisj :: (Common.EnvIO r s m) => Disj -> TrCur -> m Tree
-normalizeDisj d tc = do
+normalizeDisj :: (ResolveMonad r s m) => Disj -> TrCur -> m Tree
+normalizeDisj d tc = debugSpanTreeRM "normalizeDisj" tc $ do
   flattened <- flattenDisjunction d
   final <- rewriteUnwantedDisjuncts flattened tc
   let
@@ -680,7 +814,7 @@ D2: ⟨v1, d1⟩ | ⟨v2, d2⟩ => ⟨v1|v2, d1|d2⟩
 
 TODO: more efficiency
 -}
-flattenDisjunction :: (Common.EnvIO r s m) => Disj -> m Disj
+flattenDisjunction :: (ResolveMonad r s m) => Disj -> m Disj
 flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
   (newIndexes, newDisjs) <- foldM flatten ([], []) (zip [0 ..] disjuncts)
@@ -714,33 +848,55 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
 
 {- | Remove or rewrite unwanted disjuncts.
 
-Unwanted disjuncts include
+Unwanted disjuncts include:
 
 * duplicate default disjuncts
 * duplicate disjuncts
 * bottom disjuncts
-* RC disjuncts
 
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
-rewriteUnwantedDisjuncts :: (Common.EnvIO r s m) => Disj -> TrCur -> m Disj
+rewriteUnwantedDisjuncts :: (ResolveMonad r s m) => Disj -> TrCur -> m Disj
 rewriteUnwantedDisjuncts (Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) tc = do
-  let (newIndexes, newDisjs) = foldl go ([], []) (zip [0 ..] disjuncts)
-   in return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
+  (newIndexes, newDisjs) <- foldM go ([], []) (zip [0 ..] disjuncts)
+  return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = newDisjs}
  where
   defValues = map (disjuncts !!) dfIdxes
   origDefIdxesSet = Set.fromList dfIdxes
 
-  go (accIs, accXs) (idx, _x) =
-    let
-      x = case treeNode _x of
-        TNUnifyWithRC v
-          | Just True <- do
-              seg <- tcFocusSeg tc
-              return $ isSegReferable seg ->
-              v
-        _ -> _x
+  go (accIs, accXs) (idx, _x) = do
+    let djTC = mkSubTC (DisjRegTASeg idx) _x tc
+    pconjs <- discoverPConjsFromTC djTC
+    resolved <- resolvePendingConjuncts pconjs djTC
+    case resolved of
+      ResolvedConjuncts xs -> do
+        -- Remove the conjunct if it is a reference cycle and its segment is referable.
+        let ys =
+              filter
+                ( \x -> case tcFocus x of
+                    IsRefCycle
+                      | Just True <- do
+                          seg <- tcFocusSeg tc
+                          return $ isSegReferable seg ->
+                          False
+                    _ -> True
+                )
+                xs
+        debugInstantRM "rewriteUnwantedDisjuncts" (printf "disjunct %d: %s, resolved to: %s" idx (show _x) (show ys)) tc
+        case ys of
+          [] -> return (accIs, accXs)
+          [y] -> return $ updateDisjuncts (accIs, accXs) (idx, tcFocus y)
+          _ -> do
+            yM <- unifyNormalizedTCs ys djTC
+            return $
+              maybe
+                (updateDisjuncts (accIs, accXs) (idx, _x))
+                (\y -> updateDisjuncts (accIs, accXs) (idx, y))
+                yM
+      _ -> return $ updateDisjuncts (accIs, accXs) (idx, _x)
 
+  updateDisjuncts (accIs, accXs) (idx, x) =
+    let
       notAddedDisj = not (x `elem` accXs)
       -- If the disjunct is equal to the default value. Note that it does not mean the disjunct is the original default
       -- value.

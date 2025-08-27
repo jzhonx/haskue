@@ -233,7 +233,6 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
           ]
       )
   TNRefCycle -> consRep (symbol, "", [], [])
-  TNUnifyWithRC v -> consRep (symbol, "", [], consFields [("rest_val", mempty, v)])
   TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
   TNMutable mut@(Mutable op _) ->
     let
@@ -318,4 +317,4 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
   buildFieldRepValue fv =
     if recurOnSub
       then TreeRepFieldValueRegular (buildRepTree fv opt)
-      else TreeRepFieldValueSimple (oneLinerStringOfCurTreeState fv)
+      else TreeRepFieldValueSimple (printf "orig:%s, v: %s" (showTreeSymbol fv) (oneLinerStringOfCurTreeState fv))
