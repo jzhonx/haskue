@@ -146,9 +146,9 @@ debugSpan ::
   (a -> Value) ->
   m (a, Value) ->
   m a
-debugSpan enable name addr args bTraced g f = do
+debugSpan enable name addr args bTraced g action = do
   _ <- debugSpanStart enable name addr args bTraced
-  debugSpanExec enable name addr g f
+  debugSpanExec enable name addr g action
 
 debugSpanStart ::
   (MonadState s m, HasTrace s, MonadIO m) =>

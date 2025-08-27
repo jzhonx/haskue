@@ -37,7 +37,7 @@ import Reduce.RMonad (
  )
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (TreeRepBuildOption (..), buildRepTree, defaultTreeRepBuildOption)
+import Value.Util.TreeRep (TreeRepBuildOption (..), buildRepTree, defaultTreeRepBuildOption, repToString)
 
 data DerefResult = DerefResult
   { drValue :: Maybe Tree
@@ -600,12 +600,12 @@ We are visiting the tree in a DFS manner.
 -}
 populateRCRefs :: (ResolveMonad s r m) => [TreeAddr] -> [TreeAddr] -> TrCur -> m TrCur
 populateRCRefs rcAddrs populatingRCs nodeTC =
-  debugSpanAdaptRM
-    "populateRCRefs"
-    (Just . tcFocus)
-    (\x -> let rep = buildRepTree (tcFocus x) (defaultTreeRepBuildOption{trboRepSubFields = True}) in toJSON rep)
-    nodeTC
-    $ traverseTCSimple (\x -> subNodes x ++ rawNodes x) go nodeTC
+  debugSpanAdaptRM "populateRCRefs" (Just . tcFocus) (const (toJSON ())) nodeTC $
+    do
+      r <- traverseTCSimple (\x -> subNodes x ++ rawNodes x) go nodeTC
+      let t = tcFocus r
+      debugInstantRM "populateRCRefs" (printf "result is %s" (show t)) nodeTC
+      return r
  where
   go tc = case tcFocus tc of
     IsRef mut ref@(Reference{refArg = ra@(RefPath{})}) -> do

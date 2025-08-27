@@ -465,16 +465,6 @@ withResolveMonad f = do
   putTMCursor r
   return a
 
--- data TraceTree = TraceFullTree Tree | TraceTree Tree
-
--- instance ToJSON TraceTree where
---   toJSON (TraceFullTree t) =
---     let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
---      in toJSON rep
---   toJSON (TraceTree t) =
---     let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = False})
---      in toJSON rep
-
 whenTraceEnabled :: (Common.EnvIO r s m) => String -> m a -> m a -> m a
 whenTraceEnabled name f traced = do
   Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec, Common.stTraceFilter = tFilter}} <-
@@ -548,7 +538,7 @@ debugSpanArgsAdaptRM name args = _traceActionRM name (Just args)
 
 _traceActionRM ::
   (Common.EnvIO r s m) => String -> Maybe String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
-_traceActionRM name argsM g conv tc action = whenTraceEnabled name action $ do
+_traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name action $ do
   let
     addr = tcCanAddr tc
     bfocus = tcFocus tc
@@ -557,7 +547,7 @@ _traceActionRM name argsM g conv tc action = whenTraceEnabled name action $ do
   bTraced <- spanTreeMsgs isRoot bfocus
   debugSpan True name (show addr) (toJSON <$> argsM) bTraced conv $ do
     res <- action
-    traced <- maybe (return "") (spanTreeMsgs isRoot) (g res)
+    traced <- maybe (return "") (spanTreeMsgs isRoot) (fetchTree res)
     return (res, traced)
 
 debugInstantRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m ()

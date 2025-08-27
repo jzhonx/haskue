@@ -91,6 +91,13 @@ data LabelAttr = LabelAttr
   }
   deriving (Show, Eq, Generic, NFData)
 
+defaultLabelAttr :: LabelAttr
+defaultLabelAttr =
+  LabelAttr
+    { lbAttrCnstr = SFCRegular
+    , lbAttrIsIdent = True
+    }
+
 data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
   deriving (Eq, Ord, Show, Generic, NFData)
 
@@ -108,6 +115,14 @@ data Field = Field
   -- ^ A set of object IDs that have been unified with base raw value.
   }
   deriving (Generic)
+
+mkdefaultField :: Tree -> Field
+mkdefaultField t =
+  Field
+    { ssfValue = t
+    , ssfAttr = defaultLabelAttr
+    , ssfObjects = Set.empty
+    }
 
 data LetBinding = LetBinding
   { lbReferred :: Bool

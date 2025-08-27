@@ -22,6 +22,7 @@ treeTests =
     testGroup
       "treetests"
       [ testSnapshotTree
+      , testSnapshotTree2
       ]
 
 testSnapshotTree :: TestTree
@@ -45,7 +46,12 @@ testSnapshotTree =
       Left err -> assertFailure err
       Right t -> return t
 
+    putStrLn "-----"
     let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+    putStrLn (repToString 0 rep)
+
+    putStrLn "-----"
+    let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = False})
     putStrLn (repToString 0 rep)
 
     putStrLn "-----"
@@ -53,6 +59,42 @@ testSnapshotTree =
 
     putStrLn "-----"
     let astE = buildASTExprDebug t
+    case runExcept astE of
+      Left err -> assertFailure err
+      Right expr -> putStrLn $ exprToOneLinerStr expr
+
+testSnapshotTree2 :: TestTree
+testSnapshotTree2 =
+  testCase "snapshot_tree2" $ do
+    let
+      refAWithRC = setMutVal (Just (mkNewTree TNRefCycle)) (withEmptyMutFrame $ Ref $ emptyIdentRef $ T.pack "a")
+
+      b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomTree (Int 2))))
+      b2 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "y") (mkdefaultField (mkAtomTree (Int 2))))
+      unify1 = mkUnifyOp [mkNewTree (TNMutable refAWithRC), b2]
+      disj1 = mkDisjoinOpFromList [DisjTerm False b1, DisjTerm False (mkNewTree (TNMutable unify1))]
+      tester = mkNewTree (TNMutable disj1)
+
+    putStrLn "-----"
+    putStrLn (oneLinerStringOfCurTreeState tester)
+
+    putStrLn "-----"
+    let rep = buildRepTree tester (defaultTreeRepBuildOption{trboRepSubFields = True})
+    putStrLn (repToString 0 rep)
+
+    x <- case runExcept (snapshotTree tester) of
+      Left err -> assertFailure err
+      Right x -> return x
+
+    putStrLn "-----"
+    let rep = buildRepTree x (defaultTreeRepBuildOption{trboRepSubFields = False})
+    putStrLn (repToString 0 rep)
+
+    putStrLn "-----"
+    BL.putStr (encode rep)
+
+    putStrLn "-----"
+    let astE = buildASTExprDebug x
     case runExcept astE of
       Left err -> assertFailure err
       Right expr -> putStrLn $ exprToOneLinerStr expr

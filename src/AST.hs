@@ -76,19 +76,21 @@ newtype SourceFile = SourceFile
   }
   deriving (Eq, Show)
 
+type Expression = ASTN ExprNode
+
 data ExprNode
   = ExprUnaryExpr UnaryExpr
   | ExprBinaryOp BinaryOp Expression Expression
   deriving (Eq, Show, Generic, NFData)
 
-type Expression = ASTN ExprNode
+type UnaryExpr = ASTN UnaryExprNode
 
 data UnaryExprNode
   = UnaryExprPrimaryExpr PrimaryExpr
   | UnaryExprUnaryOp UnaryOp UnaryExpr
   deriving (Eq, Show, Generic, NFData)
 
-type UnaryExpr = ASTN UnaryExprNode
+type PrimaryExpr = ASTN PrimaryExprNode
 
 data PrimaryExprNode
   = PrimExprOperand Operand
@@ -97,18 +99,18 @@ data PrimaryExprNode
   | PrimExprArguments PrimaryExpr [Expression]
   deriving (Eq, Show, Generic, NFData)
 
-type PrimaryExpr = ASTN PrimaryExprNode
+type Selector = ASTN SelectorNode
 
 data SelectorNode
   = IDSelector Identifier
   | StringSelector SimpleStringLit
   deriving (Eq, Show, Generic, NFData)
 
-type Selector = ASTN SelectorNode
+type Index = ASTN IndexNode
 
 newtype IndexNode = Index Expression deriving (Eq, Show, Generic, NFData)
 
-type Index = ASTN IndexNode
+type Operand = ASTN OperandNode
 
 data OperandNode
   = OpLiteral Literal
@@ -116,7 +118,7 @@ data OperandNode
   | OperandName OperandName
   deriving (Eq, Show, Generic, NFData)
 
-type Operand = ASTN OperandNode
+type Literal = ASTN LiteralNode
 
 data LiteralNode
   = StringLit StringLit
@@ -130,11 +132,11 @@ data LiteralNode
   | ListLit ElementList
   deriving (Eq, Show, Generic, NFData)
 
-type Literal = ASTN LiteralNode
+type StructLit = ASTN StructLitNode
 
 newtype StructLitNode = StructLit [Declaration] deriving (Eq, Show, Generic, NFData)
 
-type StructLit = ASTN StructLitNode
+type Declaration = ASTN DeclarationNode
 
 data DeclarationNode
   = FieldDecl FieldDecl
@@ -143,29 +145,27 @@ data DeclarationNode
   | DeclLet LetClause
   deriving (Eq, Show, Generic, NFData)
 
-type Declaration = ASTN DeclarationNode
+type FieldDecl = ASTN FieldDeclNode
 
 data FieldDeclNode
   = Field [Label] Expression
   deriving (Eq, Show, Generic, NFData)
 
-type FieldDecl = ASTN FieldDeclNode
+type EllipsisDecl = ASTN EllipsisDeclNode
 
 newtype EllipsisDeclNode = Ellipsis (Maybe Expression) deriving (Eq, Show, Generic, NFData)
 
-type EllipsisDecl = ASTN EllipsisDeclNode
+type ElementList = ASTN ElementListNode
 
 newtype ElementListNode = EmbeddingList [Embedding] deriving (Eq, Show, Generic, NFData)
 
-type ElementList = ASTN ElementListNode
+type OperandName = ASTN OperandNameNode
 
 newtype OperandNameNode = Identifier Identifier deriving (Eq, Show, Generic, NFData)
 
-type OperandName = ASTN OperandNameNode
+type StringLit = ASTN StringLitNode
 
 newtype StringLitNode = SimpleStringL SimpleStringLit deriving (Eq, Show, Generic, NFData)
-
-type StringLit = ASTN StringLitNode
 
 type SimpleStringLit = ASTN SimpleStringLitNode
 

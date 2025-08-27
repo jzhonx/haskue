@@ -34,6 +34,7 @@ import Value.Disj
 import Value.DisjoinOp
 import Value.List
 import Value.Mutable
+import Value.Reference
 import Value.Tree
 import Value.UnifyOp
 import Value.Util.TreeRep
@@ -92,19 +93,7 @@ buildASTExprExt t = case treeNode t of
         disjunctsToAST (dsjDisjuncts dj)
       else
         disjunctsToAST (defDisjunctsFromDisj dj)
-  TNMutable mut@(Mutable mop _)
-    | Just v <- getMutVal mut -> buildASTExprExt v
-    | otherwise -> case mop of
-        RegOp op -> maybe (buildRegOpASTExpr op) return (treeExpr t)
-        Ref _ -> maybe (throwExprNotFound t) return (treeExpr t)
-        Compreh cph -> do
-          ce <- buildComprehASTExpr cph
-          return $
-            AST.litCons $
-              AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
-        DisjOp dop -> maybe (buildDisjoinOpASTExpr dop t) return (treeExpr t)
-        UOp u -> maybe (buildUnifyOpASTExpr u) return (treeExpr t)
-        Itp _ -> maybe (throwExprNotFound t) return (treeExpr t)
+  TNMutable mut -> buildMutableASTExpr mut t
   TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
   TNRefCycle -> buildRCASTExpr t
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
@@ -115,6 +104,30 @@ throwExprNotFound t = do
   let rep = buildRepTree t defaultTreeRepBuildOption
   throwErrSt $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
 
+buildMutableASTExpr :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
+buildMutableASTExpr mut t
+  | Just v <- getMutVal mut = buildASTExprExt v
+  | otherwise = do
+      -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
+      -- not ready.
+      isDebug <- asks getIsDebug
+      if isDebug
+        then buildMutableASTExprForce mut t
+        else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
+
+buildMutableASTExprForce :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
+buildMutableASTExprForce (Mutable mop _) t = case mop of
+  RegOp op -> buildRegOpASTExpr op
+  Ref ref -> buildRefASTExpr ref
+  Compreh cph -> do
+    ce <- buildComprehASTExpr cph
+    return $
+      AST.litCons $
+        AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
+  DisjOp dop -> buildDisjoinOpASTExpr dop t
+  UOp u -> buildUnifyOpASTExpr u
+  Itp _ -> throwExprNotFound t
+
 buildRCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
 buildRCASTExpr t =
   maybe
@@ -122,18 +135,6 @@ buildRCASTExpr t =
         isDebug <- asks getIsDebug
         if isDebug
           then return (AST.idCons $ pure $ T.pack "RC")
-          else throwExprNotFound t
-    )
-    return
-    (treeExpr t)
-
-buildURCASTExpr :: (BEnv r s m) => Tree -> Tree -> m AST.Expression
-buildURCASTExpr t inner =
-  maybe
-    ( do
-        isDebug <- asks getIsDebug
-        if isDebug
-          then buildUnifyOpASTExpr (UnifyOp $ Seq.fromList [mkNewTree TNRefCycle, inner])
           else throwExprNotFound t
     )
     return
@@ -379,6 +380,42 @@ buildDisjoinOpASTExpr op t = do
           leftMost
           rest
     | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
+
+buildRefASTExpr :: (BEnv r s m) => Reference -> m AST.Expression
+buildRefASTExpr ref = case refArg ref of
+  RefPath var xs -> do
+    let varE =
+          AST.PrimExprOperand
+            AST.<<^>> AST.OperandName
+            AST.<<^>> AST.Identifier
+            AST.<^> pure var
+    r <-
+      foldM
+        ( \acc x -> do
+            xe <- buildASTExprExt x
+            return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index xe)
+        )
+        varE
+        xs
+    return $ AST.ExprUnaryExpr AST.<^> pure (AST.UnaryExprPrimaryExpr r)
+  RefIndex xs -> do
+    case xs of
+      (x Seq.:<| rest) -> do
+        xe <- buildASTExprExt x
+        v <- case AST.anVal xe of
+          AST.ExprUnaryExpr
+            (AST.anVal -> AST.UnaryExprPrimaryExpr v) -> return v
+          _ -> throwErrSt "the first element of RefIndex should be a primary expression"
+        r <-
+          foldM
+            ( \acc y -> do
+                ye <- buildASTExprExt y
+                return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index ye)
+            )
+            v
+            rest
+        return $ AST.ExprUnaryExpr AST.<^> pure (AST.UnaryExprPrimaryExpr r)
+      _ -> throwErrSt "RefIndex should have at least one element"
 
 buildRegOpASTExpr :: (BEnv r s m) => RegularOp -> m AST.Expression
 buildRegOpASTExpr op = case ropOpType op of
