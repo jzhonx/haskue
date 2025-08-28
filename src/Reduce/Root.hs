@@ -119,11 +119,16 @@ reduceTCFocus = withTreeDepthLimit $ do
     TNBlock _ -> reduceBlock
     TNList l -> reduceList l
     TNDisj d -> reduceDisj d
+    TNUnifyWithRC r -> do
+      putTMTree r
+      reduce
+      newR <- getTMTree
+      modifyTMTN (TNUnifyWithRC newR)
     _ -> return ()
 
   modifyTMTree $ \t ->
     (setTN orig (treeNode t))
-      { treeIsCyclic = treeIsCyclic orig || treeIsCyclic t
+      { treeIsSCyclic = treeIsSCyclic orig || treeIsSCyclic t
       }
 
 reduceMutable :: (ReduceMonad s r m) => Mutable -> m ()
@@ -150,7 +155,7 @@ reduceMutable (Mutable mop _) = case mop of
               -- 2. The ref had been marked as cyclic. For example, reducing f when reducing the y.
               -- { f: {out: null | f },  y: f }
               handleRefRes isIterBinding (Just $ mkBottomTree "structural cycle")
-              modifyTMTree $ \t -> t{treeIsCyclic = True}
+              modifyTMTree $ \t -> t{treeIsSCyclic = True}
             RCDetected rcs -> do
               debugInstantTM "reduceMutable" (printf "detected ref cycle: %s, oldDesp: %s" (show rcs) (show oldDespM))
               -- If we are not in the reducing reference cycles, this contains two cases:

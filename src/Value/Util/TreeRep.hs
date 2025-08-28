@@ -135,7 +135,7 @@ buildRepTree t opt =
                   (if treeRecurClosed t then "#," else "")
                     ++ (if isJust (treeExpr t) then "" else "N,")
                     ++ (if treeIsRootOfSubTree t then "R," else "")
-                    ++ (if treeIsCyclic t then "C," else "")
+                    ++ (if treeIsSCyclic t then "SC," else "")
                     ++ printf "V:%d," (treeVersion t)
             )
               ++ trInfo trf
@@ -239,6 +239,7 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
           ]
       )
   TNRefCycle -> consRep (symbol, "", [], [])
+  TNUnifyWithRC t -> consRep (symbol, "", [], consFields [("inner", "", t)])
   TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
   TNMutable mut@(Mutable op _) ->
     let

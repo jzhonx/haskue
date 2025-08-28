@@ -269,7 +269,7 @@ markCyclic val = do
   mark :: (Common.EnvIO r s m) => TrCur -> m Tree
   mark tc = do
     let focus = tcFocus tc
-    return $ focus{treeIsCyclic = True}
+    return $ focus{treeIsSCyclic = True}
 
 {- | Copy the concrete value from the target cursor if the target value has already been reduced.
 

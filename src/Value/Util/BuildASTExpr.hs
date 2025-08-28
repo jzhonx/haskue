@@ -96,6 +96,7 @@ buildASTExprExt t = case treeNode t of
   TNMutable mut -> buildMutableASTExpr mut t
   TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
   TNRefCycle -> buildRCASTExpr t
+  TNUnifyWithRC inner -> buildUWCASTExpr inner
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
   TNNoValRef -> maybe (throwExprNotFound t) return (treeExpr t)
 
@@ -139,6 +140,13 @@ buildRCASTExpr t =
     )
     return
     (treeExpr t)
+
+buildUWCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
+buildUWCASTExpr inner = do
+  isDebug <- asks getIsDebug
+  if isDebug
+    then buildUnifyOpASTExpr (UnifyOp (Seq.fromList [mkNewTree TNRefCycle, inner]))
+    else throwExprNotFound (mkNewTree (TNUnifyWithRC inner))
 
 buildStructASTExpr :: (BEnv r s m) => Block -> m AST.Expression
 buildStructASTExpr block@(IsBlockStruct s) = do

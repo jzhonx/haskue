@@ -57,7 +57,9 @@ data TreeNode
   | TNAtomCnstr AtomCnstr
   | -- | TNRefCycle is used to represent a reference cycle, which should be resolved in a field value node.
     TNRefCycle
-  | -- | TNRefCycle represents the result of a field referencing its sub field.
+  | -- | TNUnifyWithRC represents the result of unifying with a reference cycle.
+    TNUnifyWithRC Tree
+  | -- | TNRefSubCycle represents the result of a field referencing its sub field.
     TNRefSubCycle TreeAddr
   | TNMutable Mutable
   | -- | TNNoValRef is used to represent a reference that is copied from another expression but has no value
@@ -77,8 +79,8 @@ data Tree = Tree
   -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
   , treeIsRootOfSubTree :: !Bool
   -- ^ treeIsRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parenthesis.
-  , treeIsCyclic :: !Bool
-  -- ^ treeIsCyclic is used to indicate whether the tree is cyclic.
+  , treeIsSCyclic :: !Bool
+  -- ^ treeIsSCyclic is used to indicate whether the tree is cyclic.
   -- According to the spec,
   -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
   -- of its descendants are also regarded as cyclic.
@@ -153,6 +155,7 @@ subTree seg t = case (seg, treeNode t) of
   (_, TNDisj d)
     | DisjDefTASeg <- seg -> dsjDefault d
     | DisjRegTASeg i <- seg -> dsjDisjuncts d `indexList` i
+  (_, TNUnifyWithRC r) -> subTree seg r
   _ -> Nothing
 
 {- | Set the sub tree with the given segment and new tree.
@@ -258,6 +261,7 @@ rtrDeterministic t = case treeNode t of
   TNList _ -> Just t
   TNDisj _ -> Just t
   TNRefCycle -> Just t
+  TNUnifyWithRC _ -> Just t
   TNRefSubCycle _ -> Just t
   TNNoValRef -> Just t
   TNBlock block
@@ -401,7 +405,7 @@ emptyTree =
     , treeExpr = Nothing
     , treeRecurClosed = False
     , treeIsRootOfSubTree = False
-    , treeIsCyclic = False
+    , treeIsSCyclic = False
     , treeVersion = 0
     }
 
@@ -527,6 +531,7 @@ showTreeSymbol t = case treeNode t of
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle -> "RC"
+  TNUnifyWithRC _ -> "UWR"
   TNRefSubCycle _ -> "RSC"
   TNMutable (Mutable op _) -> case op of
     RegOp _ -> "fn"
