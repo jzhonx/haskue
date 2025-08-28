@@ -647,20 +647,5 @@ populateRCRefs rcAddrs populatingRCs nodeTC =
                         newMut = setMutVal rM mut
                     return $ setTN (tcFocus tc) (TNMutable newMut)
     -- Invalidate the mutable so that later reduce can re-reduce it.
-    IsMutable mut -> do
-      let newMut = setMutVal Nothing mut
-          newTree = setTN (tcFocus tc) (TNMutable newMut)
-      return newTree
-    _ -> return $ tcFocus tc
-
--- | Populate the references that are part of the reference cycles with either RefCycle or the actual value.
-populateRCRefsWithTop :: (ResolveMonad s r m) => TrCur -> m TrCur
-populateRCRefsWithTop = traverseTCSimple (\x -> subNodes x ++ rawNodes x) go
- where
-  go tc = case tcFocus tc of
-    IsRef mut ref@(Reference{refArg = RefPath{}})
-      | Just IsRefCycle <- getMutVal mut -> do
-          debugInstantRM "populateRCRefs" (printf "visiting ref %s" (show ref)) tc
-          let newMut = setMutVal (Just (mkNewTree TNTop)) mut
-          return $ setTN (tcFocus tc) (TNMutable newMut)
+    IsMutable _ -> return $ invalidateMutable (tcFocus tc)
     _ -> return $ tcFocus tc

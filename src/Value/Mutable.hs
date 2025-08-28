@@ -40,6 +40,8 @@ pattern MutOp op <- Mutable op _
 
 newtype MutFrame = MutFrame
   { mfValue :: Maybe Tree
+  -- ^ Mutable value in general should not be another mutable, especially during notifying a reference to take a
+  -- concrete value to update itself.
   }
   deriving (Generic)
 

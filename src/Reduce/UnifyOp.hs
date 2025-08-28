@@ -984,10 +984,9 @@ consolidateRefs ptc = do
                     let isInner = isPrefix blockAddr tarIdentAddr && blockAddr /= tarIdentAddr
                     return $
                       if
-                        | isInner ->
-                            -- If the reference is an inner reference, we set the tree version to 0 to mark it
-                            -- un-reduced and set the mutable value to Nothing.
-                            (setTN focus{treeVersion = 0} $ TNMutable $ setMutVal Nothing mut, True)
+                        -- If the reference is an inner reference, we set the tree version to 0 to mark it
+                        -- un-reduced and set the mutable value to Nothing.
+                        | isInner -> (invalidateMutable focus, True)
                         | Just v <- getMutVal mut -> (v, False)
                         | otherwise -> (setTN focus TNNoValRef, False)
                 )

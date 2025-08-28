@@ -57,13 +57,13 @@ import Reduce.RMonad (
   setIsReducingRC,
   treeDepthCheck,
   withResolveMonad,
+  withTree,
  )
 import Reduce.RefSys (
   CycleDetection (..),
   DerefResult (DerefResult),
   index,
   populateRCRefs,
-  populateRCRefsWithTop,
  )
 import qualified Reduce.RegOps as RegOps
 import Reduce.UnifyOp (unifyNormalizedTCs)
@@ -369,9 +369,7 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
           (printf "tree with RCs has been populated to: %s" (show $ tcFocus x))
 
         reduce
-        withResolveMonad $ \tc -> do
-          rTC <- populateRCRefsWithTop tc
-          return (rTC, ())
+        withTree $ \t -> maintainRefValidStatus t >>= putTMTree
     )
     addrs
   deleteTMRCDesp

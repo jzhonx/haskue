@@ -726,18 +726,19 @@ The tree cursor must be the unify operation node.
 resolvePendingConjuncts :: (ResolveMonad s r m) => [Maybe TrCur] -> TrCur -> m ResolvedPConjuncts
 resolvePendingConjuncts pconjs tc = do
   RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
+  refMaintained <- maintainRefValidStatus (tcFocus tc)
   let r =
         foldr
           ( \pconj acc -> case acc of
               ResolvedConjuncts xs -> case tcFocus <$> pconj of
                 Nothing -> IncompleteConjuncts
                 Just (IsAtom a)
-                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
+                  | cc -> AtomCnstrConj (AtomCnstr a refMaintained)
                 Just _ -> ResolvedConjuncts (fromJust pconj : xs)
               IncompleteConjuncts -> case tcFocus <$> pconj of
                 -- If we discover an atom conjunct, we can ignore the incomplete conjuncts.
                 Just (IsAtom a)
-                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
+                  | cc -> AtomCnstrConj (AtomCnstr a refMaintained)
                 _ -> IncompleteConjuncts
               _ -> acc
           )
