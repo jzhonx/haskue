@@ -87,14 +87,11 @@ buildASTExprExt t = case treeNode t of
         )
         (lstSubs l)
     return $ AST.litCons $ AST.ListLit AST.<^> pure (AST.EmbeddingList ls)
-  TNDisj dj ->
-    if null (dsjDefault dj)
-      then
-        disjunctsToAST (dsjDisjuncts dj)
-      else
-        disjunctsToAST (defDisjunctsFromDisj dj)
+  TNDisj dj
+    | null (dsjDefault dj) -> disjunctsToAST (dsjDisjuncts dj)
+    | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
   TNMutable mut -> buildMutableASTExpr mut t
-  TNAtomCnstr c -> maybe (buildASTExprExt $ cnsValidator c) return (treeExpr t)
+  TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   TNRefCycle -> buildRCASTExpr t
   TNUnifyWithRC inner -> buildUWCASTExpr inner
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
@@ -115,6 +112,14 @@ buildMutableASTExpr mut t
       if isDebug
         then buildMutableASTExprForce mut t
         else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
+
+buildAtomCnstrASTExpr :: (BEnv r s m) => AtomCnstr -> Tree -> m AST.Expression
+buildAtomCnstrASTExpr ac t = do
+  isDebug <- asks getIsDebug
+  if isDebug
+    then buildArgsExpr "atomCnstr" [mkAtomTree $ cnsAtom ac, cnsValidator ac]
+    -- TODO: for non-core type, we should not build AST in non-debug mode.
+    else maybe (buildASTExprExt $ cnsValidator ac) return (treeExpr t)
 
 buildMutableASTExprForce :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
 buildMutableASTExprForce (Mutable mop _) t = case mop of
@@ -461,10 +466,4 @@ buildArgsExpr func ts = do
     AST.ExprUnaryExpr
       AST.<<^>> AST.UnaryExprPrimaryExpr
       AST.<^> pure
-        ( AST.PrimExprArguments
-            ( AST.PrimExprOperand
-                AST.<<^>> AST.OpLiteral
-                AST.<^> AST.strToLit (T.pack func)
-            )
-            ets
-        )
+        (AST.PrimExprArguments (AST.idToPrimExpr (pure $ T.pack func)) ets)

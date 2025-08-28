@@ -343,7 +343,10 @@ litCons x =
     <^> x
 
 idCons :: Identifier -> Expression
-idCons x = ExprUnaryExpr <<^>> UnaryExprPrimaryExpr <<^>> PrimExprOperand <<^>> OperandName <<^>> Identifier <^> x
+idCons x = ExprUnaryExpr <<^>> UnaryExprPrimaryExpr <^> idToPrimExpr x
+
+idToPrimExpr :: Identifier -> PrimaryExpr
+idToPrimExpr x = PrimExprOperand <<^>> OperandName <<^>> Identifier <^> x
 
 unaryOpCons :: UnaryOp -> Expression -> Maybe Expression
 unaryOpCons op (ASTN{anVal = ExprUnaryExpr e}) =

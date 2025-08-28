@@ -280,14 +280,23 @@ copyConcrete tarTC@(TCFocus (Tree{treeVersion = 0})) = do
   debugInstantRM "copyConcrete" "target tree is not reduced" tarTC
   return Nothing
 copyConcrete tarTC = do
-  let raw = case treeNode (tcFocus tarTC) of
-        TNAtomCnstr c -> mkAtomTree $ cnsAtom c
-        _ -> tcFocus tarTC
-  r <- checkRefDef raw
-  let concrete = rtrNonMut r
-  debugInstantRM "copyConcrete" (printf "target concrete is %s" (show concrete)) tarTC
-  return concrete
+  let
+    target = tcFocus tarTC
+    concreteTarM = rtrNonMut target
+
+  r <-
+    maybe
+      (return Nothing)
+      (\concreteTar -> Just <$> checkRefDef (fetchAtomFromAC concreteTar))
+      concreteTarM
+
+  debugInstantRM "copyConcrete" (printf "target concrete is %s" (show r)) tarTC
+  return r
  where
+  fetchAtomFromAC x = case x of
+    IsAtomCnstr c -> mkAtomTree $ cnsAtom c
+    _ -> x
+
   checkRefDef val = do
     -- Check if the referenced value has recurClose.
     let

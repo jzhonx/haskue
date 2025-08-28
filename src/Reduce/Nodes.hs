@@ -8,10 +8,9 @@
 module Reduce.Nodes where
 
 import Common (Config (..), HasConfig (..), HasContext (..), RuntimeParams (..))
-import qualified Common
 import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (get, modify, put, runStateT)
+import Control.Monad.State.Strict (modify, runStateT)
 
 import Control.Monad.Reader (local)
 import Cursor
@@ -34,42 +33,28 @@ import Reduce.RMonad (
   debugInstantOpRM,
   debugInstantRM,
   debugInstantTM,
-  debugSpanAdaptRM,
   debugSpanAdaptTM,
   debugSpanArgsAdaptRM,
-  debugSpanArgsTM,
   debugSpanMTreeArgsRM,
   debugSpanMTreeRM,
   debugSpanSimpleRM,
   debugSpanTM,
   debugSpanTreeRM,
-  delMutValRecvs,
-  deleteTMRCDesp,
   getRMContext,
-  getRMGlobalVers,
   getRMUnreferredLets,
-  getTMAbsAddr,
   getTMCursor,
-  getTMRCDesp,
   getTMTree,
-  inRemoteTM,
   inSubTM,
-  modifyRMContext,
   modifyTMTN,
   modifyTMTree,
-  putRMContext,
-  putTMCursor,
   putTMTree,
-  setIsReducingRC,
-  treeDepthCheck,
-  withResolveMonad,
  )
 import Reduce.RefSys (searchTCIdentInPar)
 import {-# SOURCE #-} Reduce.Root (reduce)
 import Reduce.UnifyOp (UTree (..), mergeBinUTrees, unifyNormalizedTCs)
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (treeToFullRepString, treeToRepString)
+import Value.Util.TreeRep (treeToRepString)
 
 -- ###
 -- Reduce tree nodes
@@ -749,6 +734,11 @@ resolvePendingConjuncts pconjs tc = do
                 Just (IsAtom a)
                   | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
                 Just _ -> ResolvedConjuncts (fromJust pconj : xs)
+              IncompleteConjuncts -> case tcFocus <$> pconj of
+                -- If we discover an atom conjunct, we can ignore the incomplete conjuncts.
+                Just (IsAtom a)
+                  | cc -> AtomCnstrConj (AtomCnstr a (tcFocus tc))
+                _ -> IncompleteConjuncts
               _ -> acc
           )
           (ResolvedConjuncts [])
