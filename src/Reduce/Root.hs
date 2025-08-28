@@ -132,7 +132,7 @@ reduceTCFocus = withTreeDepthLimit $ do
       }
 
 reduceMutable :: (ReduceMonad s r m) => Mutable -> m ()
-reduceMutable (Mutable mop _) = case mop of
+reduceMutable mut@(Mutable mop _) = case mop of
   Ref ref -> do
     (_, isReady) <- reduceArgs reduce rtrNonMut
     oldDespM <- getTMRCDesp
@@ -140,8 +140,10 @@ reduceMutable (Mutable mop _) = case mop of
       | not isReady -> return ()
       | Just oldDesp <- oldDespM
       , rcdIsReducingRCs oldDesp -> do
-          -- Since the value of the reference was populated without reducing it, we need to reduce it now.
-          inSubTM SubValTASeg reduce
+          -- Since the value of the reference was populated without reducing it, we need to reduce it if there is a
+          -- mutval populated.
+          when (isJust $ getMutVal mut) $
+            inSubTM SubValTASeg reduce
       | otherwise -> do
           tc <- getTMCursor
           (DerefResult rM tarAddr cd isIterBinding) <- index ref tc

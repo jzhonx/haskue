@@ -360,7 +360,9 @@ The sub tree must exist.
 inSubTM :: (ReduceMonad r s m) => TASeg -> m a -> m a
 inSubTM seg f = do
   ok <- descendTMSeg seg
-  unless ok $ throwErrSt $ printf "descend to %s failed" (show seg)
+  unless ok $ do
+    t <- getTMTree
+    throwErrSt $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
   r <- f
   propUpTM
   return r

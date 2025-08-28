@@ -1,0 +1,10 @@
+-- cycles_ref7_1 --
+a: b
+b: a
+// referencing a cycle
+c: b
+-- exp --
+a: _
+b: _
+c: _
+
