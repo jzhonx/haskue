@@ -54,6 +54,12 @@ mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas =
   intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
+treeToRepString :: Tree -> String
+treeToRepString t = repToString 0 (buildRepTree t defaultTreeRepBuildOption)
+
+treeToFullRepString :: Tree -> String
+treeToFullRepString t = repToString 0 (buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True}))
+
 repToString :: Int -> TreeRep -> String
 repToString toff (TreeRep meta extraMetas fields) =
   "("

@@ -375,7 +375,7 @@ buildDisjoinOpASTExpr op t = do
         foldM
           ( \acc x -> do
               right <- buildASTExprExt (dstValue x)
-              return $ pure $ AST.ExprBinaryOp (pure AST.Disjoin) acc right
+              return $ pure $ AST.ExprBinaryOp (pure AST.DisjoinDebugOp) acc right
           )
           leftMost
           rest

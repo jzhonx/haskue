@@ -7,22 +7,15 @@
 module Reduce.Root where
 
 import Common (
-  Config (..),
   Context (..),
-  HasConfig (..),
-  HasContext (..),
   RefCycleDesp (..),
-  RuntimeParams (..),
   emptyRefCycleDesp,
  )
 import Control.Monad (foldM, when)
-import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (get, modify, put, runStateT)
 import Cursor
-import Data.Aeson (ToJSON (..), encode)
+import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
-import qualified Data.IntMap.Strict as IntMap
-import Data.Maybe (catMaybes, fromJust, isJust)
+import Data.Maybe (catMaybes, isJust)
 import Exception (throwErrSt)
 import NotifGraph (lookupSCCAddr)
 import Path
@@ -40,13 +33,10 @@ import Reduce.Nodes (
  )
 import Reduce.Notif (startNotify)
 import Reduce.RMonad (
-  RTCState (..),
   ReduceMonad,
-  ResolveMonad,
   debugInstantRM,
   debugInstantTM,
   debugSpanAdaptTM,
-  debugSpanArgsTM,
   debugSpanTM,
   delMutValRecvs,
   deleteTMRCDesp,

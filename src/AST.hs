@@ -210,27 +210,6 @@ type IdentifierNode = T.Text
 
 type Identifier = ASTN IdentifierNode
 
-data RelOpNode
-  = NE
-  | LT
-  | LE
-  | GT
-  | GE
-  | ReMatch
-  | ReNotMatch
-  deriving (Eq, Ord, Generic, NFData)
-
-instance Show RelOpNode where
-  show NE = "!="
-  show LT = "<"
-  show LE = "<="
-  show GT = ">"
-  show GE = ">="
-  show ReMatch = "=~"
-  show ReNotMatch = "!~"
-
-type RelOp = ASTN RelOpNode
-
 data EmbeddingNode = EmbedComprehension Comprehension | AliasExpr Expression
   deriving (Eq, Show, Generic, NFData)
 
@@ -266,6 +245,8 @@ data LetClauseNode = LetClause Identifier Expression
 
 type LetClause = ASTN LetClauseNode
 
+type BinaryOp = ASTN BinaryOpNode
+
 data BinaryOpNode
   = Unify
   | Disjoin
@@ -275,9 +256,9 @@ data BinaryOpNode
   | Div
   | Equ
   | BinRelOp RelOpNode
+  | -- | Disjunction operation is used in debugging and should not appear in the final AST.
+    DisjoinDebugOp
   deriving (Eq, Ord, Generic, NFData)
-
-type BinaryOp = ASTN BinaryOpNode
 
 instance Show BinaryOpNode where
   show Unify = "&"
@@ -288,6 +269,20 @@ instance Show BinaryOpNode where
   show Div = "/"
   show Equ = "=="
   show (BinRelOp op) = show op
+  show DisjoinDebugOp = "|_o"
+
+getBinaryOpNodePrec :: BinaryOpNode -> Int
+getBinaryOpNodePrec Unify = 2
+getBinaryOpNodePrec Disjoin = 1
+getBinaryOpNodePrec Add = 6
+getBinaryOpNodePrec Sub = 6
+getBinaryOpNodePrec Mul = 7
+getBinaryOpNodePrec Div = 7
+getBinaryOpNodePrec Equ = 4
+getBinaryOpNodePrec (BinRelOp _) = 4
+getBinaryOpNodePrec DisjoinDebugOp = 1
+
+type UnaryOp = ASTN UnaryOpNode
 
 data UnaryOpNode
   = Plus
@@ -297,14 +292,35 @@ data UnaryOpNode
   | UnaRelOp RelOpNode
   deriving (Eq, Ord, Generic, NFData)
 
-type UnaryOp = ASTN UnaryOpNode
-
 instance Show UnaryOpNode where
   show Plus = "+"
   show Minus = "-"
   show Not = "!"
   show Star = "*"
   show (UnaRelOp op) = show op
+
+-- type RelOp = ASTN RelOpNode
+
+data RelOpNode
+  = NE
+  | LT
+  | LE
+  | GT
+  | GE
+  | ReMatch
+  | ReNotMatch
+  deriving (Eq, Ord, Generic, NFData)
+
+instance Show RelOpNode where
+  show NE = "!="
+  show LT = "<"
+  show LE = "<="
+  show GT = ">"
+  show GE = ">="
+  show ReMatch = "=~"
+  show ReNotMatch = "!~"
+
+data Operator = OpBinary BinaryOpNode | OpUnary UnaryOpNode
 
 data Quote = SingleQuote | DoubleQuote deriving (Eq)
 
@@ -385,10 +401,18 @@ exprBld e@ASTN{anComments = cmts} = do
   buildForE = case anVal e of
     ExprUnaryExpr ue -> unaryBld ue
     ExprBinaryOp op e1 e2 -> do
-      b1 <- exprBld e1
-      b2 <- exprBld e2
+      b1 <- wrapParensIfNeeded e1 op
+      b2 <- wrapParensIfNeeded e2 op
       return $
         b1 <> char7 ' ' <> binopBld op <> char7 ' ' <> b2
+
+  wrapParensIfNeeded operand@(anVal -> (ExprBinaryOp op1 _ _)) op = do
+    operandB <- exprBld operand
+    return $
+      if getBinaryOpNodePrec (anVal op1) < getBinaryOpNodePrec (anVal op)
+        then char7 '(' <> operandB <> char7 ')'
+        else operandB
+  wrapParensIfNeeded operand _ = exprBld operand
 
 binopBld :: BinaryOp -> Builder
 binopBld op = string7 (show (anVal op :: BinaryOpNode))
