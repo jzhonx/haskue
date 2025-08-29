@@ -133,6 +133,9 @@ instance Show BlockTASeg where
 instance ToJSON BlockTASeg where
   toJSON seg = toJSON $ show seg
 
+strToStringTASeg :: String -> TASeg
+strToStringTASeg s = BlockTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))
+
 getStrFromSeg :: BlockTASeg -> Maybe String
 getStrFromSeg (StringTASeg s) = Just (show s)
 getStrFromSeg (LetTASeg s) = Just (show s)
@@ -193,7 +196,7 @@ addrFromList segs = TreeAddr (V.fromList segs)
 -- | This is mostly used for testing purpose.
 addrFromStringList :: [String] -> TreeAddr
 addrFromStringList segs =
-  TreeAddr (V.fromList $ map (\s -> BlockTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))) segs)
+  TreeAddr (V.fromList $ map strToStringTASeg segs)
 
 {- | This is mostly used for testing purpose.
 

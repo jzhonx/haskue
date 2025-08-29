@@ -84,7 +84,6 @@ data Tree = Tree
   -- According to the spec,
   -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
   -- of its descendants are also regarded as cyclic.
-  , treeVersion :: !Int
   }
   deriving (Generic)
 
@@ -166,7 +165,7 @@ setSubTree :: (ErrorEnv m) => TASeg -> Tree -> Tree -> m Tree
 
 -- | If the segment is EphemeralTASeg, we do not set the sub-tree.
 setSubTree EphemeralTASeg _ parT = return parT
-setSubTree seg subT@Tree{treeVersion = vers} parT = do
+setSubTree seg subT parT = do
   n <- case (seg, treeNode parT) of
     (BlockTASeg s, TNBlock blk) -> updateParStruct blk s
     (SubValTASeg, TNBlock blk) -> return $ TNBlock blk{blkValue = BlockEmbed subT}
@@ -183,7 +182,7 @@ setSubTree seg subT@Tree{treeVersion = vers} parT = do
           return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
     (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
     _ -> throwErrSt insertErrMsg
-  return $ parT{treeNode = n, treeVersion = max vers (treeVersion parT)}
+  return parT{treeNode = n}
  where
   structToTN :: Struct -> Block -> TreeNode
   structToTN s blk = TNBlock blk{blkValue = BlockStruct s}
@@ -406,7 +405,6 @@ emptyTree =
     , treeRecurClosed = False
     , treeIsRootOfSubTree = False
     , treeIsSCyclic = False
-    , treeVersion = 0
     }
 
 mkNewTree :: TreeNode -> Tree
@@ -548,7 +546,7 @@ maintainRefValidStatus t = do
     _ -> return x
 
 invalidateMutable :: Tree -> Tree
-invalidateMutable t@(IsMutable mut) = (setTN t (TNMutable $ setMutVal Nothing mut)){treeVersion = 0}
+invalidateMutable t@(IsMutable mut) = setTN t (TNMutable $ setMutVal Nothing mut)
 invalidateMutable t = t
 
 showTreeSymbol :: Tree -> String

@@ -27,6 +27,7 @@ import Reduce.RMonad (
   ResolveMonad,
   debugInstantRM,
   debugSpanAdaptRM,
+  debugSpanArgsAdaptRM,
   descendTM,
   getRMContext,
   getTMAbsAddr,
@@ -276,9 +277,6 @@ markCyclic val = do
 The tree cursor is the target cursor without the copied raw value.
 -}
 copyConcrete :: (ResolveMonad s r m) => TrCur -> m (Maybe Tree)
-copyConcrete tarTC@(TCFocus (Tree{treeVersion = 0})) = do
-  debugInstantRM "copyConcrete" "target tree is not reduced" tarTC
-  return Nothing
 copyConcrete tarTC = do
   let
     target = tcFocus tarTC
@@ -609,7 +607,7 @@ We are visiting the tree in a DFS manner.
 -}
 populateRCRefs :: (ResolveMonad s r m) => [TreeAddr] -> [TreeAddr] -> TrCur -> m TrCur
 populateRCRefs rcAddrs populatingRCs nodeTC =
-  debugSpanAdaptRM "populateRCRefs" (Just . tcFocus) (const (toJSON ())) nodeTC $
+  debugSpanArgsAdaptRM "populateRCRefs" (printf "rcAddrs: %s" (show rcAddrs)) (Just . tcFocus) (const (toJSON ())) nodeTC $
     do
       r <- traverseTCSimple (\x -> subNodes x ++ rawNodes x) go nodeTC
       let t = tcFocus r
@@ -624,11 +622,14 @@ populateRCRefs rcAddrs populatingRCs nodeTC =
         Nothing -> return $ tcFocus tc
         Just fp -> do
           r <- locateRef fp tc
+
           case r of
             LRIdentNotFound _ -> throwErrSt $ printf "populateRCRefs: ident not found for ref %s" (show ref)
             LRPartialFound _ _ -> throwErrSt $ printf "populateRCRefs: partial found for ref %s" (show ref)
             LRRefFound tarTC -> do
-              let tarAddr = tcCanAddr tarTC
+              let tarAddr = trimToReferable $ tcCanAddr tarTC
+              debugInstantRM "populateRCRefs" (printf "locateRef result is %s, tarAddr: %s" (show r) (show tarAddr)) tc
+
               if
                 -- If the reference is not a reference cycle, do not populate.
                 | not (tarAddr `elem` rcAddrs) -> return $ tcFocus tc

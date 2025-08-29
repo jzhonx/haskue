@@ -16,6 +16,7 @@ import Cursor
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, isJust)
+import qualified Data.Set as Set
 import Exception (throwErrSt)
 import NotifGraph (lookupSCCAddr)
 import Path
@@ -41,7 +42,7 @@ import Reduce.RMonad (
   delMutValRecvs,
   deleteTMRCDesp,
   getRMContext,
-  getRMGlobalVers,
+  -- getRMGlobalVers,
   getTMAbsAddr,
   getTMCursor,
   getTMRCDesp,
@@ -54,6 +55,7 @@ import Reduce.RMonad (
   putRMContext,
   putTMCursor,
   putTMTree,
+  setForceReduceArgs,
   setIsReducingRC,
   treeDepthCheck,
   withResolveMonad,
@@ -69,6 +71,7 @@ import qualified Reduce.RegOps as RegOps
 import Reduce.UnifyOp (unifyNormalizedTCs)
 import Text.Printf (printf)
 import Value
+import Value.Util.TreeRep (treeToFullRepString)
 
 -- | Reduce the tree to the lowest form.
 reduce :: (ReduceMonad s r m) => m ()
@@ -91,9 +94,6 @@ reduce = debugSpanTM "reduce" $ do
             | not (ctxIsNotifying ctx) -> startNotify sccAddr
           _ -> return ()
       _ -> return ()
-
-  vers <- getRMGlobalVers
-  modifyTMTree (\t -> t{treeVersion = vers})
 
 withTreeDepthLimit :: (ReduceMonad s r m) => m a -> m a
 withTreeDepthLimit f = do
@@ -221,7 +221,7 @@ handleRefRes isIterBinding (Just result) = do
           | otherwise -> do
               delMutValRecvs addr
               let
-                newMut = setMutOp (Ref ref{refVers = Just (treeVersion v)}) mut
+                newMut = setMutOp (Ref ref) mut
                 newT = setTN t (TNMutable $ setMutVal (Just v) newMut)
               putTMCursor $ newT `setTCFocus` tc
 
@@ -304,35 +304,42 @@ It writes the reduced arguments back to the mutable tree and returns the reduced
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
 reduceArgs :: (ReduceMonad s r m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
-reduceArgs f rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
+reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
   tc <- getTMCursor
+  isForced <- Common.ctxForceReduceArgs <$> getRMContext
   case tcFocus tc of
-    IsMutable mut -> do
-      reducedArgs <-
+    IsMutable mut@(Mutable mop mf) -> do
+      (reducedArgs, updatedReducedSet) <-
         foldM
-          ( \accArgs (i, _) -> do
-              r <- inSubTM (MutArgTASeg i) (reduceArg f (rtr . tcFocus))
-              return $ r : accArgs
+          ( \(accArgs, argsReducedSet) (i, _) -> do
+              if not (i `Set.member` argsReducedSet) || isForced
+                then do
+                  r <- inSubTM (MutArgTASeg i) $ reduceFunc >> rtr <$> getTMTree
+                  return (r : accArgs, Set.insert i argsReducedSet)
+                else do
+                  r <- inSubTM (MutArgTASeg i) $ rtr <$> getTMTree
+                  return (r : accArgs, argsReducedSet)
           )
-          []
+          ([], mfArgsReduced mf)
           (zip [0 ..] (toList $ getMutArgs mut))
+
+      let newMut = Mutable mop mf{mfArgsReduced = updatedReducedSet}
+      modifyTMTN (TNMutable newMut)
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwErrSt "reduceArgs: not a mutable tree"
  where
   adapt (xs, b) = toJSON (map (fmap oneLinerStringOfCurTreeState) xs, b)
 
-reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
-reduceArg f convert = do
-  tc <- getTMCursor
-  oldDespM <- getTMRCDesp
-  let arg = tcFocus tc
-  -- If the argument is not reduced, or we are in the middle of reducing reference cycles, we need to reduce it.
-  -- TODO: treeVersion is not needed, only treeIsEvaled is needed.
-  if treeVersion arg == 0 || maybe False rcdIsReducingRCs oldDespM
-    then f >> convert <$> getTMCursor
-    -- If the argument is already reduced, we can just return it.
-    else return (convert tc)
+-- reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
+-- reduceArg reduceFunc convert = do
+--   tc <- getTMCursor
+--   oldDespM <- getTMRCDesp
+--   -- If the argument is not reduced, or we are in the middle of reducing reference cycles, we need to reduce it.
+--   if maybe False rcdIsReducingRCs oldDespM
+--     then reduceFunc >> convert <$> getTMCursor
+--     -- If the argument is already reduced, we can just return it.
+--     else return (convert tc)
 
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: (ReduceMonad s r m) => ResolvedPConjuncts -> m ()
@@ -355,10 +362,11 @@ reduceRefCycles :: (ReduceMonad s r m) => [TreeAddr] -> m ()
 reduceRefCycles [] = throwErrSt "reduceRefCycles: empty address list"
 reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
   setIsReducingRC True
+  setForceReduceArgs True
   mapM_
     ( \addr -> inRemoteTM addr $ do
         withResolveMonad $ \tc -> do
-          rTC <- populateRCRefs addrs [tcCanAddr tc] tc
+          rTC <- populateRCRefs addrs [trimToReferable $ tcCanAddr tc] tc
           debugInstantRM
             "reduceRefCycles"
             (printf "new populated-tc: %s" (show $ tcFocus rTC))
@@ -374,7 +382,15 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
         withTree $ \t -> maintainRefValidStatus t >>= putTMTree
     )
     addrs
+
+  setIsReducingRC False
   deleteTMRCDesp
+
+  withTree $ \t ->
+    debugInstantTM
+      "reduceRefCycles"
+      (printf "tree is maintained to: %s" (treeToFullRepString t))
+
   ctx <- getRMContext
   origRfbAddr <- getTMAbsAddr
   let ng = Common.ctxNotifGraph ctx

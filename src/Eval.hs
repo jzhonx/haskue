@@ -65,7 +65,7 @@ emptyEvalConfig =
     }
 
 -- | Runner holds the configuration and functions for evaluation.
-data Runner = Runner
+newtype Runner = Runner
   { rcConfig :: Common.Config
   }
 

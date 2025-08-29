@@ -11,6 +11,7 @@ module Value.Mutable where
 import qualified AST
 import Control.DeepSeq (NFData (..))
 import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import Value.Comprehension
 import Value.DisjoinOp
@@ -38,24 +39,26 @@ data MutOp
 pattern MutOp :: MutOp -> Mutable
 pattern MutOp op <- Mutable op _
 
-newtype MutFrame = MutFrame
+data MutFrame = MutFrame
   { mfValue :: Maybe Tree
   -- ^ Mutable value in general should not be another mutable, especially during notifying a reference to take a
   -- concrete value to update itself.
+  , mfArgsReduced :: Set.Set Int
+  -- ^ mfArgsReduced keeps track of which argument has been reduced. It is used to avoid re-reducing the same argument.
   }
   deriving (Generic)
 
 emptyMutFrame :: MutFrame
-emptyMutFrame = MutFrame{mfValue = Nothing}
+emptyMutFrame = MutFrame{mfValue = Nothing, mfArgsReduced = Set.empty}
 
 withEmptyMutFrame :: MutOp -> Mutable
 withEmptyMutFrame op = Mutable op emptyMutFrame
 
 getMutVal :: Mutable -> Maybe Tree
-getMutVal (Mutable _ (MutFrame v)) = v
+getMutVal (Mutable _ (MutFrame v _)) = v
 
 setMutVal :: Maybe Tree -> Mutable -> Mutable
-setMutVal m (Mutable (Ref rf) frame) = Mutable (Ref rf{refVers = treeVersion <$> m}) (frame{mfValue = m})
+setMutVal m (Mutable (Ref rf) frame) = Mutable (Ref rf) (frame{mfValue = m})
 setMutVal m (Mutable op frame) = Mutable op (frame{mfValue = m})
 
 getMutArgs :: Mutable -> Seq.Seq Tree

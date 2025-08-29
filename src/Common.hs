@@ -48,6 +48,17 @@ data Config = Config
   }
   deriving (Show)
 
+instance HasConfig Config where
+  getConfig = id
+  setConfig _ = id
+
+emptyConfig :: Config
+emptyConfig =
+  Config
+    { cfSettings = emptySettings
+    , cfRuntimeParams = emptyRuntimeParams
+    }
+
 data Settings = Settings
   { stDebugLogging :: Bool
   , stTraceExec :: Bool
@@ -62,13 +73,6 @@ newtype RuntimeParams = RuntimeParams
   { rpCreateCnstr :: Bool
   }
   deriving (Show)
-
-emptyConfig :: Config
-emptyConfig =
-  Config
-    { cfSettings = emptySettings
-    , cfRuntimeParams = emptyRuntimeParams
-    }
 
 emptySettings :: Settings
 emptySettings =
@@ -106,12 +110,10 @@ emptyEEState = EEState{eesObjID = 0, eesTrace = emptyTrace}
 
 data Context = Context
   { ctxObjID :: !Int
-  , ctxGlobalVers :: !Int
+  , ctxForceReduceArgs :: !Bool
   , ctxReduceStack :: [TreeAddr]
   , ctxIsNotifying :: !Bool
   , ctxNotifGraph :: NotifGraph
-  , ctxReadyQueue :: [TreeAddr]
-  -- ^ The ready queue is a queue of addresses that have been reduced and can notify their dependents.
   , ctxLetMap :: Map.Map TreeAddr Bool
   , ctxRefCycleDetected :: Maybe RefCycleDesp
   , ctxTrace :: Trace
@@ -135,11 +137,10 @@ emptyContext :: Context
 emptyContext =
   Context
     { ctxObjID = 0
-    , ctxGlobalVers = 0
+    , ctxForceReduceArgs = False
     , ctxReduceStack = []
     , ctxIsNotifying = False
     , ctxNotifGraph = emptyNotifGraph
-    , ctxReadyQueue = []
     , ctxLetMap = Map.empty
     , ctxRefCycleDetected = Nothing
     , ctxTrace = emptyTrace

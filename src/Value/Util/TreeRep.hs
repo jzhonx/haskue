@@ -136,7 +136,6 @@ buildRepTree t opt =
                     ++ (if isJust (treeExpr t) then "" else "N,")
                     ++ (if treeIsRootOfSubTree t then "R," else "")
                     ++ (if treeIsSCyclic t then "SC," else "")
-                    ++ printf "V:%d," (treeVersion t)
             )
               ++ trInfo trf
         , trFields = trFields trf
@@ -241,27 +240,27 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
   TNRefCycle -> consRep (symbol, "", [], [])
   TNUnifyWithRC t -> consRep (symbol, "", [], consFields [("inner", "", t)])
   TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
-  TNMutable mut@(Mutable op _) ->
+  TNMutable mut@(Mutable op mf) ->
     let
       args =
         if trboShowMutArgs opt
           then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ getMutArgs mut)
           else []
       val = maybe [] (\s -> [(show SubValTASeg, mempty, s)]) (getMutVal mut)
+      metas = [("ridxes", show $ Set.toList $ mfArgsReduced mf)]
      in
       case op of
-        RegOp rop -> consRep (symbol, ropName rop, [], consFields (args ++ val))
+        RegOp rop -> consRep (symbol, ropName rop, metas, consFields (args ++ val))
         Ref ref ->
           consRep
             ( symbol
             , showRefArg
                 (refArg ref)
                 (\x -> listToMaybe $ catMaybes [T.unpack <$> rtrString x, show <$> rtrInt x])
-                <> (", ref_vers:" <> maybe "N" show (refVers ref))
-            , []
+            , metas
             , consFields val
             )
-        Compreh _ -> consRep (symbol, "", [], consFields (args ++ val))
+        Compreh _ -> consRep (symbol, "", metas, consFields (args ++ val))
         DisjOp d ->
           let
             terms =
@@ -275,8 +274,8 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
                     (toList $ djoTerms d)
                 else []
            in
-            consRep (symbol, mempty, [], consFields (terms ++ val))
-        _ -> consRep (symbol, "", [], consFields (args ++ val))
+            consRep (symbol, mempty, metas, consFields (terms ++ val))
+        _ -> consRep (symbol, "", metas, consFields (args ++ val))
   TNBottom b -> consRep (symbol, show b, [], [])
   TNTop -> consRep (symbol, mempty, [], [])
   TNNoValRef -> consRep (symbol, mempty, [], [])

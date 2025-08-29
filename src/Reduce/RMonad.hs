@@ -71,7 +71,7 @@ mkRTState tc oid trace =
         Common.emptyContext
           { Common.ctxObjID = oid
           , Common.ctxTrace = trace
-          , Common.ctxGlobalVers = 1
+          -- , Common.ctxGlobalVers = 1
           }
     }
 
@@ -105,17 +105,20 @@ setRMObjID newID = modifyRMContext (\ctx -> Common.setID ctx newID)
 
 -- Global version
 
-getRMGlobalVers :: (ResolveMonad r s m) => m Int
-getRMGlobalVers = Common.ctxGlobalVers <$> getRMContext
+-- getRMGlobalVers :: (ResolveMonad r s m) => m Int
+-- getRMGlobalVers = Common.ctxGlobalVers <$> getRMContext
 
-setRMGlobalVers :: (ResolveMonad r s m) => Int -> m ()
-setRMGlobalVers newVers = modifyRMContext (\ctx -> ctx{Common.ctxGlobalVers = newVers})
+-- setRMGlobalVers :: (ResolveMonad r s m) => Int -> m ()
+-- setRMGlobalVers newVers = modifyRMContext (\ctx -> ctx{Common.ctxGlobalVers = newVers})
 
-increaseRMGlobalVers :: (ResolveMonad r s m) => m Int
-increaseRMGlobalVers = do
-  vers <- getRMGlobalVers
-  setRMGlobalVers (vers + 1)
-  return (vers + 1)
+-- increaseRMGlobalVers :: (ResolveMonad r s m) => m Int
+-- increaseRMGlobalVers = do
+--   vers <- getRMGlobalVers
+--   setRMGlobalVers (vers + 1)
+--   return (vers + 1)
+
+setForceReduceArgs :: (ResolveMonad r s m) => Bool -> m ()
+setForceReduceArgs b = modifyRMContext (\ctx -> ctx{Common.ctxForceReduceArgs = b})
 
 -- Trace
 
@@ -127,22 +130,22 @@ setRMTrace trace = modifyRMContext (\ctx -> setTrace ctx trace)
 
 -- Notif
 
-getRMReadyQ :: (ResolveMonad r s m) => m [TreeAddr]
-getRMReadyQ = Common.ctxReadyQueue <$> getRMContext
+-- getRMReadyQ :: (ResolveMonad r s m) => m [TreeAddr]
+-- getRMReadyQ = Common.ctxReadyQueue <$> getRMContext
 
-addToRMReadyQ :: (ResolveMonad r s m) => TreeAddr -> m ()
-addToRMReadyQ addr = modifyRMContext (\ctx -> ctx{Common.ctxReadyQueue = addr : Common.ctxReadyQueue ctx})
+-- addToRMReadyQ :: (ResolveMonad r s m) => TreeAddr -> m ()
+-- addToRMReadyQ addr = modifyRMContext (\ctx -> ctx{Common.ctxReadyQueue = addr : Common.ctxReadyQueue ctx})
 
-popRMReadyQ :: (ResolveMonad r s m) => m (Maybe TreeAddr)
-popRMReadyQ = do
-  ctx <- getRMContext
-  case Common.ctxReadyQueue ctx of
-    [] -> return Nothing
-    _ -> do
-      -- TODO: efficiency
-      let addr = last (Common.ctxReadyQueue ctx)
-      putRMContext ctx{Common.ctxReadyQueue = init (Common.ctxReadyQueue ctx)}
-      return (Just addr)
+-- popRMReadyQ :: (ResolveMonad r s m) => m (Maybe TreeAddr)
+-- popRMReadyQ = do
+--   ctx <- getRMContext
+--   case Common.ctxReadyQueue ctx of
+--     [] -> return Nothing
+--     _ -> do
+--       -- TODO: efficiency
+--       let addr = last (Common.ctxReadyQueue ctx)
+--       putRMContext ctx{Common.ctxReadyQueue = init (Common.ctxReadyQueue ctx)}
+--       return (Just addr)
 
 -- getRMNotifEnabled :: (ResolveMonad r s m) => m Bool
 -- getRMNotifEnabled = Common.ctxNotifEnabled <$> getRMContext

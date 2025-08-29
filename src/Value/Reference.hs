@@ -15,10 +15,8 @@ import Path
 import Value.Atom
 import {-# SOURCE #-} Value.Tree
 
-data Reference = Reference
+newtype Reference = Reference
   { refArg :: RefArg
-  , refVers :: Maybe Int
-  -- ^ refVers records the version of the referenced value.
   }
   deriving (Generic)
 
@@ -77,14 +75,12 @@ mkIndexRef :: Seq.Seq Tree -> Reference
 mkIndexRef ts =
   Reference
     { refArg = RefIndex ts
-    , refVers = Nothing
     }
 
 emptyIdentRef :: T.Text -> Reference
 emptyIdentRef ident =
   Reference
     { refArg = RefPath ident Seq.empty
-    , refVers = Nothing
     }
 
 mkRefFromFieldPath :: (Common.EnvIO r s m) => (Atom -> Tree) -> T.Text -> FieldPath -> m Reference
@@ -102,5 +98,4 @@ mkRefFromFieldPath aToTree var (FieldPath xs) = do
   return $
     Reference
       { refArg = RefPath var (Seq.fromList ys)
-      , refVers = Nothing
       }

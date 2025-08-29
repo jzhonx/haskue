@@ -1,20 +1,37 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 module TreeTest where
 
 import AST (exprToOneLinerStr)
-import Control.Monad.Except (runExcept)
+import Common
+import Control.Monad.Except (ExceptT, MonadError, runExcept, runExceptT)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Reader (ReaderT (runReaderT))
+import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
+import Cursor (TrCur (..), goDownTCSegMust)
 import Data.Aeson (ToJSON, Value, encode, toJSON)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import EvalExpr (evalExpr)
+import Parser (parseExpr)
 import Path
+import Reduce.RMonad (ResolveMonad)
+import Reduce.RefSys (populateRCRefs)
 import System.Directory (listDirectory)
 import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (TreeRepBuildOption (..), buildRepTree, defaultTreeRepBuildOption, repToString)
+import Value.Util.TreeRep (
+  TreeRepBuildOption (..),
+  buildRepTree,
+  defaultTreeRepBuildOption,
+  repToString,
+  treeToFullRepString,
+ )
 
 treeTests :: IO TestTree
 treeTests =
@@ -23,6 +40,7 @@ treeTests =
       "treetests"
       [ testSnapshotTree
       , testSnapshotTree2
+      , testPopulateRCRefs
       ]
 
 testSnapshotTree :: TestTree
@@ -98,3 +116,40 @@ testSnapshotTree2 =
     case runExcept astE of
       Left err -> assertFailure err
       Right expr -> putStrLn $ exprToOneLinerStr expr
+
+buildAbsTA :: String -> TreeAddr
+buildAbsTA path = appendTreeAddr rootTreeAddr (addrFromString path)
+
+absA, absAX, absB, absC :: TreeAddr
+absA = buildAbsTA "a"
+absAX = buildAbsTA "a.x"
+absB = buildAbsTA "b"
+absC = buildAbsTA "c"
+
+evalResolveMonad :: (MonadIO m, MonadError String m) => StateT Context (ReaderT Config m) a -> m a
+evalResolveMonad action = runReaderT (evalStateT action emptyContext) emptyConfig
+
+runEvalEnv :: (MonadIO m, MonadError String m) => StateT EEState (ReaderT Config m) a -> m a
+runEvalEnv action = runReaderT (evalStateT action emptyEEState) emptyConfig
+
+testPopulateRCRefs :: TestTree
+testPopulateRCRefs = testCase "populateRCRefs" $ do
+  let work = do
+        e <- parseExpr "{a: 2 & (b + 1), b: a - 1}"
+        t <- runEvalEnv (evalExpr e)
+        r <-
+          evalResolveMonad
+            ( do
+                let rootTC = TrCur t [(RootTASeg, mkNewTree TNTop)]
+                aTC <- goDownTCSegMust (strToStringTASeg "a") rootTC
+                populateRCRefs [absA, absB] [absA] aTC
+            )
+        return $ tcFocus r
+  rE <- runExceptT work
+  case rE of
+    Left err -> assertFailure err
+    Right r -> do
+      putStrLn $ treeToFullRepString r
+      putStrLn $ oneLinerStringOfCurTreeState r
+ where
+  b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomTree (Int 2))))
