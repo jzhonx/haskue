@@ -208,7 +208,7 @@ evalExprRM e = do
 -}
 
 getTMAbsAddr :: (ReduceMonad r s m) => m TreeAddr
-getTMAbsAddr = tcCanAddr <$> getTMCursor
+getTMAbsAddr = tcAddr <$> getTMCursor
 
 getTMTASeg :: (ReduceMonad r s m) => m TASeg
 getTMTASeg = do
@@ -545,7 +545,7 @@ _traceActionRM ::
   (Common.EnvIO r s m) => String -> Maybe String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
 _traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name action $ do
   let
-    addr = tcCanAddr tc
+    addr = tcAddr tc
     bfocus = tcFocus tc
     isRoot = addr == rootTreeAddr
 
@@ -557,7 +557,7 @@ _traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name actio
 
 debugInstantRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m ()
 debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
-  let addr = tcCanAddr tc
+  let addr = tcAddr tc
   debugInstant True name (show addr) (Just $ toJSON args)
 
 debugInstantOpRM :: (Common.EnvIO r s m) => String -> String -> TreeAddr -> m ()

@@ -149,7 +149,7 @@ cycle with the constraint's atom.
 -}
 replaceSelfRef :: (ResolveMonad s r m) => Tree -> TrCur -> m Tree
 replaceSelfRef atomT cnstrTC = debugSpanTreeRM "replaceSelfRef" cnstrTC $ do
-  let cnstrAddr = tcCanAddr cnstrTC
+  let cnstrAddr = tcAddr cnstrTC
   utc <- traverseTCSimple subNodes (replace cnstrAddr) cnstrTC
   return (tcFocus utc)
  where
@@ -170,7 +170,7 @@ replaceSelfRef atomT cnstrTC = debugSpanTreeRM "replaceSelfRef" cnstrTC $ do
             LRPartialFound _ _ -> return focus
             LRRefFound rtc ->
               return $
-                if tcCanAddr rtc == cnstrAddr
+                if tcAddr rtc == cnstrAddr
                   then atomT
                   else focus
       )

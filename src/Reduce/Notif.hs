@@ -294,7 +294,7 @@ propUpWithPostHandling = do
                   -- The affected field is not part of the notification graph.
                   (return ())
                   (\affectedFieldSccAddr -> addSCCAddrsToQ [(affectedFieldSccAddr, False)])
-                  (lookupSCCAddr (tcCanAddr tc) ng)
+                  (lookupSCCAddr (tcAddr tc) ng)
           )
           affected
       _ -> return ()

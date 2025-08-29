@@ -59,7 +59,7 @@ notFound :: DerefResult
 notFound = DerefResult Nothing Nothing NoCycleDetected False
 
 derefResFromTrCur :: TrCur -> DerefResult
-derefResFromTrCur tc = DerefResult (Just (tcFocus tc)) (Just (tcCanAddr tc)) NoCycleDetected False
+derefResFromTrCur tc = DerefResult (Just (tcFocus tc)) (Just (tcAddr tc)) NoCycleDetected False
 
 -- | Resolve the reference value.
 resolveTCIfRef :: (ResolveMonad s r m) => TrCur -> m DerefResult
@@ -171,7 +171,7 @@ getDstTC fieldPath _env = do
       LRRefFound tarTC -> do
         cd <- watchFound tarTC env
         vM <- copyConcrete tarTC
-        return $ DerefResult vM (Just (tcCanAddr tarTC)) cd False
+        return $ DerefResult vM (Just (tcAddr tarTC)) cd False
 
 whenNoCD :: (ResolveMonad s r m) => m CycleDetection -> CycleDetection -> m CycleDetection
 whenNoCD m NoCycleDetected = m
@@ -184,9 +184,9 @@ Also check if any of the dependent of the current ref forms a cycle with the tar
 watchFound :: (ResolveMonad s r m) => TrCur -> TrCur -> m CycleDetection
 watchFound tarTC refEnv = do
   let
-    refAddr = tcCanAddr refEnv
+    refAddr = tcAddr refEnv
     rfbRefAddr = trimToReferable refAddr
-    tarAddr = tcCanAddr tarTC
+    tarAddr = tcAddr tarTC
 
   ctx <- getRMContext
   let
@@ -218,7 +218,7 @@ TODO: should we detect sub field cycles here?
 watchNotFound :: (ResolveMonad s r m) => TreeAddr -> TrCur -> m CycleDetection
 watchNotFound tarAddr refEnv = do
   let
-    refAddr = tcCanAddr refEnv
+    refAddr = tcAddr refEnv
 
   -- ctx <- getRMContext
   debugInstantRM
@@ -299,7 +299,7 @@ copyConcrete tarTC = do
     -- Check if the referenced value has recurClose.
     let
       recurClose = treeRecurClosed (tcFocus tarTC)
-      shouldClose = addrHasDef (tcCanAddr tarTC)
+      shouldClose = addrHasDef (tcAddr tarTC)
     if shouldClose || recurClose
       then markRecurClosed val
       else return val
@@ -332,7 +332,7 @@ isInnerScope fieldPath originAddr tAddr tc = do
     let fstSel = fromJust $ headSel ref
     ident <- selToIdent fstSel
     resM <- searchTCIdent ident xtc
-    return $ tcCanAddr . fst <$> resM
+    return $ tcAddr . fst <$> resM
 
 markRecurClosed :: (Common.EnvIO r s m) => Tree -> m Tree
 markRecurClosed val = do
@@ -362,7 +362,7 @@ getRefIdentAddr :: (ResolveMonad s r m) => FieldPath -> Maybe TreeAddr -> TrCur 
 getRefIdentAddr fieldPath origAddrsM tc = do
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  let f x = searchTCIdent ident x >>= (\r -> return $ tcCanAddr . fst <$> r)
+  let f x = searchTCIdent ident x >>= (\r -> return $ tcAddr . fst <$> r)
 
   -- Search the address of the first identifier, whether from the current env or the original env.
   maybe
@@ -412,7 +412,7 @@ locateRef fieldPath tc = do
       return $
         if null unmatchedSels
           then LRRefFound matchedTC
-          else LRPartialFound matchedTC (appendTreeAddr (tcCanAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels)))
+          else LRPartialFound matchedTC (appendTreeAddr (tcAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels)))
  where
   go x [] = (x, [])
   go x sels@(sel : rs) =
@@ -490,7 +490,7 @@ searchTCIdentInPar name tc = do
     then return Nothing
     else do
       m <- searchTCIdent name ptc
-      return $ maybe Nothing (\(x, y) -> Just (tcCanAddr x, y)) m
+      return $ maybe Nothing (\(x, y) -> Just (tcAddr x, y)) m
 
 {- | Search in the tree for the first identifier that can match the name.
 
@@ -512,11 +512,11 @@ searchTCIdent name tc = do
     ( \(identTC, isLB) -> do
         when isLB $ do
           -- Mark the ident as referred if it is a let binding.
-          markRMLetReferred (tcCanAddr identTC)
+          markRMLetReferred (tcAddr identTC)
         -- unrefLets <- getRMUnreferredLets
         -- debugInstantRM
         --   "searchTCIdent"
-        --   (printf "ident: %s, unrefLets: %s" (show $ tcCanAddr identTC) (show unrefLets))
+        --   (printf "ident: %s, unrefLets: %s" (show $ tcAddr identTC) (show unrefLets))
         --   tc
         return $ Just (identTC, isLB)
     )
@@ -627,7 +627,7 @@ populateRCRefs rcAddrs populatingRCs nodeTC =
             LRIdentNotFound _ -> throwErrSt $ printf "populateRCRefs: ident not found for ref %s" (show ref)
             LRPartialFound _ _ -> throwErrSt $ printf "populateRCRefs: partial found for ref %s" (show ref)
             LRRefFound tarTC -> do
-              let tarAddr = trimToReferable $ tcCanAddr tarTC
+              let tarAddr = trimToReferable $ tcAddr tarTC
               debugInstantRM "populateRCRefs" (printf "locateRef result is %s, tarAddr: %s" (show r) (show tarAddr)) tc
 
               if

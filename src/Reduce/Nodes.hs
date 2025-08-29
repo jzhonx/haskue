@@ -166,7 +166,7 @@ reduceStruct = do
         mapM_
           ( \(k, lb) ->
               unless (lbReferred lb) $
-                addRMUnreferredLet (appendSeg (tcCanAddr tc) (BlockTASeg (LetTASeg (TE.encodeUtf8 k))))
+                addRMUnreferredLet (appendSeg (tcAddr tc) (BlockTASeg (LetTASeg (TE.encodeUtf8 k))))
           )
           (Map.toList $ blkBindings blk)
 

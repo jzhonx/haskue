@@ -43,7 +43,7 @@ instance Show UTree where
   show (UTree d tc) =
     show d
       <> ","
-      <> show (tcCanAddr tc)
+      <> show (tcAddr tc)
       <> ","
       <> show (tcFocus tc)
 
@@ -54,7 +54,7 @@ last embedded object ID in the tree address.
 -}
 getEmbeddedOID :: UTree -> Maybe Int
 getEmbeddedOID ut =
-  let TreeAddr segs = tcCanAddr (utTC ut)
+  let TreeAddr segs = tcAddr (utTC ut)
       getEID (BlockTASeg (EmbedTASeg i)) = Just i
       getEID _ = Nothing
    in -- segs are stored in reverse order so we use foldl to get the last embedded object ID.
@@ -617,9 +617,9 @@ mergeBlocks :: (ResolveMonad s r m) => (Block, UTree) -> (Block, UTree) -> TrCur
 mergeBlocks (s1, ut1@UTree{utDir = L}) (s2, ut2) unifyTC =
   let
     eidM1 = getEmbeddedOID ut1
-    utAddr1 = tcCanAddr . utTC $ ut1
+    utAddr1 = tcAddr . utTC $ ut1
     eidM2 = getEmbeddedOID ut2
-    utAddr2 = tcCanAddr . utTC $ ut2
+    utAddr2 = tcAddr . utTC $ ut2
    in
     debugSpanTreeArgsRM
       "mergeBlocks"
@@ -782,7 +782,7 @@ preprocessBlock blockTC block = do
     ( do
         let
           bid = blkID block
-          blockAddr = tcCanAddr blockTC
+          blockAddr = tcAddr blockTC
         appended <- _appendSIDToLetRef blockAddr bid blockTC
         -- rewrite all ident keys of the let bindings map with the sid.
         case treeNode appended of
@@ -850,7 +850,7 @@ _appendSIDToLetRef blockAddr sid _tc =
               )
               ( do
                   (x, y) <- m
-                  return (tcCanAddr x, y)
+                  return (tcAddr x, y)
               )
           _ -> return focus
 
@@ -965,7 +965,7 @@ removeIncompleteDisjuncts defIdxes ts =
 
 consolidateRefs :: (ResolveMonad s r m) => TrCur -> m Tree
 consolidateRefs ptc = do
-  let blockAddr = Cursor.tcCanAddr ptc
+  let blockAddr = Cursor.tcAddr ptc
   utc <- traverseTCSimple subNodes (consolidate blockAddr) ptc
   return $ Cursor.tcFocus utc
  where
@@ -1010,4 +1010,4 @@ consolidateRefs ptc = do
     let fstSel = fromJust $ headSel ref
     ident <- selToIdent fstSel
     resM <- searchTCIdent ident xtc
-    return $ tcCanAddr . fst <$> resM
+    return $ tcAddr . fst <$> resM

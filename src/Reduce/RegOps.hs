@@ -69,7 +69,7 @@ resolveRegBinOp op t1M t2M opTC = do
   debugInstantOpRM
     "resolveRegBinOp"
     (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
-    (tcCanAddr opTC)
+    (tcAddr opTC)
   resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::

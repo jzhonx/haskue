@@ -66,8 +66,8 @@ setTCFocus :: Tree -> TrCur -> TrCur
 setTCFocus t (TrCur _ cs) = TrCur t cs
 
 -- | Generate tree address from the tree cursor.
-tcCanAddr :: TrCur -> TreeAddr
-tcCanAddr c = addrFromCrumbs (tcCrumbs c)
+tcAddr :: TrCur -> TreeAddr
+tcAddr c = addrFromCrumbs (tcCrumbs c)
 
 -- | Get the parent of the cursor without propagating the value up.
 parentTC :: TrCur -> Maybe TrCur
@@ -135,7 +135,7 @@ goDownTAddr addr starT = goDownTCAddr addr (TrCur starT [])
 goDownTCAddrMust :: (ErrorEnv m) => TreeAddr -> TrCur -> m TrCur
 goDownTCAddrMust addr tc =
   maybe
-    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcCanAddr tc))
+    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcAddr tc))
     return
     (goDownTCAddr addr tc)
 
@@ -162,7 +162,7 @@ goDownTCSeg seg tc = do
 goDownTCSegMust :: (ErrorEnv m) => TASeg -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
-    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcCanAddr tc))
+    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcAddr tc))
     return
     $ goDownTCSeg seg tc
 

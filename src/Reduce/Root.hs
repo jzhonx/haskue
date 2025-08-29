@@ -98,7 +98,7 @@ reduce = debugSpanTM "reduce" $ do
 withTreeDepthLimit :: (ReduceMonad s r m) => m a -> m a
 withTreeDepthLimit f = do
   tc <- getTMCursor
-  let addr = tcCanAddr tc
+  let addr = tcAddr tc
   treeDepthCheck tc
   push addr
   r <- f
@@ -207,7 +207,7 @@ handleRefRes isIterBinding (Just result) = do
   tc <- getTMCursor
   case tc of
     TCFocus t@(IsRef mut ref) -> do
-      let addr = tcCanAddr tc
+      let addr = tcAddr tc
 
       case rtrNonMut result of
         -- No concrete value is found.
@@ -239,7 +239,7 @@ handleMutRes (Just result) furtherReduce = do
   case tc of
     (TCFocus (IsRef _ _)) -> throwErrSt "handleMutRes: tree cursor can not be a reference"
     (TCFocus (IsMutable mut)) -> do
-      let addr = tcCanAddr tc
+      let addr = tcAddr tc
 
       next <-
         if furtherReduce
@@ -366,7 +366,7 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
   mapM_
     ( \addr -> inRemoteTM addr $ do
         withResolveMonad $ \tc -> do
-          rTC <- populateRCRefs addrs [trimToReferable $ tcCanAddr tc] tc
+          rTC <- populateRCRefs addrs [trimToReferable $ tcAddr tc] tc
           debugInstantRM
             "reduceRefCycles"
             (printf "new populated-tc: %s" (show $ tcFocus rTC))
