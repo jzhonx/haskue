@@ -18,7 +18,7 @@ import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, listToMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -887,18 +887,21 @@ delUnwantedDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjunc
     resolved <- resolvePendingConjuncts pconjs djTC
     case resolved of
       ResolvedConjuncts xs -> do
-        -- Remove the conjunct if it is a reference cycle and its segment is referable.
-        let ys =
-              filter
-                ( \x -> case tcFocus x of
-                    IsRefCycle
-                      | Just True <- do
-                          seg <- tcFocusSeg tc
-                          return $ isSegReferable seg ->
-                          False
-                    _ -> True
-                )
-                xs
+        -- Remove the conjunct if it is a reference cycle or UWC and its segment is referable.
+        let
+          canCancelRC = fromMaybe False $ do
+            seg <- tcFocusSeg tc
+            return $ isSegReferable seg
+          revYs =
+            foldr
+              ( \x acc -> case tcFocus x of
+                  IsRefCycle | canCancelRC -> acc
+                  IsUnifyWithRC r | canCancelRC -> (r `setTCFocus` x) : acc
+                  _ -> x : acc
+              )
+              []
+              xs
+          ys = reverse revYs
         debugInstantRM
           "delUnwantedDisjuncts"
           (printf "disjunct %d: %s, resolved to: %s" idx (show v) (show ys))

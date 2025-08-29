@@ -123,15 +123,15 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
 
       if
         | null revRegs, rcs == 0 -> throwErrSt "no trees to unify"
-        | null revRegs
-        , canCancelRC unifyTC ->
-            return $ Just $ mkNewTree TNTop
+        | null revRegs, canCancelRC unifyTC -> return $ Just $ mkNewTree TNTop
         | null revRegs ->
             -- If there are no regular trees.
             return $ Just (mkNewTree TNRefCycle)
         | otherwise -> do
             r <- mergeTCs (reverse revRegs) unifyTC
-            if canCancelRC unifyTC
+            -- If there is no reference cycle, or the reference cycle can be cancelled, return the result of merging
+            -- regular conjuncts.
+            if rcs == 0 || canCancelRC unifyTC
               then return $ Just r
               else return $ Just $ mkNewTree (TNUnifyWithRC r)
 

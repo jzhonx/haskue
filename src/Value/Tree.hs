@@ -126,6 +126,9 @@ pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
 pattern IsRefCycle :: Tree
 pattern IsRefCycle <- TN TNRefCycle
 
+pattern IsUnifyWithRC :: Tree -> Tree
+pattern IsUnifyWithRC r <- TN (TNUnifyWithRC r)
+
 pattern IsRegOp :: Mutable -> RegularOp -> Tree
 pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
 
