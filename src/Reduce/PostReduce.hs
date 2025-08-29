@@ -37,6 +37,7 @@ import Reduce.RMonad (
   putRMContext,
   putTMCursor,
   putTMTree,
+  setForceReduceArgs,
   withTN,
   withTree,
  )
@@ -121,60 +122,23 @@ constraint in the propValUp.
 -}
 validateCnstr :: (ReduceMonad s r m) => AtomCnstr -> m ()
 validateCnstr c = debugSpanTM "validateCnstr" $ do
-  -- We can first assume that the tree value is an atom. Make sure the latest atom is created.
-  let atomT = mkAtomTree $ cnsAtom c
-  putTMTree atomT
-
-  let raw = cnsValidator c
-  tc <- getTMCursor
-  validator <- replaceSelfRef (mkAtomTree $ cnsAtom c) (raw `setTCFocus` tc)
-  debugInstantTM "validateCnstr" $
-    printf "raw: %s, validator: %s" (show raw) (show validator)
-
-  -- Run the validator in a sub context of an atom value.
+  -- Run the validator in a forced reduce args mode.
+  -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
+  -- get an incomplete value if the RC node did not yield a concrete value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  putTMTree validator
+  setForceReduceArgs True
+  putTMTree (cnsValidator c)
   reduce
+  setForceReduceArgs False
+
   res <- getTMTree
   case rtrNonMut res of
     Just (IsBottom _) -> putTMTree res
     -- The result is valid.
-    Just (IsAtom _) -> putTMTree atomT
+    Just (IsAtom _) -> putTMTree (mkAtomTree $ cnsAtom c)
     -- Incomplete case.
     Nothing -> return ()
     _ -> putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" (show res)
-
-{- | Replace any reference in the validator of the atom constraint that references the constraint and forms a vertical
-cycle with the constraint's atom.
--}
-replaceSelfRef :: (ResolveMonad s r m) => Tree -> TrCur -> m Tree
-replaceSelfRef atomT cnstrTC = debugSpanTreeRM "replaceSelfRef" cnstrTC $ do
-  let cnstrAddr = tcAddr cnstrTC
-  utc <- traverseTCSimple subNodes (replace cnstrAddr) cnstrTC
-  return (tcFocus utc)
- where
-  replace cnstrAddr tc = do
-    let focus = tcFocus tc
-    rfM <- case focus of
-      IsRef _ rf -> return $ fieldPathFromRef rtrAtom rf
-      _ -> return Nothing
-
-    maybe
-      (return focus)
-      -- If the focus is a reference, we need to check if the ref references the cnstrAddr.
-      ( \rf -> do
-          lr <- locateRef rf tc
-          debugInstantRM "replaceSelfRef" (printf "lr: %s" (show lr)) cnstrTC
-          case lr of
-            LRIdentNotFound err -> return err
-            LRPartialFound _ _ -> return focus
-            LRRefFound rtc ->
-              return $
-                if tcAddr rtc == cnstrAddr
-                  then atomT
-                  else focus
-      )
-      rfM
 
 validateStructPerm :: (ReduceMonad s r m) => m ()
 validateStructPerm = debugSpanTM "validateStructPerm" $ do
