@@ -165,9 +165,6 @@ subTree seg t = case (seg, treeNode t) of
 It ensures that the version of the parent node is always greater than or equal to any of its children.
 -}
 setSubTree :: (ErrorEnv m) => TASeg -> Tree -> Tree -> m Tree
-
--- | If the segment is EphemeralTASeg, we do not set the sub-tree.
-setSubTree EphemeralTASeg _ parT = return parT
 setSubTree seg subT parT = do
   n <- case (seg, treeNode parT) of
     (BlockTASeg s, TNBlock blk) -> updateParStruct blk s

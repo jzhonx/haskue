@@ -92,8 +92,6 @@ data TASeg
     SubValTASeg
   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
     MutArgTASeg !Int
-  | -- | EphemeralTASeg is used to represent the ephemeral value, which can be temporary iteration binding.
-    EphemeralTASeg
   deriving (Eq, Ord, Generic, NFData, ToJSON)
 
 instance Show TASeg where
@@ -104,7 +102,6 @@ instance Show TASeg where
   show (DisjRegTASeg i) = "dj" ++ show i
   show (MutArgTASeg i) = "fa" ++ show i
   show SubValTASeg = "sv"
-  show EphemeralTASeg = "eph"
 
 data BlockTASeg
   = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
