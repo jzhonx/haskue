@@ -301,7 +301,7 @@ reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
   tc <- getTMCursor
   isForced <- Common.ctxForceReduceArgs <$> getRMContext
   case tcFocus tc of
-    IsMutable mut@(Mutable mop mf) -> do
+    IsMutable mut@(Mutable _ mf) -> do
       (reducedArgs, updatedReducedSet) <-
         foldM
           ( \(accArgs, argsReducedSet) (i, _) -> do
@@ -316,8 +316,9 @@ reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
           ([], mfArgsReduced mf)
           (zip [0 ..] (toList $ getMutArgs mut))
 
-      let newMut = Mutable mop mf{mfArgsReduced = updatedReducedSet}
-      modifyTMTN (TNMutable newMut)
+      modifyTMTree $ \t -> case t of
+        IsMutable newMut -> setTN t (TNMutable $ updateArgsReduced updatedReducedSet newMut)
+        _ -> t
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwErrSt "reduceArgs: not a mutable tree"

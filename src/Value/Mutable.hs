@@ -87,6 +87,9 @@ modifyRegMut :: (RegularOp -> RegularOp) -> Mutable -> Mutable
 modifyRegMut f (Mutable (RegOp m) frame) = Mutable (RegOp $ f m) frame
 modifyRegMut _ r = r
 
+updateArgsReduced :: Set.Set Int -> Mutable -> Mutable
+updateArgsReduced s (Mutable op frame) = Mutable op (frame{mfArgsReduced = s})
+
 -- | RegularOp is a tree node that represents a function.
 data RegularOp = RegularOp
   { ropName :: String

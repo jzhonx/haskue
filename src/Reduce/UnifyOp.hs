@@ -110,7 +110,7 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
     then return $ Just $ mkBottomTree "structural cycle"
     else do
       debugInstantRM "unifyNormalizedTCs" (printf "normalized: %s" (show tcs)) unifyTC
-      let (revRegs, rcs) =
+      let (regs, rcs) =
             foldr
               ( \tc (accRegs, accRCs) ->
                   let t = tcFocus tc
@@ -123,13 +123,13 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
               tcs
 
       if
-        | null revRegs, rcs == 0 -> throwErrSt "no trees to unify"
-        | null revRegs, canCancelRC unifyTC -> return $ Just $ mkNewTree TNTop
-        | null revRegs ->
+        | null regs, rcs == 0 -> throwErrSt "no trees to unify"
+        | null regs, canCancelRC unifyTC -> return $ Just $ mkNewTree TNTop
+        | null regs ->
             -- If there are no regular trees.
             return $ Just (mkNewTree TNRefCycle)
         | otherwise -> do
-            r <- mergeTCs (reverse revRegs) unifyTC
+            r <- mergeTCs regs unifyTC
             -- If there is no reference cycle, or the reference cycle can be cancelled, return the result of merging
             -- regular conjuncts.
             if rcs == 0 || canCancelRC unifyTC
