@@ -238,7 +238,6 @@ buildRepTreeTN t tn opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} = case
           ]
       )
   TNRefCycle -> consRep (symbol, "", [], [])
-  TNUnifyWithRC t -> consRep (symbol, "", [], consFields [("inner", "", t)])
   TNRefSubCycle p -> consRep (symbol, printf "ref-sub-cycle %s" (show p), [], [])
   TNMutable mut@(Mutable op mf) ->
     let

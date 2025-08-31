@@ -65,6 +65,7 @@ instance (HasConfig a) => HasConfig (BuildConfig a) where
   setConfig bc c = bc{bcOther = setConfig (bcOther bc) c}
 
 buildASTExprExt :: (BEnv r s m) => Tree -> m AST.Expression
+buildASTExprExt t@Tree{treeUnifiedWithRC = True} = buildUWCASTExpr t
 buildASTExprExt t = case treeNode t of
   TNTop -> return $ AST.litCons (pure AST.TopLit)
   TNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
@@ -93,7 +94,6 @@ buildASTExprExt t = case treeNode t of
   TNMutable mut -> buildMutableASTExpr mut t
   TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   TNRefCycle -> buildRCASTExpr t
-  TNUnifyWithRC inner -> buildUWCASTExpr inner
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
   TNNoValRef -> maybe (throwExprNotFound t) return (treeExpr t)
 
@@ -151,7 +151,7 @@ buildUWCASTExpr inner = do
   isDebug <- asks getIsDebug
   if isDebug
     then buildUnifyOpASTExpr (UnifyOp (Seq.fromList [mkNewTree TNRefCycle, inner]))
-    else throwExprNotFound (mkNewTree (TNUnifyWithRC inner))
+    else throwErrSt "unified-with-rc expression should not be built in non-debug mode"
 
 buildStructASTExpr :: (BEnv r s m) => Block -> m AST.Expression
 buildStructASTExpr block@(IsBlockStruct s) = do

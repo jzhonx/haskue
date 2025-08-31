@@ -113,10 +113,11 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
       let (revRegs, rcs) =
             foldr
               ( \tc (accRegs, accRCs) ->
-                  case treeNode (tcFocus tc) of
-                    TNRefCycle{} -> (accRegs, accRCs + 1)
-                    TNUnifyWithRC inner -> (inner `setTCFocus` tc : accRegs, accRCs + 1)
-                    _ -> (tc : accRegs, accRCs)
+                  let t = tcFocus tc
+                   in case t of
+                        IsRefCycle -> (accRegs, accRCs + 1)
+                        IsUnifiedWithRC True -> (tc : accRegs, accRCs + 1)
+                        _ -> (tc : accRegs, accRCs)
               )
               ([], 0 :: Int)
               tcs
@@ -133,7 +134,7 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
             -- regular conjuncts.
             if rcs == 0 || canCancelRC unifyTC
               then return $ Just r
-              else return $ Just $ mkNewTree (TNUnifyWithRC r)
+              else return $ Just $ r{treeUnifiedWithRC = True}
 
 {- | Check if the reference cycle can be cancelled.
 

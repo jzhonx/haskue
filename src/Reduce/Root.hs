@@ -119,11 +119,6 @@ reduceTCFocus = withTreeDepthLimit $ do
     TNBlock _ -> reduceBlock
     TNList l -> reduceList l
     TNDisj d -> reduceDisj d
-    TNUnifyWithRC r -> do
-      putTMTree r
-      reduce
-      newR <- getTMTree
-      modifyTMTN (TNUnifyWithRC newR)
     _ -> return ()
 
   modifyTMTree $ \t ->

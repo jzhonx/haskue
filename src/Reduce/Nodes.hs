@@ -872,7 +872,7 @@ delUnwantedDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjunc
     let canCancelRC = isAddrCanonical (tcAddr tc)
     case v of
       IsRefCycle | canCancelRC -> return (accIs, accXs)
-      IsUnifyWithRC r | canCancelRC -> return $ updateDisjuncts (accIs, accXs) (idx, r)
+      IsUnifiedWithRC True | canCancelRC -> return $ updateDisjuncts (accIs, accXs) (idx, v{treeUnifiedWithRC = False})
       _ -> return $ updateDisjuncts (accIs, accXs) (idx, v)
 
   updateDisjuncts (accIs, accXs) (idx, x) =
