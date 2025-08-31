@@ -1,7 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,7 +13,7 @@ import qualified Common
 import Control.Monad (foldM, when)
 import Control.Monad.State.Strict (get, gets, modify, put, runStateT)
 import Cursor
-import Data.Maybe (fromMaybe, isJust, maybeToList)
+import Data.Maybe (isJust, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)

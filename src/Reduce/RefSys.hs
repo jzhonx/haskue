@@ -38,7 +38,6 @@ import Reduce.RMonad (
  )
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (TreeRepBuildOption (..), buildRepTree, defaultTreeRepBuildOption, repToString)
 
 data DerefResult = DerefResult
   { drValue :: Maybe Tree
@@ -198,7 +197,7 @@ watchFound tarTC refEnv = do
     Just refSCCAddr -> case refSCCAddr of
       ACyclicSCCAddr _ -> return NoCycleDetected
       CyclicSCCAddr _ -> return $ RCDetected (getSCCAddrs refSCCAddr newG)
-      SCyclicSCCAddr _ _ -> return undefined
+      SCyclicSCCAddr _ _ -> return SCDetected
   debugInstantRM
     "watchFound"
     ( printf
@@ -249,7 +248,7 @@ type DstTC = Either Tree (Maybe TrCur)
 
 data CycleDetection
   = RCDetected [TreeAddr]
-  | SCDetected Tree
+  | SCDetected
   | NoCycleDetected
   deriving (Show, Eq)
 

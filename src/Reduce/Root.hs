@@ -144,12 +144,12 @@ reduceMutable mut@(Mutable mop _) = case mop of
           (DerefResult rM tarAddr cd isIterBinding) <- index ref tc
           case cd of
             NoCycleDetected -> handleRefRes isIterBinding rM
-            SCDetected _ -> do
-              -- If the target is cyclic, and it is not used to only reduce mutable, we should return structural
+            SCDetected -> do
+              -- If the target is ancestor, and it is not used to only reduce mutable, we should return structural
               -- cycle.
               -- This handles two cases:
-              -- 1. The ref had not been marked as cyclic. For example, f: {out: null | f}, the inner f.
-              -- 2. The ref had been marked as cyclic. For example, reducing f when reducing the y.
+              -- 1. The ref had not been marked as structural cyclic. For example, f: {out: null | f}, the inner f.
+              -- 2. The ref had been marked as structural cyclic. For example, reducing f when reducing the y.
               -- { f: {out: null | f },  y: f }
               handleRefRes isIterBinding (Just $ mkBottomTree "structural cycle")
               modifyTMTree $ \t -> t{treeIsSCyclic = True}
