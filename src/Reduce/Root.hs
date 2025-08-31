@@ -194,7 +194,7 @@ reduceMutable mut@(Mutable mop _) = case mop of
   DisjOp _ -> do
     -- Disjunction operation can have incomplete arguments.
     (_, _) <- reduceArgs reduce rtrNonMut
-    r <- getTMCursor >>= resolveDisjOp False
+    r <- getTMCursor >>= resolveDisjOp
     handleMutRes r True
   UOp _ -> do
     pconjs <- discoverPConjs
@@ -270,12 +270,10 @@ handleMutRes (Just result) furtherReduce = do
 
 putValInMutVal :: (ReduceMonad s r m) => Maybe Tree -> m ()
 putValInMutVal m = do
-  tc <- getTMCursor
-  case tcFocus tc of
-    IsMutable mut -> do
-      let newMut = setMutVal m mut
-      putTMCursor (setTCFocusTN (TNMutable newMut) tc)
-    _ -> throwErrSt "putValInMutVal: not a mutable tree"
+  t <- getTMTree
+  case t of
+    IsMutable _ -> putTMTree $ setMutableValue m t
+    _ -> throwErrSt $ printf "putValInMutVal: not a mutable tree, got %s" (show t)
 
 {- | Check whether the mutator is reducible.
 
@@ -331,16 +329,6 @@ reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
  where
   adapt (xs, b) = toJSON (map (fmap oneLinerStringOfCurTreeState) xs, b)
 
--- reduceArg :: (ReduceMonad s r m) => m () -> (TrCur -> a) -> m a
--- reduceArg reduceFunc convert = do
---   tc <- getTMCursor
---   oldDespM <- getTMRCDesp
---   -- If the argument is not reduced, or we are in the middle of reducing reference cycles, we need to reduce it.
---   if maybe False rcdIsReducingRCs oldDespM
---     then reduceFunc >> convert <$> getTMCursor
---     -- If the argument is already reduced, we can just return it.
---     else return (convert tc)
-
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: (ReduceMonad s r m) => ResolvedPConjuncts -> m ()
 handleResolvedPConjsForUnifyMut IncompleteConjuncts = return ()
@@ -379,7 +367,7 @@ reduceRefCycles addrs = debugSpanTM "reduceRefCycles" $ do
           (printf "tree with RCs has been populated to: %s" (show $ tcFocus x))
 
         reduce
-        withTree $ \t -> maintainRefValidStatus t >>= putTMTree
+        withTree $ \t -> normalizeRef t >>= putTMTree
     )
     addrs
 

@@ -139,23 +139,9 @@ unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (show
 
 A reference cycle can be cancelled if
 * in the form of f: RC & v
-* in the form of f: RC & v | dj
 -}
 canCancelRC :: TrCur -> Bool
-canCancelRC unifyTC =
-  maybe
-    False
-    ( \(seg, ptc) ->
-        isSegReferable seg
-          || case (seg, isSegReferable <$> tcFocusSeg ptc) of
-            (DisjRegTASeg _, Just True) -> True
-            _ -> False
-    )
-    ( do
-        seg <- tcFocusSeg unifyTC
-        ptc <- parentTC unifyTC
-        return (seg, ptc)
-    )
+canCancelRC unifyTC = isAddrCanonical (tcAddr unifyTC)
 
 {- | Unify two UTrees that are discovered in the merging process.
 
@@ -311,21 +297,6 @@ mergeLeftAtom (v1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) 
 
   amismatch :: (Show a) => a -> a -> TreeNode
   amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
-
--- mkCnstrOrOther :: (ResolveMonad s r m) => Tree -> m Tree
--- mkCnstrOrOther t2 = do
---   RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
---   -- logDebugStrRM $ printf "mergeLeftAtom: cc: %s, procOther: %s, %s" (show cc) (show ut1) (show ut2)
---   if cc
---     then do
---       c <- mkCnstr v1 t2
---       retTr c
---     else mergeLeftOther ut2 ut1 unifyTC
-
-mkCnstr :: (ResolveMonad s r m) => Atom -> Tree -> m Tree
-mkCnstr a cnstr = do
-  let op = mkMutableTree $ mkUnifyOp [mkAtomTree a, cnstr]
-  return $ mkCnstrTree a op
 
 mergeLeftBound :: (ResolveMonad s r m) => (Bounds, UTree) -> UTree -> TrCur -> m Tree
 mergeLeftBound (b1, ut1@(UTree{utDir = d1})) ut2@(UTree{utTC = tc2, utDir = d2}) unifyTC = do

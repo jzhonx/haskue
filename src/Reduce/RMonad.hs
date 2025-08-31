@@ -291,14 +291,14 @@ For example, x: (1 & 2) + 1 | 2. The bottom is in the disjunction but not a disj
 propUpTM :: (ReduceMonad r s m) => m ()
 propUpTM = do
   tc <- getTMCursor
-  addr <- getTMAbsAddr
   seg <- getTMTASeg
   focus <- getTMTree
 
-  -- If the focus is a bottom and the address is not an immediate disj, then we should overwrite the parent with the
-  -- bottom.
+  -- If the focus is a bottom and last segment is referable, then discard the focus and pop the bottom up.
+  -- For example, {x: 1 & 2}, the bottom in the conjunction invalidates the whole struct.
+  -- Another example is y: [1&2], the bottom in the conjunction invalidates the whole list.
   case focus of
-    IsBottom _ | isInDisj addr && not (isSegDisj seg) -> do
+    IsBottom _ | isSegReferable seg -> do
       _discardTMAndPop
       putTMTree focus
     _ -> propUpTC tc >>= putTMCursor

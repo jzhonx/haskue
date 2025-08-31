@@ -9,10 +9,8 @@ module Reduce.Nodes where
 
 import Common (Config (..), HasConfig (..), HasContext (..), RuntimeParams (..))
 import Control.Monad (foldM, unless, void, when)
-import Control.Monad.Reader (asks)
+import Control.Monad.Reader (asks, local)
 import Control.Monad.State.Strict (modify, runStateT)
-
-import Control.Monad.Reader (local)
 import Cursor
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
@@ -628,33 +626,18 @@ closeTree a =
     -- TNMutable _ -> throwErrSt "TODO"
     _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-{- | Discover conjuncts from a tree node that contains conjuncts as its children.
+{- | Discover conjuncts from a **unreduced** tree node that contains conjuncts as its children.
 
 It reduces every conjunct node it finds.
 -}
 discoverPConjs :: (ReduceMonad s r m) => m [Maybe TrCur]
-discoverPConjs = discoverPConjsOpt True
-
-{- | Discover conjuncts from a tree node that contains conjuncts as its children without reducing them.
-
-It should be used after reduceArgs has been called.
--}
-discoverPConjsFromTC :: (ResolveMonad s r m) => TrCur -> m [Maybe TrCur]
-discoverPConjsFromTC tc = do
-  curCtx <- getRMContext
-  (a, updated) <- runStateT (discoverPConjsOpt False) (RTCState tc curCtx)
-  modify $ \s -> setContext s (rtsCtx updated)
-  return a
-
--- | Discover conjuncts from a tree node that contains conjuncts as its children.
-discoverPConjsOpt :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
-discoverPConjsOpt toReduce = debugSpanAdaptTM "discoverPConjs" adapt $ do
+discoverPConjs = debugSpanAdaptTM "discoverPConjs" adapt $ do
   conjTC <- getTMCursor
   case tcFocus conjTC of
-    IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp toReduce
-    IsBlock _ -> discoverPConsjFromBlkConj toReduce
+    IsMutable (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
+    IsBlock _ -> discoverPConsjFromBlkConj
     _ -> do
-      when toReduce reduce
+      reduce
       vM <- rtrNonMut <$> getTMTree
       return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
  where
@@ -666,23 +649,23 @@ It recursively discovers conjuncts from the unify operation and its arguments.
 
 It reduces any mutable argument it finds.
 -}
-discoverPConjsFromUnifyOp :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
-discoverPConjsFromUnifyOp toReduce = do
+discoverPConjsFromUnifyOp :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConjsFromUnifyOp = do
   tc <- getTMCursor
   case tc of
     TCFocus (IsMutable mut@(MutOp (UOp _))) -> do
       -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
       foldM
         ( \acc (i, _) -> do
-            subs <- inSubTM (MutArgTASeg i) (discoverPConjsOpt toReduce)
+            subs <- inSubTM (MutArgTASeg i) discoverPConjs
             return (acc ++ subs)
         )
         []
         (zip [0 ..] (toList $ getMutArgs mut))
     _ -> throwErrSt "discoverPConjsFromUnifyOp: not a mutable unify operation"
 
-discoverPConsjFromBlkConj :: (ReduceMonad s r m) => Bool -> m [Maybe TrCur]
-discoverPConsjFromBlkConj toReduce = do
+discoverPConsjFromBlkConj :: (ReduceMonad s r m) => m [Maybe TrCur]
+discoverPConsjFromBlkConj = do
   tc <- getTMCursor
   case tc of
     TCFocus (IsBlock blk) -> do
@@ -693,7 +676,7 @@ discoverPConsjFromBlkConj toReduce = do
       embeds <-
         foldM
           ( \acc i -> do
-              subs <- inSubTM (BlockTASeg (EmbedTASeg i)) (discoverPConjsOpt toReduce)
+              subs <- inSubTM (BlockTASeg (EmbedTASeg i)) discoverPConjs
               return (acc ++ subs)
           )
           []
@@ -726,29 +709,31 @@ The tree cursor must be the unify operation node.
 resolvePendingConjuncts :: (ResolveMonad s r m) => [Maybe TrCur] -> TrCur -> m ResolvedPConjuncts
 resolvePendingConjuncts pconjs tc = do
   RuntimeParams{rpCreateCnstr = cc} <- asks (cfRuntimeParams . getConfig)
-  refMaintained <- maintainRefValidStatus (tcFocus tc)
-  let r =
+  -- TODO: why do we need to normalize the reference here?
+  refMaintained <- normalizeRef (tcFocus tc)
+  let (readies, foundIncmpl, acM) =
         foldr
-          ( \pconj acc -> case acc of
-              ResolvedConjuncts xs -> case tcFocus <$> pconj of
-                Nothing -> IncompleteConjuncts
-                Just (IsAtom a)
-                  | cc -> AtomCnstrConj (AtomCnstr a refMaintained)
-                Just _ -> ResolvedConjuncts (fromJust pconj : xs)
-              IncompleteConjuncts -> case tcFocus <$> pconj of
-                -- If we discover an atom conjunct, we can ignore the incomplete conjuncts.
-                Just (IsAtom a)
-                  | cc -> AtomCnstrConj (AtomCnstr a refMaintained)
-                _ -> IncompleteConjuncts
-              _ -> acc
+          ( \pconj (acc, accFoundIncmpl, accACM) -> case tcFocus <$> pconj of
+              Nothing -> (acc, True, accACM)
+              Just (IsAtom a)
+                | cc ->
+                    ( fromJust pconj : acc
+                    , accFoundIncmpl
+                    , if isJust accACM then accACM else Just $ AtomCnstr a refMaintained
+                    )
+              Just _ -> (fromJust pconj : acc, accFoundIncmpl, accACM)
           )
-          (ResolvedConjuncts [])
+          ([], False, Nothing)
           pconjs
+      r =
+        if not foundIncmpl
+          then ResolvedConjuncts readies
+          else maybe IncompleteConjuncts AtomCnstrConj acM
   debugInstantRM "resolvePendingConjuncts" (printf "resolved: %s" (show r)) tc
   return r
 
-resolveDisjOp :: (ResolveMonad s r m) => Bool -> TrCur -> m (Maybe Tree)
-resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
+resolveDisjOp :: (ResolveMonad s r m) => TrCur -> m (Maybe Tree)
+resolveDisjOp disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
   debugSpanMTreeRM "resolveDisjOp" disjOpTC $ do
     let terms = toList $ djoTerms disjOp
     when (length terms < 2) $
@@ -756,7 +741,7 @@ resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
         printf "disjunction operation requires at least 2 terms, got %d" (length terms)
 
     debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
-    disjuncts <- procMarkedTerms asConj terms
+    disjuncts <- procMarkedTerms terms
 
     debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
     if null disjuncts
@@ -766,9 +751,9 @@ resolveDisjOp asConj disjOpTC@(TCFocus (IsMutable (MutOp (DisjOp disjOp)))) =
         let d = emptyDisj{dsjDisjuncts = disjuncts}
         r <- normalizeDisj d disjOpTC
         return $ Just r
-resolveDisjOp _ _ = throwErrSt "resolveDisjOp: focus is not a disjunction operation"
+resolveDisjOp _ = throwErrSt "resolveDisjOp: focus is not a disjunction operation"
 
-{- | Normalize the disjunction.
+{- | Normalize a disjunction which is generated by reducing a disjunction operation.
 
 1. Flatten the disjunction.
 2. Deduplicate the disjuncts.
@@ -858,6 +843,8 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
 
 {- | Remove or rewrite unwanted disjuncts.
 
+All the disjuncts have been reduced before this step.
+
 Unwanted disjuncts include:
 
 * duplicate default disjuncts
@@ -882,40 +869,10 @@ delUnwantedDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjunc
   origDefIdxesSet = Set.fromList dfIdxes
 
   go (accIs, accXs) (idx, v) = do
-    let djTC = mkSubTC (DisjRegTASeg idx) v tc
-    pconjs <- discoverPConjsFromTC djTC
-    resolved <- resolvePendingConjuncts pconjs djTC
-    case resolved of
-      ResolvedConjuncts xs -> do
-        -- Remove the conjunct if it is a reference cycle or UWC and its segment is referable.
-        let
-          canCancelRC = fromMaybe False $ do
-            seg <- tcFocusSeg tc
-            return $ isSegReferable seg
-          revYs =
-            foldr
-              ( \x acc -> case tcFocus x of
-                  IsRefCycle | canCancelRC -> acc
-                  IsUnifyWithRC r | canCancelRC -> (r `setTCFocus` x) : acc
-                  _ -> x : acc
-              )
-              []
-              xs
-          ys = reverse revYs
-        debugInstantRM
-          "delUnwantedDisjuncts"
-          (printf "disjunct %d: %s, resolved to: %s" idx (show v) (show ys))
-          tc
-        case ys of
-          [] -> return (accIs, accXs)
-          [y] -> return $ updateDisjuncts (accIs, accXs) (idx, tcFocus y)
-          _ -> do
-            yM <- unifyNormalizedTCs ys djTC
-            return $
-              maybe
-                (updateDisjuncts (accIs, accXs) (idx, v))
-                (\y -> updateDisjuncts (accIs, accXs) (idx, y))
-                yM
+    let canCancelRC = isAddrCanonical (tcAddr tc)
+    case v of
+      IsRefCycle | canCancelRC -> return (accIs, accXs)
+      IsUnifyWithRC r | canCancelRC -> return $ updateDisjuncts (accIs, accXs) (idx, r)
       _ -> return $ updateDisjuncts (accIs, accXs) (idx, v)
 
   updateDisjuncts (accIs, accXs) (idx, x) =
@@ -955,16 +912,9 @@ M1: *⟨v⟩    => ⟨v, v⟩     introduce identical default for marked term
 M2: *⟨v, d⟩ => ⟨v, d⟩     keep existing defaults for marked term
 M3:  ⟨v, d⟩ => ⟨v⟩        strip existing defaults from unmarked term
 -}
-procMarkedTerms :: (ResolveMonad s r m) => Bool -> [DisjTerm] -> m [Tree]
-procMarkedTerms asConj terms = do
+procMarkedTerms :: (ResolveMonad s r m) => [DisjTerm] -> m [Tree]
+procMarkedTerms terms = do
   -- disjoin operation allows incompleteness.
-
-  -- let concreteTerms =
-  --       -- If the disjunction is a conjunct, there is no need to reduce the terms.
-  --       if asConj
-  --         then terms
-  --         else filter (isJust . rtrNonMut . dstValue) terms
-
   let hasMarked = any dstMarked terms
   return $
     foldr

@@ -520,18 +520,18 @@ snapshotTree t = do
     t
     subTs
 
-{- | Populate the references that are part of the reference cycles with either RefCycle or the actual value.
+{- | Normalize the reference in the tree.
 
-Reference status was broken during reducing the RCs. We have to restore the status by
+Reference status could be broken during reducing the RCs. We have to restore the status by
 * making mutable type value of ref to Nothing. Because the mutval of a mutable should not be a mutable.
 * converting RC of Ref to Top.
 -}
-maintainRefValidStatus :: (ErrorEnv m) => Tree -> m Tree
-maintainRefValidStatus t = do
+normalizeRef :: (ErrorEnv m) => Tree -> m Tree
+normalizeRef t = do
   nCur <- maintain t
   foldM
     ( \acc (seg, st) -> do
-        newSt <- maintainRefValidStatus st
+        newSt <- normalizeRef st
         setSubTree seg newSt acc
     )
     nCur
@@ -539,15 +539,16 @@ maintainRefValidStatus t = do
  where
   maintain x = case x of
     IsRef mut (Reference{refArg = RefPath{}})
-      | Just IsRefCycle <- getMutVal mut -> do
-          let newMut = setMutVal (Just (mkNewTree TNTop)) mut
-          return $ setTN x (TNMutable newMut)
+      | Just IsRefCycle <- getMutVal mut -> return $ setMutableValue (Just (mkNewTree TNTop)) x
       | Just (IsMutable _) <- getMutVal mut -> return $ invalidateMutable x
     _ -> return x
 
 invalidateMutable :: Tree -> Tree
-invalidateMutable t@(IsMutable mut) = setTN t (TNMutable $ setMutVal Nothing mut)
-invalidateMutable t = t
+invalidateMutable = setMutableValue Nothing
+
+setMutableValue :: Maybe Tree -> Tree -> Tree
+setMutableValue vM t@(IsMutable mut) = setTN t (TNMutable $ setMutVal vM mut)
+setMutableValue _ t = t
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of

@@ -353,10 +353,18 @@ bdRep b = case b of
 disjunctsToAST :: (BEnv r s m) => [Tree] -> m AST.Expression
 disjunctsToAST ds = do
   xs <- mapM buildASTExprExt ds
-  return $
-    foldr1
-      (\x acc -> pure $ AST.ExprBinaryOp (pure AST.Disjoin) x acc)
-      xs
+  isDebug <- asks getIsDebug
+  -- We might print unresolved disjunctions in debug mode with only one disjunct.
+  if isDebug && length xs < 2
+    then case xs of
+      [] -> return $ AST.litCons (pure AST.BottomLit)
+      [x] -> return x
+      _ -> throwErrSt "unreachable"
+    else
+      return $
+        foldr1
+          (\x acc -> pure $ AST.ExprBinaryOp (pure AST.Disjoin) x acc)
+          xs
 
 buildUnifyOpASTExpr :: (BEnv r s m) => UnifyOp -> m AST.Expression
 buildUnifyOpASTExpr op

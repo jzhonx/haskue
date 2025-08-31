@@ -295,3 +295,14 @@ isSegReferable (BlockTASeg (getStrFromSeg -> Just _)) = True
 isSegReferable (IndexTASeg _) = True
 isSegReferable RootTASeg = True
 isSegReferable _ = False
+
+-- | Is the tree address a canonical tree address.
+isAddrCanonical :: TreeAddr -> Bool
+isAddrCanonical (TreeAddr xs) = all isSegCanonical xs
+ where
+  isSegCanonical :: TASeg -> Bool
+  isSegCanonical seg = isSegReferable seg || isSegSubVal seg
+
+isSegSubVal :: TASeg -> Bool
+isSegSubVal SubValTASeg = True
+isSegSubVal _ = False
