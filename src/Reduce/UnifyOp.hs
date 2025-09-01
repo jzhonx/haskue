@@ -241,7 +241,6 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
         (TNTop, _) -> mergeLeftTop ut1 ut2
         (_, TNTop) -> mergeLeftTop ut2 ut1
         (TNAtom a1, _) -> mergeLeftAtom (a1, ut1) ut2 unifyTC
-        -- Below is the earliest time to create a constraint
         (_, TNAtom a2) -> mergeLeftAtom (a2, ut2) ut1 unifyTC
         (TNDisj dj1, _) -> mergeLeftDisj (dj1, ut1) ut2 unifyTC
         (_, TNDisj dj2) -> mergeLeftDisj (dj2, ut2) ut1 unifyTC
@@ -562,21 +561,9 @@ returnNotUnifiable (UTree{utTC = tc1, utDir = d1}) (UTree{utTC = tc2}) = do
 mergeLeftBlock :: (ResolveMonad s r m) => (Block, UTree) -> UTree -> TrCur -> m Tree
 mergeLeftBlock (s1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t2 = tcFocus tc2
-  if
-    -- When the left struct is an empty struct with non empty embedded fields, meaning it is an embedded value, we can
-    -- just return the right value because embedded value has been added as conjunct.
-    -- For example, {int} & 1 -> {} & 1 & int
-    -- The 1 and int are re-ordered, but the result should be the same.
-    -- \| hasEmptyFields s1 && not (null $ stcEmbeds s1) -> retTr t2
-    -- -- When the left is an empty struct and the right value is an embedded value of type non-struct, meaning we are
-    -- -- using the embedded value to replace the struct.
-    -- -- For example, the parent struct is {a: 1, b}, and the function is {a: 1} & b.
-    -- \| hasEmptyFields s1 && isJust (utEmbedID ut2) -> case treeNode t2 of
-    --     TNBlock s2 -> mergeBlocks (s1, ut1) (s2, ut2)
-    --     _ -> retTr t2
-    | otherwise -> case treeNode t2 of
-        TNBlock s2 -> mergeBlocks (s1, ut1) (s2, ut2) unifyTC
-        _ -> mergeLeftOther ut2 ut1 unifyTC
+  case treeNode t2 of
+    TNBlock s2 -> mergeBlocks (s1, ut1) (s2, ut2) unifyTC
+    _ -> mergeLeftOther ut2 ut1 unifyTC
 
 {- | unify two structs.
 

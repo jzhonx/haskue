@@ -12,6 +12,7 @@ import Data.Text.Lazy (unpack)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 
 class HasTrace a where
@@ -207,7 +208,7 @@ debugInstant enable name addr args = do
 
 dumpTrace :: (MonadIO m) => Bool -> String -> m ()
 dumpTrace enable msg =
-  when enable $ liftIO $ putStrLn $ "ChromeTrace" ++ msg
+  when enable $ liftIO $ hPutStr stderr $ "ChromeTrace" ++ msg ++ "\n"
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceID . getTrace
@@ -226,4 +227,8 @@ lastTraceID = do
   return $ traceID tr
 
 emptyTrace :: Trace
-emptyTrace = Trace{traceID = 0, traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}}
+emptyTrace =
+  Trace
+    { traceID = 0
+    , traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}
+    }
