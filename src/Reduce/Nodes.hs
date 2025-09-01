@@ -7,16 +7,15 @@
 
 module Reduce.Nodes where
 
-import Common (Config (..), HasConfig (..), HasContext (..), RuntimeParams (..))
+import Common (Config (..), HasConfig (..), RuntimeParams (..))
 import Control.Monad (foldM, unless, void, when)
 import Control.Monad.Reader (asks, local)
-import Control.Monad.State.Strict (modify, runStateT)
 import Cursor
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -24,7 +23,6 @@ import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import Path
 import Reduce.RMonad (
-  RTCState (..),
   ReduceMonad,
   ResolveMonad,
   addRMUnreferredLet,
@@ -38,7 +36,6 @@ import Reduce.RMonad (
   debugSpanSimpleRM,
   debugSpanTM,
   debugSpanTreeRM,
-  getRMContext,
   getRMUnreferredLets,
   getTMCursor,
   getTMTree,
@@ -60,7 +57,7 @@ import Value.Util.TreeRep (treeToRepString)
 
 {- | Reduce the struct.
 
-Most of the heavy work is done in the propUpStructPost function.
+Most of the heavy work is done in the handleStructMutObjChange function.
 -}
 reduceBlock :: (ReduceMonad s r m) => m ()
 reduceBlock = debugSpanTM "reduceBlock" $ do
@@ -74,7 +71,7 @@ reduceBlock = debugSpanTM "reduceBlock" $ do
 
 reduceUnifiedBlock :: (ReduceMonad s r m) => Tree -> m ()
 reduceUnifiedBlock unified = do
-  tc <- getTMCursor
+  origBlock <- getTMTree
   case unified of
     IsBlock _ -> do
       putTMTree unified
@@ -84,8 +81,8 @@ reduceUnifiedBlock unified = do
       modifyTMTree $ \x -> case x of
         IsBlock block -> let newBlock = block{blkValue = BlockEmbed unified} in setTN x $ TNBlock newBlock
         _ -> x
-      reduce
-  handleBlockReducedRes (tcFocus tc)
+      inSubTM SubValTASeg reduce
+  handleBlockReducedRes origBlock
 
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForStruct :: (ResolveMonad s r m) => ResolvedPConjuncts -> TrCur -> m (Maybe Tree)
@@ -137,7 +134,7 @@ reduceStruct = do
     ( \(blk, _) ->
         mapM_
           ( \(i, _) -> do
-              -- Inserting reduced dynamic field element into the struct is handled by propUpStructPost.
+              -- Inserting reduced dynamic field element into the struct is handled by handleStructMutObjChange.
               inSubTM (BlockTASeg (DynFieldTASeg i 0)) reduce
               -- we will reduce every fields, so no need to return affected labels.
               void $ handleStructMutObjChange (DynFieldTASeg i 0)
@@ -151,7 +148,7 @@ reduceStruct = do
               -- pattern value should never be reduced because the references inside the pattern value should only
               -- be resolved in the unification node of the static field.
               -- See unify for more details.
-              -- reduced constraint will constrain fields, which is done in the propUpStructPost.
+              -- reduced constraint will constrain fields, which is done in the handleStructMutObjChange.
               inSubTM (BlockTASeg (PatternTASeg i 0)) reduce
               void $ handleStructMutObjChange (PatternTASeg i 0)
           )
@@ -224,6 +221,10 @@ aliasErr name = mkBottomTree $ printf "can not have both alias and field with na
 lbRedeclErr :: T.Text -> Tree
 lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
 
+{- | Reduce the struct field with the given name.
+
+If the field is reduced to bottom, the whole struct becomes bottom.
+-}
 reduceStructField :: (ReduceMonad s r m) => T.Text -> m ()
 reduceStructField name = do
   whenBlock
@@ -239,7 +240,12 @@ reduceStructField name = do
           _ -> return ()
     )
   whenBlock
-    (\(_, _) -> inSubTM (BlockTASeg (StringTASeg (TE.encodeUtf8 name))) reduce)
+    ( \(_, _) -> do
+        r <- inSubTM (BlockTASeg (StringTASeg (TE.encodeUtf8 name))) (reduce >> getTMTree)
+        case r of
+          IsBottom _ -> putTMTree r
+          _ -> return ()
+    )
 
 {- | Handle the post process of the mutable object change in the struct.
 
@@ -376,16 +382,6 @@ handleStructMutObjChange seg = do
                 return $ case t of
                   IsBlock (IsBlockStruct resStruct) -> Map.keys $ stcFields resStruct
                   _ -> []
-
-    -- merged <- unifyNormalizedTCs [structTC] structTC
-    -- utc <- handleBlockReducedRes (tcFocus structTC) (merged `setTCFocus` structTC)
-    -- return
-    --   ( utc
-    --   , case treeNode (tcFocus utc) of
-    --       -- Currently we have to re-reduce all fields because unify does not return the reduced fields.
-    --       TNBlock (IsBlockStruct resStruct) -> Map.keys $ stcFields resStruct
-    --       _ -> []
-    --   )
     _ -> return []
 
 getLabelFieldPairs :: Struct -> [(T.Text, Field)]

@@ -281,27 +281,21 @@ modifyTMNodeWithTree t = modifyTMTN (treeNode t)
 
 -- PropUp operations
 
-{- | Propagate the value up.
-
-For the bottom handling:
-1. It surfaces the bottom only if the bottom is in a disjunction but not a disjunct.
-
-For example, x: (1 & 2) + 1 | 2. The bottom is in the disjunction but not a disjunct.
--}
+-- | Propagate the value up.
 propUpTM :: (ReduceMonad r s m) => m ()
 propUpTM = do
   tc <- getTMCursor
-  seg <- getTMTASeg
-  focus <- getTMTree
+  propUpTC tc >>= putTMCursor
 
-  -- If the focus is a bottom and last segment is referable, then discard the focus and pop the bottom up.
-  -- For example, {x: 1 & 2}, the bottom in the conjunction invalidates the whole struct.
-  -- Another example is y: [1&2], the bottom in the conjunction invalidates the whole list.
-  case focus of
-    IsBottom _ | isSegReferable seg -> do
-      _discardTMAndPop
-      putTMTree focus
-    _ -> propUpTC tc >>= putTMCursor
+-- -- If the focus is a bottom and last segment is referable, then discard the focus and pop the bottom up.
+-- -- For example, {x: 1 & 2}, the bottom in the conjunction invalidates the whole struct.
+-- -- Another example is y: [1&2], the bottom in the conjunction invalidates the whole list.
+-- case focus of
+--   IsBottom _ | isSegReferable seg -> do
+--     _discardTMAndPop
+--     putTMTree focus
+--   _ -> propUpTC tc >>= putTMCursor
+--
 
 runTMTCAction :: (ReduceMonad r s m) => (forall n. (ResolveMonad r s n) => TrCur -> n Tree) -> m ()
 runTMTCAction f = do

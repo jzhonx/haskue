@@ -139,16 +139,18 @@ This should only be used by TreeCursor.
 subTree :: (HasCallStack) => TASeg -> Tree -> Maybe Tree
 subTree seg t = case (seg, treeNode t) of
   (RootTASeg, _) -> Just t
-  (BlockTASeg s, TNBlock blk@(IsBlockStruct struct)) -> case s of
-    StringTASeg name
-      | Just sf <- lookupStructField (TE.decodeUtf8 name) struct -> Just $ ssfValue sf
-    PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> blkCnstrs blk IntMap.!? i
-    DynFieldTASeg i j ->
-      (if j == 0 then dsfLabel else dsfValue) <$> blkDynFields blk IntMap.!? i
-    LetTASeg name
-      | Just lb <- lookupBlockLet (TE.decodeUtf8 name) blk -> Just (lbValue lb)
-    EmbedTASeg i -> embValue <$> blkEmbeds blk IntMap.!? i
-    _ -> Nothing
+  (BlockTASeg s, TNBlock blk)
+    | StringTASeg name <- s
+    , IsBlockStruct struct <- blk
+    , Just sf <- lookupStructField (TE.decodeUtf8 name) struct ->
+        Just $ ssfValue sf
+    | PatternTASeg i j <- s -> (if j == 0 then scsPattern else scsValue) <$> blkCnstrs blk IntMap.!? i
+    | DynFieldTASeg i j <- s ->
+        (if j == 0 then dsfLabel else dsfValue) <$> blkDynFields blk IntMap.!? i
+    | LetTASeg name <- s
+    , Just lb <- lookupBlockLet (TE.decodeUtf8 name) blk ->
+        Just (lbValue lb)
+    | EmbedTASeg i <- s -> embValue <$> blkEmbeds blk IntMap.!? i
   (SubValTASeg, TNBlock (IsBlockEmbed ev)) -> Just ev
   (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
   (_, TNMutable mut)
@@ -187,10 +189,11 @@ setSubTree seg subT parT = do
   structToTN s blk = TNBlock blk{blkValue = BlockStruct s}
 
   updateParStruct :: (ErrorEnv m) => Block -> BlockTASeg -> m TreeNode
-  updateParStruct parBlock@(IsBlockStruct parStruct) labelSeg
+  updateParStruct parBlock labelSeg
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | StringTASeg name <- labelSeg
+    , IsBlockStruct parStruct <- parBlock
     , Just field <- lookupStructField (TE.decodeUtf8 name) parStruct =
         let
           newField = subT `updateFieldValue` field
