@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -11,19 +12,14 @@ module Value.Tree where
 
 import AST (exprToOneLinerStr)
 import qualified AST
-import Common (EnvIO, ErrorEnv)
-import Control.Monad (foldM)
+import Common (EnvIO)
 import Control.Monad.Except (runExcept)
-import Data.Foldable (toList)
-import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
-import GHC.Stack (HasCallStack)
 import Path (
   BlockTASeg (..),
   FieldPath (FieldPath),
@@ -31,8 +27,8 @@ import Path (
   TASeg (..),
   TreeAddr,
   addrToList,
+  stringSegToText,
  )
-import Text.Printf (printf)
 import Value.Atom
 import Value.Block
 import Value.Bottom
@@ -51,7 +47,7 @@ data TreeNode
   | TNBottom Bottom
   | TNBounds Bounds
   | TNTop
-  | TNBlock Block
+  | TNStruct Struct
   | TNList List
   | TNDisj Disj
   | TNAtomCnstr AtomCnstr
@@ -59,11 +55,21 @@ data TreeNode
     TNRefCycle
   | -- | TNRefSubCycle represents the result of a field referencing its sub field.
     TNRefSubCycle TreeAddr
-  | TNMutable Mutable
-  | -- | TNNoValRef is used to represent a reference that is copied from another expression but has no value
+  | -- | TNNoVal is used to represent a reference that is copied from another expression but has no value
     -- yet.
-    TNNoValRef
+    TNNoVal
   deriving (Generic)
+
+data TreeValGenEnv
+  = TGenOp Mutable
+  | TGenImmutable
+  deriving (Generic)
+
+data EmbedType
+  = ETNone
+  | ETEnclosing
+  | ETEmbedded !Int
+  deriving (Eq, Show, Generic)
 
 -- Some rules:
 -- 1. If a node is a Mutable that contains references, then the node should not be supplanted to other places without
@@ -73,22 +79,27 @@ data Tree = Tree
   { treeNode :: TreeNode
   , treeExpr :: Maybe AST.Expression
   -- ^ treeExpr is the parsed expression.
-  , treeRecurClosed :: !Bool
-  -- ^ treeRecurClosed is used to indicate whether the sub-tree including itself is closed.
-  , treeIsRootOfSubTree :: !Bool
-  -- ^ treeIsRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parentheses.
-  , treeUnifiedWithRC :: !Bool
-  -- ^ treeUnifiedWithRC is used to indicate whether the tree has been unified with a reference cycle.
-  , treeIsSCyclic :: !Bool
-  -- ^ treeIsSCyclic is used to indicate whether the tree is cyclic.
+  , valGenEnv :: TreeValGenEnv
+  , isRecurClosed :: !Bool
+  -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
+  , isRootOfSubTree :: !Bool
+  -- ^ isRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parentheses.
+  , isUnifiedWithRC :: !Bool
+  -- ^ isUnifiedWithRC is used to indicate whether the tree has been unified with a reference cycle.
+  , isSCyclic :: !Bool
+  -- ^ isSCyclic is used to indicate whether the tree is cyclic.
   -- According to the spec,
   -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
   -- of its descendants are also regarded as cyclic.
+  , embType :: EmbedType
+  -- ^ embType is used to indicate whether the tree is embedded in a struct. If it is, by convention, the first
+  -- argument of a mutable should be the struct itself.
+  , tmpSub :: Maybe Tree
   }
   deriving (Generic)
 
 instance Show Tree where
-  show = oneLinerStringOfCurTreeState
+  show = oneLinerStringOfTree
 
 pattern TN :: TreeNode -> Tree
 pattern TN tn <- Tree{treeNode = tn}
@@ -105,8 +116,14 @@ pattern IsBounds b <- TN (TNBounds b)
 pattern IsTop :: Tree
 pattern IsTop <- TN TNTop
 
-pattern IsBlock :: Block -> Tree
-pattern IsBlock block <- TN (TNBlock block)
+pattern IsStruct :: Struct -> Tree
+pattern IsStruct struct <- TN (TNStruct struct)
+
+pattern IsFullStruct :: Struct -> Tree
+pattern IsFullStruct struct <- TN (TNStruct struct@Struct{stcEmbedVal = Nothing})
+
+pattern IsEmbedVal :: Tree -> Tree
+pattern IsEmbedVal v <- TN (TNStruct Struct{stcEmbedVal = Just v})
 
 pattern IsList :: List -> Tree
 pattern IsList lst <- TN (TNList lst)
@@ -117,126 +134,29 @@ pattern IsDisj d <- TN (TNDisj d)
 pattern IsAtomCnstr :: AtomCnstr -> Tree
 pattern IsAtomCnstr c <- TN (TNAtomCnstr c)
 
-pattern IsMutable :: Mutable -> Tree
-pattern IsMutable mut <- TN (TNMutable mut)
-
-pattern IsRef :: Mutable -> Reference -> Tree
-pattern IsRef mut ref <- IsMutable mut@(MutOp (Ref ref))
-
 pattern IsRefCycle :: Tree
 pattern IsRefCycle <- TN TNRefCycle
 
-pattern IsRegOp :: Mutable -> RegularOp -> Tree
-pattern IsRegOp mut rop <- IsMutable mut@(MutOp (RegOp rop))
+pattern IsNoVal :: Tree
+pattern IsNoVal <- TN TNNoVal
 
 pattern IsUnifiedWithRC :: Bool -> Tree
-pattern IsUnifiedWithRC b <- Tree{treeUnifiedWithRC = b}
+pattern IsUnifiedWithRC b <- Tree{isUnifiedWithRC = b}
 
-{- | Descend into the tree with the given segment.
+pattern IsTGenOp :: Mutable -> Tree
+pattern IsTGenOp mut <- Tree{valGenEnv = TGenOp mut}
 
-This should only be used by TreeCursor.
--}
-subTree :: (HasCallStack) => TASeg -> Tree -> Maybe Tree
-subTree seg t = case (seg, treeNode t) of
-  (RootTASeg, _) -> Just t
-  (BlockTASeg s, TNBlock blk)
-    | StringTASeg name <- s
-    , IsBlockStruct struct <- blk
-    , Just sf <- lookupStructField (TE.decodeUtf8 name) struct ->
-        Just $ ssfValue sf
-    | PatternTASeg i j <- s -> (if j == 0 then scsPattern else scsValue) <$> blkCnstrs blk IntMap.!? i
-    | DynFieldTASeg i j <- s ->
-        (if j == 0 then dsfLabel else dsfValue) <$> blkDynFields blk IntMap.!? i
-    | LetTASeg name <- s
-    , Just lb <- lookupBlockLet (TE.decodeUtf8 name) blk ->
-        Just (lbValue lb)
-    | EmbedTASeg i <- s -> embValue <$> blkEmbeds blk IntMap.!? i
-  (SubValTASeg, TNBlock (IsBlockEmbed ev)) -> Just ev
-  (IndexTASeg i, TNList vs) -> lstSubs vs `indexList` i
-  (_, TNMutable mut)
-    | MutArgTASeg i <- seg -> getMutArgs mut Seq.!? i
-    | SubValTASeg <- seg -> getMutVal mut
-  (_, TNDisj d)
-    | DisjDefTASeg <- seg -> dsjDefault d
-    | DisjRegTASeg i <- seg -> dsjDisjuncts d `indexList` i
-  _ -> Nothing
+pattern IsTGenImmutable :: Tree
+pattern IsTGenImmutable <- Tree{valGenEnv = TGenImmutable}
 
-{- | Set the sub tree with the given segment and new tree.
+pattern IsRef :: Mutable -> Reference -> Tree
+pattern IsRef mut ref <- IsTGenOp mut@(MutOp (Ref ref))
 
-It ensures that the version of the parent node is always greater than or equal to any of its children.
--}
-setSubTree :: (ErrorEnv m) => TASeg -> Tree -> Tree -> m Tree
-setSubTree seg subT parT = do
-  n <- case (seg, treeNode parT) of
-    (BlockTASeg s, TNBlock blk) -> updateParStruct blk s
-    (SubValTASeg, TNBlock blk) -> return $ TNBlock blk{blkValue = BlockEmbed subT}
-    (IndexTASeg i, TNList vs) ->
-      let subs = lstSubs vs
-          l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-       in return l
-    (_, TNMutable mut)
-      | MutArgTASeg i <- seg -> return $ TNMutable $ updateMutArg i subT mut
-      | SubValTASeg <- seg -> return . TNMutable $ setMutVal (Just subT) mut
-    (_, TNDisj d)
-      | DisjDefTASeg <- seg -> return (TNDisj $ d{dsjDefault = dsjDefault d})
-      | DisjRegTASeg i <- seg ->
-          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    (RootTASeg, _) -> throwErrSt "setSubTreeT: RootTASeg is not allowed"
-    _ -> throwErrSt insertErrMsg
-  return parT{treeNode = n}
- where
-  structToTN :: Struct -> Block -> TreeNode
-  structToTN s blk = TNBlock blk{blkValue = BlockStruct s}
+pattern IsRegOp :: Mutable -> RegularOp -> Tree
+pattern IsRegOp mut rop <- IsTGenOp mut@(MutOp (RegOp rop))
 
-  updateParStruct :: (ErrorEnv m) => Block -> BlockTASeg -> m TreeNode
-  updateParStruct parBlock labelSeg
-    -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
-    -- found.
-    | StringTASeg name <- labelSeg
-    , IsBlockStruct parStruct <- parBlock
-    , Just field <- lookupStructField (TE.decodeUtf8 name) parStruct =
-        let
-          newField = subT `updateFieldValue` field
-          newStruct = updateStructField (TE.decodeUtf8 name) newField parStruct
-         in
-          return (structToTN newStruct parBlock)
-    | LetTASeg name <- labelSeg
-    , Just _ <- lookupBlockLet (TE.decodeUtf8 name) parBlock =
-        let
-          newBlock = updateBlockLet (TE.decodeUtf8 name) subT parBlock
-         in
-          return (TNBlock newBlock)
-    | PatternTASeg i j <- labelSeg =
-        let
-          psf = blkCnstrs parBlock IntMap.! i
-          newPSF = if j == 0 then psf{scsPattern = subT} else psf{scsValue = subT}
-         in
-          return $ TNBlock parBlock{blkCnstrs = IntMap.insert i newPSF (blkCnstrs parBlock)}
-    | DynFieldTASeg i j <- labelSeg =
-        let
-          pends = blkDynFields parBlock
-          psf = pends IntMap.! i
-          newPSF = if j == 0 then psf{dsfLabel = subT} else psf{dsfValue = subT}
-         in
-          return $ TNBlock parBlock{blkDynFields = IntMap.insert i newPSF (blkDynFields parBlock)}
-    | EmbedTASeg i <- labelSeg =
-        let
-          oldEmbeds = blkEmbeds parBlock
-          newEmbed = (oldEmbeds IntMap.! i){embValue = subT}
-         in
-          return $ TNBlock parBlock{blkEmbeds = IntMap.insert i newEmbed oldEmbeds}
-  updateParStruct _ _ = throwErrSt insertErrMsg
-
-  insertErrMsg :: String
-  insertErrMsg =
-    printf
-      "setSubTreeTN: cannot insert child to parent, segment: %s, child:\n%s\nparent:\n%s"
-      (show seg)
-      (show subT)
-      (show parT)
-
-indexList :: [a] -> Int -> Maybe a
-indexList xs i = if i < length xs then Just (xs !! i) else Nothing
+pattern IsSCycle :: Tree
+pattern IsSCycle <- Tree{isSCyclic = True}
 
 -- = TreeNode getters and setters =
 
@@ -245,6 +165,9 @@ setTN t n = t{treeNode = n}
 
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
+
+setTValGenEnv :: TreeValGenEnv -> Tree -> Tree
+setTValGenEnv f t = t{valGenEnv = f}
 
 {- | Retrieve the deterministic value from the tree.
 
@@ -263,12 +186,9 @@ rtrDeterministic t = case treeNode t of
   TNDisj _ -> Just t
   TNRefCycle -> Just t
   TNRefSubCycle _ -> Just t
-  TNNoValRef -> Just t
-  TNBlock block
-    | IsBlockEmbed ev <- block -> rtrDeterministic ev
-    | otherwise -> Just t
-  TNAtomCnstr c -> Just $ mkAtomTree (cnsAtom c)
-  TNMutable mut -> getMutVal mut >>= rtrDeterministic
+  TNNoVal -> Just t
+  TNStruct _ -> Just t
+  TNAtomCnstr c -> Just $ mkAtomTree c.value
 
 {- | Retrieve the value of non-union type.
 
@@ -282,9 +202,9 @@ rtrNonUnion t = do
     TNBottom _ -> Just v
     TNTop -> Just v
     TNList _ -> Just v
-    TNBlock _ -> Just v
+    TNStruct _ -> Just v
     TNRefCycle -> Just v
-    TNDisj d | Just df <- dsjDefault d -> rtrNonUnion df
+    TNDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
     _ -> Nothing
 
 -- | Retrieve the concrete value from the tree.
@@ -294,11 +214,11 @@ rtrConcrete t = do
   case v of
     IsAtom _ -> Just v
     -- There is only struct value after retrieving concrete value.
-    IsBlock (IsBlockStruct s) -> if stcIsConcrete s then Just v else Nothing
+    IsStruct s -> if stcIsConcrete s then Just v else Nothing
     _ -> Nothing
 
 rtrNonMut :: Tree -> Maybe Tree
-rtrNonMut (IsMutable mut) = getMutVal mut >>= rtrNonMut
+rtrNonMut IsNoVal = Nothing
 rtrNonMut t = return t
 
 rtrAtom :: Tree -> Maybe Atom
@@ -329,6 +249,9 @@ rtrBottom t = do
   v <- rtrNonUnion t
   case v of
     IsBottom b -> Just b
+    IsStruct s
+      | Just ev <- stcEmbedVal s -> rtrBottom ev
+      | Just err <- stcPermErr s -> rtrBottom err
     _ -> Nothing
 
 rtrBounds :: Tree -> Maybe Bounds
@@ -360,41 +283,22 @@ rtrStruct :: Tree -> Maybe Struct
 rtrStruct t = do
   v <- rtrNonUnion t
   case v of
-    IsBlock (IsBlockStruct struct) -> Just struct
+    IsStruct s -> Just s
     _ -> Nothing
 
-rtrBlock :: Tree -> Maybe Block
-rtrBlock t = do
-  v <- rtrNonUnion t
-  case v of
-    IsBlock b -> Just b
-    _ -> Nothing
+-- | Convert the default disjuncts to a tree.
+rtrDisjDefVal :: Disj -> Maybe Tree
+rtrDisjDefVal d =
+  let dfs = defDisjunctsFromDisj d
+   in if
+        | null dfs -> Nothing
+        | length dfs == 1 -> Just (head dfs)
+        | otherwise -> Just $ mkDisjTree $ emptyDisj{dsjDisjuncts = dfs}
 
--- = Traversal =
-
--- | Generate a list of sub-trees that have values to reduce, not the values that have been reduced.
-subNodes :: Tree -> [(TASeg, Tree)]
-subNodes t = case treeNode t of
-  TNBlock blk@(IsBlockStruct struct) ->
-    [(BlockTASeg $ StringTASeg (TE.encodeUtf8 s), ssfValue field) | (s, field) <- Map.toList (stcFields struct)]
-      ++ [(BlockTASeg $ PatternTASeg i 0, scsPattern c) | (i, c) <- IntMap.toList $ blkCnstrs blk]
-      ++ [(BlockTASeg $ DynFieldTASeg i 0, dsfLabel dsf) | (i, dsf) <- IntMap.toList $ blkDynFields blk]
-  TNList l -> [(IndexTASeg i, v) | (i, v) <- zip [0 ..] (lstSubs l)]
-  TNMutable mut -> [(MutArgTASeg i, v) | (i, v) <- zip [0 ..] (toList $ getMutArgs mut)]
-  TNDisj d ->
-    maybe [] (\x -> [(DisjDefTASeg, x)]) (dsjDefault d)
-      ++ [(DisjRegTASeg i, v) | (i, v) <- zip [0 ..] (dsjDisjuncts d)]
-  _ -> []
-
--- | TODO: comprehension struct
-rawNodes :: Tree -> [(TASeg, Tree)]
-rawNodes t = case treeNode t of
-  TNBlock block ->
-    [(BlockTASeg $ PatternTASeg i 1, scsValue c) | (i, c) <- IntMap.toList $ blkCnstrs block]
-      ++ [(BlockTASeg $ DynFieldTASeg i 1, dsfValue dsf) | (i, dsf) <- IntMap.toList $ blkDynFields block]
-      ++ [(BlockTASeg $ LetTASeg (TE.encodeUtf8 s), lbValue lb) | (s, lb) <- Map.toList $ blkBindings block]
-      ++ [(BlockTASeg $ EmbedTASeg i, embValue emb) | (i, emb) <- IntMap.toList $ blkEmbeds block]
-  _ -> []
+isEmbedded :: Tree -> Bool
+isEmbedded t = case embType t of
+  ETEmbedded _ -> True
+  _ -> False
 
 -- = Helpers =
 
@@ -402,15 +306,24 @@ emptyTree :: Tree
 emptyTree =
   Tree
     { treeNode = TNTop
+    , valGenEnv = TGenImmutable
     , treeExpr = Nothing
-    , treeRecurClosed = False
-    , treeIsRootOfSubTree = False
-    , treeUnifiedWithRC = False
-    , treeIsSCyclic = False
+    , isRecurClosed = False
+    , isRootOfSubTree = False
+    , isUnifiedWithRC = False
+    , isSCyclic = False
+    , embType = ETNone
+    , tmpSub = Nothing
     }
+
+makeTreeImmutable :: Tree -> Tree
+makeTreeImmutable t = t{valGenEnv = TGenImmutable}
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = emptyTree{treeNode = n}
+
+mkNewTreeWithTGen :: TreeNode -> TreeValGenEnv -> Tree
+mkNewTreeWithTGen n g = (mkNewTree n){valGenEnv = g}
 
 mkAtomTree :: Atom -> Tree
 mkAtomTree a = mkNewTree (TNAtom a)
@@ -434,21 +347,21 @@ mkDisjTree :: Disj -> Tree
 mkDisjTree d = mkNewTree (TNDisj d)
 
 mkMutableTree :: Mutable -> Tree
-mkMutableTree fn = mkNewTree (TNMutable fn)
+mkMutableTree fn = (mkNewTree TNNoVal){valGenEnv = TGenOp fn}
 
 mkListTree :: [Tree] -> Tree
 mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
 
-mkBlockTree :: Block -> Tree
-mkBlockTree b = mkNewTree (TNBlock b)
-
 mkStructTree :: Struct -> Tree
-mkStructTree s = mkNewTree (TNBlock (emptyBlock{blkValue = BlockStruct s}))
+mkStructTree s = mkNewTree (TNStruct s)
+
+singletonNoVal :: Tree
+singletonNoVal = mkNewTree TNNoVal
 
 -- | Create an index function node.
 appendSelToRefTree :: Tree -> Tree -> Tree
-appendSelToRefTree oprnd selArg = case treeNode oprnd of
-  TNMutable mut@(MutOp (Ref ref)) ->
+appendSelToRefTree oprnd selArg = case oprnd of
+  IsTGenOp mut@(MutOp (Ref ref)) ->
     mkMutableTree $ setMutOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
   _ -> mkMutableTree $ withEmptyMutFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
@@ -456,20 +369,15 @@ treesToFieldPath :: [Tree] -> Maybe FieldPath
 treesToFieldPath ts = FieldPath <$> mapM treeToSel ts
 
 treeToSel :: Tree -> Maybe Selector
-treeToSel t = case rtrNonMut t of
-  -- TODO: Think about changing mutval.
-  Just v -> concreteToSel v
-  _ -> concreteToSel t
+treeToSel = concreteToSel
 
 concreteToSel :: Tree -> Maybe Selector
 concreteToSel t = case treeNode t of
   TNAtom a
     | (String s) <- a -> Just (StringSel (TE.encodeUtf8 s))
     | (Int j) <- a -> Just (IntSel $ fromIntegral j)
-   where
-
   -- If a disjunct has a default, then we should try to use the default.
-  TNDisj dj | isJust (dsjDefault dj) -> treeToSel (fromJust $ dsjDefault dj)
+  TNDisj dj | isJust (rtrDisjDefVal dj) -> treeToSel (fromJust $ rtrDisjDefVal dj)
   _ -> Nothing
 
 addrToTrees :: TreeAddr -> Maybe [Tree]
@@ -477,7 +385,7 @@ addrToTrees p = mapM selToTree (addrToList p)
  where
   selToTree :: TASeg -> Maybe Tree
   selToTree sel = case sel of
-    BlockTASeg (StringTASeg s) -> Just $ mkAtomTree (String (TE.decodeUtf8 s))
+    (BlockTASeg (StringTASeg s)) -> Just $ mkAtomTree (String (stringSegToText s))
     IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
     _ -> Nothing
 
@@ -499,79 +407,30 @@ builtinMutableTable =
   ]
 
 -- | Create a one-liner string representation of the snapshot of the tree.
-oneLinerStringOfCurTreeState :: Tree -> String
-oneLinerStringOfCurTreeState t =
-  let astE = do
-        s <- snapshotTree t
-        buildASTExprDebug s
+oneLinerStringOfTree :: Tree -> String
+oneLinerStringOfTree t =
+  let astE = buildASTExprDebug t
    in case runExcept astE of
         Left err -> show err
         Right expr -> exprToOneLinerStr expr
 
--- | Create a snapshot of the tree by consolidating all mutable values to their cached values.
-snapshotTree :: (ErrorEnv m) => Tree -> m Tree
-snapshotTree (IsMutable mut)
-  | Just t <- getMutVal mut = snapshotTree t
-snapshotTree t = do
-  let subTs = subNodes t ++ rawNodes t
-  foldM
-    ( \acc (seg, st) -> do
-        r <- snapshotTree st
-        setSubTree seg r acc
-    )
-    t
-    subTs
-
-{- | Normalize the reference in the tree.
-
-Reference status could be broken during reducing the RCs. We have to restore the status by
-* making mutable type value of ref to Nothing. Because the mutval of a mutable should not be a mutable.
-* converting RC of Ref to Top.
--}
-normalizeRef :: (ErrorEnv m) => Tree -> m Tree
-normalizeRef t = do
-  nCur <- maintain t
-  foldM
-    ( \acc (seg, st) -> do
-        newSt <- normalizeRef st
-        setSubTree seg newSt acc
-    )
-    nCur
-    (subNodes nCur ++ rawNodes nCur)
- where
-  maintain x = case x of
-    IsRef mut (Reference{refArg = RefPath{}})
-      | Just IsRefCycle <- getMutVal mut -> return $ setMutableValue (Just (mkNewTree TNTop)) x
-      | Just (IsMutable _) <- getMutVal mut -> return $ invalidateMutable x
-    _ -> return x
-
 invalidateMutable :: Tree -> Tree
-invalidateMutable = setMutableValue Nothing
-
-setMutableValue :: Maybe Tree -> Tree -> Tree
-setMutableValue vM t@(IsMutable mut) = setTN t (TNMutable $ setMutVal vM mut)
-setMutableValue _ t = t
+invalidateMutable t@(IsTGenOp _) = t{treeNode = TNNoVal}
+invalidateMutable t = t
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
   TNAtom _ -> "a"
   TNBounds _ -> "bds"
-  TNBlock{} -> "{}"
+  TNStruct{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
   TNRefCycle -> "RC"
   TNRefSubCycle _ -> "RSC"
-  TNMutable (Mutable op _) -> case op of
-    RegOp _ -> "fn"
-    Ref _ -> "ref"
-    Compreh _ -> "compreh"
-    DisjOp _ -> "disjoin"
-    UOp _ -> "unify"
-    Itp _ -> "inter"
   TNBottom _ -> "_|_"
   TNTop -> "_"
-  TNNoValRef -> "pref"
+  TNNoVal -> "noval"
 
 showValueType :: (EnvIO r s m) => Tree -> m String
 showValueType t = case treeNode t of
@@ -583,7 +442,7 @@ showValueType t = case treeNode t of
     Null -> return "null"
   TNBounds b -> return $ show b
   TNBottom _ -> return "_|_"
-  TNBlock _ -> return "struct"
+  TNStruct _ -> return "struct"
   TNList _ -> return "list"
   TNTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ show t

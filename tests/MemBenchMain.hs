@@ -48,7 +48,7 @@ delRecvsInMap mutAddr =
               filter
                 ( \recv ->
                     let
-                      mutValAddr = appendSeg mutAddr SubValTASeg
+                      mutValAddr = mutAddr
                      in
                       not $ {-# SCC "isPrefix" #-} isPrefix mutValAddr recv
                 )
@@ -71,7 +71,7 @@ delRecvsInMap2 mutAddr m = delEmptyElem $ delRecvs m
       ( filter
           ( \recv ->
               let
-                mutValAddr = appendSeg mutAddr SubValTASeg
+                mutValAddr = mutAddr
                in
                 not $ isPrefix mutValAddr recv
           )

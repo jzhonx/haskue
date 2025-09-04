@@ -9,4 +9,4 @@ B: {
 x: B
 x: d: 3 // not allowed, as closed by embedded #A
 -- exp --
-error: d is not allowed
+error: "d" is not allowed

@@ -299,8 +299,6 @@ instance Show UnaryOpNode where
   show Star = "*"
   show (UnaRelOp op) = show op
 
--- type RelOp = ASTN RelOpNode
-
 data RelOpNode
   = NE
   | LT
@@ -540,7 +538,7 @@ declBld e = case anVal e of
   Embedding eb -> embeddingBld eb
   DeclLet (ASTN{anVal = LetClause ident binde}) -> do
     b <- exprBld binde
-    return $ string7 "let" <> byteString (TE.encodeUtf8 $ anVal ident) <> string7 " = " <> b
+    return $ string7 "let " <> byteString (TE.encodeUtf8 $ anVal ident) <> string7 " = " <> b
 
 fieldDeclBld :: (M m) => FieldDecl -> m Builder
 fieldDeclBld e = case anVal e of

@@ -1,38 +1,167 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.RMonad where
 
 import qualified AST
-import qualified Common
-import Control.Monad (unless, when)
-import Control.Monad.Except (throwError)
-import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (get, gets, modify, runStateT)
+import Common (
+  Config (..),
+  HasConfig (..),
+  IDStore (..),
+  emptyConfig,
+ )
+import Control.Monad (foldM, unless, when)
+import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Reader (MonadReader, asks)
+import Control.Monad.State.Strict (MonadState, get, gets, modify)
 import Cursor
 import Data.Aeson (ToJSON, Value, toJSON)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust, isNothing)
+import Data.Maybe (fromJust)
 import qualified Data.Set as Set
-import qualified EvalExpr
-import Exception (throwErrSt)
+import EvalExpr (evalExpr)
+import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import NotifGraph
 import Path
 import Text.Printf (printf)
-import Util (HasTrace (..), Trace, debugInstant, debugSpan)
+import Util (HasTrace (..), Trace, debugInstant, debugSpan, emptyTrace)
 import Value
 import Value.Util.TreeRep
 
+data FetchResult = FRDirty | FRCyclic | FRSCyclic | FRNormal
+  deriving (Eq, Show)
+
+type Fetch = SuffixIrredAddr -> FetchResult
+
+data ReduceParams = ReduceParams
+  { createCnstr :: Bool
+  , fetch :: Fetch
+  -- ^ Custom fetch function that fetches the tree at the suffix irreducible address.
+  -- If the custom value is not found, it should return 'Right Nothing'.
+  }
+
+instance Show ReduceParams where
+  show c = "ReduceParams {createCnstr = " ++ show c.createCnstr ++ " }"
+
+emptyReduceParams :: ReduceParams
+emptyReduceParams =
+  ReduceParams
+    { createCnstr = False
+    , fetch = const FRNormal
+    }
+
+class HasReduceParams s where
+  getReduceParams :: s -> ReduceParams
+  setReduceParams :: s -> ReduceParams -> s
+  modifyReduceParams :: (ReduceParams -> ReduceParams) -> s -> s
+
+data ReduceConfig = ReduceConfig
+  { baseConfig :: Config
+  , params :: ReduceParams
+  }
+  deriving (Show)
+
+instance HasConfig ReduceConfig where
+  getConfig = baseConfig
+  setConfig r c = r{baseConfig = c}
+  modifyConfig f r = r{baseConfig = f (baseConfig r)}
+
+instance HasReduceParams ReduceConfig where
+  getReduceParams = params
+  setReduceParams r p = r{params = p}
+  modifyReduceParams f r = r{params = f (params r)}
+
+emptyReduceConfig :: ReduceConfig
+emptyReduceConfig =
+  ReduceConfig
+    { baseConfig = emptyConfig
+    , params = emptyReduceParams
+    }
+
+class HasContext s where
+  getContext :: s -> Context
+  setContext :: s -> Context -> s
+  modifyContext :: s -> (Context -> Context) -> s
+
+data Context = Context
+  { ctxObjID :: !Int
+  , ctxReduceStack :: [TreeAddr]
+  , isRecalcing :: !Bool
+  , ctxNotifGraph :: NotifGraph
+  , ctxLetMap :: Map.Map TreeAddr Bool
+  , rcdIsReducingRCs :: !Bool
+  , ctxTrace :: Trace
+  }
+  deriving (Eq, Show)
+
+instance HasTrace Context where
+  getTrace = ctxTrace
+  setTrace ctx t = ctx{ctxTrace = t}
+
+instance IDStore Context where
+  getID = ctxObjID
+  setID ctx i = ctx{ctxObjID = i}
+
+instance HasContext Context where
+  getContext = id
+  setContext _ = id
+  modifyContext ctx f = f ctx
+
+emptyContext :: Context
+emptyContext =
+  Context
+    { ctxObjID = 0
+    , ctxReduceStack = []
+    , isRecalcing = False
+    , ctxNotifGraph = emptyNotifGraph
+    , ctxLetMap = Map.empty
+    , rcdIsReducingRCs = False
+    , ctxTrace = emptyTrace
+    }
+
+showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
+showRefNotifiers notifiers =
+  let s = Map.foldrWithKey go "" notifiers
+   in if null s then "[]" else "[" ++ s ++ "\n]"
+ where
+  go :: TreeAddr -> [TreeAddr] -> String -> String
+  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
+
+data Error
+  = FatalErr String
+  | DirtyDep SuffixIrredAddr
+
+instance Show Error where
+  show (FatalErr msg) = msg
+  show (DirtyDep siAddr) = printf "dependency %s is dirty" (show siAddr)
+
+throwFatal :: (MonadError Error m, HasCallStack) => String -> m a
+throwFatal msg = throwError $ FatalErr $ msg ++ "\n" ++ prettyCallStack callStack
+
+throwDirty :: (MonadError Error m) => SuffixIrredAddr -> m a
+throwDirty siAddr = throwError $ DirtyDep siAddr
+
+liftFatal :: (MonadError Error m) => ExceptT String m a -> m a
+liftFatal = modifyError FatalErr
+
 -- ResolveMonad is the environment for reducing the tree.
 type ResolveMonad r s m =
-  ( Common.EnvIO r s m
-  , Common.HasContext s
+  ( MonadError Error m
+  , HasCallStack
+  , MonadReader r m
+  , HasConfig r
+  , MonadState s m
+  , HasTrace s
+  , MonadIO m
+  , HasContext s
+  , HasReduceParams r
+  , IDStore s
   )
 
 -- | ReduceMonad is the environment for reducing the tree with tree cursor stored.
@@ -43,47 +172,46 @@ type ReduceMonad r s m =
 
 data RTCState = RTCState
   { rtsTC :: TrCur
-  , rtsCtx :: Common.Context
+  , rtsCtx :: Context
   }
 
 instance HasTreeCursor RTCState where
   getTreeCursor = rtsTC
   setTreeCursor s tc = s{rtsTC = tc}
 
-instance Common.HasContext RTCState where
+instance HasContext RTCState where
   getContext = rtsCtx
   setContext s ctx = s{rtsCtx = ctx}
   modifyContext s f = s{rtsCtx = f (rtsCtx s)}
 
 instance HasTrace RTCState where
-  getTrace = Common.ctxTrace . rtsCtx
+  getTrace = ctxTrace . rtsCtx
   setTrace s trace = s{rtsCtx = setTrace (rtsCtx s) trace}
 
-instance Common.IDStore RTCState where
-  getID = Common.getID . rtsCtx
-  setID s newID = s{rtsCtx = Common.setID (rtsCtx s) newID}
+instance IDStore RTCState where
+  getID = getID . rtsCtx
+  setID s newID = s{rtsCtx = setID (rtsCtx s) newID}
 
 mkRTState :: TrCur -> Int -> Trace -> RTCState
 mkRTState tc oid trace =
   RTCState
     { rtsTC = tc
     , rtsCtx =
-        Common.emptyContext
-          { Common.ctxObjID = oid
-          , Common.ctxTrace = trace
-          -- , Common.ctxGlobalVers = 1
+        emptyContext
+          { ctxObjID = oid
+          , ctxTrace = trace
           }
     }
 
 -- Context
 
-getRMContext :: (ResolveMonad r s m) => m Common.Context
-getRMContext = gets Common.getContext
+getRMContext :: (ResolveMonad r s m) => m Context
+getRMContext = gets getContext
 
-putRMContext :: (ResolveMonad r s m) => Common.Context -> m ()
-putRMContext ctx = modify $ \s -> Common.setContext s ctx
+putRMContext :: (ResolveMonad r s m) => Context -> m ()
+putRMContext ctx = modify $ \s -> setContext s ctx
 
-modifyRMContext :: (ResolveMonad r s m) => (Common.Context -> Common.Context) -> m ()
+modifyRMContext :: (ResolveMonad r s m) => (Context -> Context) -> m ()
 modifyRMContext f = do
   ctx <- getRMContext
   putRMContext (f ctx)
@@ -98,27 +226,10 @@ allocRMObjID = do
   return newOID
 
 getRMObjID :: (ResolveMonad r s m) => m Int
-getRMObjID = Common.getID <$> getRMContext
+getRMObjID = getID <$> getRMContext
 
 setRMObjID :: (ResolveMonad r s m) => Int -> m ()
-setRMObjID newID = modifyRMContext (\ctx -> Common.setID ctx newID)
-
--- Global version
-
--- getRMGlobalVers :: (ResolveMonad r s m) => m Int
--- getRMGlobalVers = Common.ctxGlobalVers <$> getRMContext
-
--- setRMGlobalVers :: (ResolveMonad r s m) => Int -> m ()
--- setRMGlobalVers newVers = modifyRMContext (\ctx -> ctx{Common.ctxGlobalVers = newVers})
-
--- increaseRMGlobalVers :: (ResolveMonad r s m) => m Int
--- increaseRMGlobalVers = do
---   vers <- getRMGlobalVers
---   setRMGlobalVers (vers + 1)
---   return (vers + 1)
-
-setForceReduceArgs :: (ResolveMonad r s m) => Bool -> m ()
-setForceReduceArgs b = modifyRMContext (\ctx -> ctx{Common.ctxForceReduceArgs = b})
+setRMObjID newID = modifyRMContext (\ctx -> setID ctx newID)
 
 -- Trace
 
@@ -128,80 +239,41 @@ getRMTrace = getTrace <$> getRMContext
 setRMTrace :: (ResolveMonad r s m) => Trace -> m ()
 setRMTrace trace = modifyRMContext (\ctx -> setTrace ctx trace)
 
--- Notif
-
--- getRMReadyQ :: (ResolveMonad r s m) => m [TreeAddr]
--- getRMReadyQ = Common.ctxReadyQueue <$> getRMContext
-
--- addToRMReadyQ :: (ResolveMonad r s m) => TreeAddr -> m ()
--- addToRMReadyQ addr = modifyRMContext (\ctx -> ctx{Common.ctxReadyQueue = addr : Common.ctxReadyQueue ctx})
-
--- popRMReadyQ :: (ResolveMonad r s m) => m (Maybe TreeAddr)
--- popRMReadyQ = do
---   ctx <- getRMContext
---   case Common.ctxReadyQueue ctx of
---     [] -> return Nothing
---     _ -> do
---       -- TODO: efficiency
---       let addr = last (Common.ctxReadyQueue ctx)
---       putRMContext ctx{Common.ctxReadyQueue = init (Common.ctxReadyQueue ctx)}
---       return (Just addr)
-
--- getRMNotifEnabled :: (ResolveMonad r s m) => m Bool
--- getRMNotifEnabled = Common.ctxNotifEnabled <$> getRMContext
-
--- setRMNotifEnabled :: (ResolveMonad r s m) => Bool -> m ()
--- setRMNotifEnabled b = modifyRMContext (\ctx -> ctx{Common.ctxNotifEnabled = b})
-
 {- | Delete the notification receivers that have the specified prefix.
 
 we need to delete receiver starting with the addr, not only the addr. For example, if the function
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delRefSysRecvPrefix :: (ResolveMonad s r m) => TreeAddr -> m ()
-delRefSysRecvPrefix addrPrefix = do
-  modifyRMContext $ \ctx -> ctx{Common.ctxNotifGraph = delDepWithPrefixFromNG addrPrefix (Common.ctxNotifGraph ctx)}
+delTMDependentPrefix :: (ResolveMonad r s m) => TreeAddr -> m ()
+delTMDependentPrefix addrPrefix = do
+  modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delDepPrefixFromNG addrPrefix (ctxNotifGraph ctx)}
 
-{- | Delete the notification receivers of the sub values of the mutval.
+delMutValRecvs :: (ResolveMonad r s m) => TreeAddr -> m ()
+delMutValRecvs = undefined
 
-If the receiver addresss is the mutable address itself, then it should be skipped because the mutable could be a
-reference.
-
-If the receiver addresss is the mutable address plus the argument segment, then it should be skipped.
--}
-delMutValRecvs :: (ResolveMonad s r m) => TreeAddr -> m ()
-delMutValRecvs mutAddr = modifyRMContext $ \ctx ->
-  ctx{Common.ctxNotifGraph = delDepWithPrefixFromNG (appendSeg mutAddr SubValTASeg) (Common.ctxNotifGraph ctx)}
-
-addRMUnreferredLet :: (ResolveMonad r s m) => TreeAddr -> m ()
-addRMUnreferredLet addr = do
+addRMDanglingLet :: (ResolveMonad r s m) => TreeAddr -> m ()
+addRMDanglingLet addr = do
   ctx <- getRMContext
   let
-    oldMap = Common.ctxLetMap ctx
+    oldMap = ctxLetMap ctx
     newMap = if addr `Map.member` oldMap then oldMap else Map.insert addr False oldMap
-  putRMContext ctx{Common.ctxLetMap = newMap}
+  putRMContext ctx{ctxLetMap = newMap}
 
-getRMUnreferredLets :: (ResolveMonad r s m) => m [TreeAddr]
-getRMUnreferredLets = do
+getRMDanglingLets :: (ResolveMonad r s m) => m [TreeAddr]
+getRMDanglingLets = do
   ctx <- getRMContext
-  let letAddrs = Map.toList (Common.ctxLetMap ctx)
+  let letAddrs = Map.toList (ctxLetMap ctx)
   return [addr | (addr, False) <- letAddrs]
 
 markRMLetReferred :: (ResolveMonad r s m) => TreeAddr -> m ()
 markRMLetReferred addr = do
   ctx <- getRMContext
-  let newMap = Map.insert addr True (Common.ctxLetMap ctx)
-  putRMContext ctx{Common.ctxLetMap = newMap}
+  let newMap = Map.insert addr True (ctxLetMap ctx)
+  putRMContext ctx{ctxLetMap = newMap}
 
 evalExprRM :: (ResolveMonad r s m) => AST.Expression -> m Tree
-evalExprRM e = do
-  curSID <- getRMObjID
-  trace <- getRMTrace
-  (rawT, newEEState) <- runStateT (EvalExpr.evalExpr e) (Common.EEState curSID trace)
-  setRMObjID (Common.eesObjID newEEState)
-  setRMTrace (Common.eesTrace newEEState)
-  return rawT
+evalExprRM e = modifyError FatalErr (evalExpr e)
 
 {-
 ====== TreeAddr ======
@@ -213,7 +285,7 @@ getTMAbsAddr = tcAddr <$> getTMCursor
 getTMTASeg :: (ReduceMonad r s m) => m TASeg
 getTMTASeg = do
   tc <- getTMCursor
-  tcFocusSegMust tc
+  modifyError FatalErr (tcFocusSegMust tc)
 
 -- Cursor
 
@@ -227,7 +299,7 @@ putTMCursor tc = modify $ \s -> setTreeCursor s tc
 
 -- Crumbs
 
-getTMCrumbs :: (ReduceMonad r s m) => m [TreeCrumb]
+getTMCrumbs :: (ReduceMonad r s m) => m [(TASeg, Tree)]
 getTMCrumbs = tcCrumbs <$> getTMCursor
 
 -- Tree
@@ -261,7 +333,7 @@ getTMParent :: (ReduceMonad r s m) => m Tree
 getTMParent = do
   crumbs <- getTMCrumbs
   case crumbs of
-    [] -> throwErrSt "already at the top"
+    [] -> throwFatal "already at the top"
     (_, t) : _ -> return t
 
 -- TreeNode
@@ -285,17 +357,7 @@ modifyTMNodeWithTree t = modifyTMTN (treeNode t)
 propUpTM :: (ReduceMonad r s m) => m ()
 propUpTM = do
   tc <- getTMCursor
-  propUpTC tc >>= putTMCursor
-
--- -- If the focus is a bottom and last segment is referable, then discard the focus and pop the bottom up.
--- -- For example, {x: 1 & 2}, the bottom in the conjunction invalidates the whole struct.
--- -- Another example is y: [1&2], the bottom in the conjunction invalidates the whole list.
--- case focus of
---   IsBottom _ | isSegReferable seg -> do
---     _discardTMAndPop
---     putTMTree focus
---   _ -> propUpTC tc >>= putTMCursor
---
+  modifyError FatalErr (propUpTC tc) >>= putTMCursor
 
 runTMTCAction :: (ReduceMonad r s m) => (forall n. (ResolveMonad r s n) => TrCur -> n Tree) -> m ()
 runTMTCAction f = do
@@ -359,7 +421,7 @@ inSubTM seg f = do
   ok <- descendTMSeg seg
   unless ok $ do
     t <- getTMTree
-    throwErrSt $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
+    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
   r <- f
   propUpTM
   return r
@@ -378,7 +440,7 @@ _discardTMAndPop = do
 goTMAbsAddr :: (ReduceMonad r s m) => TreeAddr -> m Bool
 goTMAbsAddr addr = do
   when (headSeg addr /= Just RootTASeg) $
-    throwErrSt (printf "the addr %s should start with the root segment" (show addr))
+    throwFatal (printf "the addr %s should start with the root segment" (show addr))
   propUpTMUntilSeg RootTASeg
   let dstWoRoot = fromJust $ tailTreeAddr addr
   rM <- goDownTCAddr dstWoRoot <$> getTMCursor
@@ -388,8 +450,9 @@ goTMAbsAddrMust :: (ReduceMonad r s m) => TreeAddr -> m ()
 goTMAbsAddrMust addr = do
   origAddr <- getTMAbsAddr
   ok <- goTMAbsAddr addr
-  unless ok $ throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show origAddr)
+  unless ok $ throwFatal $ printf "cannot go to addr (%s) tree from %s" (show addr) (show origAddr)
 
+-- | TODO: some functions do not require going back to the original address.
 inRemoteTM :: (ReduceMonad r s m) => TreeAddr -> m a -> m a
 inRemoteTM addr f = do
   origAddr <- getTMAbsAddr
@@ -398,10 +461,20 @@ inRemoteTM addr f = do
   goTMAbsAddrMust origAddr
   return r
 
+inTempTM :: (ReduceMonad r s m) => Tree -> m a -> m a
+inTempTM tmpT f = do
+  modifyTMTree (\t -> t{tmpSub = Just tmpT})
+  res <- inSubTM TempTASeg f
+  modifyTMTree (\t -> t{tmpSub = Nothing})
+  addr <- getTMAbsAddr
+  let tmpAddr = appendSeg addr TempTASeg
+  delTMDependentPrefix tmpAddr
+  return res
+
 -- Mutable operations
 
 -- Locate the immediate parent mutable of a reference.
-locateImMutableTM :: (ReduceMonad s r m) => m ()
+locateImMutableTM :: (ReduceMonad r s m) => m ()
 locateImMutableTM = do
   addr <- getTMAbsAddr
   when (isLastSegMutableArg addr) $ do
@@ -413,23 +486,14 @@ locateImMutableTM = do
     | Just (MutArgTASeg _) <- lastSeg addr = True
     | otherwise = False
 
-runInSubValEnv :: (ReduceMonad r s m) => m a -> m a
-runInSubValEnv f = undefined
-
 -- Ref Cycle
 
-getTMRCDesp :: (ReduceMonad s r m) => m (Maybe Common.RefCycleDesp)
-getTMRCDesp = Common.ctxRefCycleDetected <$> getRMContext
+getIsReducingRC :: (ReduceMonad r s m) => m Bool
+getIsReducingRC = rcdIsReducingRCs <$> getRMContext
 
-deleteTMRCDesp :: (ReduceMonad s r m) => m ()
-deleteTMRCDesp = modifyRMContext (\ctx -> ctx{Common.ctxRefCycleDetected = Nothing})
-
-setIsReducingRC :: (ReduceMonad s r m) => Bool -> m ()
+setIsReducingRC :: (ReduceMonad r s m) => Bool -> m ()
 setIsReducingRC b = do
-  oldDesp <- getTMRCDesp
-  when (isNothing oldDesp) $ throwErrSt "currently no ref cycle detected"
-  modifyRMContext $ \ctx ->
-    ctx{Common.ctxRefCycleDetected = Just $ (fromJust oldDesp){Common.rcdIsReducingRCs = b}}
+  modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
 
 -- Tree depth check
 
@@ -438,12 +502,9 @@ treeDepthCheck tc = do
   let
     crumbs = tcCrumbs tc
     depth = length crumbs
-  Common.Config
-    { Common.cfSettings = Common.Settings{Common.stMaxTreeDepth = maxDepth}
-    } <-
-    asks Common.getConfig
+  Config{stMaxTreeDepth = maxDepth} <- asks getConfig
   let maxDepthVal = if maxDepth <= 0 then 1000 else maxDepth
-  when (depth > maxDepthVal) $ throwError $ printf "tree depth exceeds max depth (%d)" maxDepthVal
+  when (depth > maxDepthVal) $ throwFatal $ printf "tree depth exceeds max depth (%d)" maxDepthVal
 
 unlessFocusBottom :: (ReduceMonad r s m) => a -> m a -> m a
 unlessFocusBottom a f = do
@@ -452,11 +513,6 @@ unlessFocusBottom a f = do
     TNBottom _ -> return a
     _ -> f
 
-mustMutable :: (ReduceMonad r s m) => (Mutable -> m a) -> m a
-mustMutable f = withTree $ \t -> case treeNode t of
-  TNMutable fn -> f fn
-  _ -> throwErrSt $ printf "tree focus %s is not a mutator" (show t)
-
 withResolveMonad :: (ReduceMonad r s m) => (forall n. (ResolveMonad r s n) => TrCur -> n (TrCur, a)) -> m a
 withResolveMonad f = do
   tc <- getTMCursor
@@ -464,17 +520,17 @@ withResolveMonad f = do
   putTMCursor r
   return a
 
-whenTraceEnabled :: (Common.EnvIO r s m) => String -> m a -> m a -> m a
+whenTraceEnabled :: (ResolveMonad r s m) => String -> m a -> m a -> m a
 whenTraceEnabled name f traced = do
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTraceExec = traceExec, Common.stTraceFilter = tFilter}} <-
-    asks Common.getConfig
+  Config{stTraceExec = traceExec, stTraceFilter = tFilter} <-
+    asks getConfig
   if traceExec && (Set.null tFilter || Set.member name tFilter)
     then traced
     else f
 
-spanTreeMsgs :: (Common.EnvIO r s m) => Bool -> Tree -> m Value
+spanTreeMsgs :: (ResolveMonad r s m) => Bool -> Tree -> m Value
 spanTreeMsgs isTreeRoot t = do
-  Common.Config{Common.cfSettings = Common.Settings{Common.stTracePrintTree = tracePrintTree}} <- asks Common.getConfig
+  Config{stTracePrintTree = tracePrintTree} <- asks getConfig
   return $
     if not tracePrintTree
       then ""
@@ -483,16 +539,19 @@ spanTreeMsgs isTreeRoot t = do
          in toJSON rep
 
 debugSpanTM :: (ReduceMonad r s m, ToJSON a) => String -> m a -> m a
-debugSpanTM name = _traceActionTM name Nothing toJSON
+debugSpanTM name = traceActionTM name Nothing toJSON
 
 debugSpanArgsTM :: (ReduceMonad r s m, ToJSON a) => String -> String -> m a -> m a
-debugSpanArgsTM name args = _traceActionTM name (Just args) toJSON
+debugSpanArgsTM name args = traceActionTM name (Just args) toJSON
 
 debugSpanAdaptTM :: (ReduceMonad r s m) => String -> (a -> Value) -> m a -> m a
-debugSpanAdaptTM name = _traceActionTM name Nothing
+debugSpanAdaptTM name = traceActionTM name Nothing
 
-_traceActionTM :: (ReduceMonad r s m) => String -> Maybe String -> (a -> Value) -> m a -> m a
-_traceActionTM name argsM jsonfy f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
+debugSpanArgsAdaptTM :: (ReduceMonad r s m) => String -> String -> (a -> Value) -> m a -> m a
+debugSpanArgsAdaptTM name args = traceActionTM name (Just args)
+
+traceActionTM :: (ReduceMonad r s m) => String -> Maybe String -> (a -> Value) -> m a -> m a
+traceActionTM name argsM jsonfy f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
   let isRoot = addr == rootTreeAddr
   bTraced <- getTMTree >>= spanTreeMsgs isRoot
   debugSpan True name (show addr) (toJSON <$> argsM) bTraced jsonfy $ do
@@ -505,39 +564,42 @@ debugInstantTM name args = whenTraceEnabled name (return ()) $
   withAddrAndFocus $
     \addr _ -> debugInstant True name (show addr) (Just $ toJSON args)
 
-debugSpanSimpleRM :: (Common.EnvIO r s m) => String -> TrCur -> m a -> m a
-debugSpanSimpleRM name = _traceActionRM name Nothing (const Nothing) (const (toJSON ()))
+debugSpanSimpleRM :: (ResolveMonad r s m) => String -> TrCur -> m a -> m a
+debugSpanSimpleRM name = traceActionRM name Nothing (const Nothing) (const (toJSON ()))
 
-debugSpanTreeRM :: (Common.EnvIO r s m) => String -> TrCur -> m Tree -> m Tree
+debugSpanArgsSimpleRM :: (ResolveMonad r s m) => String -> String -> TrCur -> m a -> m a
+debugSpanArgsSimpleRM name args = traceActionRM name (Just args) (const Nothing) (const (toJSON ()))
+
+debugSpanTreeRM :: (ResolveMonad r s m) => String -> TrCur -> m Tree -> m Tree
 debugSpanTreeRM name =
   -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  _traceActionRM name Nothing Just (const (toJSON ()))
+  traceActionRM name Nothing Just (const (toJSON ()))
 
-debugSpanMTreeRM :: (Common.EnvIO r s m) => String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
+debugSpanMTreeRM :: (ResolveMonad r s m) => String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
 debugSpanMTreeRM name =
   -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  _traceActionRM name Nothing id (const (toJSON ()))
+  traceActionRM name Nothing id (const (toJSON ()))
 
-debugSpanTreeArgsRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m Tree -> m Tree
+debugSpanTreeArgsRM :: (ResolveMonad r s m) => String -> String -> TrCur -> m Tree -> m Tree
 debugSpanTreeArgsRM name args =
   -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  _traceActionRM name (Just args) Just (const (toJSON ()))
+  traceActionRM name (Just args) Just (const (toJSON ()))
 
-debugSpanMTreeArgsRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
+debugSpanMTreeArgsRM :: (ResolveMonad r s m) => String -> String -> TrCur -> m (Maybe Tree) -> m (Maybe Tree)
 debugSpanMTreeArgsRM name args =
   -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  _traceActionRM name (Just args) id (const (toJSON ()))
+  traceActionRM name (Just args) id (const (toJSON ()))
 
-debugSpanAdaptRM :: (Common.EnvIO r s m) => String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
-debugSpanAdaptRM name = _traceActionRM name Nothing
+debugSpanAdaptRM :: (ResolveMonad r s m) => String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+debugSpanAdaptRM name = traceActionRM name Nothing
 
 debugSpanArgsAdaptRM ::
-  (Common.EnvIO r s m) => String -> String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
-debugSpanArgsAdaptRM name args = _traceActionRM name (Just args)
+  (ResolveMonad r s m) => String -> String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+debugSpanArgsAdaptRM name args = traceActionRM name (Just args)
 
-_traceActionRM ::
-  (Common.EnvIO r s m) => String -> Maybe String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
-_traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name action $ do
+traceActionRM ::
+  (ResolveMonad r s m) => String -> Maybe String -> (a -> Maybe Tree) -> (a -> Value) -> TrCur -> m a -> m a
+traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name action $ do
   let
     addr = tcAddr tc
     bfocus = tcFocus tc
@@ -549,11 +611,110 @@ _traceActionRM name argsM fetchTree conv tc action = whenTraceEnabled name actio
     traced <- maybe (return "") (spanTreeMsgs isRoot) (fetchTree res)
     return (res, traced)
 
-debugInstantRM :: (Common.EnvIO r s m) => String -> String -> TrCur -> m ()
+debugInstantRM :: (ResolveMonad r s m) => String -> String -> TrCur -> m ()
 debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
   let addr = tcAddr tc
   debugInstant True name (show addr) (Just $ toJSON args)
 
-debugInstantOpRM :: (Common.EnvIO r s m) => String -> String -> TreeAddr -> m ()
+debugInstantOpRM :: (ResolveMonad r s m) => String -> String -> TreeAddr -> m ()
 debugInstantOpRM name args addr = whenTraceEnabled name (return ()) $ do
   debugInstant True name (show addr) (Just $ toJSON args)
+
+{- | Visit every node in the tree in pre-order and apply the function.
+
+It does not re-constrain struct fields.
+-}
+preVisitTree ::
+  (ResolveMonad r s m) =>
+  (TrCur -> [SubNodeSeg]) ->
+  ((TrCur, a) -> m (TrCur, a)) ->
+  (TrCur, a) ->
+  m (TrCur, a)
+preVisitTree subs f x = do
+  y <- f x
+  foldM
+    ( \acc subSeg -> do
+        (seg, pre, post) <- case subSeg of
+          SubNodeSegNormal seg -> return (seg, return, return)
+          -- subTC <- modifyError FatalErr (goDownTCSegMust seg (fst acc))
+          -- z <- preVisitTree subs f (subTC, snd acc)
+          -- nextTC <- modifyError FatalErr (propUpTC (fst z))
+          -- return (nextTC, snd z)
+          SubNodeSegEmbed seg -> do
+            let origSeg = fromJust $ tcFocusSeg (fst acc)
+            return (seg, propUpTC, goDownTCSegMust origSeg)
+        -- subTC <- modifyError FatalErr (propUpTC (fst acc) >>= goDownTCSegMust seg)
+        -- z <- preVisitTree subs f (subTC, snd acc)
+        -- nextTC <- modifyError FatalErr (propUpTC (fst z) >>= goDownTCSegMust origSeg)
+        -- return (nextTC, snd z)
+        subTC <- modifyError FatalErr (pre (fst acc) >>= goDownTCSegMust seg)
+        z <- preVisitTree subs f (subTC, snd acc)
+        nextTC <- modifyError FatalErr (propUpTC (fst z) >>= post)
+        return (nextTC, snd z)
+    )
+    y
+    (subs $ fst y)
+
+-- | A simple version of the preVisitTree function that does not return a custom value.
+preVisitTreeSimple ::
+  (ResolveMonad r s m) =>
+  (TrCur -> [SubNodeSeg]) ->
+  (TrCur -> m TrCur) ->
+  TrCur ->
+  m TrCur
+preVisitTreeSimple subs f tc = do
+  (r, _) <-
+    preVisitTree
+      subs
+      ( \(x, _) -> do
+          r <- f x
+          return (r, ())
+      )
+      (tc, ())
+  return r
+
+{- | Visit every node in the tree in post-order and apply the function.
+
+It does not re-constrain struct fields.
+-}
+postVisitTree ::
+  (ResolveMonad r s m) =>
+  (TrCur -> [SubNodeSeg]) ->
+  ((TrCur, a) -> m (TrCur, a)) ->
+  (TrCur, a) ->
+  m (TrCur, a)
+postVisitTree subs f x = do
+  y <-
+    foldM
+      ( \acc subSeg -> do
+          (seg, pre, post) <- case subSeg of
+            SubNodeSegNormal seg -> return (seg, return, return)
+            SubNodeSegEmbed seg -> do
+              let origSeg = fromJust $ tcFocusSeg (fst acc)
+              return (seg, propUpTC, goDownTCSegMust origSeg)
+
+          subTC <- modifyError FatalErr (pre (fst acc) >>= goDownTCSegMust seg)
+          z <- postVisitTree subs f (subTC, snd acc)
+          nextTC <- modifyError FatalErr (propUpTC (fst z) >>= post)
+          return (nextTC, snd z)
+      )
+      x
+      (subs $ fst x)
+  f y
+
+postVisitTreeSimple ::
+  (ResolveMonad r s m) =>
+  (TrCur -> [SubNodeSeg]) ->
+  (TrCur -> m TrCur) ->
+  TrCur ->
+  m TrCur
+postVisitTreeSimple subs f tc = do
+  (r, _) <-
+    postVisitTree
+      subs
+      ( \(x, _) -> do
+          r <- f x
+          return (r, ())
+      )
+      (tc, ())
+  return r

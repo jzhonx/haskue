@@ -1,43 +1,49 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.RefSys where
 
 import qualified AST
-import qualified Common
 import Control.Monad (unless, when)
+import Control.Monad.Reader (asks)
 import Cursor
 import Data.Aeson (toJSON)
 import Data.Aeson.Types (Value)
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Exception (throwErrSt)
 import NotifGraph
 import Path
 import Reduce.RMonad (
+  FetchResult (..),
+  HasReduceParams (..),
   ReduceMonad,
   ResolveMonad,
+  ctxNotifGraph,
   debugInstantRM,
   debugSpanAdaptRM,
-  debugSpanArgsAdaptRM,
   descendTM,
+  fetch,
   getRMContext,
   getTMAbsAddr,
   getTMCursor,
+  liftFatal,
   markRMLetReferred,
+  preVisitTreeSimple,
   propUpTMUntilSeg,
   putRMContext,
+  throwDirty,
+  throwFatal,
  )
 import Text.Printf (printf)
 import Value
+import Value.Util.TreeRep (treeToFullRepString, treeToRepString)
 
 data DerefResult = DerefResult
   { drValue :: Maybe Tree
@@ -52,7 +58,7 @@ adaptDRFetch :: DerefResult -> Maybe Tree
 adaptDRFetch = const Nothing
 
 adaptDRRep :: DerefResult -> Value
-adaptDRRep dr = toJSON (oneLinerStringOfCurTreeState <$> drValue dr, drTargetAddr dr, drIsInBinding dr)
+adaptDRRep dr = toJSON (treeToRepString <$> drValue dr, drTargetAddr dr, show $ drCycleDetection dr, drIsInBinding dr)
 
 notFound :: DerefResult
 notFound = DerefResult Nothing Nothing NoCycleDetected False
@@ -61,9 +67,9 @@ derefResFromTrCur :: TrCur -> DerefResult
 derefResFromTrCur tc = DerefResult (Just (tcFocus tc)) (Just (tcAddr tc)) NoCycleDetected False
 
 -- | Resolve the reference value.
-resolveTCIfRef :: (ResolveMonad s r m) => TrCur -> m DerefResult
+resolveTCIfRef :: (ResolveMonad r s m) => TrCur -> m DerefResult
 resolveTCIfRef tc = case tc of
-  TCFocus (IsRef _ ref) -> index ref tc
+  TCFocus (IsRef _ _) -> index tc
   _ -> return $ derefResFromTrCur tc
 
 {- | Index the tree with the segments.
@@ -77,25 +83,26 @@ The return value will not be another reference.
 The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
 arguments are the segments.
 -}
-index :: (ResolveMonad s r m) => Reference -> TrCur -> m DerefResult
-index argRef@Reference{refArg = (RefPath var sels)} tc =
-  debugSpanAdaptRM (printf "index: var: %s" var) adaptDRFetch adaptDRRep tc $ do
-    lbM <- searchTCIdent var tc
+index :: (ResolveMonad r s m) => TrCur -> m DerefResult
+index tc@(TCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) =
+  debugSpanAdaptRM (printf "index: ident: %s" (show ident)) adaptDRFetch adaptDRRep tc $ do
+    lbM <- searchTCIdent ident tc
     case lbM of
-      Just (TCFocus (IsRef mut rf), True)
+      Just (TCFocus (IsRef mut rf), typ)
         -- Let value is an index. For example, let x = ({a:1}).a
-        | Just segs <- getIndexSegs rf -> do
+        | Just segs <- getIndexSegs rf
+        , typ /= ITField -> do
             let newRef = mkIndexRef (segs Seq.>< sels)
                 -- build the new reference tree.
-                refTC = setTCFocusTN (TNMutable $ setMutOp (Ref newRef) mut) tc
+                refTC = setTCFocusMut (setMutOp (Ref newRef) mut) tc
             resolveTCIfRef refTC
-      Just (TCFocus lb, True) -> do
+      Just (TCFocus lb, typ) | typ /= ITField -> do
         -- If the let value is not a reference, but a regular expression.
         -- For example, let x = {}, let x = 1 + 2
         let
           newRef = mkIndexRef (lb Seq.<| sels)
           -- build the new reference tree.
-          refTC = setTCFocusTN (TNMutable $ withEmptyMutFrame (Ref newRef)) tc
+          refTC = setTCFocusMut (withEmptyMutFrame (Ref newRef)) tc
         resolveTCIfRef refTC
 
       -- Rest of the cases. For cases such as { let x = a.b, a: b: {}, c: x } where let value is a refernece, it can be
@@ -109,8 +116,8 @@ index argRef@Reference{refArg = (RefPath var sels)} tc =
           refTCM
 
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index Reference{refArg = arg@(RefIndex _)} tc = debugSpanAdaptRM "index" adaptDRFetch adaptDRRep tc $ do
-  operandTC <- goDownTCSegMust (MutArgTASeg 0) tc
+index tc@(TCFocus (IsRef _ Reference{refArg = arg@(RefIndex _)})) = debugSpanAdaptRM "index" adaptDRFetch adaptDRRep tc $ do
+  operandTC <- liftFatal $ goDownTCSegMust (MutArgTASeg 0) tc
   let
     reducedOperandM = rtrNonMut (tcFocus operandTC)
     idxFieldPathM = convertRefArgTreesToSels arg
@@ -125,21 +132,21 @@ index Reference{refArg = arg@(RefIndex _)} tc = debugSpanAdaptRM "index" adaptDR
         _ -> goDownTCAddr (fieldPathToAddr idxFieldPath) reducedTC
 
   maybe (return notFound) resolveTCIfRef tarTCM
+index tc = throwFatal $ printf "index: invalid tree cursor %s" (show tc)
 
 -- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
-refTCFromRef :: (ResolveMonad s r m) => Reference -> TrCur -> m (Maybe (TrCur, FieldPath))
-refTCFromRef Reference{refArg = arg@(RefPath var _)} tc = do
+refTCFromRef :: (ResolveMonad r s m) => Reference -> TrCur -> m (Maybe (TrCur, FieldPath))
+refTCFromRef Reference{refArg = arg@(RefPath ident _)} tc = do
   maybe
     (return Nothing)
     ( \fp@(FieldPath reducedSels) -> do
-        newRef <- mkRefFromFieldPath mkAtomTree var (FieldPath (tail reducedSels))
-        let
-          -- build the new reference tree.
-          refTC = setTCFocusTN (TNMutable $ withEmptyMutFrame (Ref newRef)) tc
+        newRef <- liftFatal $ mkRefFromFieldPath mkAtomTree ident (FieldPath (tail reducedSels))
+        -- build the new reference tree.
+        let refTC = setTCFocusMut (withEmptyMutFrame (Ref newRef)) tc
         return $ Just (refTC, fp)
     )
     (convertRefArgTreesToSels arg)
-refTCFromRef _ _ = throwErrSt "refTCFromRef: invalid reference"
+refTCFromRef _ _ = throwFatal "refTCFromRef: invalid reference"
 
 {- | Convert the reference argument trees to selectors.
 
@@ -147,8 +154,8 @@ Notice that even if the selector tree is concrete, it might not be valid selecto
 -}
 convertRefArgTreesToSels :: RefArg -> Maybe FieldPath
 convertRefArgTreesToSels arg = case arg of
-  (RefPath var sels) -> do
-    let h = StringSel (TE.encodeUtf8 var)
+  (RefPath ident sels) -> do
+    let h = StringSel (TE.encodeUtf8 $ refIdentToText ident)
     rest <- mapM treeToSel (toList sels)
     return $ FieldPath (h : rest)
   (RefIndex (_ Seq.:<| rest)) -> FieldPath <$> mapM treeToSel (toList rest)
@@ -158,87 +165,64 @@ convertRefArgTreesToSels arg = case arg of
 
 The env is to provide the context for the dereferencing the reference.
 -}
-getDstTC :: (ResolveMonad s r m) => FieldPath -> TrCur -> m DerefResult
-getDstTC fieldPath _env = do
+getDstTC :: (ResolveMonad r s m) => FieldPath -> TrCur -> m DerefResult
+getDstTC fieldPath env = do
   -- Make deref see the latest tree, even with unreduced nodes.
-  env <- syncTC _env
   debugSpanAdaptRM "getDstTC" adaptDRFetch adaptDRRep env $ do
     lr <- locateRef fieldPath env
     case lr of
       LRIdentNotFound err -> return (DerefResult (Just err) Nothing NoCycleDetected False)
-      LRPartialFound _ potentialTarAddr -> undefined
+      LRPartialFound _ potentialTarAddr -> do
+        cd <- watch potentialTarAddr env
+        return (DerefResult Nothing (Just potentialTarAddr) cd False)
       LRRefFound tarTC -> do
-        cd <- watchFound tarTC env
+        cd <- watch (tcAddr tarTC) env
         vM <- copyConcrete tarTC
         return $ DerefResult vM (Just (tcAddr tarTC)) cd False
 
-whenNoCD :: (ResolveMonad s r m) => m CycleDetection -> CycleDetection -> m CycleDetection
+whenNoCD :: (ResolveMonad r s m) => m CycleDetection -> CycleDetection -> m CycleDetection
 whenNoCD m NoCycleDetected = m
 whenNoCD _ cd = return cd
 
 {- | Watch the target address from the reference environment.
 
+TODO: update the notification graph with the new dependency, not always insert.
+
 Also check if any of the dependent of the current ref forms a cycle with the target address.
 -}
-watchFound :: (ResolveMonad s r m) => TrCur -> TrCur -> m CycleDetection
-watchFound tarTC refEnv = do
-  let
-    refAddr = tcAddr refEnv
-    rfbRefAddr = trimToReferable refAddr
-    tarAddr = tcAddr tarTC
-
+watch :: (ResolveMonad r s m) => TreeAddr -> TrCur -> m CycleDetection
+watch tarAddr refEnv = do
+  when (isNothing $ addrIsSufRef tarAddr) $
+    throwFatal $
+      printf "watch: target addr %s is not suffix-referable" (show tarAddr)
   ctx <- getRMContext
   let
-    newG = addNewDepToNG (refAddr, tarAddr) (Common.ctxNotifGraph ctx)
-    refSCCAddrM = lookupSCCAddr refAddr newG
-  putRMContext $ ctx{Common.ctxNotifGraph = newG}
-  cd <- case refSCCAddrM of
-    Nothing -> throwErrSt $ printf "watchFound: refAddr %s is not in the notification graph" (show refAddr)
-    Just refSCCAddr -> case refSCCAddr of
-      ACyclicSCCAddr _ -> return NoCycleDetected
-      CyclicSCCAddr _ -> return $ RCDetected (getSCCAddrs refSCCAddr newG)
-      SCyclicSCCAddr _ _ -> return SCDetected
+    refAddr = tcAddr refEnv
+    tarAddrR = fromJust $ addrIsSufRef tarAddr
+    newG = addNewDepToNG (refAddr, tarAddrR) (ctxNotifGraph ctx)
+    -- Check if the refAddr's SuffixIrreducible form is in a cyclic scc.
+    -- We have to trim the refAddr to its suffix irreducible form because the reference could be mutable argument.
+    -- For example, {a: b + 1, b: a - 1}. We are interested in whether b forms a cycle, not /b/fa0.
+    refGrpAddrM = lookupGrpAddr (trimAddrToSufIrred refAddr) newG
+  putRMContext $ ctx{ctxNotifGraph = newG}
+
+  cd <- case refGrpAddrM of
+    Nothing -> throwFatal $ printf "watchFound: refAddr %s is not in the notification graph" (show refAddr)
+    Just refGrpAddr -> case refGrpAddr of
+      ACyclicGrpAddr _ -> return NoCycleDetected
+      CyclicBaseAddr _ -> return $ RCDetected (map sufIrredToAddr $ getElemAddrInGrp refGrpAddr newG)
+
   debugInstantRM
     "watchFound"
     ( printf
         "tried to detect if tar: %s forms a cycle with %s's dependents. graph: %s, result: %s"
         (show tarAddr)
-        (show rfbRefAddr)
+        (show refAddr)
         (show newG)
         (show cd)
     )
     refEnv
   return cd
-
-{- | Watch the target address from the reference environment when the target is not found.
-
-TODO: should we detect sub field cycles here?
--}
-watchNotFound :: (ResolveMonad s r m) => TreeAddr -> TrCur -> m CycleDetection
-watchNotFound tarAddr refEnv = do
-  let
-    refAddr = tcAddr refEnv
-
-  -- ctx <- getRMContext
-  debugInstantRM
-    "watchNotFound"
-    ( printf
-        "tried to detect if tar: %s forms a cycle with %s's dependents: %s"
-        (show tarAddr)
-        (show refAddr)
-        (show NoCycleDetected)
-    )
-    refEnv
-  -- putRMContext $ Common.addCtxNotifPair ctx (tarAddr, refAddr)
-  debugInstantRM
-    "watchNotFound"
-    ( printf
-        "added notification pair: %s -> %s"
-        (show tarAddr)
-        (show refAddr)
-    )
-    refEnv
-  return NoCycleDetected
 
 {- | The result of getting the destination value.
 
@@ -248,7 +232,6 @@ type DstTC = Either Tree (Maybe TrCur)
 
 data CycleDetection
   = RCDetected [TreeAddr]
-  | SCDetected
   | NoCycleDetected
   deriving (Show, Eq)
 
@@ -258,53 +241,54 @@ We have to mark all descendants as cyclic here instead of just marking the focus
 it is immediately unified with a non-cyclic value, the descendants of the merged value, which does not have the
 cyclic attribute, would lose the cyclic attribute.
 -}
-markCyclic :: (Common.EnvIO r s m) => Tree -> m Tree
+markCyclic :: (ResolveMonad r s m) => Tree -> m Tree
 markCyclic val = do
-  utc <- traverseTCSimple subNodes mark valTC
+  utc <- preVisitTreeSimple (subNodes False) mark valTC
   return $ tcFocus utc
  where
   -- Create a tree cursor based on the value.
   valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
 
-  mark :: (Common.EnvIO r s m) => TrCur -> m Tree
+  mark :: (ResolveMonad r s m) => TrCur -> m TrCur
   mark tc = do
     let focus = tcFocus tc
-    return $ focus{treeIsSCyclic = True}
+    return $ focus{isSCyclic = True} `setTCFocus` tc
 
 {- | Copy the concrete value from the target cursor if the target value has already been reduced.
 
 The tree cursor is the target cursor without the copied raw value.
 -}
-copyConcrete :: (ResolveMonad s r m) => TrCur -> m (Maybe Tree)
+copyConcrete :: (ResolveMonad r s m) => TrCur -> m (Maybe Tree)
 copyConcrete tarTC = do
-  let
-    target = tcFocus tarTC
-    concreteTarM = rtrNonMut target
-
-  r <-
-    maybe
-      (return Nothing)
-      (\concreteTar -> Just <$> checkRefDef (fetchAtomFromAC concreteTar))
-      concreteTarM
-
-  debugInstantRM "copyConcrete" (printf "target concrete is %s" (show r)) tarTC
-  return r
+  -- We need to make the target immutable before returning it.
+  -- 1. If the target is a mutable, then we should not return the mutable because the dependent can receive the new value
+  -- if the mutable is updated.
+  -- 2. If the target is a block, then we need the actual struct that it produces. However, we need to preserve the
+  -- original references so that if they point to an inner scope, the values of them can be invalidated and further
+  -- resolved to new fields. So there is no need to recursively make the block immutable.
+  let immutTarget = makeTreeImmutable (tcFocus tarTC)
+  r <- checkRefDef (tcAddr tarTC) (fetchAtomFromAC immutTarget)
+  debugInstantRM "copyConcrete" (printf "target concrete is %s" (treeToFullRepString r)) tarTC
+  case r of
+    IsNoVal -> return Nothing
+    _ -> return $ Just r
  where
   fetchAtomFromAC x = case x of
-    IsAtomCnstr c -> mkAtomTree $ cnsAtom c
+    IsAtomCnstr c -> mkAtomTree c.value
     _ -> x
 
-  checkRefDef val = do
-    -- Check if the referenced value has recurClose.
-    let
-      recurClose = treeRecurClosed (tcFocus tarTC)
-      shouldClose = addrHasDef (tcAddr tarTC)
-    if shouldClose || recurClose
-      then markRecurClosed val
-      else return val
+checkRefDef :: (ResolveMonad r s m) => TreeAddr -> Tree -> m Tree
+checkRefDef tarAddr val = do
+  -- Check if the referenced value has recurClose.
+  let
+    recurClose = isRecurClosed val
+    hasDef = addrHasDef tarAddr
+  if hasDef || recurClose
+    then markRecurClosed val
+    else return val
 
 -- | Check if the reference is an inner reference.
-isInnerScope :: (ResolveMonad s r m) => FieldPath -> TreeAddr -> TreeAddr -> TrCur -> m Bool
+isInnerScope :: (ResolveMonad r s m) => FieldPath -> TreeAddr -> TreeAddr -> TrCur -> m Bool
 isInnerScope fieldPath originAddr tAddr tc = do
   tarIdentAddrM <- searchIdent fieldPath tc
   isInner <-
@@ -326,30 +310,31 @@ isInnerScope fieldPath originAddr tAddr tc = do
   return isInner
  where
   -- Search the first identifier of the reference and convert it to absolute tree addr if it exists.
-  searchIdent :: (ResolveMonad s r m) => FieldPath -> TrCur -> m (Maybe TreeAddr)
+  searchIdent :: (ResolveMonad r s m) => FieldPath -> TrCur -> m (Maybe TreeAddr)
   searchIdent ref xtc = do
     let fstSel = fromJust $ headSel ref
     ident <- selToIdent fstSel
-    resM <- searchTCIdent ident xtc
+    resM <- searchTCIdent (RefIdent ident) xtc
     return $ tcAddr . fst <$> resM
 
-markRecurClosed :: (Common.EnvIO r s m) => Tree -> m Tree
+markRecurClosed :: (ResolveMonad r s m) => Tree -> m Tree
 markRecurClosed val = do
-  utc <- traverseTCSimple subNodes mark valTC
+  utc <- preVisitTreeSimple (subNodes True) mark valTC
   return $ tcFocus utc
  where
   -- Create a tree cursor based on the value.
   valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
-  mark :: (Common.EnvIO r s m) => TrCur -> m Tree
+
   mark tc = do
     let focus = tcFocus tc
     return $
       focus
-        { treeRecurClosed = True
+        { isRecurClosed = True
         , treeNode = case treeNode focus of
-            TNBlock block -> TNBlock $ modifyBlockStruct (\s -> s{stcClosed = True}) block
+            TNStruct s -> TNStruct $ s{stcClosed = True}
             _ -> treeNode focus
         }
+        `setTCFocus` tc
 
 {- | Get the first identifier of the reference to absolute tree addr.
 
@@ -357,11 +342,11 @@ If the identifier is not found, it returns Nothing.
 
 It does not follow the reference.
 -}
-getRefIdentAddr :: (ResolveMonad s r m) => FieldPath -> Maybe TreeAddr -> TrCur -> m (Maybe TreeAddr)
+getRefIdentAddr :: (ResolveMonad r s m) => FieldPath -> Maybe TreeAddr -> TrCur -> m (Maybe TreeAddr)
 getRefIdentAddr fieldPath origAddrsM tc = do
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  let f x = searchTCIdent ident x >>= (\r -> return $ tcAddr . fst <$> r)
+  let f x = searchTCIdent (RefIdent ident) x >>= (\r -> return $ tcAddr . fst <$> r)
 
   -- Search the address of the first identifier, whether from the current env or the original env.
   maybe
@@ -372,7 +357,16 @@ getRefIdentAddr fieldPath origAddrsM tc = do
     )
     origAddrsM
 
-notFoundMsg :: (Common.EnvIO r s m) => T.Text -> Maybe AST.Position -> m String
+{- | Go to the absolute addr in the tree and execute the action if the addr exists.
+
+If the addr does not exist, return Nothing.
+-}
+inAbsAddrTCMust :: (ResolveMonad r s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
+inAbsAddrTCMust p tc f = do
+  tarM <- liftFatal (goTCAbsAddr p tc)
+  maybe (throwFatal $ printf "%s is not found" (show p)) f tarM
+
+notFoundMsg :: (ResolveMonad r s m) => T.Text -> Maybe AST.Position -> m String
 notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
   return $
     printf
@@ -381,7 +375,7 @@ notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
       (fromMaybe "-" fM)
       (show $ AST.posLine pos)
       (show $ AST.posColumn pos)
-notFoundMsg ident pinfo = throwErrSt $ printf "position %s is not enough for identifier %s" (show pinfo) (show ident)
+notFoundMsg ident pinfo = throwFatal $ printf "position %s is not enough for identifier %s" (show pinfo) (show ident)
 
 data LocateRefResult
   = LRIdentNotFound Tree
@@ -395,12 +389,12 @@ data LocateRefResult
 
 The path must start with a locatable ident.
 -}
-locateRef :: (ResolveMonad s r m) => FieldPath -> TrCur -> m LocateRefResult
+locateRef :: (ResolveMonad r s m) => FieldPath -> TrCur -> m LocateRefResult
 locateRef fieldPath tc = do
-  when (isFieldPathEmpty fieldPath) $ throwErrSt "empty fieldPath"
+  when (isFieldPathEmpty fieldPath) $ throwFatal "empty fieldPath"
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  searchTCIdent ident tc >>= \case
+  searchTCIdent (RefIdent ident) tc >>= \case
     Nothing -> do
       errMsg <- notFoundMsg ident (treeExpr (tcFocus tc) >>= AST.anPos)
       return . LRIdentNotFound $ mkBottomTree errMsg
@@ -408,10 +402,31 @@ locateRef fieldPath tc = do
       -- The ref is non-empty, so the rest must be a valid addr.
       let rest = fromJust $ tailFieldPath fieldPath
           (matchedTC, unmatchedSels) = go identTC (getRefSels rest)
-      return $
-        if null unmatchedSels
-          then LRRefFound matchedTC
-          else LRPartialFound matchedTC (appendTreeAddr (tcAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels)))
+          targetAddr =
+            if null unmatchedSels
+              then tcAddr matchedTC
+              else appendTreeAddr (tcAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels))
+
+      debugInstantRM "locateRef" (printf "fieldPath: %s, before fetch" (show fieldPath)) tc
+
+      -- Check if the target address is dirty.
+      fetch <- asks (fetch . getReduceParams)
+      case addrIsSufIrred targetAddr of
+        Just tSIAddr
+          | FRDirty <- fetch tSIAddr -> throwDirty tSIAddr
+          | FRCyclic <- fetch tSIAddr
+          , -- If the target is atom, even if it is cyclic, we can still return the value.
+            -- Consider {a: 1 & a}
+            Just _ <- rtrAtom matchedTC.tcFocus ->
+              return $ LRRefFound matchedTC
+          | FRCyclic <- fetch tSIAddr -> return $ LRRefFound (mkNewTree TNRefCycle `setTCFocus` matchedTC)
+          | FRSCyclic <- fetch tSIAddr ->
+              return $ LRRefFound $ (tcFocus matchedTC){isSCyclic = True} `setTCFocus` matchedTC
+        _ ->
+          return $
+            if null unmatchedSels
+              then LRRefFound matchedTC
+              else LRPartialFound matchedTC targetAddr
  where
   go x [] = (x, [])
   go x sels@(sel : rs) =
@@ -424,35 +439,35 @@ locateRef fieldPath tc = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrRM :: (ReduceMonad s r m) => TreeAddr -> m a -> m (Maybe a)
+inAbsAddrRM :: (ReduceMonad r s m) => TreeAddr -> m a -> m (Maybe a)
 inAbsAddrRM p f = do
   origAbsAddr <- getTMAbsAddr
 
   tarM <- whenM (goRMAbsAddr p) f
   backOk <- goRMAbsAddr origAbsAddr
   unless backOk $ do
-    throwErrSt $
+    throwFatal $
       printf
         "failed to go back to the original addr %s, dest: %s"
         (show origAbsAddr)
         (show p)
   return tarM
  where
-  whenM :: (ReduceMonad s r m) => m Bool -> m a -> m (Maybe a)
+  whenM :: (ReduceMonad r s m) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
     if b then Just <$> g else return Nothing
 
 -- | Go to the absolute addr in the tree.
-goRMAbsAddr :: (ReduceMonad s r m) => TreeAddr -> m Bool
+goRMAbsAddr :: (ReduceMonad r s m) => TreeAddr -> m Bool
 goRMAbsAddr dst = do
   when (headSeg dst /= Just RootTASeg) $
-    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
+    throwFatal (printf "the addr %s should start with the root segment" (show dst))
   propUpTMUntilSeg RootTASeg
   let dstNoRoot = fromJust $ tailTreeAddr dst
   descendTM dstNoRoot
 
-goRMAbsAddrMust :: (ReduceMonad s r m) => TreeAddr -> m ()
+goRMAbsAddrMust :: (ReduceMonad r s m) => TreeAddr -> m ()
 goRMAbsAddrMust dst = do
   from <- getTMAbsAddr
   ok <- goRMAbsAddr dst
@@ -461,191 +476,130 @@ goRMAbsAddrMust dst = do
     case treeNode (tcFocus tc) of
       -- If the focus of the cursor is a bottom, it is not a problem.
       TNBottom _ -> return ()
-      _ -> throwErrSt $ printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
+      _ -> throwFatal $ printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
 
 addrHasDef :: TreeAddr -> Bool
 addrHasDef p =
   any
     ( \case
-        BlockTASeg (StringTASeg s) -> fromMaybe False $ do
+        BlockTASeg (StringTASeg (StringSeg s)) -> fromMaybe False $ do
           typ <- getFieldType (T.unpack $ TE.decodeUtf8 s)
           return $ typ == SFTDefinition
         _ -> False
     )
     $ addrToList p
 
-selToIdent :: (Common.EnvIO r s m) => Selector -> m T.Text
+selToIdent :: (ResolveMonad r s m) => Selector -> m T.Text
 selToIdent (StringSel s) = return $ TE.decodeUtf8 s
-selToIdent _ = throwErrSt "invalid selector"
+selToIdent _ = throwFatal "invalid selector"
 
-{- | Search in the parent scope for the first identifier that can match the segment.
-
-Also return if the identifier is a let binding.
--}
-searchTCIdentInPar :: (ResolveMonad s r m) => T.Text -> TrCur -> m (Maybe (TreeAddr, Bool))
-searchTCIdentInPar name tc = do
-  ptc <- parentTCMust tc
-  if isTCTop ptc
-    then return Nothing
-    else do
-      m <- searchTCIdent name ptc
-      return $ maybe Nothing (\(x, y) -> Just (tcAddr x, y)) m
+data IdentType
+  = ITField
+  | ITLetBinding
+  | ITIterBinding
+  deriving (Show, Eq)
 
 {- | Search in the tree for the first identifier that can match the name.
 
 Searching identifiers only searches for the identifiers declared in the block, not for the identifiers added by
 unification with embeddings.
 
-Return a pair. The first is address of the identifier, the second is whether the identifier is a let binding.
+Return a pair. The first is address of the identifier, the second is whether the identifier is a let binding (not
+including an iteration binding).
 
 The child value will not be propagated to the parent block. Propagation is not needed because all static fields should
 already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCIdent :: (ResolveMonad s r m) => T.Text -> TrCur -> m (Maybe (TrCur, Bool))
-searchTCIdent name tc = do
-  subM <- findIdent name tc
+searchTCIdent :: (ResolveMonad r s m) => RefIdent -> TrCur -> m (Maybe (TrCur, IdentType))
+searchTCIdent ident tc = do
+  subM <- findIdent ident tc
   maybe
-    (goUp tc)
-    ( \(identTC, isLB) -> do
-        when isLB $ do
+    (goUpOrLeft tc)
+    ( \(identTC, typ) -> do
+        when (typ == ITLetBinding) $ do
           -- Mark the ident as referred if it is a let binding.
           markRMLetReferred (tcAddr identTC)
-        -- unrefLets <- getRMUnreferredLets
-        -- debugInstantRM
-        --   "searchTCIdent"
-        --   (printf "ident: %s, unrefLets: %s" (show $ tcAddr identTC) (show unrefLets))
-        --   tc
-        return $ Just (identTC, isLB)
+        return $ Just (identTC, typ)
     )
     subM
  where
-  mkSeg isLB = let nt = TE.encodeUtf8 name in BlockTASeg $ if isLB then LetTASeg nt else StringTASeg nt
-
-  goUp :: (ResolveMonad s r m) => TrCur -> m (Maybe (TrCur, Bool))
-  goUp (TrCur _ [(RootTASeg, _)]) = return Nothing -- stop at the root.
-  goUp utc = do
-    ptc <- maybe (throwErrSt "already on the top") return $ parentTC utc
-    searchTCIdent name ptc
-
-  -- TODO: findIdent for default disjunct?
-  findIdent :: (Common.EnvIO r s m) => T.Text -> TrCur -> m (Maybe (TrCur, Bool))
-  findIdent ident blockTC = do
-    case treeNode (tcFocus blockTC) of
-      TNBlock blk@(IsBlockStruct struct) -> do
-        -- If the block reduces to non-struct, then the fields are not searchable in the block. The fields have
-        -- behaved like mutable argument.
-        -- For example, { x: {a:1, c:d, e}, e: {a: int} | {b: int}, d:1 }
-        -- - merge -> {x: {a:1, c:d} | {a:1, c:d, b:int}, d:1, e: {..}}
-        -- Then when we reduce the merged value, at /x/dj0/c, it finds d in the top /.
-        let
-          m =
-            catMaybes
-              [ do
-                  sf <- lookupStructIdentField ident struct
-                  return (mkSubTC (mkSeg False) (ssfValue sf) blockTC, False)
-              , do
-                  lb <- lookupBlockLet ident blk
-                  return (mkSubTC (mkSeg True) (lbValue lb) blockTC, True)
-              ]
-        case m of
-          [] -> do
-            -- debugInstantRM
-            --   "findIdent"
-            --   (printf "ident %s not found in block, tc: %s" (show ident) (showCursor blockTC))
-            --   blockTC
-            return Nothing
-          [x] -> return $ Just x
-          (fstTC, _) : _ ->
-            return $
-              Just
-                ( mkBottomTree (printf "multiple fields found for %s" ident) `setTCFocus` fstTC
-                , False
+  goUpOrLeft :: (ResolveMonad r s m) => TrCur -> m (Maybe (TrCur, IdentType))
+  goUpOrLeft (TrCur _ [(RootTASeg, _)]) = return Nothing -- stop at the root.
+  -- If the current node is an embedding, we should go to the parent block which by convention is the first mutable
+  -- argument.
+  goUpOrLeft utc@(TrCur t ((MutArgTASeg i, _) : _))
+    | i > 0
+    , ETEmbedded sid <- t.embType = do
+        ptc <- liftFatal (propUpTC utc)
+        args <- case ptc of
+          TCFocus (IsTGenOp mut) -> return $ getMutArgs mut
+          _ -> throwFatal $ printf "searchTCIdent: parent of embedding is not a mutable: %s" (show ptc)
+        let jM =
+              foldr
+                ( \(j, x) acc ->
+                    if isJust acc
+                      then acc
+                      else do
+                        struct <- rtrStruct x
+                        if struct.stcID == sid then Just j else Nothing
                 )
-      TNMutable (MutOp (Compreh c)) -> do
-        case Map.lookup ident (cphIterBindings c) of
-          Just v -> return $ Just (mkSubTC (mkSeg True) v blockTC, False)
-          Nothing -> return Nothing
-      _ -> do
-        -- debugInstantRM
-        --   "findIdent"
-        --   (printf "ident %s not found in value, tc: %s" (show ident) (showCursor blockTC))
-        --   blockTC
-        return Nothing
+                Nothing
+                (zip [0 ..] $ toList args)
+        case jM of
+          Nothing -> throwFatal $ printf "searchTCIdent: embedding %s's parent does not have the embedding struct" (show sid)
+          Just j -> do
+            debugInstantRM "searchTCIdent" (printf "going up from embedding to parent block arg %s" (show j)) utc
+            structTC <- liftFatal (goDownTCSegMust (MutArgTASeg j) ptc)
+            searchTCIdent ident structTC
+  goUpOrLeft utc = do
+    ptc <- liftFatal (propUpTC utc)
+    searchTCIdent ident ptc
 
-{- | Go to the absolute addr in the tree. No propagation is involved.
-
-The tree must have all the latest changes.
--}
-goTCAbsAddr :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> m (Maybe TrCur)
-goTCAbsAddr dst tc = do
-  when (headSeg dst /= Just RootTASeg) $
-    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
-  top <- topTC tc
-  let dstNoRoot = fromJust $ tailTreeAddr dst
-  return $ goDownTCAddr dstNoRoot top
-
-goTCAbsAddrMust :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> m TrCur
-goTCAbsAddrMust dst tc = do
-  tarM <- goTCAbsAddr dst tc
-  maybe (throwErrSt $ printf "failed to go to the addr %s" (show dst)) return tarM
-
-{- | Go to the absolute addr in the tree and execute the action if the addr exists.
-
-If the addr does not exist, return Nothing.
--}
-inAbsAddrTCMust :: (Common.EnvIO r s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
-inAbsAddrTCMust p tc f = do
-  tarM <- goTCAbsAddr p tc
-  maybe (throwErrSt $ printf "%s is not found" (show p)) f tarM
-
-{- | Populate the references that are part of the reference cycles with either RefCycle or the actual value.
-
-We are visiting the tree in a DFS manner.
--}
-populateRCRefs :: (ResolveMonad s r m) => [TreeAddr] -> [TreeAddr] -> TrCur -> m TrCur
-populateRCRefs rcAddrs populatingRCs nodeTC =
-  debugSpanArgsAdaptRM "populateRCRefs" (printf "rcAddrs: %s" (show rcAddrs)) (Just . tcFocus) (const (toJSON ())) nodeTC $
-    do
-      r <- traverseTCSimple (\x -> subNodes x ++ rawNodes x) go nodeTC
-      let t = tcFocus r
-      debugInstantRM "populateRCRefs" (printf "result is %s" (show t)) nodeTC
-      return r
- where
-  go tc = case tcFocus tc of
-    IsRef mut ref@(Reference{refArg = ra@(RefPath{})}) -> do
-      debugInstantRM "populateRCRefs" (printf "visiting ref %s" (show ref)) tc
-      let fpM = convertRefArgTreesToSels ra
-      case fpM of
-        Nothing -> return $ tcFocus tc
-        Just fp -> do
-          r <- locateRef fp tc
-
-          case r of
-            LRIdentNotFound _ -> throwErrSt $ printf "populateRCRefs: ident not found for ref %s" (show ref)
-            LRPartialFound _ _ -> throwErrSt $ printf "populateRCRefs: partial found for ref %s" (show ref)
-            LRRefFound tarTC -> do
-              let tarAddr = trimToReferable $ tcAddr tarTC
-              debugInstantRM "populateRCRefs" (printf "locateRef result is %s, tarAddr: %s" (show r) (show tarAddr)) tc
-
-              if
-                -- If the reference is not a reference cycle, do not populate.
-                | not (tarAddr `elem` rcAddrs) -> return $ tcFocus tc
-                -- If the reference is pointing to a RC reference that is being populated, create a RC node.
-                | tarAddr `elem` populatingRCs -> do
-                    let newMut = setMutVal (Just (mkNewTree TNRefCycle)) mut
-                    return $ setTN (tcFocus tc) (TNMutable newMut)
-                -- It is a RC reference that has not been populated yet. Populate it recursively.
-                | otherwise -> do
-                    rTC <- populateRCRefs rcAddrs (tarAddr : populatingRCs) tarTC
-                    -- If the population result is still a reference, we should fetch the non-mutable part of the
-                    -- reference to avoid nested references.
-                    let rM = case tcFocus rTC of
-                          IsRef{} -> rtrNonMut (tcFocus rTC)
-                          _ -> Just $ tcFocus rTC
-                        newMut = setMutVal rM mut
-                    return $ setTN (tcFocus tc) (TNMutable newMut)
-    -- Invalidate the mutable so that later reduce can re-reduce it.
-    IsMutable _ -> return $ invalidateMutable (tcFocus tc)
-    _ -> return $ tcFocus tc
+findIdent :: (ResolveMonad r s m) => RefIdent -> TrCur -> m (Maybe (TrCur, IdentType))
+findIdent ident tc = do
+  case tcFocus tc of
+    IsStruct struct -> do
+      -- If the block reduces to non-struct, then the fields are not searchable in the block. The fields have
+      -- behaved like mutable argument.
+      -- For example, { x: {a:1, c:d, e}, e: {a: int} | {b: int}, d:1 }
+      -- - merge -> {x: {a:1, c:d} | {a:1, c:d, b:int}, d:1, e: {..}}
+      -- Then when we reduce the merged value, at /x/dj0/c, it finds d in the top /.
+      let
+        m =
+          catMaybes
+            [ do
+                name <- case ident of RefIdent name -> Just name; _ -> Nothing
+                field <- lookupStructField name struct
+                if field.ssfAttr.lbAttrIsIdent
+                  then do
+                    subTC <- goDownTCSeg (textToStringTASeg name) tc
+                    return (subTC, ITField)
+                  else
+                    Nothing
+            , do
+                seg <- case ident of
+                  RefIdent name -> Just $ BlockTASeg $ LetTASeg (textToStringSeg name) Nothing
+                  RefIdentWithOID name oid -> Just $ BlockTASeg $ LetTASeg (textToStringSeg name) (Just oid)
+                subTC <- goDownTCSeg seg tc
+                binding <- Map.lookup ident struct.stcBindings
+                let typ = if binding.isIterVar then ITIterBinding else ITLetBinding
+                return (subTC, typ)
+            ]
+      case m of
+        [] -> return Nothing
+        [x] -> return $ Just x
+        (fstTC, _) : _ ->
+          return $
+            Just
+              ( mkBottomTree (printf "multiple fields found for %s" (show ident)) `setTCFocus` fstTC
+              , ITField
+              )
+    IsTGenOp (MutOp (Compreh c)) -> do
+      debugInstantRM "searchTCIdent" (printf "search in the compreh, bindings: %s" (show c.iterBindings)) tc
+      return $ do
+        name <- case ident of RefIdent name -> Just name; _ -> Nothing
+        v <- Map.lookup name c.iterBindings
+        return (v `setTCFocus` tc, ITIterBinding)
+    _ -> return Nothing

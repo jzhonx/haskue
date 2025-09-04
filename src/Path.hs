@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Path where
 
@@ -11,6 +10,7 @@ import Data.Aeson.Types (ToJSON (..))
 import qualified Data.ByteString as B
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
+import Data.Text (unpack)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
@@ -61,7 +61,7 @@ fieldPathToAddr :: FieldPath -> TreeAddr
 fieldPathToAddr (FieldPath sels) = addrFromList $ map selToTASeg sels
 
 selToTASeg :: Selector -> TASeg
-selToTASeg (StringSel s) = BlockTASeg $ StringTASeg s
+selToTASeg (StringSel s) = textToStringTASeg (TE.decodeUtf8 s)
 selToTASeg (IntSel i) = IndexTASeg i
 
 fieldPathFromString :: String -> FieldPath
@@ -86,57 +86,76 @@ data TASeg
     RootTASeg
   | IndexTASeg !Int
   | BlockTASeg BlockTASeg
-  | DisjDefTASeg
-  | DisjRegTASeg !Int
-  | -- | SubValTASeg is used to represent the only sub value of a value.
-    SubValTASeg
+  | DisjTASeg !Int
   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
     MutArgTASeg !Int
+  | TempTASeg
   deriving (Eq, Ord, Generic, NFData, ToJSON)
 
 instance Show TASeg where
   show RootTASeg = "/"
   show (BlockTASeg s) = show s
   show (IndexTASeg i) = "i" ++ show i
-  show DisjDefTASeg = "d*"
-  show (DisjRegTASeg i) = "dj" ++ show i
+  show (DisjTASeg i) = "dj" ++ show i
   show (MutArgTASeg i) = "fa" ++ show i
-  show SubValTASeg = "sv"
+  show TempTASeg = "tmp"
+
+isSegReducible :: TASeg -> Bool
+isSegReducible (MutArgTASeg _) = True
+isSegReducible (DisjTASeg _) = True
+isSegReducible _ = False
+
+isSegIrreducible :: TASeg -> Bool
+isSegIrreducible seg = not $ isSegReducible seg
+
+isSegReferable :: TASeg -> Bool
+isSegReferable (BlockTASeg (StringTASeg _)) = True
+isSegReferable (BlockTASeg (LetTASeg{})) = True
+isSegReferable (IndexTASeg _) = True
+isSegReferable RootTASeg = True
+isSegReferable _ = False
+
+newtype StringSeg = StringSeg B.ByteString
+  deriving (Eq, Ord, Generic, NFData)
+
+instance Show StringSeg where
+  show (StringSeg s) = unpack $ stringSegToText (StringSeg s)
+
+instance ToJSON StringSeg where
+  toJSON (StringSeg s) = toJSON $ show s
+
+stringSegToText :: StringSeg -> T.Text
+stringSegToText (StringSeg s) = TE.decodeUtf8 s
+
+textToStringSeg :: T.Text -> StringSeg
+textToStringSeg t = StringSeg (TE.encodeUtf8 t)
 
 data BlockTASeg
-  = -- | StringTASeg can be used to match both StringTASeg and LetTASeg, meaning it can be used to query either field or
-    -- let binding.
-    StringTASeg B.ByteString
+  = StringTASeg StringSeg
+  | LetTASeg StringSeg (Maybe Int)
   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
     PatternTASeg !Int !Int
   | -- | DynFieldTASeg is used to represent a dynamic field.
     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
     DynFieldTASeg !Int !Int
-  | -- | A let binding is always indexed by the LetTASeg.
-    LetTASeg
-      -- | Identifier
-      B.ByteString
-  | EmbedTASeg !Int
+  | StubFieldTASeg StringSeg
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show BlockTASeg where
-  show (StringTASeg s) = show s
-  -- c stands for constraint.
   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
   show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
-  show (LetTASeg s) = "let_" ++ show s
-  show (EmbedTASeg i) = "emb_" ++ show i
+  show (StubFieldTASeg s) = "__" ++ show s
+  show (StringTASeg s) = show s
+  show (LetTASeg s m) = "let_" ++ show s ++ maybe "" (\i -> "_" ++ show i) m
 
 instance ToJSON BlockTASeg where
   toJSON seg = toJSON $ show seg
 
 strToStringTASeg :: String -> TASeg
-strToStringTASeg s = BlockTASeg (StringTASeg (TE.encodeUtf8 (T.pack s)))
+strToStringTASeg s = textToStringTASeg (T.pack s)
 
-getStrFromSeg :: BlockTASeg -> Maybe String
-getStrFromSeg (StringTASeg s) = Just (show s)
-getStrFromSeg (LetTASeg s) = Just (show s)
-getStrFromSeg _ = Nothing
+textToStringTASeg :: T.Text -> TASeg
+textToStringTASeg s = BlockTASeg $ StringTASeg $ textToStringSeg s
 
 unaryOpTASeg :: TASeg
 unaryOpTASeg = MutArgTASeg 0
@@ -151,10 +170,6 @@ toBinOpTASeg :: BinOpDirect -> TASeg
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
 
-isSegDisj :: TASeg -> Bool
-isSegDisj (DisjRegTASeg _) = True
-isSegDisj _ = False
-
 data BinOpDirect = L | R deriving (Eq, Ord)
 
 instance Show BinOpDirect where
@@ -165,10 +180,13 @@ instance Show BinOpDirect where
 the list.
 -}
 newtype TreeAddr = TreeAddr {getTreeAddrSegs :: V.Vector TASeg}
-  deriving (Eq, Ord, Generic, NFData, ToJSON)
+  deriving (Eq, Ord, Generic, NFData)
 
 instance Show TreeAddr where
   show = showTreeAddr
+
+instance ToJSON TreeAddr where
+  toJSON addr = toJSON $ show addr
 
 showTreeAddr :: TreeAddr -> String
 showTreeAddr (TreeAddr a)
@@ -245,15 +263,11 @@ headSeg (TreeAddr a)
   | otherwise = Just $ V.head a
 
 -- | Check if addr x is a prefix of addr y.
-isPrefix ::
-  -- | x
-  TreeAddr ->
-  -- | y
-  TreeAddr ->
-  Bool
-isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && V.and (V.zipWith eq x y)
- where
-  eq = {-# SCC "isPrefix-eq" #-} (==)
+isPrefix :: TreeAddr -> TreeAddr -> Bool
+isPrefix (TreeAddr x) (TreeAddr y) = isSegVPrefix x y
+
+isSegVPrefix :: V.Vector TASeg -> V.Vector TASeg -> Bool
+isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 
 -- isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && x == V.take (V.length x) y
 
@@ -262,47 +276,71 @@ isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && V.and (V.zipWit
 If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
 first addr is returned.
 -}
-trimPrefixTreeAddr ::
-  -- | prefix address
-  TreeAddr ->
-  -- | address
-  TreeAddr ->
-  TreeAddr
+trimPrefixTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
 trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
   | not (isPrefix pre x) = x
   | otherwise = TreeAddr (V.drop (V.length pa) xa)
 
-isInDisj :: TreeAddr -> Bool
-isInDisj (TreeAddr xs) = any isSegDisj xs
+{- | SuffixIrredAddr is an addr that ends with an irreducible segment.
 
--- | Convert the addr to referable form which only contains string, int or root segments.
-trimToReferable :: TreeAddr -> TreeAddr
-trimToReferable (TreeAddr xs) = TreeAddr $ V.filter isSegReferable xs
-
-{- | Get the referable address.
-
-Referable address is the address that a value can be referred to in the CUE code. If the address contains any mutable
-arg segment, then the address is not referable.
+Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
 -}
-getReferableAddr :: TreeAddr -> Maybe TreeAddr
-getReferableAddr p =
-  if not (all isSegReferable (getTreeAddrSegs p))
-    then Nothing
-    else Just p
+newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector TASeg}
+  deriving (Eq, Ord, Generic, NFData)
 
-isSegReferable :: TASeg -> Bool
-isSegReferable (BlockTASeg (getStrFromSeg -> Just _)) = True
-isSegReferable (IndexTASeg _) = True
-isSegReferable RootTASeg = True
-isSegReferable _ = False
+instance Show SuffixIrredAddr where
+  show a = show $ sufIrredToAddr a
 
--- | Is the tree address a canonical tree address.
-isAddrCanonical :: TreeAddr -> Bool
-isAddrCanonical (TreeAddr xs) = all isSegCanonical xs
- where
-  isSegCanonical :: TASeg -> Bool
-  isSegCanonical seg = isSegReferable seg || isSegSubVal seg
+addrIsSufIrred :: TreeAddr -> Maybe SuffixIrredAddr
+addrIsSufIrred (TreeAddr xs)
+  | V.null xs = Just $ SuffixIrredAddr V.empty
+  | isSegIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
+  | otherwise = Nothing
 
-isSegSubVal :: TASeg -> Bool
-isSegSubVal SubValTASeg = True
-isSegSubVal _ = False
+trimAddrToSufIrred :: TreeAddr -> SuffixIrredAddr
+trimAddrToSufIrred (TreeAddr xs) =
+  let
+    revXs = V.reverse xs
+    revNonMutArgs = V.dropWhile isSegReducible revXs
+   in
+    SuffixIrredAddr $ V.reverse revNonMutArgs
+
+sufIrredToAddr :: SuffixIrredAddr -> TreeAddr
+sufIrredToAddr (SuffixIrredAddr xs) = TreeAddr xs
+
+sufIrredIsSufRef :: SuffixIrredAddr -> Maybe SuffixReferableAddr
+sufIrredIsSufRef (SuffixIrredAddr xs)
+  | V.null xs = Just $ SuffixReferableAddr V.empty
+  | isSegReferable (V.last xs) = Just $ SuffixReferableAddr xs
+  | otherwise = Nothing
+
+initSufIrred :: SuffixIrredAddr -> Maybe SuffixIrredAddr
+initSufIrred (SuffixIrredAddr xs)
+  | V.null xs = Nothing
+  | otherwise = Just $ SuffixIrredAddr (V.init xs)
+
+trimAddrToSufRef :: TreeAddr -> SuffixReferableAddr
+trimAddrToSufRef (TreeAddr xs) =
+  let
+    revXs = V.reverse xs
+    revYs = V.dropWhile (not . isSegReferable) revXs
+   in
+    SuffixReferableAddr $ V.reverse revYs
+
+newtype SuffixReferableAddr = SuffixReferableAddr {getReferableAddr :: V.Vector TASeg}
+  deriving (Eq, Ord, Generic, NFData)
+
+instance Show SuffixReferableAddr where
+  show a = show $ sufRefToAddr a
+
+sufRefToAddr :: SuffixReferableAddr -> TreeAddr
+sufRefToAddr (SuffixReferableAddr xs) = TreeAddr xs
+
+sufRefToSufIrred :: SuffixReferableAddr -> SuffixIrredAddr
+sufRefToSufIrred (SuffixReferableAddr xs) = SuffixIrredAddr xs
+
+addrIsSufRef :: TreeAddr -> Maybe SuffixReferableAddr
+addrIsSufRef (TreeAddr xs)
+  | V.null xs = Just $ SuffixReferableAddr V.empty
+  | isSegReferable (V.last xs) = Just $ SuffixReferableAddr xs
+  | otherwise = Nothing

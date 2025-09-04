@@ -1,6 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -20,7 +19,7 @@ import Control.Monad (foldM)
 import Control.Monad.Reader (MonadReader, ask, asks, runReaderT)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.Maybe (isJust)
+import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
@@ -65,21 +64,15 @@ instance (HasConfig a) => HasConfig (BuildConfig a) where
   setConfig bc c = bc{bcOther = setConfig (bcOther bc) c}
 
 buildASTExprExt :: (BEnv r s m) => Tree -> m AST.Expression
-buildASTExprExt t@Tree{treeUnifiedWithRC = True} = buildUWCASTExpr t
-buildASTExprExt t@Tree{treeIsSCyclic = True} = buildSCyclicASTExpr t
+buildASTExprExt t@Tree{isUnifiedWithRC = True} = buildUWCASTExpr t
+buildASTExprExt t@Tree{isSCyclic = True} = buildSCyclicASTExpr t
+buildASTExprExt t@(IsTGenOp mut) | IsNoVal <- t = buildMutableASTExpr mut t
 buildASTExprExt t = case treeNode t of
   TNTop -> return $ AST.litCons (pure AST.TopLit)
   TNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
   TNAtom a -> return $ (AST.litCons . aToLiteral) a
   TNBounds b -> return $ buildBoundsASTExpr b
-  TNBlock block
-    | IsBlockEmbed ev <- block -> buildASTExprExt ev
-    | let dynsReady = all (isJust . rtrNonMut . dsfLabel) (IntMap.elems $ blkDynFields block)
-    , let embedsReady = all (isJust . rtrNonMut . embValue) (IntMap.elems $ blkEmbeds block)
-    , dynsReady && embedsReady ->
-        buildStructASTExpr block
-    -- If dynamic fields or embedded values are not ready, then we need to use the original expression.
-    | otherwise -> maybe (buildStructASTExpr block) return (treeExpr t)
+  TNStruct struct -> buildStructASTExpr struct t
   TNList l -> do
     ls <-
       mapM
@@ -90,13 +83,12 @@ buildASTExprExt t = case treeNode t of
         (lstSubs l)
     return $ AST.litCons $ AST.ListLit AST.<^> pure (AST.EmbeddingList ls)
   TNDisj dj
-    | null (dsjDefault dj) -> disjunctsToAST (dsjDisjuncts dj)
+    | null (rtrDisjDefVal dj) -> disjunctsToAST (dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
-  TNMutable mut -> buildMutableASTExpr mut t
   TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   TNRefCycle -> buildRCASTExpr t
   TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
-  TNNoValRef -> maybe (throwExprNotFound t) return (treeExpr t)
+  TNNoVal -> throwExprNotFound t
 
 throwExprNotFound :: (ErrorEnv m) => Tree -> m a
 throwExprNotFound t = do
@@ -104,21 +96,20 @@ throwExprNotFound t = do
   throwErrSt $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
 
 buildMutableASTExpr :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
-buildMutableASTExpr mut t
-  | Just v <- getMutVal mut = buildASTExprExt v
-  | otherwise = do
-      -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
-      -- not ready.
-      isDebug <- asks getIsDebug
-      if isDebug
-        then buildMutableASTExprForce mut t
-        else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
+buildMutableASTExpr mut t = do
+  -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
+  -- not ready.
+  isDebug <- asks getIsDebug
+  if isDebug
+    then buildMutableASTExprForce mut t
+    -- TODO: handle parenthese in treeExpr. Currently treeExpr does not have parenthese.
+    else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
 
 buildAtomCnstrASTExpr :: (BEnv r s m) => AtomCnstr -> Tree -> m AST.Expression
 buildAtomCnstrASTExpr ac t = do
   isDebug <- asks getIsDebug
   if isDebug
-    then buildArgsExpr "atomCnstr" [mkAtomTree $ cnsAtom ac, cnsValidator ac]
+    then buildArgsExpr "atomCnstr" [mkAtomTree ac.value, cnsValidator ac]
     -- TODO: for non-core type, we should not build AST in non-debug mode.
     else maybe (buildASTExprExt $ cnsValidator ac) return (treeExpr t)
 
@@ -136,16 +127,11 @@ buildMutableASTExprForce (Mutable mop _) t = case mop of
   Itp _ -> throwExprNotFound t
 
 buildRCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
-buildRCASTExpr t =
-  maybe
-    ( do
-        isDebug <- asks getIsDebug
-        if isDebug
-          then return (AST.idCons $ pure $ T.pack "RC")
-          else throwExprNotFound t
-    )
-    return
-    (treeExpr t)
+buildRCASTExpr t = do
+  isDebug <- asks getIsDebug
+  if isDebug
+    then return (AST.idCons $ pure $ T.pack "RC")
+    else throwErrSt "ref-cycle expression should not be built in non-debug mode"
 
 buildUWCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
 buildUWCASTExpr inner = do
@@ -158,123 +144,140 @@ buildSCyclicASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
 buildSCyclicASTExpr inner = do
   isDebug <- asks getIsDebug
   if isDebug
-    then buildArgsExpr "SC" [inner]
+    then buildArgsExpr "SC" [inner{isSCyclic = False}]
     else throwErrSt "structural cycle expression should not be built in non-debug mode"
 
-buildStructASTExpr :: (BEnv r s m) => Block -> m AST.Expression
-buildStructASTExpr block@(IsBlockStruct s) = do
-  fields <-
-    mapM
-      ( \case
-          BlockFieldLabel fl -> do
-            pair <-
-              maybe
-                (throwErrSt $ "struct field not found: " ++ show fl)
-                (\f -> return (fl, f))
-                (lookupStructField fl s)
-            processSField pair
-          BlockDynFieldOID oid -> do
-            dsf <-
-              maybe
-                (throwErrSt $ "dynamic field not found: " ++ show oid)
-                return
-                (IntMap.lookup oid (blkDynFields block))
-            maybe
-              (processDynField dsf)
-              ( \al ->
-                  maybe
-                    -- The dynamic field might not be in the fields if the dynamic field is in the form of ("str")
-                    (processDynField dsf)
-                    (\f -> processSField (al, f))
-                    (lookupStructField al s)
-              )
-              (rtrString $ dsfLabel dsf)
-      )
-      (dedupBlockLabels rtrString (blkDynFields block) (blkOrdLabels block))
-  patterns <- mapM processPattern (IntMap.elems $ blkCnstrs block)
-  embeds <- mapM processEmbed (IntMap.elems $ blkEmbeds block)
-
-  isDebug <- asks getIsDebug
-  let decls = fields ++ embeds ++ (if isDebug then patterns else [])
-      e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
-  return e
- where
-  processSField :: (BEnv r s m) => (T.Text, Field) -> m AST.Declaration
-  processSField (sel, sf) = do
-    e <- buildASTExprExt (ssfValue sf)
-    let decl =
-          AST.FieldDecl
-            AST.<^> pure
-              ( AST.Field
-                  [ labelCons (ssfAttr sf) $
-                      if lbAttrIsIdent (ssfAttr sf)
-                        then AST.LabelID AST.<^> pure sel
-                        else AST.LabelString AST.<^> AST.strToSimpleStrLit sel
-                  ]
-                  e
-              )
-    return decl
-
-  processDynField :: (BEnv r s m) => DynamicField -> m AST.Declaration
-  processDynField sf = do
-    le <- buildASTExprExt (dsfLabel sf)
-    ve <- buildASTExprExt (dsfValue sf)
-    let decl =
-          AST.FieldDecl
-            AST.<^> pure
-              ( AST.Field
-                  [ labelCons
-                      (dsfAttr sf)
-                      ( if dsfLabelIsInterp sf
-                          then undefined
-                          else pure $ AST.LabelNameExpr le
-                      )
-                  ]
-                  ve
-              )
-    return decl
-
-  processPattern :: (BEnv r s m) => StructCnstr -> m AST.Declaration
-  processPattern pat = do
-    pte <- buildASTExprExt (scsPattern pat)
-    ve <- buildASTExprExt (scsValue pat)
-    return $
-      AST.FieldDecl
-        AST.<^> pure (AST.Field [labelPatternCons pte] ve)
-
-  processEmbed :: (BEnv r s m) => Embedding -> m AST.Declaration
-  processEmbed embed = case treeNode (embValue embed) of
-    TNMutable (MutOp (Compreh c)) -> do
-      ce <- buildComprehASTExpr c
-      return $ AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce
-    _ -> do
-      e <- buildASTExprExt (embValue embed)
-      return $ AST.Embedding AST.<<^>> AST.AliasExpr AST.<^> e
-
-  labelCons :: LabelAttr -> AST.LabelName -> AST.Label
-  labelCons attr ln =
-    AST.Label
-      AST.<^> pure
-        ( AST.LabelName
-            ln
-            ( case lbAttrCnstr attr of
-                SFCRegular -> AST.RegularLabel
-                SFCRequired -> AST.RequiredLabel
-                SFCOptional -> AST.OptionalLabel
+buildStaticFieldExpr :: (BEnv r s m) => (T.Text, Field) -> m AST.Declaration
+buildStaticFieldExpr (sel, sf) = do
+  e <- buildASTExprExt (ssfValue sf)
+  let decl =
+        AST.FieldDecl
+          AST.<^> pure
+            ( AST.Field
+                [ labelCons (ssfAttr sf) $
+                    if lbAttrIsIdent (ssfAttr sf)
+                      then AST.LabelID AST.<^> pure sel
+                      else AST.LabelString AST.<^> AST.strToSimpleStrLit sel
+                ]
+                e
             )
-        )
-  labelPatternCons :: AST.Expression -> AST.Label
-  labelPatternCons le =
-    AST.Label
-      AST.<^> pure (AST.LabelPattern le)
-buildStructASTExpr _ = throwErrSt "buildStructASTExpr: expected a Block with Struct"
+  return decl
+
+buildDynFieldExpr :: (BEnv r s m) => DynamicField -> m AST.Declaration
+buildDynFieldExpr sf = do
+  le <- buildASTExprExt (dsfLabel sf)
+  ve <- buildASTExprExt (dsfValue sf)
+  let decl =
+        AST.FieldDecl
+          AST.<^> pure
+            ( AST.Field
+                [ labelCons
+                    (dsfAttr sf)
+                    ( if dsfLabelIsInterp sf
+                        then pure $ AST.LabelNameExpr le
+                        else pure $ AST.LabelNameExpr le
+                    )
+                ]
+                ve
+            )
+  return decl
+
+buildPatternExpr :: (BEnv r s m) => StructCnstr -> m AST.Declaration
+buildPatternExpr pat = do
+  pte <- buildASTExprExt (scsPattern pat)
+  ve <- buildASTExprExt (scsValue pat)
+  return $
+    AST.FieldDecl
+      AST.<^> pure (AST.Field [labelPatternCons pte] ve)
+
+buildLetExpr :: (BEnv r s m) => (RefIdent, Binding) -> m AST.Declaration
+buildLetExpr (ident, binding) = do
+  let s = refIdentToText ident
+  ve <- buildASTExprExt binding.value
+  let
+    letClause :: AST.LetClause
+    letClause = pure (AST.LetClause (pure s) ve)
+  return (pure $ AST.DeclLet letClause)
+
+-- buildEmbedExpr :: (BEnv r s m) => Embedding -> m AST.Declaration
+-- buildEmbedExpr embed = case embValue embed of
+--   IsTGenOp (MutOp (Compreh c)) -> do
+--     ce <- buildComprehASTExpr c
+--     return $ AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce
+--   _ -> do
+--     e <- buildASTExprExt (embValue embed)
+--     return $ AST.Embedding AST.<<^>> AST.AliasExpr AST.<^> e
+
+labelCons :: LabelAttr -> AST.LabelName -> AST.Label
+labelCons a ln =
+  AST.Label
+    AST.<^> pure
+      ( AST.LabelName
+          ln
+          ( case lbAttrCnstr a of
+              SFCRegular -> AST.RegularLabel
+              SFCRequired -> AST.RequiredLabel
+              SFCOptional -> AST.OptionalLabel
+          )
+      )
+labelPatternCons :: AST.Expression -> AST.Label
+labelPatternCons le = AST.Label AST.<^> pure (AST.LabelPattern le)
+
+buildStructASTExpr :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExpr struct t = do
+  isDebug <- asks getIsDebug
+  if isDebug
+    then buildStructASTExprDebug struct t
+    else buildStructASTExprNormal struct t
+
+buildStructASTExprDebug :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExprDebug s t = do
+  statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
+  dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
+  patterns <- mapM buildPatternExpr (IntMap.elems $ stcCnstrs s)
+  lets <- mapM buildLetExpr (Map.toList $ stcBindings s)
+  -- embedValM <- maybe (return Nothing) buildASTExprExt s.stcEmbedVal
+  let
+    decls = statics ++ dynamics ++ patterns ++ lets
+    e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
+  return e
+
+buildStructASTExprNormal :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExprNormal _ (IsEmbedVal v) = buildASTExprExt v
+buildStructASTExprNormal s t = do
+  case buildStructOrdLabels rtrString s of
+    Just labels -> do
+      fields <-
+        mapM
+          ( \l -> do
+              pair <-
+                maybe
+                  (throwErrSt $ "struct field not found: " ++ show l)
+                  (\f -> return (l, f))
+                  (lookupStructField l s)
+              buildStaticFieldExpr pair
+          )
+          labels
+
+      let decls = fields
+          e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
+      return e
+    -- If not all dynamic fields can be resolved to string labels, we can not build the struct expression.
+    Nothing ->
+      maybe
+        (throwErrSt "struct expression not found")
+        return
+        (treeExpr t)
 
 buildComprehASTExpr :: (BEnv r s m) => Comprehension -> m AST.Comprehension
 buildComprehASTExpr cph = do
-  start <- buildStartClause (head (toList $ cphClauses cph))
-  rest <- mapM buildIterClause (tail (toList $ cphClauses cph))
+  let argList = toList cph.args
+      clauses = init argList
+      structTmpl = last argList
+  start <- buildStartClause (head clauses)
+  rest <- mapM buildIterClause (tail clauses)
 
-  e <- buildASTExprExt (cphBlock cph)
+  e <- buildASTExprExt (getValFromIterClause structTmpl)
   sl <- case AST.anVal e of
     AST.ExprUnaryExpr
       ( AST.anVal ->
@@ -293,16 +296,16 @@ buildComprehASTExpr cph = do
       AST.Comprehension (pure $ AST.Clauses (pure start) (map pure rest)) sl
  where
   buildStartClause clause = case clause of
-    ComprehClauseIf val -> do
+    ComprehArgIf val -> do
       ve <- buildASTExprExt val
       return (AST.GuardClause ve)
-    ComprehClauseFor varName secVarM val -> do
+    ComprehArgFor varName secVarM val -> do
       ve <- buildASTExprExt val
       return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
     _ -> throwErrSt "start clause should not be let clause"
 
   buildIterClause clause = case clause of
-    ComprehClauseLet varName val -> do
+    ComprehArgLet varName val -> do
       ve <- buildASTExprExt val
       return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
     _ -> do
@@ -417,7 +420,7 @@ buildRefASTExpr ref = case refArg ref of
           AST.PrimExprOperand
             AST.<<^>> AST.OperandName
             AST.<<^>> AST.Identifier
-            AST.<^> pure var
+            AST.<^> pure (refIdentToText var)
     r <-
       foldM
         ( \acc x -> do

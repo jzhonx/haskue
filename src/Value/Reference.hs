@@ -15,17 +15,31 @@ import Path
 import Value.Atom
 import {-# SOURCE #-} Value.Tree
 
-newtype Reference = Reference
-  { refArg :: RefArg
-  }
-  deriving (Generic)
+newtype Reference = Reference {refArg :: RefArg} deriving (Generic)
 
 data RefArg
   = -- | RefPath denotes a reference starting with an identifier.
-    RefPath T.Text (Seq.Seq Tree)
+    RefPath RefIdent (Seq.Seq Tree)
   | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
     RefIndex (Seq.Seq Tree)
   deriving (Generic)
+
+data RefIdent = RefIdent T.Text | RefIdentWithOID T.Text Int deriving (Generic, Eq, Ord)
+
+instance Show RefIdent where
+  show i = T.unpack $ refIdentToText i
+
+refIdentToText :: RefIdent -> T.Text
+refIdentToText (RefIdent s) = s
+refIdentToText (RefIdentWithOID s i) = s `T.append` T.pack ("_" ++ show i)
+
+refIdentToLetTASeg :: RefIdent -> BlockTASeg
+refIdentToLetTASeg (RefIdent s) = LetTASeg (textToStringSeg s) Nothing
+refIdentToLetTASeg (RefIdentWithOID s i) = LetTASeg (textToStringSeg s) (Just i)
+
+letTASegToRefIdent :: StringSeg -> Maybe Int -> RefIdent
+letTASegToRefIdent s Nothing = RefIdent (stringSegToText s)
+letTASegToRefIdent s (Just i) = RefIdentWithOID (stringSegToText s) i
 
 showRefArg :: RefArg -> (Tree -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) (toList xs))
@@ -43,7 +57,7 @@ getIndexSegs r = case refArg r of
 
 fieldPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe FieldPath
 fieldPathFromRefArg treeToA arg = case arg of
-  RefPath var xs -> do
+  RefPath ident xs -> do
     sels <-
       mapM
         ( \x -> case treeToA x of
@@ -52,7 +66,7 @@ fieldPathFromRefArg treeToA arg = case arg of
             _ -> Nothing
         )
         (toList xs)
-    return $ FieldPath (StringSel (TE.encodeUtf8 var) : sels)
+    return $ FieldPath (StringSel (TE.encodeUtf8 $ refIdentToText ident) : sels)
   -- RefIndex does not start with a string.
   RefIndex _ -> Nothing
 
@@ -80,11 +94,11 @@ mkIndexRef ts =
 emptyIdentRef :: T.Text -> Reference
 emptyIdentRef ident =
   Reference
-    { refArg = RefPath ident Seq.empty
+    { refArg = RefPath (RefIdent ident) Seq.empty
     }
 
-mkRefFromFieldPath :: (Common.EnvIO r s m) => (Atom -> Tree) -> T.Text -> FieldPath -> m Reference
-mkRefFromFieldPath aToTree var (FieldPath xs) = do
+mkRefFromFieldPath :: (Common.EnvIO r s m) => (Atom -> Tree) -> RefIdent -> FieldPath -> m Reference
+mkRefFromFieldPath aToTree ident (FieldPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
@@ -97,5 +111,5 @@ mkRefFromFieldPath aToTree var (FieldPath xs) = do
       xs
   return $
     Reference
-      { refArg = RefPath var (Seq.fromList ys)
+      { refArg = RefPath ident (Seq.fromList ys)
       }

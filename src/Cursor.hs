@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -9,7 +10,7 @@ module Cursor where
 
 import Common (ErrorEnv)
 import Control.DeepSeq (NFData (..))
-import Control.Monad (foldM)
+import Control.Monad (when)
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -17,9 +18,14 @@ import Data.ByteString.Builder (
   toLazyByteString,
  )
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.Maybe (fromMaybe)
+import Data.Foldable (toList)
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
+import qualified Data.Sequence as Seq
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
+import GHC.Stack (HasCallStack)
 import Path
 import Text.Printf (printf)
 import Value
@@ -42,7 +48,7 @@ Suppose the cursor is at the struct that contains the value 42. The cursor is
 -}
 data TrCur = TrCur
   { tcFocus :: Tree
-  , tcCrumbs :: [TreeCrumb]
+  , tcCrumbs :: [(TASeg, Tree)]
   }
   deriving (Eq, Generic, NFData)
 
@@ -53,12 +59,9 @@ instance Show TrCur where
 pattern TCFocus :: Tree -> TrCur
 pattern TCFocus t <- TrCur{tcFocus = t}
 
-type TreeCrumb = (TASeg, Tree)
-
-addrFromCrumbs :: [TreeCrumb] -> TreeAddr
+addrFromCrumbs :: [(TASeg, Tree)] -> TreeAddr
 addrFromCrumbs crumbs = addrFromList $ go crumbs []
  where
-  go :: [TreeCrumb] -> [TASeg] -> [TASeg]
   go [] acc = acc
   go ((n, _) : cs) acc = go cs (n : acc)
 
@@ -68,14 +71,6 @@ setTCFocus t (TrCur _ cs) = TrCur t cs
 -- | Generate tree address from the tree cursor.
 tcAddr :: TrCur -> TreeAddr
 tcAddr c = addrFromCrumbs (tcCrumbs c)
-
--- | Get the parent of the cursor without propagating the value up.
-parentTC :: TrCur -> Maybe TrCur
-parentTC (TrCur _ []) = Nothing
-parentTC (TrCur _ ((_, t) : cs)) = Just $ TrCur t cs
-
-parentTCMust :: (ErrorEnv m) => TrCur -> m TrCur
-parentTCMust tc = maybe (throwErrSt "already top") return (parentTC tc)
 
 -- | Get the segment paired with the focus of the cursor.
 tcFocusSeg :: TrCur -> Maybe TASeg
@@ -89,6 +84,10 @@ tcFocusSegMust tc = maybe (throwErrSt "already top") return (tcFocusSeg tc)
 isTCTop :: TrCur -> Bool
 isTCTop (TrCur _ []) = True
 isTCTop _ = False
+
+isTCRoot :: TrCur -> Bool
+isTCRoot (TrCur _ [(RootTASeg, _)]) = True
+isTCRoot _ = False
 
 showCursor :: TrCur -> String
 showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
@@ -111,14 +110,18 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         mempty
         cs
 
-mkSubTC :: TASeg -> Tree -> TrCur -> TrCur
-mkSubTC seg a tc = TrCur a ((seg, tcFocus tc) : tcCrumbs tc)
+-- | Create a sub cursor with the given segment and tree, and the updated parent tree from the current cursor.
+mkSubTC :: Tree -> TASeg -> Tree -> [(TASeg, Tree)] -> TrCur
+mkSubTC t seg parT crumbs = TrCur t ((seg, parT) : crumbs)
 
 modifyTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
 modifyTCFocus f (TrCur t cs) = TrCur (f t) cs
 
 setTCFocusTN :: TreeNode -> TrCur -> TrCur
 setTCFocusTN tn = modifyTCFocus (`setTN` tn)
+
+setTCFocusMut :: Mutable -> TrCur -> TrCur
+setTCFocusMut mut = modifyTCFocus (setTValGenEnv (TGenOp mut))
 
 goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
 goDownTCAddr a = go (addrToList a)
@@ -147,31 +150,34 @@ goDownTCSeg :: TASeg -> TrCur -> Maybe TrCur
 goDownTCSeg seg tc = do
   let focus = tcFocus tc
   case subTree seg focus of
-    Just nextTree -> return $ mkSubTC seg nextTree tc
+    Just (nextTree, updatedParT) -> return $ mkSubTC nextTree seg updatedParT (tcCrumbs tc)
     Nothing -> do
-      (nextTree, nextSeg) <- case treeNode focus of
-        TNMutable mut -> do
-          mv <- getMutVal mut
-          return (mv, SubValTASeg)
-        TNDisj d -> do
-          dft <- dsjDefault d
-          return (dft, DisjDefTASeg)
+      nextTC <- case treeNode focus of
+        TNDisj d
+          -- If the disjunction has one default disjunct, we can go to the default value without a segment.
+          | [i] <- dsjDefIndexes d -> do
+              dft <- rtrDisjDefVal d
+              let updatedParT =
+                    focus
+                      { treeNode =
+                          TNDisj $
+                            d
+                              { dsjDisjuncts =
+                                  take i (dsjDisjuncts d) ++ [singletonNoVal] ++ drop (i + 1) (dsjDisjuncts d)
+                              }
+                      }
+              return $ mkSubTC dft (DisjTASeg i) updatedParT (tcCrumbs tc)
         _ -> Nothing
-      goDownTCSeg seg $ mkSubTC nextSeg nextTree tc
+      goDownTCSeg seg nextTC
 
 goDownTCSegMust :: (ErrorEnv m) => TASeg -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
-    (throwErrSt $ printf "cannot go to sub (%s) tree from %s" (show seg) (show $ tcAddr tc))
+    ( throwErrSt $
+        printf "cannot go to sub (%s) tree from path: %s, parent: %s" (show seg) (show $ tcAddr tc) (show $ tcFocus tc)
+    )
     return
     $ goDownTCSeg seg tc
-
-{- | Go down the Tree with the given segment and return the new cursor with the visiting path.
-
-It handles the cases when a node can be accessed without segments, such as the default value of a disjunction.
--}
-goDownTSeg :: TASeg -> Tree -> Maybe TrCur
-goDownTSeg seg startT = goDownTCSeg seg (TrCur startT [])
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
@@ -181,86 +187,161 @@ propUpTC :: (ErrorEnv m) => TrCur -> m TrCur
 propUpTC (TrCur _ []) = throwErrSt "already at the top"
 propUpTC tc@(TrCur _ [(RootTASeg, _)]) = return tc
 propUpTC (TrCur subT ((seg, parT) : cs)) = do
+  let tM = setSubTree seg subT parT
+  case tM of
+    Nothing -> throwErrSt $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT)
+    Just t -> return $ TrCur t cs
+
+{- | Propagates the changes made to the focus to the parent nodes.
+
+If the cursor is at Root, it returns Nothing too through setSubTree.
+-}
+propUpTCMaybe :: TrCur -> Maybe TrCur
+propUpTCMaybe (TrCur _ []) = Nothing
+propUpTCMaybe (TrCur subT ((seg, parT) : cs)) = do
   t <- setSubTree seg subT parT
   return $ TrCur t cs
 
-{- | Surface evaluated values up until the root and return the updated tree cursor with the original cursor
-position.
--}
-syncTC :: (ErrorEnv m) => TrCur -> m TrCur
-syncTC a = go a []
- where
-  go (TrCur _ []) _ = throwErrSt "already at the top"
-  go tc@(TrCur _ [(RootTASeg, _)]) acc =
-    -- Leftmost of the acc represents the highest processed tree.
-    -- Go from the highest processed tree to the original cursor position.
-    -- The accTC has the processed parent tree.
-    return $ foldl (\accTC (t, seg) -> TrCur t ((seg, tcFocus accTC) : tcCrumbs accTC)) tc acc
-  go (TrCur _ [_]) _ = throwErrSt "highest segment is not RootTASeg"
-  go tc@(TrCur subT ((seg, _) : _)) acc = do
-    parTC <- propUpTC tc
-    go parTC ((subT, seg) : acc)
+{- | Descend into the tree with the given segment.
 
--- | Get the top cursor of the tree. No propagation is involved.
+It returns the sub tree and the updated parent tree with
+
+This should only be used by TreeCursor.
+-}
+subTree :: (HasCallStack) => TASeg -> Tree -> Maybe (Tree, Tree)
+subTree seg parentT = do
+  sub <- go seg parentT
+  updatedParT <- setSubTree seg singletonNoVal parentT
+  return (sub, updatedParT)
+ where
+  go (MutArgTASeg i) (IsTGenOp mut) = getMutArgs mut Seq.!? i
+  go TempTASeg t = tmpSub t
+  go _ t = case (seg, t) of
+    (RootTASeg, _) -> Just t
+    (BlockTASeg bseg, IsStruct struct) -> case bseg of
+      StringTASeg name
+        | Just sf <- lookupStructField (stringSegToText name) struct ->
+            Just $ ssfValue sf
+      LetTASeg name i -> lookupStructLet (letTASegToRefIdent name i) struct
+      PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
+      DynFieldTASeg i j ->
+        (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
+      StubFieldTASeg name
+        | Just sf <- lookupStructStaticFieldBase (stringSegToText name) struct ->
+            Just $ ssfValue sf
+      _ -> Nothing
+    (IndexTASeg i, IsList vs) -> lstSubs vs `indexList` i
+    (_, IsDisj d) | DisjTASeg i <- seg -> dsjDisjuncts d `indexList` i
+    _ -> Nothing
+
+{- | Set the sub tree with the given segment and new tree.
+
+The sub tree should already exist in the parent tree.
+-}
+setSubTree :: TASeg -> Tree -> Tree -> Maybe Tree
+setSubTree (MutArgTASeg i) subT parT@(IsTGenOp mut) = return $ setTValGenEnv (TGenOp $ updateMutArg i subT mut) parT
+setSubTree TempTASeg subT parT = return $ parT{tmpSub = Just subT}
+setSubTree seg subT parT = do
+  n <- case (seg, parT) of
+    (BlockTASeg (StringTASeg name), IsStruct parStruct)
+      -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
+      -- found.
+      | Just field <- lookupStructField (stringSegToText name) parStruct ->
+          let
+            newField = subT `updateFieldValue` field
+            newStruct = updateStructField (stringSegToText name) newField parStruct
+           in
+            return $ TNStruct newStruct
+    (BlockTASeg (PatternTASeg i j), IsStruct parStruct) ->
+      return $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
+    (BlockTASeg (DynFieldTASeg i j), IsStruct parStruct) ->
+      return $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
+    (BlockTASeg (StubFieldTASeg name), IsStruct parStruct) ->
+      return $ TNStruct (updateStructStaticFieldBase (stringSegToText name) subT parStruct)
+    (BlockTASeg (LetTASeg name i), IsStruct parStruct) ->
+      return $ TNStruct (updateStructLetBinding (letTASegToRefIdent name i) subT parStruct)
+    (IndexTASeg i, IsList vs) ->
+      let subs = lstSubs vs
+          l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
+       in return l
+    (_, IsDisj d)
+      | DisjTASeg i <- seg ->
+          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+    (RootTASeg, _) -> Nothing
+    _ -> Nothing
+  return parT{treeNode = n}
+
+indexList :: [a] -> Int -> Maybe a
+indexList xs i = if i < length xs then Just (xs !! i) else Nothing
+
+setSubTreeMust :: (ErrorEnv m) => TASeg -> Tree -> Tree -> m Tree
+setSubTreeMust seg subT parT =
+  maybe
+    (throwErrSt $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT))
+    return
+    (setSubTree seg subT parT)
+
+-- | Go to the top of the tree cursor.
 topTC :: (ErrorEnv m) => TrCur -> m TrCur
 topTC (TrCur _ []) = throwErrSt "already at the top"
 topTC tc@(TrCur _ ((RootTASeg, _) : _)) = return tc
-topTC (TrCur _ ((_, parT) : cs)) = topTC $ TrCur parT cs
+topTC tc = do
+  parTC <- propUpTC tc
+  topTC parTC
 
-{- | Visit every node in the tree in pre-order and apply the function.
+-- = Traversal =
 
-It does not re-constrain struct fields.
+data SubNodeSeg = SubNodeSegNormal TASeg | SubNodeSegEmbed TASeg deriving (Show, Eq)
+
+-- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
+subNodes :: Bool -> TrCur -> [SubNodeSeg]
+subNodes withStub (TCFocus t@(IsTGenOp mut)) =
+  let xs = [SubNodeSegNormal (MutArgTASeg i) | (i, _) <- zip [0 ..] (toList $ getMutArgs mut)]
+      ys = subTNSegsOpt withStub t
+   in xs ++ ys
+subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)
+
+subTNSegsOpt :: Bool -> Tree -> [SubNodeSeg]
+subTNSegsOpt withStub t = map SubNodeSegNormal $ subTNSegs t ++ if withStub then subStubSegs t else []
+
+subTNSegs :: Tree -> [TASeg]
+subTNSegs t = case treeNode t of
+  TNStruct s ->
+    [textToStringTASeg n | n <- Map.keys (stcFields s)]
+      ++ [BlockTASeg $ refIdentToLetTASeg ident | ident <- Map.keys (stcBindings s)]
+      ++ [BlockTASeg $ PatternTASeg i 0 | i <- IntMap.keys $ stcCnstrs s]
+      ++ [BlockTASeg $ DynFieldTASeg i 0 | i <- IntMap.keys $ stcDynFields s]
+  TNList l -> [IndexTASeg i | (i, _) <- zip [0 ..] (lstSubs l)]
+  TNDisj d ->
+    [DisjTASeg i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
+  _ -> []
+
+{- | Generate a list of sub-trees that are stubs.
+
+TODO: comprehension struct
 -}
-traverseTC ::
-  (ErrorEnv m) =>
-  (Tree -> [(TASeg, Tree)]) ->
-  ((TrCur, a) -> m (TrCur, a)) ->
-  (TrCur, a) ->
-  m (TrCur, a)
-traverseTC subs f x = do
-  y <- f x
-  foldM
-    ( \acc (seg, sub) -> do
-        z <- traverseTC subs f (mkSubTC seg sub (fst acc), snd acc)
-        nextTC <- propUpTC (fst z)
-        return (nextTC, snd z)
-    )
-    y
-    (subs $ tcFocus $ fst y)
+subStubSegs :: Tree -> [TASeg]
+subStubSegs (IsStruct s) =
+  [BlockTASeg $ PatternTASeg i 1 | i <- IntMap.keys $ stcCnstrs s]
+    ++ [BlockTASeg $ DynFieldTASeg i 1 | i <- IntMap.keys $ stcDynFields s]
+    ++ [ BlockTASeg $ StubFieldTASeg $ textToStringSeg name
+       | name <- Map.keys $ stcStaticFieldBases s
+       ]
+subStubSegs _ = []
 
--- | A simple version of the traverseTC function that does not return a custom value.
-traverseTCSimple ::
-  (ErrorEnv m) =>
-  (Tree -> [(TASeg, Tree)]) ->
-  (TrCur -> m Tree) ->
-  TrCur ->
-  m TrCur
-traverseTCSimple subs f tc = do
-  (r, _) <-
-    traverseTC
-      subs
-      ( \(x, _) -> do
-          r <- f x
-          return (r `setTCFocus` x, ())
-      )
-      (tc, ())
-  return r
+{- | Go to the absolute addr in the tree. No propagation is involved.
 
-inSubTC :: (ErrorEnv m) => TASeg -> (TrCur -> m Tree) -> TrCur -> m TrCur
-inSubTC seg f tc = do
-  subTC <- goDownTCSegMust seg tc
-  r <- f subTC
-  propUpTC (r `setTCFocus` subTC)
+The tree must have all the latest changes.
+-}
+goTCAbsAddr :: (ErrorEnv m) => TreeAddr -> TrCur -> m (Maybe TrCur)
+goTCAbsAddr dst tc = do
+  when (headSeg dst /= Just RootTASeg) $
+    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
+  top <- topTC tc
+  let dstNoRoot = fromJust $ tailTreeAddr dst
+  return $ goDownTCAddr dstNoRoot top
 
-snapshotTC :: (ErrorEnv m) => TrCur -> m TrCur
-snapshotTC tc = do
-  let
-    rewrite xtc =
-      let focus = tcFocus xtc
-       in return $ case treeNode focus of
-            TNBlock block
-              | IsBlockEmbed ev <- block -> ev
-            TNMutable m -> fromMaybe focus (getMutVal m)
-            _ -> focus
-
-  traverseTCSimple subNodes rewrite tc
+goTCAbsAddrMust :: (ErrorEnv m) => TreeAddr -> TrCur -> m TrCur
+goTCAbsAddrMust dst tc = do
+  tarM <- goTCAbsAddr dst tc
+  maybe (throwErrSt $ printf "failed to go to the addr %s" (show dst)) return tarM

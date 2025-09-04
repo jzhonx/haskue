@@ -62,7 +62,7 @@ delRecvsInMap2 mutAddr m = delEmptyElem $ delRecvs m
       ( filter
           ( \recv ->
               let
-                mutValAddr = appendSeg mutAddr SubValTASeg
+                mutValAddr = mutAddr
                in
                 not $ isPrefix mutValAddr recv
           )
@@ -98,7 +98,7 @@ runRM f = do
                         , Common.stShowMutArgs = False
                         , Common.stMaxTreeDepth = 15
                         }
-                  , Common.cfRuntimeParams = Common.RuntimeParams{Common.rpCreateCnstr = True}
+                  , Common.cfReduceParams = Common.ReduceParams{Common.createCnstr = True}
                   }
               )
           }

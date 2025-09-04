@@ -10,12 +10,10 @@ module EvalExpr where
 import AST
 import qualified Common
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (MonadError)
 import Control.Monad.State.Strict (gets, modify)
 import Data.Foldable (toList)
-import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -64,7 +62,22 @@ evalLiteral lit = return v
 evalStructLit :: (EvalEnv r s m) => StructLit -> m Tree
 evalStructLit (anVal -> StructLit decls) = do
   sid <- allocOID
-  foldM evalDecl (mkBlockTree (emptyBlock{blkID = sid})) decls
+  elems <- mapM evalDecl decls
+  res <-
+    foldM
+      ( \acc elm -> case acc of
+          IsStruct struct -> insertElemToStruct elm struct
+          _ -> return acc
+      )
+      (mkStructTree $ emptyStruct{stcID = sid})
+      elems
+  case res of
+    -- If the result is a struct and it has embedded fields, then mark the embedded fields as embedded.
+    IsStruct _
+      | let embeds = [v{embType = ETEmbedded sid} | EmbedSAdder v <- elems]
+      , not (null embeds) -> do
+          return $ mkMutableTree (mkUnifyOp $ res{embType = ETEnclosing} : embeds)
+    _ -> return res
 
 simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either Tree T.Text)
 simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
@@ -98,29 +111,22 @@ simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
     | otherwise -> throwErrSt $ printf "invalid simple string literal: %s" (show segs)
 
--- | Evaluates a declaration in a struct. It returns the updated struct tree.
-evalDecl :: (EvalEnv r s m) => Tree -> Declaration -> m Tree
-evalDecl x decl = case treeNode x of
-  TNBottom _ -> return x
-  TNBlock block -> case anVal decl of
-    AST.Embedding ed -> do
-      v <- evalEmbedding False ed
-      oid <- allocOID
-      let adder = EmbedSAdder oid v
-      addNewBlockElem adder block
-    EllipsisDecl (anVal -> Ellipsis cM) ->
-      maybe
-        (return (mkBlockTree block))
-        (\_ -> throwError "default constraints are not implemented yet")
-        cM
-    FieldDecl (anVal -> AST.Field ls e) -> do
-      sfa <- evalFDeclLabels ls e
-      addNewBlockElem sfa block
-    DeclLet (anVal -> LetClause ident binde) -> do
-      val <- evalExpr binde
-      let adder = LetSAdder (anVal ident) val
-      addNewBlockElem adder block
-  _ -> throwErrSt "invalid struct"
+-- | Evaluates a declaration.
+evalDecl :: (EvalEnv r s m) => Declaration -> m StructElemAdder
+evalDecl decl = case anVal decl of
+  AST.Embedding ed -> do
+    v <- evalEmbedding False ed
+    return $ EmbedSAdder v
+  EllipsisDecl (anVal -> Ellipsis cM) ->
+    maybe
+      (return EmptyAdder) -- TODO: implement real ellipsis handling
+      (\_ -> throwErrSt "default constraints are not implemented yet")
+      cM
+  FieldDecl (anVal -> AST.Field ls e) ->
+    evalFDeclLabels ls e
+  DeclLet (anVal -> LetClause ident binde) -> do
+    val <- evalExpr binde
+    return $ LetSAdder (anVal ident) val
 
 evalEmbedding :: (EvalEnv r s m) => Bool -> AST.Embedding -> m Tree
 evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
@@ -133,7 +139,7 @@ evalEmbedding
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (ComprehClauseIf gev : clsv) sv
+    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
 evalEmbedding
   isListCompreh
   ( anVal ->
@@ -146,23 +152,23 @@ evalEmbedding
       mkMutableTree $
         withEmptyMutFrame $
           Compreh $
-            mkComprehension isListCompreh (ComprehClauseFor (anVal i) (anVal <$> jM) fev : clsv) sv
+            mkComprehension isListCompreh (ComprehArgFor (anVal i) (anVal <$> jM) fev : clsv) sv
 evalEmbedding _ _ = throwErrSt "invalid embedding"
 
-evalClause :: (EvalEnv r s m) => Clause -> m ComprehClause
+evalClause :: (EvalEnv r s m) => Clause -> m ComprehArg
 evalClause c = case anVal c of
   ClauseStartClause (anVal -> GuardClause e) -> do
     t <- evalExpr e
-    return $ ComprehClauseIf t
+    return $ ComprehArgIf t
   ClauseStartClause (anVal -> ForClause (anVal -> i) jM e) -> do
     t <- evalExpr e
-    return $ ComprehClauseFor i (anVal <$> jM) t
+    return $ ComprehArgFor i (anVal <$> jM) t
   ClauseLetClause (anVal -> LetClause (anVal -> ident) le) -> do
     lt <- evalExpr le
-    return $ ComprehClauseLet ident lt
+    return $ ComprehArgLet ident lt
   _ -> throwErrSt $ printf "invalid clause: %s" (show c)
 
-evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m BlockElemAdder
+evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m StructElemAdder
 evalFDeclLabels lbls e =
   case lbls of
     [] -> throwErrSt "empty labels"
@@ -174,10 +180,10 @@ evalFDeclLabels lbls e =
       do
         sf2 <- evalFDeclLabels (l2 : rs) e
         sid <- allocOID
-        let val = mkBlockTree $ mkBlockFromAdder sid sf2
+        val <- insertElemToStruct sf2 (emptyStruct{stcID = sid})
         mkAdder l1 val
  where
-  mkAdder :: (EvalEnv r s m) => Label -> Tree -> m BlockElemAdder
+  mkAdder :: (EvalEnv r s m) => Label -> Tree -> m StructElemAdder
   mkAdder (anVal -> Label le) val = case anVal le of
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
@@ -225,16 +231,25 @@ evalFDeclLabels lbls e =
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
-{- | Insert a new element into the struct. If the field is already in the struct, then unify the field with the new
-field.
+data StructElemAdder
+  = StaticSAdder T.Text Field
+  | DynamicSAdder !Int DynamicField
+  | CnstrSAdder !Int Tree Tree
+  | LetSAdder T.Text Tree
+  | EmbedSAdder Tree
+  | EmptyAdder
+
+{- | Insert a new element into the struct.
+
+If the field is already in the struct, then unify the field with the new field.
 -}
-addNewBlockElem :: (Common.EnvIO r s m) => BlockElemAdder -> Block -> m Tree
-addNewBlockElem adder block@(IsBlockStruct struct) = case adder of
+insertElemToStruct :: (EvalEnv r s m) => StructElemAdder -> Struct -> m Tree
+insertElemToStruct adder struct = case adder of
   (StaticSAdder name sf) ->
     maybe
-      ( case lookupBlockStubVal name block of
+      ( case lookupStructStubVal name struct of
           -- The label is already in the struct, so we need to unify the field.
-          [BlkStubField extSF] ->
+          [StructStubField extSF] ->
             let
               unifySFOp =
                 Value.Field
@@ -242,53 +257,25 @@ addNewBlockElem adder block@(IsBlockStruct struct) = case adder of
                   , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                   , ssfObjects = Set.empty
                   }
+              newStruct = updateStubAndField name unifySFOp struct
              in
-              return $
-                mkBlockTree $
-                  setBlockStruct
-                    (struct{stcFields = Map.insert name unifySFOp (stcFields struct)})
-                    block
-                      { blkStaticFields = Map.insert name unifySFOp (blkStaticFields block)
-                      }
-          [BlkStubLet _] -> return $ aliasErr name
+              return $ mkStructTree newStruct
+          [StructStubLet _] -> return $ aliasErr name
           -- The label is not seen before in the struct.
-          [] ->
-            return $
-              mkBlockTree
-                ( setBlockStruct
-                    ( struct
-                        { stcFields = Map.insert name sf (stcFields struct)
-                        }
-                    )
-                    block
-                      { blkStaticFields = Map.insert name sf (blkStaticFields block)
-                      , blkOrdLabels = blkOrdLabels block ++ [BlockFieldLabel name]
-                      }
-                )
+          [] -> return $ mkStructTree $ insertNewStubAndField name sf struct
           _ -> return $ aliasErr name
       )
       return
       (existCheck name False)
-  (DynamicSAdder i dsf) ->
-    return . mkBlockTree $
-      block
-        { blkOrdLabels = blkOrdLabels block ++ [BlockDynFieldOID i]
-        , blkDynFields = IntMap.insert i dsf (blkDynFields block)
-        }
-  (CnstrSAdder i pattern val) ->
-    return . mkBlockTree $
-      block
-        { blkCnstrs = IntMap.insert i (StructCnstr i pattern val) (blkCnstrs block)
-        }
+  (DynamicSAdder i dsf) -> return . mkStructTree $ insertStructNewDynField i dsf struct
+  (CnstrSAdder i pattern val) -> return . mkStructTree $ insertStructNewCnstr i pattern val struct
   (LetSAdder name val) ->
     return $
       fromMaybe
         -- The name is not seen before in the block.
-        (mkBlockTree $ insertBlockLet name val block)
+        (mkStructTree $ insertStructLet name val struct)
         (existCheck name True)
-  (EmbedSAdder i val) -> do
-    let embed = mkEmbedding i val
-    return $ mkBlockTree $ block{blkEmbeds = IntMap.insert i embed (blkEmbeds block)}
+  _ -> return $ mkStructTree struct
  where
   aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
   lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
@@ -296,14 +283,13 @@ addNewBlockElem adder block@(IsBlockStruct struct) = case adder of
   -- Checks if name is already in the block. If it is, then return an error message.
   existCheck :: T.Text -> Bool -> Maybe Tree
   existCheck name isNameLet =
-    case (lookupBlockStubVal name block, isNameLet) of
-      ([BlkStubField f], True)
+    case (lookupStructStubVal name struct, isNameLet) of
+      ([StructStubField f], True)
         | lbAttrIsIdent (ssfAttr f) -> Just $ aliasErr name
-      ([BlkStubLet _], True) -> Just $ lbRedeclErr name
-      ([BlkStubLet _], False) -> Just $ aliasErr name
+      ([StructStubLet _], True) -> Just $ lbRedeclErr name
+      ([StructStubLet _], False) -> Just $ aliasErr name
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
-addNewBlockElem _ _ = throwErrSt "addNewBlockElem: expected a Block with Struct"
 
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m Tree
 evalListLit (anVal -> AST.EmbeddingList es) = do
@@ -334,7 +320,7 @@ evalPrimExpr e = case anVal e of
       Nothing -> return $ mkMutableTree $ withEmptyMutFrame $ Ref $ emptyIdentRef ident
     OpExpression expr -> do
       x <- evalExpr expr
-      return $ x{treeIsRootOfSubTree = True}
+      return $ x{isRootOfSubTree = True}
   (PrimExprSelector primExpr sel) -> do
     p <- evalPrimExpr primExpr
     evalSelector e sel p
@@ -350,11 +336,14 @@ evalPrimExpr e = case anVal e of
 replaceFuncArgs :: (MonadError String m) => Tree -> [Tree] -> m Tree
 replaceFuncArgs t args = case t of
   IsRegOp mut fn ->
-    return . setTN t $
-      TNMutable $
-        setMutOp
-          (RegOp $ fn{ropArgs = Seq.fromList args})
-          mut
+    return $
+      setTValGenEnv
+        ( TGenOp $
+            setMutOp
+              (RegOp $ fn{ropArgs = Seq.fromList args})
+              mut
+        )
+        t
   _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
@@ -391,7 +380,7 @@ evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
   let tWithE = setExpr t (Just (AST.ExprUnaryExpr e <$ e))
-  return $ mkNewTree (TNMutable $ mkUnaryOp op tWithE)
+  return $ mkMutableTree (mkUnaryOp op tWithE)
 
 {- | order of arguments is important for disjunctions.
 
@@ -405,16 +394,16 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   case op of
     (anVal -> AST.Unify) -> return $ flattenUnify lt rt
-    _ -> return $ mkNewTree (TNMutable $ mkBinaryOp op lt rt)
+    _ -> return $ mkMutableTree (mkBinaryOp op lt rt)
 
 flattenUnify :: Tree -> Tree -> Tree
 flattenUnify l r = case getLeftAcc of
   Just acc -> mkMutableTree $ mkUnifyOp (toList acc ++ [r])
   Nothing -> mkMutableTree $ mkUnifyOp [l, r]
  where
-  getLeftAcc = case treeNode l of
+  getLeftAcc = case l of
     -- The left tree is an accumulator only if it is a unify op.
-    TNMutable (MutOp (UOp u)) -> Just (ufConjuncts u)
+    IsTGenOp (MutOp (UOp u)) -> Just (ufConjuncts u)
     _ -> Nothing
 
 evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m Tree
@@ -462,11 +451,11 @@ flattenDisj l r = case getLeftAcc of
   Just acc -> mkMutableTree $ mkDisjoinOp (acc Seq.|> r)
   Nothing -> mkMutableTree $ mkDisjoinOp (Seq.fromList [l, r])
  where
-  getLeftAcc = case treeNode (dstValue l) of
-    TNMutable (MutOp (DisjOp dj))
+  getLeftAcc = case dstValue l of
+    IsTGenOp (MutOp (DisjOp dj))
       -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
       -- If the left term is a marked term, it implies that it is a root.
-      | not (dstMarked l) && not (treeIsRootOfSubTree (dstValue l)) -> Just (djoTerms dj)
+      | not (dstMarked l) && not (isRootOfSubTree (dstValue l)) -> Just (djoTerms dj)
     _ -> Nothing
 
 allocOID :: (EvalEnv r s m) => m Int

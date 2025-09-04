@@ -1,89 +1,47 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module Value.Block where
 
 import Control.DeepSeq (NFData (..))
+import Control.Monad (foldM)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import Value.Reference (RefIdent (..))
 import {-# SOURCE #-} Value.Tree
 
-{- | A block is a structure that contains a set of fields and a set of embeddings.
-
-Reduction of a block is not necessarily a struct.
--}
-data Block = Block
-  { blkID :: !Int
-  -- ^ The ID is used to identify the block. It will not be used in the comparison of structs.
-  , blkOrdLabels :: [BlockLabel]
-  -- ^ blkOrdLabels is a list of ordered field labels. It does not contain let bindings.
-  , blkStaticFields :: Map.Map T.Text Field
-  -- ^ The un-evaluated fields that defined in this block. Note that fields defined in the embedding are not included.
-  , blkBindings :: Map.Map T.Text LetBinding
-  -- ^ Let bindings are read-only. They are not reduced.
-  , blkDynFields :: IntMap.IntMap DynamicField
-  -- ^ We should not shrink the list as it is a heap list.
-  , blkCnstrs :: IntMap.IntMap StructCnstr
-  , blkEmbeds :: IntMap.IntMap Embedding
-  , blkValue :: BlockValue
-  }
-  deriving (Generic)
-
-data BlockLabel = BlockFieldLabel T.Text | BlockDynFieldOID !Int
-  deriving (Eq, Generic, NFData, Ord)
-
-instance Show BlockLabel where
-  show (BlockFieldLabel n) = T.unpack n
-  show (BlockDynFieldOID i) = show i
-
-data BlockValue
-  = BlockStruct Struct
-  | BlockEmbed Tree
-  deriving (Generic)
-
-pattern IsBlockStruct :: Struct -> Block
-pattern IsBlockStruct s <- Block{blkValue = BlockStruct s}
-
-pattern IsBlockEmbed :: Tree -> Block
-pattern IsBlockEmbed t <- Block{blkValue = BlockEmbed t}
-
-emptyBlock :: Block
-emptyBlock =
-  Block
-    { blkID = 0
-    , blkStaticFields = Map.empty
-    , blkOrdLabels = []
-    , blkBindings = Map.empty
-    , blkDynFields = IntMap.empty
-    , blkCnstrs = IntMap.empty
-    , blkEmbeds = IntMap.empty
-    , blkValue = BlockStruct emptyStruct
-    }
-
-modifyBlockStruct :: (Struct -> Struct) -> Block -> Block
-modifyBlockStruct f blk@(IsBlockStruct s) = blk{blkValue = BlockStruct (f s)}
-modifyBlockStruct _ blk = blk
-
-setBlockStruct :: Struct -> Block -> Block
-setBlockStruct s blk@(IsBlockStruct _) = blk{blkValue = BlockStruct s}
-setBlockStruct _ blk = blk
-
+-- | A struct has concrete field labels and constraints that have no mutable patterns.
 data Struct = Struct
-  { stcClosed :: !Bool
-  -- ^ == Results start
-  , -- \^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed.
-    stcPerms :: [PermItem]
+  { stcID :: !Int
+  , stcClosed :: !Bool
+  -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed, if directly
+  -- referenced. Should be directly copied from the block.
   , stcFields :: Map.Map T.Text Field
   -- ^ It is the fields.
+  , stcBindings :: Map.Map RefIdent Binding
+  , stcDynFields :: IntMap.IntMap DynamicField
+  , stcCnstrs :: IntMap.IntMap StructCnstr
+  , stcStaticFieldBases :: Map.Map T.Text Field
+  -- ^ The un-evaluated fields that defined in this block. They shold be copied to the struct when building the struct.
+  , stcOrdLabels :: [StructFieldLabel]
   , stcIsConcrete :: !Bool
+  , stcEmbedVal :: Maybe Tree
+  , stcPermErr :: Maybe Tree
+  , stcPerms :: [PermItem]
   }
   deriving (Generic)
+
+data StructFieldLabel = StructStaticFieldLabel T.Text | StructDynFieldOID !Int
+  deriving (Eq, Generic, NFData, Ord)
+
+instance Show StructFieldLabel where
+  show (StructStaticFieldLabel n) = T.unpack n
+  show (StructDynFieldOID i) = show i
 
 data LabelAttr = LabelAttr
   { lbAttrCnstr :: StructFieldCnstr
@@ -104,9 +62,9 @@ data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
 data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
-data BlockStubVal
-  = BlkStubField Field
-  | BlkStubLet LetBinding
+data StructStubVal
+  = StructStubField Field
+  | StructStubLet Tree
 
 data Field = Field
   { ssfValue :: Tree
@@ -124,13 +82,6 @@ mkdefaultField t =
     , ssfObjects = Set.empty
     }
 
-data LetBinding = LetBinding
-  { lbReferred :: Bool
-  , lbValue :: Tree
-  -- ^ The value is only for the storage purpose.
-  }
-  deriving (Generic)
-
 {- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
 possible.
 -}
@@ -145,30 +96,24 @@ data DynamicField = DynamicField
   }
   deriving (Generic)
 
-{- | StructCnstr is in the form of {[pattern]: value}.
+{- | StructCnstr is in the form of [pattern]: value.
 
-The first element is the pattern, the second element is the value.
+According to sepc,
+> A pattern constraint, denoted [pattern]: value, defines a pattern, which is a value of type string, and a value to
+> unify with fields whose label unifies with the pattern.
 -}
 data StructCnstr = StructCnstr
   { scsID :: !Int
   , scsPattern :: Tree
   , scsValue :: Tree
-  -- ^ The value is only for the storage purpose. It is still raw. It will not be reduced during reducing.
   }
   deriving (Generic)
 
-data Embedding = Embedding
-  { embID :: !Int
-  , embValue :: Tree
-  }
-  deriving (Generic)
-
-data BlockElemAdder
-  = StaticSAdder T.Text Field
-  | DynamicSAdder !Int DynamicField
-  | CnstrSAdder !Int Tree Tree
-  | LetSAdder T.Text Tree
-  | EmbedSAdder !Int Tree
+-- data Embedding = Embedding
+--   { embID :: !Int
+--   , embValue :: Tree
+--   }
+--   deriving (Generic)
 
 {- | Permission item stores permission information for the static fields and dynamic fields of a struct.
 
@@ -180,8 +125,8 @@ original struct.
 -}
 data PermItem = PermItem
   { piCnstrs :: Set.Set Int
-  , piLabels :: Set.Set BlockLabel
-  , piOpLabels :: Set.Set BlockLabel
+  , piLabels :: Set.Set StructFieldLabel
+  , piOpLabels :: Set.Set StructFieldLabel
   }
   deriving (Eq, Generic, NFData)
 
@@ -203,41 +148,21 @@ mergeAttrs a1 a2 =
     , lbAttrIsIdent = lbAttrIsIdent a1 || lbAttrIsIdent a2
     }
 
-mkBlockFromAdder :: Int -> BlockElemAdder -> Block
-mkBlockFromAdder bid adder
-  | StaticSAdder s sf <- adder =
-      block
-        { blkStaticFields = Map.singleton s sf
-        , blkOrdLabels = [BlockFieldLabel s]
-        , blkValue =
-            BlockStruct $
-              emptyStruct
-                { stcFields = Map.singleton s sf
-                }
-        }
-  | DynamicSAdder oid dsf <- adder =
-      block
-        { blkOrdLabels = [BlockDynFieldOID oid]
-        , blkDynFields = IntMap.singleton oid dsf
-        }
-  | CnstrSAdder oid pat val <- adder =
-      block
-        { blkCnstrs = IntMap.singleton oid (StructCnstr oid pat val)
-        }
-  | LetSAdder s v <- adder =
-      block{blkBindings = Map.singleton s LetBinding{lbReferred = False, lbValue = v}}
-  | EmbedSAdder eid t <- adder =
-      block{blkEmbeds = IntMap.singleton eid (mkEmbedding eid t)}
- where
-  block = emptyBlock{blkID = bid}
-
 emptyStruct :: Struct
 emptyStruct =
   Struct
-    { stcFields = Map.empty
+    { stcID = 0
+    , stcFields = Map.empty
+    , stcBindings = Map.empty
+    , stcStaticFieldBases = Map.empty
+    , stcDynFields = IntMap.empty
+    , stcCnstrs = IntMap.empty
     , stcClosed = False
-    , stcPerms = []
+    , stcOrdLabels = []
     , stcIsConcrete = False
+    , stcEmbedVal = Nothing
+    , stcPermErr = Nothing
+    , stcPerms = []
     }
 
 updateFieldValue :: Tree -> Field -> Field
@@ -251,11 +176,7 @@ staticFieldMker t a =
     , ssfObjects = Set.empty
     }
 
-dynToField ::
-  DynamicField ->
-  Maybe Field ->
-  (Tree -> Tree -> Tree) ->
-  Field
+dynToField :: DynamicField -> Maybe Field -> (Tree -> Tree -> Tree) -> Field
 dynToField df sfM unifier = case sfM of
   -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
   -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
@@ -278,50 +199,29 @@ dynToField df sfM unifier = case sfM of
       , ssfObjects = Set.fromList [dsfID df]
       }
 
-mkEmbedding :: Int -> Tree -> Embedding
-mkEmbedding eid t =
-  Embedding
-    { embID = eid
-    , embValue = t
-    }
+-- mkEmbedding :: Int -> Tree -> Embedding
+-- mkEmbedding eid t =
+--   Embedding
+--     { embID = eid
+--     , embValue = t
+--     }
 
-lookupBlockLet :: T.Text -> Block -> Maybe LetBinding
-lookupBlockLet name block = Map.lookup name (blkBindings block)
+lookupStructLet :: RefIdent -> Struct -> Maybe Tree
+lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
 
 {- | Insert a new let binding into the block.
 
 Caller should ensure that the name is not already in the block.
 -}
-insertBlockLet :: T.Text -> Tree -> Block -> Block
-insertBlockLet s t block =
-  block
-    { blkBindings =
-        Map.insert
-          s
-          LetBinding
-            { lbReferred = False
-            , lbValue = t
-            }
-          (blkBindings block)
-    }
-
-updateBlockLet :: T.Text -> Tree -> Block -> Block
-updateBlockLet name t block =
-  block
-    { blkBindings =
-        Map.update (\lb -> Just lb{lbValue = t}) name (blkBindings block)
-    }
-
-markLetBindReferred :: T.Text -> Block -> Block
-markLetBindReferred name block =
-  block
-    { blkBindings =
-        Map.update (\lb -> Just lb{lbReferred = True}) name (blkBindings block)
+insertStructLet :: T.Text -> Tree -> Struct -> Struct
+insertStructLet s t struct =
+  struct
+    { stcBindings = Map.insert (RefIdent s) (Binding t False) (stcBindings struct)
     }
 
 -- | Determines whether the block has empty fields, including both static and dynamic fields.
-hasEmptyFields :: Block -> Bool
-hasEmptyFields blk = Map.null (blkStaticFields blk) && null (blkDynFields blk)
+hasEmptyFields :: Struct -> Bool
+hasEmptyFields struct = Map.null (stcStaticFieldBases struct) && null (stcDynFields struct)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -334,16 +234,21 @@ getFieldType ident
 
 The name could be in both the fields and let bindings, or either.
 -}
-lookupBlockStubVal :: T.Text -> Block -> [BlockStubVal]
-lookupBlockStubVal name blk@(IsBlockStruct struct) =
+lookupStructStubVal :: T.Text -> Struct -> [StructStubVal]
+lookupStructStubVal name struct =
   catMaybes
-    [ BlkStubField <$> Map.lookup name (stcFields struct)
-    , BlkStubLet <$> Map.lookup name (blkBindings blk)
+    [ StructStubField <$> Map.lookup name (stcStaticFieldBases struct)
+    , StructStubLet . value <$> Map.lookup (RefIdent name) struct.stcBindings
     ]
-lookupBlockStubVal name blk = catMaybes [BlkStubLet <$> Map.lookup name (blkBindings blk)]
+
+lookupStructDynField :: Int -> Struct -> Maybe DynamicField
+lookupStructDynField oid struct = IntMap.lookup oid (stcDynFields struct)
 
 lookupStructField :: T.Text -> Struct -> Maybe Field
 lookupStructField name struct = Map.lookup name (stcFields struct)
+
+lookupStructStaticFieldBase :: T.Text -> Struct -> Maybe Field
+lookupStructStaticFieldBase name struct = Map.lookup name (stcStaticFieldBases struct)
 
 lookupStructIdentField :: T.Text -> Struct -> Maybe Field
 lookupStructIdentField name struct =
@@ -365,55 +270,161 @@ updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructFie
 removeStructFieldsByNames :: [T.Text] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
 
-{- | Given a struct and a list of static field names, return the permission information to check if the static fields
-are allowed
--}
-getPermInfoForFields :: Struct -> [T.Text] -> [PermItem]
-getPermInfoForFields struct = foldr go []
- where
-  go name ext =
-    foldr
-      ( \p acc ->
-          if BlockFieldLabel name `Set.member` piLabels p || BlockFieldLabel name `Set.member` piOpLabels p then p : acc else acc
-      )
-      ext
-      (stcPerms struct)
+updateStructCnstrByID :: Int -> Bool -> Tree -> Struct -> Struct
+updateStructCnstrByID cid isPattern sub struct =
+  struct
+    { stcCnstrs =
+        IntMap.update
+          ( \sc ->
+              Just
+                ( if isPattern
+                    then sc{scsPattern = sub}
+                    else sc{scsValue = sub}
+                )
+          )
+          cid
+          (stcCnstrs struct)
+    }
 
-{- | Given a struct and the id of a dynamic field, return the permission information to check if the dynamic
-field is allowed or whether the dynamic field allows other fields.
--}
-getPermInfoForDyn :: Struct -> Int -> [PermItem]
-getPermInfoForDyn struct i =
-  foldr
-    ( \p acc ->
-        if BlockDynFieldOID i `Set.member` piLabels p || BlockDynFieldOID i `Set.member` piOpLabels p then p : acc else acc
-    )
-    []
-    (stcPerms struct)
+updateStructDynFieldByID :: Int -> Bool -> Tree -> Struct -> Struct
+updateStructDynFieldByID oid isLabel sub struct =
+  struct
+    { stcDynFields =
+        IntMap.update
+          ( \df ->
+              Just
+                ( if isLabel
+                    then df{dsfLabel = sub}
+                    else df{dsfValue = sub}
+                )
+          )
+          oid
+          (stcDynFields struct)
+    }
 
-{- | Given a struct and the index of a constraint, return the permission information to check whether the constraint
-allows other fields.
+updateStructStaticFieldBase :: T.Text -> Tree -> Struct -> Struct
+updateStructStaticFieldBase name sub struct =
+  struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
+
+updateStructLetBinding :: RefIdent -> Tree -> Struct -> Struct
+updateStructLetBinding name sub struct =
+  struct
+    { stcBindings = Map.update (\b -> Just (b{value = sub})) name (stcBindings struct)
+    }
+
+buildStructOrdLabels :: (Tree -> Maybe T.Text) -> Struct -> Maybe [T.Text]
+buildStructOrdLabels rtrString struct =
+  let
+    r :: Maybe ([T.Text], Set.Set T.Text)
+    r =
+      foldM
+        ( \(revAcc, seen) blkLabel -> do
+            newLabel <- case blkLabel of
+              StructStaticFieldLabel n -> return n
+              StructDynFieldOID i -> do
+                dsf <- lookupStructDynField i struct
+                rtrString (dsfLabel dsf)
+            return $
+              if Set.member newLabel seen
+                then (revAcc, seen)
+                else (newLabel : revAcc, Set.insert newLabel seen)
+        )
+        ([], Set.empty)
+        (stcOrdLabels struct)
+   in
+    reverse . fst <$> r
+
+{- | Update the stub static field that has already existed with the given name.
+
+Also update the field.
+
+It is used in parsing the AST to a struct.
 -}
-getPermInfoForPattern :: Struct -> Int -> [PermItem]
-getPermInfoForPattern struct i =
-  foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)
+updateStubAndField :: T.Text -> Field -> Struct -> Struct
+updateStubAndField name field struct =
+  struct
+    { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
+    , stcFields = Map.insert name field (stcFields struct)
+    }
+
+-- | Insert a new static field into the stub struct.
+insertNewStubAndField :: T.Text -> Field -> Struct -> Struct
+insertNewStubAndField name field struct =
+  struct
+    { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
+    , stcOrdLabels = stcOrdLabels struct ++ [StructStaticFieldLabel name]
+    , stcFields = Map.insert name field (stcFields struct)
+    }
+
+-- | Insert a new dynamic field into the block stub struct.
+insertStructNewDynField :: Int -> DynamicField -> Struct -> Struct
+insertStructNewDynField oid df struct =
+  struct
+    { stcDynFields = IntMap.insert oid df (stcDynFields struct)
+    , stcOrdLabels = stcOrdLabels struct ++ [StructDynFieldOID oid]
+    }
+
+-- | Insert a new constraint into the block stub struct.
+insertStructNewCnstr :: Int -> Tree -> Tree -> Struct -> Struct
+insertStructNewCnstr cid pat val struct =
+  struct{stcCnstrs = IntMap.insert cid (StructCnstr cid pat val) (stcCnstrs struct)}
+
+-- {- | Given a struct and a list of static field names, return the permission information to check if the static fields
+-- are allowed
+-- -}
+-- getPermInfoForFields :: Struct -> [T.Text] -> [PermItem]
+-- getPermInfoForFields struct = foldr go []
+--  where
+--   go name ext =
+--     foldr
+--       ( \p acc ->
+--           if name `Set.member` piLabels p || name `Set.member` piOpLabels p then p : acc else acc
+--       )
+--       ext
+--       (stcPerms struct)
+
+-- {- | Given a struct and the id of a dynamic field, return the permission information to check if the dynamic
+-- field is allowed or whether the dynamic field allows other fields.
+-- -}
+-- getPermInfoForDyn :: Struct -> Int -> [PermItem]
+-- getPermInfoForDyn struct i =
+--   foldr
+--     ( \p acc ->
+--         if StructDynFieldOID i `Set.member` piLabels p || StructDynFieldOID i `Set.member` piOpLabels p then p : acc else acc
+--     )
+--     []
+--     (stcPerms struct)
+
+-- {- | Given a struct and the index of a constraint, return the permission information to check whether the constraint
+-- allows other fields.
+-- -}
+-- getPermInfoForPattern :: Struct -> Int -> [PermItem]
+-- getPermInfoForPattern struct i =
+--   foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)
 
 {- | Deduplicate the block labels by removing the static that have the same label or dynamic field that is evaluated to
 the same label.
 -}
-dedupBlockLabels :: (Tree -> Maybe T.Text) -> IntMap.IntMap DynamicField -> [BlockLabel] -> [BlockLabel]
-dedupBlockLabels rtrString dynFields labels =
+dedupStructFieldLabels ::
+  (Tree -> Maybe T.Text) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
+dedupStructFieldLabels rtrString dynFields labels =
   reverse . fst $ foldl go ([], Set.empty) labels
  where
-  go (acc, seen) (BlockFieldLabel n)
+  go (acc, seen) (StructStaticFieldLabel n)
     | Set.member n seen = (acc, seen)
-    | otherwise = (BlockFieldLabel n : acc, Set.insert n seen)
-  go (acc, seen) (BlockDynFieldOID i) =
+    | otherwise = (StructStaticFieldLabel n : acc, Set.insert n seen)
+  go (acc, seen) (StructDynFieldOID i) =
     case do
       df <- IntMap.lookup i dynFields
       rtrString (dsfLabel df) of
       -- The dynamic field label is a string so that we should examine it.
       Just s
         | Set.member s seen -> (acc, seen)
-        | otherwise -> (BlockDynFieldOID i : acc, Set.insert s seen)
-      Nothing -> (BlockDynFieldOID i : acc, seen)
+        | otherwise -> (StructDynFieldOID i : acc, Set.insert s seen)
+      Nothing -> (StructDynFieldOID i : acc, seen)
+
+data Binding = Binding
+  { value :: Tree
+  , isIterVar :: !Bool
+  }
+  deriving (Generic)

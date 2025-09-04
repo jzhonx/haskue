@@ -13,15 +13,21 @@ module Eval (
   evalFile,
   emptyEvalConfig,
   strToCUEVal,
-  emptyRunner,
-  Runner (..),
 )
 where
 
 import AST
-import qualified Common
-import Control.Monad.Except (MonadError)
-import Control.Monad.IO.Class (MonadIO)
+import Common (
+  CommonState,
+  Config (..),
+  eesObjID,
+  eesTrace,
+  emptyCommonState,
+  emptyConfig,
+ )
+import Control.Monad (when)
+import Control.Monad.Except (MonadError, modifyError)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
 import Cursor
@@ -35,12 +41,13 @@ import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
 import Parser (parseExpr, parseSourceFile)
 import Path (TASeg (RootTASeg))
-import qualified Reduce
-import Reduce.PostReduce (postValidation)
+import Reduce (postValidation, reduce)
 import Reduce.RMonad
+import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 import Util (emptyTrace)
 import Value
+import Value.Util.TreeRep (treeToFullRepString)
 
 data EvalConfig = EvalConfig
   { ecDebugLogging :: Bool
@@ -63,27 +70,6 @@ emptyEvalConfig =
     , ecMaxTreeDepth = 0
     , ecFilePath = ""
     }
-
--- | Runner holds the configuration and functions for evaluation.
-newtype Runner = Runner
-  { rcConfig :: Common.Config
-  }
-
-instance Show Runner where
-  show r = printf "{rcConfig = %s}" (show $ rcConfig r)
-
-emptyRunner :: Runner
-emptyRunner =
-  Runner
-    { rcConfig = Common.emptyConfig
-    }
-
-updateConfig :: Runner -> Common.Config -> Runner
-updateConfig r c = r{rcConfig = c}
-
-instance Common.HasConfig Runner where
-  getConfig = rcConfig
-  setConfig r c = r{rcConfig = c}
 
 runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
 runIO eStr conf = do
@@ -119,7 +105,7 @@ runStr s conf = do
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyRunner) emptyTrace
+    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyConfig) emptyTrace
 
 strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m Tree
 strToCUEVal s conf = do
@@ -133,49 +119,43 @@ evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m Tr
 evalFile sf = evalToTree (evalSourceFile sf)
 
 evalToTree ::
-  (MonadError String m, MonadIO m) => StateT Common.EEState (ReaderT Runner m) Tree -> EvalConfig -> m Tree
+  (MonadError String m, MonadIO m) => StateT CommonState (ReaderT ReduceConfig m) Tree -> EvalConfig -> m Tree
 evalToTree f conf = do
-  let runner =
-        updateConfig
-          emptyRunner
-          ( Common.Config
-              { Common.cfSettings =
-                  (Common.cfSettings . rcConfig $ emptyRunner)
-                    { Common.stDebugLogging = ecDebugLogging conf
-                    , Common.stTraceExec = ecTraceExec conf
-                    , Common.stTracePrintTree = ecTracePrintTree conf
-                    , Common.stTraceFilter =
-                        let s = ecTraceFilter conf
-                         in if null s then Set.empty else Set.fromList $ splitOn "," s
-                    , Common.stShowMutArgs = ecShowMutArgs conf
-                    , Common.stMaxTreeDepth = ecMaxTreeDepth conf
-                    }
-              , Common.cfRuntimeParams =
-                  (Common.cfRuntimeParams . rcConfig $ emptyRunner)
-                    { Common.rpCreateCnstr = True
-                    }
-              }
-          )
+  let config =
+        Config
+          { stDebugLogging = ecDebugLogging conf
+          , stTraceExec = ecTraceExec conf
+          , stTracePrintTree = ecTracePrintTree conf
+          , stTraceFilter =
+              let s = ecTraceFilter conf
+               in if null s then Set.empty else Set.fromList $ splitOn "," s
+          , stShowMutArgs = ecShowMutArgs conf
+          , stMaxTreeDepth = ecMaxTreeDepth conf
+          }
+
   reduced <-
     runReaderT
       ( do
-          (root, eeState) <- runStateT f Common.emptyEEState
-
+          (root, eeState) <- runStateT f emptyCommonState
+          when (ecDebugLogging conf) $
+            liftIO $
+              hPutStr stderr $
+                "Initial eval result: " ++ treeToFullRepString root ++ "\n"
           let
             rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
-            cv = mkRTState rootTC (Common.eesObjID eeState) (Common.eesTrace eeState)
-          execStateT Reduce.reduce cv
+            cv = mkRTState rootTC (eesObjID eeState) (eesTrace eeState)
+          execStateT (modifyError show reduce) cv
       )
-      runner
+      (ReduceConfig config (emptyReduceParams{createCnstr = True}))
 
   finalized <-
     runReaderT
-      (execStateT postValidation reduced)
-      ( updateConfig
-          runner
-          ( let c = rcConfig runner
-             in c{Common.cfRuntimeParams = (Common.cfRuntimeParams c){Common.rpCreateCnstr = False}}
-          )
-      )
+      (execStateT (modifyError show postValidation) reduced)
+      (ReduceConfig config emptyReduceParams)
+
   let finalTC = getTreeCursor finalized
+  when (ecDebugLogging conf) $
+    liftIO $
+      hPutStr stderr $
+        "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
   return $ tcFocus finalTC

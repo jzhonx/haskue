@@ -7,4 +7,4 @@ x: close({
 y:     *"a" | "b"
 ("y"): "b"
 -- exp --
-error: a is not allowed
+error: "a" is not allowed

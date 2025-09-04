@@ -26,9 +26,9 @@ library
         NotifGraph,
         Reduce,
         Reduce.Nodes,
-        Reduce.Notif,
         Reduce.PostReduce,
         Reduce.RMonad,
+        Reduce.ReCalc,
         Reduce.RefSys,
         Reduce.RegOps,
         Reduce.Root,
@@ -61,12 +61,26 @@ library
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
+    default-extensions:
+      BlockArguments,
+      DuplicateRecordFields,
+      FlexibleContexts,
+      FlexibleInstances,
+      InstanceSigs,
+      LambdaCase,
+      MultiWayIf,
+      NamedFieldPuns,
+      OverloadedRecordDot,
+      OverloadedStrings,
+      RecordWildCards,
+      ScopedTypeVariables,
+
     build-depends:    
-      base ^>=4.17.0.0,
+      base,
       bytestring >= 0.11.5 && < 0.12,
       containers >= 0.6.7 && < 0.7,
-      mtl >= 2.2.2 && < 2.3,
-      transformers >= 0.5.6 && < 0.6,
+      mtl >= 2.3.1,
+      transformers,
       text >= 2.0.2 && < 2.1,
       parsec >= 3.1.16 && < 3.2,
       optparse-applicative >= 0.18.1 && < 0.19,
@@ -89,7 +103,7 @@ executable haskue
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        base ^>=4.17.0.0,
+        base,
         haskue,
         mtl,
         bytestring,
@@ -107,7 +121,7 @@ Test-Suite haskue-unit-test
     NotifGraphTest,
     TreeTest,
   build-depends:
-        base ^>=4.17.0.0,
+        base,
         tasty >= 0.7,
         tasty-hunit,
         haskue,

@@ -9,21 +9,21 @@ module Reduce.RegOps where
 
 import qualified AST
 import Cursor
-import Exception (throwErrSt)
 import Path
 import Reduce.RMonad (
   ResolveMonad,
   debugInstantOpRM,
+  throwFatal,
  )
 import Text.Printf (printf)
 import Value
 
 -- * Regular Unary Ops
 
-retVal :: (ResolveMonad s r m) => Tree -> m (Maybe Tree)
+retVal :: (ResolveMonad r s m) => Tree -> m (Maybe Tree)
 retVal = return . Just
 
-resolveUnaryOp :: (ResolveMonad s r m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
+resolveUnaryOp :: (ResolveMonad r s m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
 resolveUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
@@ -64,7 +64,7 @@ resolveUnaryOp op tM = do
 -- * Regular Binary Ops
 
 resolveRegBinOp ::
-  (ResolveMonad s r m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
+  (ResolveMonad r s m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
 resolveRegBinOp op t1M t2M opTC = do
   debugInstantOpRM
     "resolveRegBinOp"
@@ -73,7 +73,7 @@ resolveRegBinOp op t1M t2M opTC = do
   resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
-  (ResolveMonad s r m) =>
+  (ResolveMonad r s m) =>
   AST.BinaryOp ->
   (BinOpDirect, Maybe Tree) ->
   (BinOpDirect, Maybe Tree) ->
@@ -99,7 +99,7 @@ resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
           | Just _ <- rtrNonUnion t1, Just _ <- rtrNonUnion t2 -> return $ Just $ mismatch op t1 t2
         _ -> return Nothing
     | otherwise ->
-        throwErrSt $
+        throwFatal $
           printf "regular binary op %s is not supported for %s and %s" (show $ AST.anVal op) (show t1M) (show t2M)
  where
   cmpOps = [AST.Equ, AST.BinRelOp AST.NE]

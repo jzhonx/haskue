@@ -39,27 +39,17 @@ data MutOp
 pattern MutOp :: MutOp -> Mutable
 pattern MutOp op <- Mutable op _
 
-data MutFrame = MutFrame
-  { mfValue :: Maybe Tree
-  -- ^ Mutable value in general should not be another mutable, especially during notifying a reference to take a
-  -- concrete value to update itself.
-  , mfArgsReduced :: Set.Set Int
+newtype MutFrame = MutFrame
+  { mfArgsReduced :: Set.Set Int
   -- ^ mfArgsReduced keeps track of which argument has been reduced. It is used to avoid re-reducing the same argument.
   }
   deriving (Generic)
 
 emptyMutFrame :: MutFrame
-emptyMutFrame = MutFrame{mfValue = Nothing, mfArgsReduced = Set.empty}
+emptyMutFrame = MutFrame{mfArgsReduced = Set.empty}
 
 withEmptyMutFrame :: MutOp -> Mutable
 withEmptyMutFrame op = Mutable op emptyMutFrame
-
-getMutVal :: Mutable -> Maybe Tree
-getMutVal (Mutable _ (MutFrame v _)) = v
-
-setMutVal :: Maybe Tree -> Mutable -> Mutable
-setMutVal m (Mutable (Ref rf) frame) = Mutable (Ref rf) (frame{mfValue = m})
-setMutVal m (Mutable op frame) = Mutable op (frame{mfValue = m})
 
 getMutArgs :: Mutable -> Seq.Seq Tree
 getMutArgs (Mutable op _) = mutOpArgs op
@@ -67,7 +57,7 @@ getMutArgs (Mutable op _) = mutOpArgs op
 mutOpArgs :: MutOp -> Seq.Seq Tree
 mutOpArgs (RegOp rop) = ropArgs rop
 mutOpArgs (Ref ref) = subRefArgs $ refArg ref
-mutOpArgs (Compreh c) = fmap getValFromIterClause (cphClauses c)
+mutOpArgs (Compreh c) = fmap getValFromIterClause c.args
 mutOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
 mutOpArgs (UOp u) = ufConjuncts u
 mutOpArgs (Itp itp) = itpExprs itp
@@ -78,7 +68,7 @@ updateMutArg i t (Mutable op frame) = Mutable (updateMutOpArg i t op) frame
 updateMutOpArg :: Int -> Tree -> MutOp -> MutOp
 updateMutOpArg i t (RegOp mut) = RegOp $ mut{ropArgs = Seq.update i t (ropArgs mut)}
 updateMutOpArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
-updateMutOpArg i t (Compreh c) = Compreh $ c{cphClauses = Seq.adjust (setValInIterClause t) i (cphClauses c)}
+updateMutOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
 updateMutOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
 updateMutOpArg i t (UOp u) = UOp $ u{ufConjuncts = Seq.update i t (ufConjuncts u)}
 updateMutOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
@@ -148,3 +138,12 @@ mkUnifyOp ts = withEmptyMutFrame $ UOp $ emptyUnifyOp{ufConjuncts = Seq.fromList
 
 mkItpMutable :: [IplSeg] -> [Tree] -> Mutable
 mkItpMutable segs exprs = withEmptyMutFrame $ Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
+
+showOpType :: MutOp -> String
+showOpType op = case op of
+  RegOp _ -> "fn"
+  Ref _ -> "ref"
+  Compreh _ -> "compreh"
+  DisjOp _ -> "disjoin"
+  UOp _ -> "unify"
+  Itp _ -> "inter"

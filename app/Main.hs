@@ -51,5 +51,5 @@ main = do
   file <- readFile (ecFilePath opts)
   x <- runExceptT $ runIO file opts
   case x of
-    Left err -> putStrLn err
+    Left err -> putStrLn $ "Internal bug: " ++ err
     Right b -> hPutBuilder stdout b

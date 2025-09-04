@@ -10,35 +10,36 @@ import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Tree
 
 data Comprehension = Comprehension
-  { cphIsListCompreh :: !Bool
-  , cphClauses :: Seq.Seq ComprehClause
-  , cphIterBindings :: Map.Map T.Text Tree
+  { isListCompreh :: !Bool
+  , args :: Seq.Seq ComprehArg
+  , iterBindings :: Map.Map T.Text Tree
   -- ^ Temporary iteration bindings for the comprehension so far.
-  , cphBlock :: Tree
   }
   deriving (Generic)
 
-data ComprehClause
-  = ComprehClauseLet T.Text Tree
-  | ComprehClauseIf Tree
-  | ComprehClauseFor T.Text (Maybe T.Text) Tree
+data ComprehArg
+  = ComprehArgLet T.Text Tree
+  | ComprehArgIf Tree
+  | ComprehArgFor T.Text (Maybe T.Text) Tree
+  | ComprehArgStructTmpl Tree
   deriving (Generic)
 
-mkComprehension :: Bool -> [ComprehClause] -> Tree -> Comprehension
+mkComprehension :: Bool -> [ComprehArg] -> Tree -> Comprehension
 mkComprehension isListCompreh clauses sv =
   Comprehension
-    { cphIsListCompreh = isListCompreh
-    , cphClauses = Seq.fromList clauses
-    , cphIterBindings = Map.empty
-    , cphBlock = sv
+    { isListCompreh = isListCompreh
+    , args = Seq.fromList (clauses ++ [ComprehArgStructTmpl sv])
+    , iterBindings = Map.empty
     }
 
-getValFromIterClause :: ComprehClause -> Tree
-getValFromIterClause (ComprehClauseLet _ v) = v
-getValFromIterClause (ComprehClauseIf v) = v
-getValFromIterClause (ComprehClauseFor _ _ v) = v
+getValFromIterClause :: ComprehArg -> Tree
+getValFromIterClause (ComprehArgLet _ v) = v
+getValFromIterClause (ComprehArgIf v) = v
+getValFromIterClause (ComprehArgFor _ _ v) = v
+getValFromIterClause (ComprehArgStructTmpl v) = v
 
-setValInIterClause :: Tree -> ComprehClause -> ComprehClause
-setValInIterClause v (ComprehClauseLet n _) = ComprehClauseLet n v
-setValInIterClause v (ComprehClauseIf _) = ComprehClauseIf v
-setValInIterClause v (ComprehClauseFor n m _) = ComprehClauseFor n m v
+setValInIterClause :: Tree -> ComprehArg -> ComprehArg
+setValInIterClause v (ComprehArgLet n _) = ComprehArgLet n v
+setValInIterClause v (ComprehArgIf _) = ComprehArgIf v
+setValInIterClause v (ComprehArgFor n m _) = ComprehArgFor n m v
+setValInIterClause v (ComprehArgStructTmpl _) = ComprehArgStructTmpl v

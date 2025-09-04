@@ -10,6 +10,7 @@ import Control.Monad (void, when)
 import Control.Monad.Except (MonadError, throwError)
 import Data.Maybe (fromJust, isNothing)
 import qualified Data.Text as T
+import Exception (throwErrSt)
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -88,12 +89,12 @@ emptyLexeme = WithTokenInfo () TokenNone False
 
 parseExpr :: (MonadError String m) => String -> m Expression
 parseExpr s = case runParser (entry expr) 0 "" s of
-  Left err -> throwError $ show err
+  Left err -> throwErrSt $ show err
   Right res -> return $ wtVal res
 
 parseSourceFile :: (MonadError String m) => String -> String -> m SourceFile
 parseSourceFile filename s = case runParser (entry sourceFile) 0 filename s of
-  Left err -> throwError $ show err
+  Left err -> throwErrSt $ show err
   Right res -> return $ wtVal res
 
 binopTable :: [(String, BinaryOpNode)]

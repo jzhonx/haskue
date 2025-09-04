@@ -23,7 +23,7 @@ import Value.UnifyOp
 -----
 
 deriving instance Eq Comprehension
-deriving instance Eq ComprehClause
+deriving instance Eq ComprehArg
 
 deriving instance Eq Reference
 deriving instance Eq RefArg
@@ -40,15 +40,14 @@ deriving instance Eq MutOp
 deriving instance Eq MutFrame
 deriving instance Eq RegularOp
 
-deriving instance Eq Block
-deriving instance Eq BlockValue
-deriving instance Eq Struct
+instance Eq Struct where
+  (==) s1 s2 = stcFields s1 == stcFields s2 && stcClosed s1 == stcClosed s2 && stcIsConcrete s1 == stcIsConcrete s2
+
 deriving instance Eq Field
-deriving instance Eq LetBinding
 deriving instance Eq DynamicField
 deriving instance Eq StructCnstr
-deriving instance Eq Embedding
-deriving instance Eq BlockElemAdder
+
+-- deriving instance Eq Embedding
 
 deriving instance Eq List
 
@@ -57,17 +56,16 @@ deriving instance Eq Disj
 deriving instance Eq AtomCnstr
 
 instance Eq TreeNode where
-  (==) (TNBlock s1) (TNBlock s2) = s1 == s2
+  (==) (TNStruct s1) (TNStruct s2) = s1 == s2
   (==) (TNList ts1) (TNList ts2) = ts1 == ts2
   (==) (TNDisj d1) (TNDisj d2) = d1 == d2
   (==) (TNAtom l1) (TNAtom l2) = l1 == l2
   (==) (TNAtomCnstr c1) (TNAtomCnstr c2) = c1 == c2
   (==) (TNDisj dj1) n2@(TNAtom _) =
-    if isNothing (dsjDefault dj1)
+    if isNothing (rtrDisjDefVal dj1)
       then False
-      else treeNode (fromJust $ dsjDefault dj1) == n2
+      else treeNode (fromJust $ rtrDisjDefVal dj1) == n2
   (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
-  (==) (TNMutable f1) (TNMutable f2) = f1 == f2
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
@@ -82,7 +80,7 @@ instance Eq Tree where
 -----
 
 deriving instance Show Comprehension
-deriving instance Show ComprehClause
+deriving instance Show ComprehArg
 
 deriving instance Show Reference
 instance Show RefArg where
@@ -101,15 +99,13 @@ deriving instance Show MutOp
 deriving instance Show MutFrame
 deriving instance Show RegularOp
 
-deriving instance Show Block
-deriving instance Show BlockValue
 deriving instance Show Struct
 deriving instance Show Field
-deriving instance Show LetBinding
 deriving instance Show DynamicField
 deriving instance Show StructCnstr
-deriving instance Show Embedding
-deriving instance Show BlockElemAdder
+
+-- deriving instance Show Embedding
+deriving instance Show Binding
 
 deriving instance Show List
 
@@ -122,10 +118,11 @@ deriving instance Show AtomCnstr
 -----
 
 deriving instance NFData Comprehension
-deriving instance NFData ComprehClause
+deriving instance NFData ComprehArg
 
 deriving instance NFData Reference
 deriving instance NFData RefArg
+deriving instance NFData RefIdent
 
 deriving instance NFData Interpolation
 
@@ -139,14 +136,13 @@ deriving instance NFData MutOp
 deriving instance NFData MutFrame
 deriving instance NFData RegularOp
 
-deriving instance NFData Block
-deriving instance NFData BlockValue
 deriving instance NFData Struct
 deriving instance NFData Field
-deriving instance NFData LetBinding
 deriving instance NFData DynamicField
 deriving instance NFData StructCnstr
-deriving instance NFData Embedding
+
+-- deriving instance NFData Embedding
+deriving instance NFData Binding
 
 deriving instance NFData List
 
@@ -155,4 +151,6 @@ deriving instance NFData Disj
 deriving instance NFData AtomCnstr
 
 deriving instance NFData TreeNode
+deriving instance NFData TreeValGenEnv
+deriving instance NFData EmbedType
 deriving instance NFData Tree

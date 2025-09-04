@@ -9,6 +9,7 @@ import Data.ByteString.Builder (toLazyByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS (ByteString, lines, pack)
 import Data.List (sort)
 import Eval (ecMaxTreeDepth, emptyEvalConfig, runIO)
+import Exception (throwErrSt)
 import System.Directory (listDirectory)
 import System.IO (readFile)
 import Test.Tasty
@@ -31,7 +32,7 @@ parseTxtar file = do
           )
           (("", ""), 0)
           (lines file)
-  when (state /= 2) $ throwError "No expected output"
+  when (state /= 2) $ throwErrSt "No expected output"
   return (input, exp)
 
 cmpStrings :: BS.ByteString -> BS.ByteString -> IO ()
@@ -50,7 +51,7 @@ createTest path name = testCase name $ do
     r <- runIO input emptyEvalConfig{ecMaxTreeDepth = 20}
     return (exp, r)
   case x of
-    Left err -> assertFailure err
+    Left err -> assertFailure (show err)
     Right (_exp, b) -> do
       let act = toLazyByteString b
           exp = BS.pack _exp
