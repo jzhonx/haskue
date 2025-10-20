@@ -102,10 +102,6 @@ unifyNormalizedTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m (Maybe Tree)
 unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (showTCList tcs) unifyTC $ do
   when (length tcs < 2) $ throwFatal "not enough arguments for unification"
 
-  -- -- Make sure all tcs are up-to-date.
-  -- tcs <- forM conjAddrs $ \addr ->
-  --   liftFatal (goTCAbsAddrMust addr unifyTC)
-
   let isAllCyclic = all (isSCyclic . tcFocus) tcs
   if isAllCyclic
     then return $ Just $ mkBottomTree "structural cycle"
@@ -177,7 +173,7 @@ mergeTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m Tree
 mergeTCs tcs unifyTC = debugSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
   when (null tcs) $ throwFatal "not enough arguments"
   let headTC = head tcs
-  when (isEmbedded (tcFocus headTC)) $ throwFatal "the first tree can not be embedded"
+  -- TODO: does the first tree need to be not embedded?
   r <-
     foldM
       ( \acc tc -> do

@@ -24,16 +24,16 @@ lab: lab:         true
 certbot: certbot: true
 
 EnvironmentsInfo: {
-	"albq01": rio & fts & rccs
-	"atl01":  rio & fts & rccs
-	"blu-cd": rio & fts & rccs & lab
-	// "blu-qa-int":  rio & fts & lab
-	// "blu-qa-next": rio & fts & lab
-	// "blu-qa-perf": rio & fts & rccs & lab
-	// "blu-qa-sats": rio & fts & lab
-	// "brln01":      rio & fts
-	// "cgco01":      rio & fts & rccs
-	// "cgcy01":      rio & fts
+	"albq01":      rio & fts & rccs
+	"atl01":       rio & fts & rccs
+	"blu-cd":      rio & fts & rccs & lab
+	"blu-qa-int":  rio & fts & lab
+	"blu-qa-next": rio & fts & lab
+	"blu-qa-perf": rio & fts & rccs & lab
+	"blu-qa-sats": rio & fts & lab
+	"brln01":      rio & fts
+	"cgco01":      rio & fts & rccs
+	"cgcy01":      rio & fts
 	// "chi01":       rio & fts & rccs
 	// "chlw01":      rio & fts
 	// "corl01":      rio & fts & rccs
@@ -43,20 +43,20 @@ EnvironmentsInfo: {
 	// "eden01":      rio & fts & rccs
 	// "fox01":       rio & fts & rccs & canary
 	// "gma2de01":    rio & fts
-	// "gma2it01":                        rio & fts
-	// "hahd01":                          rio & fts & rccs
-	// "hdc01":                           rio & fts
-	// "jack01":                          rio & fts & rccs
-	// "katy01":                          rio & fts & rccs
-	// "mana02":                          rio & fts & rccs
-	// "mdhd01":                          rio & fts & rccs
-	// "mimi01":                          rio & fts & rccs
-	// "minikube-comcast":                rio & fts
-	// "mphs01":                          rio & fts & rccs
-	// "mtnk01":                          rio & fts & rccs
-	// "nape01":                          rio & fts & rccs & canary
-	// "nash01":                          rio & fts & rccs
-	// "ncs02":                           rio & fts & rccs
+	// "gma2it01":    rio & fts
+	// "hahd01":           rio & fts & rccs
+	// "hdc01":            rio & fts
+	// "jack01":           rio & fts & rccs
+	// "katy01":           rio & fts & rccs
+	// "mana02":           rio & fts & rccs
+	// "mdhd01":           rio & fts & rccs
+	// "mimi01":           rio & fts & rccs
+	// "minikube-comcast": rio & fts
+	// "mphs01":           rio & fts & rccs
+	// "mtnk01":           rio & fts & rccs
+	// "nape01":           rio & fts & rccs & canary
+	// "nash01":           rio & fts & rccs
+	// "ncs02":            rio & fts & rccs
 	// "new-jack01":                      rio & fts
 	// "new-mana01":                      rio & fts
 	// "new-ncs01":                       rio & fts

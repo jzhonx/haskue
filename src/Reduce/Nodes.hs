@@ -29,6 +29,7 @@ import Reduce.RMonad (
   debugInstantOpRM,
   debugInstantRM,
   debugInstantTM,
+  debugSpanAdaptRM,
   debugSpanAdaptTM,
   debugSpanArgsAdaptRM,
   debugSpanArgsAdaptTM,
@@ -38,6 +39,8 @@ import Reduce.RMonad (
   debugSpanTM,
   debugSpanTreeRM,
   delTMDependentPrefix,
+  descendTMSeg,
+  descendTMSegMust,
   getRMDanglingLets,
   getTMAbsAddr,
   getTMCursor,
@@ -47,6 +50,7 @@ import Reduce.RMonad (
   liftFatal,
   modifyTMTN,
   modifyTMTree,
+  propUpTM,
   putTMCursor,
   putTMTree,
   throwFatal,
@@ -70,7 +74,7 @@ reduceStruct = debugSpanTM "reduceStruct" $ do
           ( \i -> do
               inSubTM (BlockTASeg (DynFieldTASeg i 0)) reduce
               -- we will reduce every fields, so no need to return affected labels.
-              void $ handleStructFieldsChange (DynFieldTASeg i 0)
+              -- void $ handleSObjChange (DynFieldTASeg i 0)
           )
           (IntMap.keys $ stcDynFields s)
     )
@@ -79,7 +83,7 @@ reduceStruct = debugSpanTM "reduceStruct" $ do
         mapM_
           ( \i -> do
               inSubTM (BlockTASeg (PatternTASeg i 0)) reduce
-              void $ handleStructFieldsChange (PatternTASeg i 0)
+              -- void $ handleSObjChange (PatternTASeg i 0)
           )
           (IntMap.keys $ stcCnstrs s)
     )
@@ -288,14 +292,15 @@ reduceStructField name = whenStruct $ \_ -> do
           | otherwise -> return ()
 
 -- | Handle the post process of the mutable object change in the struct.
-handleStructFieldsChange :: (ReduceMonad r s m) => BlockTASeg -> m [T.Text]
-handleStructFieldsChange seg = do
-  stc <- getTMCursor
-  let focus = tcFocus stc
-  case focus of
+handleSObjChange :: (ReduceMonad r s m) => m [TreeAddr]
+handleSObjChange = do
+  tc <- getTMCursor
+  seg <- liftFatal $ tcFocusSegMust tc
+  stc <- liftFatal $ propUpTC tc
+  let r = tcFocus tc
+  case tcFocus stc of
     IsStruct struct
-      | StringTASeg _ <- seg -> debugSpanTM (printf "handleStructFieldsChange, seg: %s" (show seg)) do
-          r <- inSubTM (BlockTASeg seg) getTMTree
+      | BlockTASeg (StringTASeg _) <- seg -> debugSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           let errM = case r of
                 IsBottom _ | IsTGenImmutable <- r -> Just r
                 _
@@ -307,42 +312,38 @@ handleStructFieldsChange seg = do
               delTMDependentPrefix $ tcAddr stc
             Nothing -> return ()
           return []
-      | DynFieldTASeg i _ <- seg -> debugSpanTM (printf "handleStructFieldsChange, seg: %s" (show seg)) do
-          tc <- getTMCursor
-          (oldLRmd, remAffLabels) <- removeAppliedObject i struct tc
-          let
-            dsf = stcDynFields struct IntMap.! i
-            rE = dynFieldToStatic (stcFields oldLRmd) dsf
-            allCnstrs = IntMap.elems $ stcCnstrs struct
-
-          debugInstantTM "handleStructFieldsChange" (printf "dsf: %s, rE: %s" (show dsf) (show rE))
-
+      | BlockTASeg (DynFieldTASeg i _) <- seg -> debugSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
+          (oldLRmd, remAffLabels) <- removeAppliedObject i struct stc
+          let dsf = stcDynFields struct IntMap.! i
+              allCnstrs = IntMap.elems $ stcCnstrs oldLRmd
+          rE <- dynFieldToStatic (stcFields oldLRmd) dsf
+          debugInstantTM "handleSObjChange" (printf "dsf: %s, rE: %s, dsf: %s" (show dsf) (show rE) (show dsf))
           case rE of
             Left err -> modifyTMTN (treeNode err) >> return []
             -- If the dynamic field label is incomplete, no change is made. But we still need to return the removed
             -- affected labels.
-            Right Nothing -> return remAffLabels
+            Right Nothing -> return $ genAddrs (tcAddr stc) remAffLabels
             Right (Just (name, field)) -> do
               -- Constrain the dynamic field with all existing constraints.
               (addAffFields, addAffLabels) <- do
-                newField <- constrainFieldWithCnstrs name field allCnstrs tc
+                newField <- constrainFieldWithCnstrs name field allCnstrs stc
                 return
                   ( [(name, newField)]
                   , if not (null $ ssfObjects newField) then [name] else []
                   )
 
               let
-                -- TODO: dedup
-                affectedLabels = remAffLabels ++ addAffLabels
+                affectedLabels =
+                  remAffLabels
+                    ++ foldr (\n acc -> if n `elem` remAffLabels then acc else n : acc) [] addAffLabels
                 newS = updateStructWithFields addAffFields oldLRmd
               debugInstantTM
-                "handleStructFieldsChange"
-                (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffFields) (show affectedLabels))
+                "handleSObjChange"
+                (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffLabels) (show affectedLabels))
 
-              modifyTMTN (TNStruct newS)
-              validateStructPerm
-              return affectedLabels
-      | PatternTASeg i _ <- seg -> debugSpanTM (printf "handleStructFieldsChange, seg: %s" (show seg)) do
+              propUpTM >> modifyTMTN (TNStruct newS) >> descendTMSegMust seg
+              return $ genAddrs (tcAddr stc) affectedLabels
+      | BlockTASeg (PatternTASeg i _) <- seg -> debugSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           -- Constrain all fields with the new constraint if it exists.
           let cnstr = stcCnstrs struct IntMap.! i
           -- New constraint might have the following effects:
@@ -360,20 +361,20 @@ handleStructFieldsChange seg = do
           (newStruct, addAffLabels) <- applyCnstrToFields cnstr oldPVRmd stc
           let affectedLabels = remAffLabels ++ addAffLabels
 
-          modifyTMTN (TNStruct newStruct)
+          propUpTM >> modifyTMTN (TNStruct newStruct) >> descendTMSegMust seg
           unless (null affectedLabels) $
             debugInstantTM
-              "handleStructFieldsChange"
+              "handleSObjChange"
               ( printf
                   "-: %s, +: %s, new struct: %s"
                   (show remAffLabels)
                   (show addAffLabels)
                   (show $ mkStructTree newStruct)
               )
-
-          validateStructPerm
-          return affectedLabels
+          return $ genAddrs (tcAddr stc) affectedLabels
     _ -> return []
+ where
+  genAddrs baseAddr = map (\name -> appendSeg baseAddr (textToStringTASeg name))
 
 getLabelFieldPairs :: Struct -> [(T.Text, Field)]
 getLabelFieldPairs struct = Map.toList $ stcFields struct
@@ -382,22 +383,30 @@ getLabelFieldPairs struct = Map.toList $ stcFields struct
 
 It returns a pair which contains reduced string and the newly created/updated field.
 -}
-dynFieldToStatic :: Map.Map T.Text Field -> DynamicField -> Either Tree (Maybe (T.Text, Field))
+dynFieldToStatic ::
+  (ReduceMonad r s m) => Map.Map T.Text Field -> DynamicField -> m (Either Tree (Maybe (T.Text, Field)))
 dynFieldToStatic fields df
-  | Just name <- rtrString label = mkField name
-  | Just _ <- rtrBottom label = Left label
+  | Just name <- rtrString label = do
+      let
+        unifier l r = mkMutableTree $ mkUnifyOp [l, r]
+        newSF = dynToField df (Map.lookup name fields) unifier
+
+      debugInstantTM
+        "dynFieldToStatic"
+        ( printf
+            "converted dynamic field to static field, name: %s, old field: %s, new field: %s"
+            name
+            (show $ Map.lookup name fields)
+            (show newSF)
+        )
+      return $ Right (Just (name, newSF))
+  | Just _ <- rtrBottom label = return $ Left label
   -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
   -- have been reduced to a string.
-  | Nothing <- rtrNonUnion label = return Nothing
-  | otherwise = Left (mkBottomTree "label can only be a string")
+  | Nothing <- rtrNonUnion label = return $ Right Nothing
+  | otherwise = return $ Left (mkBottomTree "label can only be a string")
  where
   label = dsfLabel df
-  mkField name =
-    let
-      unifier l r = mkMutableTree $ mkUnifyOp [l, r]
-      newSF = dynToField df (Map.lookup name fields) unifier
-     in
-      return (Just (name, newSF))
 
 {- | Apply pattern constraints ([pattern]: constraint) to the static field.
 
@@ -476,58 +485,63 @@ Returns the updated struct and the list of labels whose fields are affected.
 This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 -}
 removeAppliedObject :: (ResolveMonad r s m) => Int -> Struct -> TrCur -> m (Struct, [T.Text])
-removeAppliedObject objID struct tc = debugSpanSimpleRM "removeAppliedObject" tc $ do
-  (remAffFields, removedLabels) <-
-    foldM
-      ( \(accUpdated, accRemoved) (name, field) -> do
-          let
-            newObjectIDs = Set.delete objID (ssfObjects field)
-            newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
-            newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
-            baseRawM = ssfValue <$> Map.lookup name (stcStaticFieldBases struct)
-          debugInstantRM
-            "removeAppliedObject"
-            ( printf
-                "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
-                name
-                (show objID)
-                (show $ Set.toList newObjectIDs)
-                (show baseRawM)
-            )
-            tc
+removeAppliedObject objID struct tc =
+  debugSpanAdaptRM "removeAppliedObject" (Just . mkStructTree . fst) (const $ toJSON ()) tc $ do
+    (remAffFields, removedLabels) <-
+      foldM
+        ( \(accUpdated, accRemoved) (name, field) -> do
+            let
+              newObjectIDs = Set.delete objID (ssfObjects field)
+              newCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allCnstrs
+              newDyns = IntMap.filterWithKey (\k _ -> k `Set.member` newObjectIDs) allDyns
+              baseRawM = ssfValue <$> Map.lookup name (stcStaticFieldBases struct)
+            debugInstantRM
+              "removeAppliedObject"
+              ( printf
+                  "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
+                  name
+                  (show objID)
+                  (show $ Set.toList newObjectIDs)
+                  (show baseRawM)
+              )
+              tc
 
-          case baseRawM of
-            Just raw -> do
-              let
-                rawField = field{ssfValue = raw, ssfObjects = Set.empty}
-                fieldWithDyns =
-                  foldr
-                    (\dyn acc -> dynToField dyn (Just acc) unifier)
-                    rawField
-                    (IntMap.elems newDyns)
-              newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
-              return ((name, newField) : accUpdated, accRemoved)
-            -- The field is created by a dynamic field, so it does not have a base raw.
-            _ ->
-              if null newDyns
-                -- If there are no dynamic fields left, then the field should be removed.
-                then return (accUpdated, name : accRemoved)
-                else do
-                  let
-                    dyns = IntMap.elems newDyns
-                    startField = field{ssfValue = dsfValue $ head dyns}
-                    fieldWithDyns =
-                      foldr
-                        (\dyn acc -> dynToField dyn (Just acc) unifier)
-                        startField
-                        (tail dyns)
-                  newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
-                  return ((name, newField) : accUpdated, accRemoved)
-      )
-      ([], [])
-      (fieldsUnifiedWithObject objID $ Map.toList $ stcFields struct)
-  let res = removeStructFieldsByNames removedLabels $ updateStructWithFields remAffFields struct
-  return (res, map fst remAffFields)
+            case baseRawM of
+              Just raw -> do
+                let
+                  rawField = field{ssfValue = raw, ssfObjects = Set.empty}
+                  fieldWithDyns =
+                    foldr
+                      (\dyn acc -> dynToField dyn (Just acc) unifier)
+                      rawField
+                      (IntMap.elems newDyns)
+                newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
+                return ((name, newField) : accUpdated, accRemoved)
+              -- The field is created by a dynamic field, so it does not have a base raw.
+              _ ->
+                if null newDyns
+                  -- If there are no dynamic fields left, then the field should be removed.
+                  then return (accUpdated, name : accRemoved)
+                  else do
+                    let
+                      dyns = IntMap.elems newDyns
+                      startField =
+                        field
+                          { ssfValue = dsfValue $ head dyns
+                          , ssfObjects = Set.singleton (dsfID $ head dyns)
+                          }
+                      fieldWithDyns =
+                        foldr
+                          (\dyn acc -> dynToField dyn (Just acc) unifier)
+                          startField
+                          (tail dyns)
+                    newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems newCnstrs) tc
+                    return ((name, newField) : accUpdated, accRemoved)
+        )
+        ([], [])
+        (fieldsUnifiedWithObject objID $ Map.toList $ stcFields struct)
+    let res = removeStructFieldsByNames removedLabels $ updateStructWithFields remAffFields struct
+    return (res, map fst remAffFields)
  where
   allCnstrs = stcCnstrs struct
   allDyns = stcDynFields struct

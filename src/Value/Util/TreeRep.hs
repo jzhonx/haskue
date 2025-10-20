@@ -234,7 +234,7 @@ buildRepTreeStruct struct opt =
         ( \(j, dsf) acc ->
             TreeRepField
               (show (BlockTASeg $ DynFieldTASeg j 0))
-              (dlabelAttr dsf)
+              (dlabelAttr dsf <> ",dynf_val:" ++ showTreeSymbol (dsfValue dsf))
               (buildFieldRepValue (dsfLabel dsf) opt)
               : acc
         )

@@ -12,10 +12,12 @@ import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust)
 import qualified Data.Set as Set
+import NotifGraph (lookupGrpAddr)
 import Path
 import Reduce.Nodes (
   ResolvedPConjuncts (..),
   discoverPConjsFromUnifyOp,
+  handleSObjChange,
   reduceCompreh,
   reduceDisj,
   reduceList,
@@ -32,17 +34,21 @@ import Reduce.RMonad (
   debugSpanAdaptTM,
   debugSpanTM,
   getIsReducingRC,
+  getRMContext,
   getTMAbsAddr,
   getTMCursor,
   getTMTree,
+  inRemoteTM,
   inSubTM,
   modifyRMContext,
   modifyTMTN,
   modifyTMTree,
+  preVisitTree,
+  pushRecalcRootQ,
   throwFatal,
   treeDepthCheck,
  )
-import Reduce.ReCalc (recalc)
+import Reduce.Recalc (recalc)
 import Reduce.RefSys (
   CycleDetection (..),
   DerefResult (DerefResult),
@@ -57,7 +63,37 @@ import Value
 reduce :: (ReduceMonad r s m) => m ()
 reduce = do
   origAddr <- getTMAbsAddr
-  debugSpanTM "reduce" reduceTCFocus
+  debugSpanTM "reduce" reducePureFocus
+
+  -- Add affected labels as new source of change.
+  ng <- ctxNotifGraph <$> getRMContext
+  xs <- handleSObjChange
+  -- For each affected field, if it is not part of the notification graph (meaning no nodes depend on it or its
+  -- sub-nodes), we need to reduce it first.
+  mapM_
+    ( \afAddr ->
+        let siAddr = fromJust $ addrIsSufIrred afAddr
+         in case lookupGrpAddr siAddr ng of
+              Just gAddr -> pushRecalcRootQ gAddr
+              Nothing -> inRemoteTM afAddr do
+                reduce
+                tc <- getTMCursor
+                (_, gAddrs) <-
+                  preVisitTree
+                    (subNodes False)
+                    ( \(x, a) -> case do
+                        raddr <- addrIsSufRef (tcAddr x)
+                        lookupGrpAddr (sufRefToSufIrred raddr) ng of
+                        Just gAddr -> return (x, gAddr : a)
+                        Nothing -> return (x, a)
+                    )
+                    (tc, [])
+                debugInstantTM
+                  "recalcNode"
+                  (printf "preVisitTree done for affected addr %s, gAddrs: %s" (show afAddr) (show gAddrs))
+                mapM_ pushRecalcRootQ gAddrs
+    )
+    xs
 
   when (isJust $ addrIsSufRef origAddr) recalc
 
@@ -76,8 +112,8 @@ withTreeDepthLimit f = do
 
   pop = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
-reduceTCFocus :: (ReduceMonad r s m) => m ()
-reduceTCFocus = withTreeDepthLimit $ do
+reducePureFocus :: (ReduceMonad r s m) => m ()
+reducePureFocus = withTreeDepthLimit $ do
   orig <- getTMTree
 
   case orig of

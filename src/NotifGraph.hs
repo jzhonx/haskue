@@ -182,11 +182,6 @@ updateNotifGraph graph =
               (CyclicBaseAddr (head xs))
               (Set.fromList xs)
               acc
-              -- SCyclicSCC (x, y) xs ->
-              --   Map.insert
-              --     (SCyclicGrpAddr (x, y))
-              --     (Set.fromList xs)
-              --     acc
       )
       Map.empty
       -- (trace (printf "newGraphSCCs: %s" (show newGraphSCCs)) newGraphSCCs)
@@ -213,7 +208,7 @@ updateNotifGraph graph =
         (deptsMap graph)
 
 scc :: (HasCallStack) => Map.Map SuffixReferableAddr [SuffixIrredAddr] -> Set.Set SuffixIrredAddr -> TarjanState
-scc edges vertexes = execState go initState
+scc edges vertexes = execState ({-# SCC "sccGo" #-} go) initState
  where
   initState = emptyTarjanState edges (Set.toList vertexes)
 
@@ -253,9 +248,6 @@ data SCC
   = AcyclicSCC SuffixIrredAddr
   | CyclicSCC [SuffixIrredAddr]
   deriving (Show)
-
--- \| -- | The pair is (descendant, ancestor).
--- SCyclicSCC (SuffixIrredAddr, SuffixReferableAddr) [SuffixIrredAddr]
 
 -- | Perform a depth-first search to find strongly connected components (SCCs) using Tarjan's algorithm.
 sccDFS :: (HasCallStack) => SuffixIrredAddr -> State TarjanState ()
@@ -331,16 +323,11 @@ sccDFS v = do
                   ) ->
                   CyclicSCC [v]
               | null sccRestNodes -> AcyclicSCC v
-              -- \| Just sc <- sCycleM -> SCyclicSCC sc (v : sccRestNodes)
               | otherwise -> CyclicSCC (v : sccRestNodes)
        in ts
             { tsStack = newStack
             , tsMetaMap = newMetaMap
             , tsSCCs = newSCC : tsSCCs ts
-            -- , tsAncLinks = case sCycleM of
-            --     Nothing -> ts.tsAncLinks
-            --     Just (desc, anc) ->
-            --       Map.insertWith (++) desc [anc] ts.tsAncLinks
             }
 
 {- | Get the neighbors of a node in the notification graph.
@@ -361,7 +348,7 @@ Or p: {(p): 1}. The edge is /p -> /p/dyn_0.
 getNeighbors :: SuffixIrredAddr -> State TarjanState [(SuffixIrredAddr, Bool)]
 getNeighbors v = do
   edges <- gets tsEdges
-  return $ go v True edges []
+  return $ {-# SCC "getNeighborsGo" #-} go v True edges []
  where
   -- start is True if the current address is the getNeighbor address.
   go ::
@@ -374,11 +361,11 @@ getNeighbors v = do
     | sufIrredToAddr x == rootTreeAddr = acc
     | start
     , Just rx <- sufIrredIsSufRef x =
-        let newAcc = acc ++ maybe [] (map (\w -> (w, isSufIrredParent w v))) (Map.lookup rx edges)
+        let newAcc = maybe acc (\ns -> foldr (\w nacc -> (w, isSufIrredParent w v) : nacc) acc ns) (Map.lookup rx edges)
          in go (sufRefToSufIrred $ getParentSufRefAddr x) False edges newAcc
     | not start
     , Just rx <- sufIrredIsSufRef x =
-        let newAcc = acc ++ ([(x, True) | Map.member rx edges])
+        let newAcc = if Map.member rx edges then (x, True) : acc else acc
          in go (sufRefToSufIrred $ getParentSufRefAddr x) False edges newAcc
     | otherwise = go (sufRefToSufIrred $ getParentSufRefAddr x) False edges acc
 
@@ -405,7 +392,7 @@ isSufIrredParent parent child =
 It first converts the irreducible address to a referable address, then get the parent of the referable address.
 -}
 getParentSufRefAddr :: SuffixIrredAddr -> SuffixReferableAddr
-getParentSufRefAddr addr = go (trimAddrToSufRef (sufIrredToAddr addr))
+getParentSufRefAddr addr = {-# SCC "getParentSufRefAddrGo" #-} go (trimAddrToSufRef (sufIrredToAddr addr))
  where
   go x
     | rootTreeAddr == sufRefToAddr x = x

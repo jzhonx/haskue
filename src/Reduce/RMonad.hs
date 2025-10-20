@@ -93,6 +93,7 @@ data Context = Context
   { ctxObjID :: !Int
   , ctxReduceStack :: [TreeAddr]
   , isRecalcing :: !Bool
+  , recalcRootQ :: [GrpAddr]
   , ctxNotifGraph :: NotifGraph
   , ctxLetMap :: Map.Map TreeAddr Bool
   , rcdIsReducingRCs :: !Bool
@@ -119,6 +120,7 @@ emptyContext =
     { ctxObjID = 0
     , ctxReduceStack = []
     , isRecalcing = False
+    , recalcRootQ = []
     , ctxNotifGraph = emptyNotifGraph
     , ctxLetMap = Map.empty
     , rcdIsReducingRCs = False
@@ -171,7 +173,7 @@ type ReduceMonad r s m =
   )
 
 data RTCState = RTCState
-  { rtsTC :: TrCur
+  { rtsTC :: !TrCur
   , rtsCtx :: Context
   }
 
@@ -292,7 +294,7 @@ getTMTASeg = do
 getTMCursor :: (ReduceMonad r s m) => m TrCur
 getTMCursor = do
   x <- get
-  return $ {-# SCC "getTreeCursor" #-} getTreeCursor x
+  return $ getTreeCursor x
 
 putTMCursor :: (ReduceMonad r s m) => TrCur -> m ()
 putTMCursor tc = modify $ \s -> setTreeCursor s tc
@@ -402,6 +404,13 @@ descendTMSeg seg = do
     (\r -> putTMCursor r >> return True)
     (goDownTCSeg seg tc)
 
+descendTMSegMust :: (ReduceMonad r s m) => TASeg -> m ()
+descendTMSegMust seg = do
+  ok <- descendTMSeg seg
+  unless ok $ do
+    t <- getTMTree
+    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
+
 -- Push down operations
 
 -- | Push down the segment with the new value.
@@ -494,6 +503,27 @@ getIsReducingRC = rcdIsReducingRCs <$> getRMContext
 setIsReducingRC :: (ReduceMonad r s m) => Bool -> m ()
 setIsReducingRC b = do
   modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
+
+-- Q
+
+getRecalcRootQ :: (ResolveMonad r s m) => m [GrpAddr]
+getRecalcRootQ = recalcRootQ <$> getRMContext
+
+pushRecalcRootQ :: (ReduceMonad r s m) => GrpAddr -> m ()
+pushRecalcRootQ gAddr = do
+  debugInstantTM
+    "pushRecalcRootQ"
+    (printf "pushing gAddr %s to recalcRootQ" (show gAddr))
+  modifyRMContext $ \ctx -> ctx{recalcRootQ = gAddr : recalcRootQ ctx}
+
+popRecalcRootQ :: (ResolveMonad r s m) => m (Maybe GrpAddr)
+popRecalcRootQ = do
+  ctx <- getRMContext
+  case recalcRootQ ctx of
+    [] -> return Nothing
+    (x : xs) -> do
+      putRMContext ctx{recalcRootQ = xs}
+      return (Just x)
 
 -- Tree depth check
 
@@ -636,17 +666,9 @@ preVisitTree subs f x = do
     ( \acc subSeg -> do
         (seg, pre, post) <- case subSeg of
           SubNodeSegNormal seg -> return (seg, return, return)
-          -- subTC <- modifyError FatalErr (goDownTCSegMust seg (fst acc))
-          -- z <- preVisitTree subs f (subTC, snd acc)
-          -- nextTC <- modifyError FatalErr (propUpTC (fst z))
-          -- return (nextTC, snd z)
           SubNodeSegEmbed seg -> do
             let origSeg = fromJust $ tcFocusSeg (fst acc)
             return (seg, propUpTC, goDownTCSegMust origSeg)
-        -- subTC <- modifyError FatalErr (propUpTC (fst acc) >>= goDownTCSegMust seg)
-        -- z <- preVisitTree subs f (subTC, snd acc)
-        -- nextTC <- modifyError FatalErr (propUpTC (fst z) >>= goDownTCSegMust origSeg)
-        -- return (nextTC, snd z)
         subTC <- modifyError FatalErr (pre (fst acc) >>= goDownTCSegMust seg)
         z <- preVisitTree subs f (subTC, snd acc)
         nextTC <- modifyError FatalErr (propUpTC (fst z) >>= post)

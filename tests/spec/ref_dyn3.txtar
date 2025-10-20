@@ -1,4 +1,4 @@
--- ref7 --
+-- ref_dyn3 --
 // This case tests that a reference to a function field in a function node is resolved correctly.
 y: A.b
 r1: {d: 2}

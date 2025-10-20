@@ -1,4 +1,4 @@
--- ref8 --
+-- ref5 --
 // this tests whether the chained reference is resolved correctly.
 y: x
 x: {a: z}

@@ -28,7 +28,7 @@ library
         Reduce.Nodes,
         Reduce.PostReduce,
         Reduce.RMonad,
-        Reduce.ReCalc,
+        Reduce.Recalc,
         Reduce.RefSys,
         Reduce.RegOps,
         Reduce.Root,
