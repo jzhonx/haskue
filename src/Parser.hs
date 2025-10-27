@@ -7,7 +7,7 @@ module Parser where
 
 import AST
 import Control.Monad (void, when)
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (MonadError)
 import Data.Maybe (fromJust, isNothing)
 import qualified Data.Text as T
 import Exception (throwErrSt)
@@ -271,7 +271,6 @@ operand =
             x <- identifier
             return $ fmapSingleNode OperandName (fmapSingleNode Identifier x)
         )
-    -- <|> (fmapSingleNode OperandName <$> (composeNoPos Identifier <$> identifier))
     <|> ( do
             l <- lparen
             e <- expr
@@ -497,8 +496,6 @@ guardClause = do
   st <- lexeme "if" $ (,TokenString) <$> (string "if" <?> "failed to parse keyword if")
   end <- expr
   return $ betweenTokenInfos st (GuardClause (wtVal end)) end
-
--- return $ GuardClause (wtVal eLex) <$ eLex
 
 forClause :: Parser (WithTokenInfo StartClause)
 forClause = do

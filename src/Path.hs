@@ -269,8 +269,6 @@ isPrefix (TreeAddr x) (TreeAddr y) = isSegVPrefix x y
 isSegVPrefix :: V.Vector TASeg -> V.Vector TASeg -> Bool
 isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 
--- isPrefix (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && x == V.take (V.length x) y
-
 {- | Trim the address by cutting off the prefix.
 
 If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the

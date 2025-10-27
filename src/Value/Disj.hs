@@ -25,8 +25,5 @@ data Disj = Disj
 defDisjunctsFromDisj :: Disj -> [Tree]
 defDisjunctsFromDisj (Disj{dsjDefIndexes = indexes, dsjDisjuncts = disjuncts}) = map (\i -> disjuncts !! i) indexes
 
--- buildDefVal :: (Disj -> Tree) -> Disj -> Disj
--- buildDefVal toTree d = d{dsjDefault = defValFromDisj toTree d}
-
 emptyDisj :: Disj
 emptyDisj = Disj{dsjDefIndexes = [], dsjDisjuncts = []}

@@ -47,8 +47,6 @@ deriving instance Eq Field
 deriving instance Eq DynamicField
 deriving instance Eq StructCnstr
 
--- deriving instance Eq Embedding
-
 deriving instance Eq List
 
 deriving instance Eq Disj
@@ -104,7 +102,6 @@ deriving instance Show Field
 deriving instance Show DynamicField
 deriving instance Show StructCnstr
 
--- deriving instance Show Embedding
 deriving instance Show Binding
 
 deriving instance Show List
@@ -141,7 +138,6 @@ deriving instance NFData Field
 deriving instance NFData DynamicField
 deriving instance NFData StructCnstr
 
--- deriving instance NFData Embedding
 deriving instance NFData Binding
 
 deriving instance NFData List

@@ -109,12 +109,6 @@ data StructCnstr = StructCnstr
   }
   deriving (Generic)
 
--- data Embedding = Embedding
---   { embID :: !Int
---   , embValue :: Tree
---   }
---   deriving (Generic)
-
 {- | Permission item stores permission information for the static fields and dynamic fields of a struct.
 
 The permission information is used to check if the opposite labels and dynamic fields are allowed when the base struct
@@ -198,13 +192,6 @@ dynToField df sfM unifier = case sfM of
       , ssfAttr = dsfAttr df
       , ssfObjects = Set.fromList [dsfID df]
       }
-
--- mkEmbedding :: Int -> Tree -> Embedding
--- mkEmbedding eid t =
---   Embedding
---     { embID = eid
---     , embValue = t
---     }
 
 lookupStructLet :: RefIdent -> Struct -> Maybe Tree
 lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
@@ -368,39 +355,6 @@ insertStructNewDynField oid df struct =
 insertStructNewCnstr :: Int -> Tree -> Tree -> Struct -> Struct
 insertStructNewCnstr cid pat val struct =
   struct{stcCnstrs = IntMap.insert cid (StructCnstr cid pat val) (stcCnstrs struct)}
-
--- {- | Given a struct and a list of static field names, return the permission information to check if the static fields
--- are allowed
--- -}
--- getPermInfoForFields :: Struct -> [T.Text] -> [PermItem]
--- getPermInfoForFields struct = foldr go []
---  where
---   go name ext =
---     foldr
---       ( \p acc ->
---           if name `Set.member` piLabels p || name `Set.member` piOpLabels p then p : acc else acc
---       )
---       ext
---       (stcPerms struct)
-
--- {- | Given a struct and the id of a dynamic field, return the permission information to check if the dynamic
--- field is allowed or whether the dynamic field allows other fields.
--- -}
--- getPermInfoForDyn :: Struct -> Int -> [PermItem]
--- getPermInfoForDyn struct i =
---   foldr
---     ( \p acc ->
---         if StructDynFieldOID i `Set.member` piLabels p || StructDynFieldOID i `Set.member` piOpLabels p then p : acc else acc
---     )
---     []
---     (stcPerms struct)
-
--- {- | Given a struct and the index of a constraint, return the permission information to check whether the constraint
--- allows other fields.
--- -}
--- getPermInfoForPattern :: Struct -> Int -> [PermItem]
--- getPermInfoForPattern struct i =
---   foldr (\p acc -> if i `Set.member` piCnstrs p then p : acc else acc) [] (stcPerms struct)
 
 {- | Deduplicate the block labels by removing the static that have the same label or dynamic field that is evaluated to
 the same label.

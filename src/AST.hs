@@ -9,7 +9,7 @@ module AST where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
-import Control.Monad.State (MonadState, evalState, get, gets, modify)
+import Control.Monad.State (MonadState, evalState, gets, modify)
 import Data.ByteString.Builder (
   Builder,
   byteString,

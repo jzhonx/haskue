@@ -7,7 +7,7 @@
 
 module Reduce.Nodes where
 
-import Control.Monad (foldM, forM_, unless, void, when)
+import Control.Monad (foldM, forM_, unless, when)
 import Control.Monad.Reader (asks)
 import Cursor
 import Data.Aeson (KeyValue (..), ToJSON (..), object)
@@ -39,7 +39,6 @@ import Reduce.RMonad (
   debugSpanTM,
   debugSpanTreeRM,
   delTMDependentPrefix,
-  descendTMSeg,
   descendTMSegMust,
   getRMDanglingLets,
   getTMAbsAddr,
@@ -71,20 +70,13 @@ reduceStruct = debugSpanTM "reduceStruct" $ do
   whenStruct
     ( \s ->
         mapM_
-          ( \i -> do
-              inSubTM (BlockTASeg (DynFieldTASeg i 0)) reduce
-              -- we will reduce every fields, so no need to return affected labels.
-              -- void $ handleSObjChange (DynFieldTASeg i 0)
-          )
+          (\i -> inSubTM (BlockTASeg (DynFieldTASeg i 0)) reduce)
           (IntMap.keys $ stcDynFields s)
     )
   whenStruct
     ( \s ->
         mapM_
-          ( \i -> do
-              inSubTM (BlockTASeg (PatternTASeg i 0)) reduce
-              -- void $ handleSObjChange (PatternTASeg i 0)
-          )
+          (\i -> inSubTM (BlockTASeg (PatternTASeg i 0)) reduce)
           (IntMap.keys $ stcCnstrs s)
     )
   -- Reduce lets.
@@ -679,11 +671,7 @@ resolvePendingConjuncts pconjs tc = do
   cc <- asks (createCnstr . getReduceParams)
 
   let cnstr = tcFocus tc
-  -- -- We have to rebuild the expression as in the reducing RCs, the tree could have been rewritten, like using
-  -- -- substitution to replace a reference with another mutable.
-  -- e <- liftFatal $ buildASTExpr $ tcFocus tc
-  -- cnstr <- evalExprRM e
-  let (readies, foundIncmpl, atomCnstrM) =
+      (readies, foundIncmpl, atomCnstrM) =
         foldr
           ( \pconj (acc, accFoundIncmpl, accACM) -> case tcFocus <$> pconj of
               Nothing -> (acc, True, accACM)
