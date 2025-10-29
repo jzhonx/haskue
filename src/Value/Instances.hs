@@ -6,6 +6,7 @@ module Value.Instances where
 
 import Control.DeepSeq (NFData (..))
 import Data.Maybe (fromJust, isNothing)
+import StringIndex (ShowWithTextIndexer (..))
 import Value.Block
 import Value.Comprehension
 import Value.Constraint
@@ -109,6 +110,15 @@ deriving instance Show List
 deriving instance Show Disj
 
 deriving instance Show AtomCnstr
+
+deriving instance Show TreeNode
+deriving instance Show TreeValGenEnv
+deriving instance Show Tree
+
+instance ShowWithTextIndexer Tree where
+  tshow t = do
+    s <- oneLinerStringOfTree t
+    return s
 
 -----
 -- NFData

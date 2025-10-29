@@ -17,7 +17,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import NotifGraph
 import Path
 import Reduce.RMonad (
@@ -41,6 +40,7 @@ import Reduce.RMonad (
   throwDirty,
   throwFatal,
  )
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textIndexToText)
 import Text.Printf (printf)
 import Value
 import Value.Util.TreeRep (treeToFullRepString, treeToRepString)
@@ -58,7 +58,8 @@ adaptDRFetch :: DerefResult -> Maybe Tree
 adaptDRFetch = const Nothing
 
 adaptDRRep :: DerefResult -> Value
-adaptDRRep dr = toJSON (treeToRepString <$> drValue dr, drTargetAddr dr, show $ drCycleDetection dr, drIsInBinding dr)
+-- adaptDRRep dr = toJSON (treeToRepString <$> drValue dr, drTargetAddr dr, show $ drCycleDetection dr, drIsInBinding dr)
+adaptDRRep dr = toJSON ()
 
 notFound :: DerefResult
 notFound = DerefResult Nothing Nothing NoCycleDetected False
@@ -118,9 +119,9 @@ index tc@(TCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) =
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
 index tc@(TCFocus (IsRef _ Reference{refArg = arg@(RefIndex _)})) = debugSpanAdaptRM "index" adaptDRFetch adaptDRRep tc $ do
   operandTC <- liftFatal $ goDownTCSegMust (MutArgTASeg 0) tc
+  idxFieldPathM <- convertRefArgTreesToSels arg
   let
     reducedOperandM = rtrNonMut (tcFocus operandTC)
-    idxFieldPathM = convertRefArgTreesToSels arg
     tarTCM = do
       idxFieldPath <- idxFieldPathM
       reducedOperand <- reducedOperandM
@@ -137,6 +138,7 @@ index tc = throwFatal $ printf "index: invalid tree cursor %s" (show tc)
 -- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
 refTCFromRef :: (ResolveMonad r s m) => Reference -> TrCur -> m (Maybe (TrCur, FieldPath))
 refTCFromRef Reference{refArg = arg@(RefPath ident _)} tc = do
+  m <- convertRefArgTreesToSels arg
   maybe
     (return Nothing)
     ( \fp@(FieldPath reducedSels) -> do
@@ -145,21 +147,26 @@ refTCFromRef Reference{refArg = arg@(RefPath ident _)} tc = do
         let refTC = setTCFocusMut (withEmptyMutFrame (Ref newRef)) tc
         return $ Just (refTC, fp)
     )
-    (convertRefArgTreesToSels arg)
+    m
 refTCFromRef _ _ = throwFatal "refTCFromRef: invalid reference"
 
 {- | Convert the reference argument trees to selectors.
 
 Notice that even if the selector tree is concrete, it might not be valid selector. It could be a disjunction.
 -}
-convertRefArgTreesToSels :: RefArg -> Maybe FieldPath
+convertRefArgTreesToSels :: (TextIndexerMonad s m) => RefArg -> m (Maybe FieldPath)
 convertRefArgTreesToSels arg = case arg of
   (RefPath ident sels) -> do
-    let h = StringSel (TE.encodeUtf8 $ refIdentToText ident)
-    rest <- mapM treeToSel (toList sels)
-    return $ FieldPath (h : rest)
-  (RefIndex (_ Seq.:<| rest)) -> FieldPath <$> mapM treeToSel (toList rest)
-  _ -> Nothing
+    idx <- refIdentToTextIndex ident
+    restM <- mapM treeToSel (toList sels)
+    return $ do
+      let h = StringSel idx
+      rest <- sequence restM
+      return $ FieldPath (h : rest)
+  (RefIndex (_ Seq.:<| rest)) -> do
+    m <- mapM treeToSel (toList rest)
+    return $ FieldPath <$> sequence m
+  _ -> return Nothing
 
 {- | Get the value pointed by the value path and the original addresses.
 
@@ -280,9 +287,8 @@ copyConcrete tarTC = do
 checkRefDef :: (ResolveMonad r s m) => TreeAddr -> Tree -> m Tree
 checkRefDef tarAddr val = do
   -- Check if the referenced value has recurClose.
-  let
-    recurClose = isRecurClosed val
-    hasDef = addrHasDef tarAddr
+  let recurClose = isRecurClosed val
+  hasDef <- addrHasDef tarAddr
   if hasDef || recurClose
     then markRecurClosed val
     else return val
@@ -366,12 +372,13 @@ inAbsAddrTCMust p tc f = do
   tarM <- liftFatal (goTCAbsAddr p tc)
   maybe (throwFatal $ printf "%s is not found" (show p)) f tarM
 
-notFoundMsg :: (ResolveMonad r s m) => T.Text -> Maybe AST.Position -> m String
-notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) =
+notFoundMsg :: (ResolveMonad r s m) => TextIndex -> Maybe AST.Position -> m String
+notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) = do
+  idStr <- tshow ident
   return $
     printf
       "reference %s is not found:\n\t%s:%s:%s"
-      (show ident)
+      (show idStr)
       (fromMaybe "-" fM)
       (show $ AST.posLine pos)
       (show $ AST.posColumn pos)
@@ -478,19 +485,23 @@ goRMAbsAddrMust dst = do
       TNBottom _ -> return ()
       _ -> throwFatal $ printf "failed to go to the addr %s, from: %s, tc: %s" (show dst) (show from) (show tc)
 
-addrHasDef :: TreeAddr -> Bool
-addrHasDef p =
-  any
-    ( \case
-        BlockTASeg (StringTASeg (StringSeg s)) -> fromMaybe False $ do
-          typ <- getFieldType (T.unpack $ TE.decodeUtf8 s)
-          return $ typ == SFTDefinition
-        _ -> False
-    )
-    $ addrToList p
+addrHasDef :: (TextIndexerMonad s m) => TreeAddr -> m Bool
+addrHasDef p = do
+  xs <-
+    mapM
+      ( \case
+          BlockTASeg (StringTASeg s) -> do
+            t <- textIndexToText s
+            return $ fromMaybe False $ do
+              typ <- getFieldType (T.unpack t)
+              return $ typ == SFTDefinition
+          _ -> return False
+      )
+      (addrToList p)
+  return $ or xs
 
-selToIdent :: (ResolveMonad r s m) => Selector -> m T.Text
-selToIdent (StringSel s) = return $ TE.decodeUtf8 s
+selToIdent :: (ResolveMonad r s m) => Selector -> m TextIndex
+selToIdent (StringSel s) = return s
 selToIdent _ = throwFatal "invalid selector"
 
 data IdentType
@@ -574,14 +585,14 @@ findIdent ident tc = do
                 field <- lookupStructField name struct
                 if field.ssfAttr.lbAttrIsIdent
                   then do
-                    subTC <- goDownTCSeg (textToStringTASeg name) tc
+                    subTC <- goDownTCSeg (tIdxToStringTASeg name) tc
                     return (subTC, ITField)
                   else
                     Nothing
             , do
                 seg <- case ident of
-                  RefIdent name -> Just $ BlockTASeg $ LetTASeg (textToStringSeg name) Nothing
-                  RefIdentWithOID name oid -> Just $ BlockTASeg $ LetTASeg (textToStringSeg name) (Just oid)
+                  RefIdent name -> Just $ BlockTASeg $ LetTASeg name Nothing
+                  RefIdentWithOID name oid -> Just $ BlockTASeg $ LetTASeg name (Just oid)
                 subTC <- goDownTCSeg seg tc
                 binding <- Map.lookup ident struct.stcBindings
                 let typ = if binding.isIterVar then ITIterBinding else ITLetBinding

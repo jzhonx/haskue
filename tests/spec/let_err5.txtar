@@ -5,4 +5,4 @@ t: {
 	y: t.x
 }
 -- exp --
-error: unreferenced let clause let x
+error: unreferenced let clause let "x"

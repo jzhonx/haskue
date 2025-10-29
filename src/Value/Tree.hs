@@ -12,12 +12,11 @@ module Value.Tree where
 
 import AST (exprToOneLinerStr)
 import qualified AST
-import Common (EnvIO)
-import Control.Monad.Except (runExcept)
+import Common (ErrorEnv)
+import Control.Monad.Except (runExceptT)
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import Path (
@@ -27,8 +26,8 @@ import Path (
   TASeg (..),
   TreeAddr,
   addrToList,
-  stringSegToText,
  )
+import StringIndex (ShowWithTextIndexer (..), TextIndexerMonad, textToTextIndex)
 import Value.Atom
 import Value.Block
 import Value.Bottom
@@ -97,9 +96,6 @@ data Tree = Tree
   , tmpSub :: Maybe Tree
   }
   deriving (Generic)
-
-instance Show Tree where
-  show = oneLinerStringOfTree
 
 pattern TN :: TreeNode -> Tree
 pattern TN tn <- Tree{treeNode = tn}
@@ -365,29 +361,33 @@ appendSelToRefTree oprnd selArg = case oprnd of
     mkMutableTree $ setMutOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
   _ -> mkMutableTree $ withEmptyMutFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
-treesToFieldPath :: [Tree] -> Maybe FieldPath
-treesToFieldPath ts = FieldPath <$> mapM treeToSel ts
+treesToFieldPath :: (TextIndexerMonad s m) => [Tree] -> m (Maybe FieldPath)
+treesToFieldPath ts = do
+  xs <- mapM treeToSel ts
+  return $ FieldPath <$> sequence xs
 
-treeToSel :: Tree -> Maybe Selector
-treeToSel = concreteToSel
-
-concreteToSel :: Tree -> Maybe Selector
-concreteToSel t = case treeNode t of
+treeToSel :: (TextIndexerMonad s m) => Tree -> m (Maybe Selector)
+treeToSel t = case treeNode t of
   TNAtom a
-    | (String s) <- a -> Just (StringSel (TE.encodeUtf8 s))
-    | (Int j) <- a -> Just (IntSel $ fromIntegral j)
+    | (String s) <- a -> do
+        tIdx <- textToTextIndex s
+        return $ Just (StringSel tIdx)
+    | (Int j) <- a -> return $ Just (IntSel $ fromIntegral j)
   -- If a disjunct has a default, then we should try to use the default.
   TNDisj dj | isJust (rtrDisjDefVal dj) -> treeToSel (fromJust $ rtrDisjDefVal dj)
-  _ -> Nothing
+  _ -> return Nothing
 
-addrToTrees :: TreeAddr -> Maybe [Tree]
-addrToTrees p = mapM selToTree (addrToList p)
+addrToTrees :: (TextIndexerMonad s m) => TreeAddr -> m (Maybe [Tree])
+addrToTrees p = do
+  xs <- mapM selToTree (addrToList p)
+  return $ sequence xs
  where
-  selToTree :: TASeg -> Maybe Tree
   selToTree sel = case sel of
-    (BlockTASeg (StringTASeg s)) -> Just $ mkAtomTree (String (stringSegToText s))
-    IndexTASeg j -> Just $ mkAtomTree (Int (fromIntegral j))
-    _ -> Nothing
+    (BlockTASeg (StringTASeg s)) -> do
+      str <- tshow s
+      return $ Just $ mkAtomTree (String (T.pack str))
+    IndexTASeg j -> return $ Just $ mkAtomTree (Int (fromIntegral j))
+    _ -> return Nothing
 
 -- built-in functions
 builtinMutableTable :: [(String, Tree)]
@@ -407,12 +407,13 @@ builtinMutableTable =
   ]
 
 -- | Create a one-liner string representation of the snapshot of the tree.
-oneLinerStringOfTree :: Tree -> String
-oneLinerStringOfTree t =
-  let astE = buildASTExprDebug t
-   in case runExcept astE of
-        Left err -> show err
-        Right expr -> exprToOneLinerStr expr
+oneLinerStringOfTree :: (TextIndexerMonad s m) => Tree -> m String
+oneLinerStringOfTree t = do
+  let m = buildASTExprDebug t
+  e <- runExceptT m
+  case e of
+    Left err -> return err
+    Right expr -> return $ exprToOneLinerStr expr
 
 invalidateMutable :: Tree -> Tree
 invalidateMutable t@(IsTGenOp _) = t{treeNode = TNNoVal}
@@ -432,7 +433,7 @@ showTreeSymbol t = case treeNode t of
   TNTop -> "_"
   TNNoVal -> "noval"
 
-showValueType :: (EnvIO r s m) => Tree -> m String
+showValueType :: (ErrorEnv m) => Tree -> m String
 showValueType t = case treeNode t of
   TNAtom a -> case a of
     String _ -> return "string"
@@ -445,4 +446,4 @@ showValueType t = case treeNode t of
   TNStruct _ -> return "struct"
   TNList _ -> return "list"
   TNTop -> return "_"
-  _ -> throwErrSt $ "not a value type: " ++ show t
+  _ -> throwErrSt $ "not a value type: " ++ showTreeSymbol t

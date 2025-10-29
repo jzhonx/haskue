@@ -18,10 +18,11 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Exception (throwErrSt)
+import StringIndex (TextIndex, TextIndexerMonad, textIndexToText, textToTextIndex)
 import Text.Printf (printf)
 import Value
 
-type EvalEnv r s m = (Common.EnvIO r s m, Common.IDStore s)
+type EvalEnv r s m = (Common.EnvIO r s m, Common.IDStore s, TextIndexerMonad s m)
 
 evalSourceFile :: (EvalEnv r s m) => SourceFile -> m Tree
 evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
@@ -125,8 +126,9 @@ evalDecl decl = case anVal decl of
   FieldDecl (anVal -> AST.Field ls e) ->
     evalFDeclLabels ls e
   DeclLet (anVal -> LetClause ident binde) -> do
+    idIdx <- textToTextIndex (anVal ident)
     val <- evalExpr binde
-    return $ LetSAdder (anVal ident) val
+    return $ LetSAdder idIdx val
 
 evalEmbedding :: (EvalEnv r s m) => Bool -> AST.Embedding -> m Tree
 evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
@@ -148,11 +150,15 @@ evalEmbedding
     fev <- evalExpr fe
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
+    iidx <- textToTextIndex (anVal i)
+    jidxM <- case jM of
+      Just j -> Just <$> textToTextIndex (anVal j)
+      Nothing -> return Nothing
     return $
       mkMutableTree $
         withEmptyMutFrame $
           Compreh $
-            mkComprehension isListCompreh (ComprehArgFor (anVal i) (anVal <$> jM) fev : clsv) sv
+            mkComprehension isListCompreh (ComprehArgFor iidx jidxM fev : clsv) sv
 evalEmbedding _ _ = throwErrSt "invalid embedding"
 
 evalClause :: (EvalEnv r s m) => Clause -> m ComprehArg
@@ -161,11 +167,16 @@ evalClause c = case anVal c of
     t <- evalExpr e
     return $ ComprehArgIf t
   ClauseStartClause (anVal -> ForClause (anVal -> i) jM e) -> do
+    iidx <- textToTextIndex i
+    jidxM <- case jM of
+      Just j -> Just <$> textToTextIndex (anVal j)
+      Nothing -> return Nothing
     t <- evalExpr e
-    return $ ComprehArgFor i (anVal <$> jM) t
+    return $ ComprehArgFor iidx jidxM t
   ClauseLetClause (anVal -> LetClause (anVal -> ident) le) -> do
+    idIdx <- textToTextIndex ident
     lt <- evalExpr le
-    return $ ComprehArgLet ident lt
+    return $ ComprehArgLet idIdx lt
   _ -> throwErrSt $ printf "invalid clause: %s" (show c)
 
 evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m StructElemAdder
@@ -188,8 +199,9 @@ evalFDeclLabels lbls e =
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
        in case ln of
-            (toIDentLabel -> Just key) ->
-              return $ StaticSAdder key (staticFieldMker val attr)
+            (toIDentLabel -> Just key) -> do
+              keyIdx <- textToTextIndex key
+              return $ StaticSAdder keyIdx (staticFieldMker val attr)
             (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
               oid <- allocOID
@@ -197,7 +209,9 @@ evalFDeclLabels lbls e =
             (toSStrLabel -> Just ss) -> do
               rE <- simpleStringLitToStr ss
               case rE of
-                Right str -> return $ StaticSAdder str (staticFieldMker val attr)
+                Right str -> do
+                  strIdx <- textToTextIndex str
+                  return $ StaticSAdder strIdx (staticFieldMker val attr)
                 Left t -> do
                   oid <- allocOID
                   return $ DynamicSAdder oid (DynamicField oid attr t True val)
@@ -232,10 +246,10 @@ evalFDeclLabels lbls e =
   isVar _ = False
 
 data StructElemAdder
-  = StaticSAdder T.Text Field
+  = StaticSAdder TextIndex Field
   | DynamicSAdder !Int DynamicField
   | CnstrSAdder !Int Tree Tree
-  | LetSAdder T.Text Tree
+  | LetSAdder TextIndex Tree
   | EmbedSAdder Tree
   | EmptyAdder
 
@@ -245,7 +259,8 @@ If the field is already in the struct, then unify the field with the new field.
 -}
 insertElemToStruct :: (EvalEnv r s m) => StructElemAdder -> Struct -> m Tree
 insertElemToStruct adder struct = case adder of
-  (StaticSAdder name sf) ->
+  (StaticSAdder name sf) -> do
+    nameStr <- textIndexToText name
     maybe
       ( case lookupStructStubVal name struct of
           -- The label is already in the struct, so we need to unify the field.
@@ -260,30 +275,33 @@ insertElemToStruct adder struct = case adder of
               newStruct = updateStubAndField name unifySFOp struct
              in
               return $ mkStructTree newStruct
-          [StructStubLet _] -> return $ aliasErr name
+          [StructStubLet _] -> do
+            return $ aliasErr nameStr
           -- The label is not seen before in the struct.
           [] -> return $ mkStructTree $ insertNewStubAndField name sf struct
-          _ -> return $ aliasErr name
+          _ -> return $ aliasErr nameStr
       )
       return
-      (existCheck name False)
+      (existCheck name nameStr False)
   (DynamicSAdder i dsf) -> return . mkStructTree $ insertStructNewDynField i dsf struct
   (CnstrSAdder i pattern val) -> return . mkStructTree $ insertStructNewCnstr i pattern val struct
-  (LetSAdder name val) ->
+  (LetSAdder name val) -> do
+    nameStr <- textIndexToText name
     return $
       fromMaybe
         -- The name is not seen before in the block.
         (mkStructTree $ insertStructLet name val struct)
-        (existCheck name True)
+        (existCheck name nameStr True)
   _ -> return $ mkStructTree struct
  where
-  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" name
-  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" name
+  -- In both errors, we show the name so that the name is quoted.
+  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" (show name)
+  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" (show name)
 
   -- Checks if name is already in the block. If it is, then return an error message.
-  existCheck :: T.Text -> Bool -> Maybe Tree
-  existCheck name isNameLet =
-    case (lookupStructStubVal name struct, isNameLet) of
+  existCheck :: TextIndex -> T.Text -> Bool -> Maybe Tree
+  existCheck nameIdx name isNameLet =
+    case (lookupStructStubVal nameIdx struct, isNameLet) of
       ([StructStubField f], True)
         | lbAttrIsIdent (ssfAttr f) -> Just $ aliasErr name
       ([StructStubLet _], True) -> Just $ lbRedeclErr name
@@ -317,7 +335,9 @@ evalPrimExpr e = case anVal e of
     OpLiteral lit -> evalLiteral lit
     OperandName (anVal -> Identifier (anVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
       Just v -> return v
-      Nothing -> return $ mkMutableTree $ withEmptyMutFrame $ Ref $ emptyIdentRef ident
+      Nothing -> do
+        idIdx <- textToTextIndex ident
+        return $ mkMutableTree $ withEmptyMutFrame $ Ref $ emptyIdentRef idIdx
     OpExpression expr -> do
       x <- evalExpr expr
       return $ x{isRootOfSubTree = True}

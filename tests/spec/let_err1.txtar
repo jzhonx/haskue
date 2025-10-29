@@ -2,4 +2,4 @@
 // unreferenced variable x
 let x = 0
 -- exp --
-error: unreferenced let clause let x
+error: unreferenced let clause let "x"

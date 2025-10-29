@@ -3,15 +3,13 @@
 
 module Value.Reference where
 
-import qualified Common
 import Data.Foldable (toList)
 import Data.List (intercalate)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import Path
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Value.Atom
 import {-# SOURCE #-} Value.Tree
 
@@ -24,22 +22,28 @@ data RefArg
     RefIndex (Seq.Seq Tree)
   deriving (Generic)
 
-data RefIdent = RefIdent T.Text | RefIdentWithOID T.Text Int deriving (Generic, Eq, Ord)
+data RefIdent = RefIdent TextIndex | RefIdentWithOID TextIndex Int deriving (Show, Generic, Eq, Ord)
 
-instance Show RefIdent where
-  show i = T.unpack $ refIdentToText i
+instance ShowWithTextIndexer RefIdent where
+  tshow (RefIdent s) = tshow s
+  tshow (RefIdentWithOID s i) = do
+    sStr <- tshow s
+    return $ sStr ++ "_" ++ show i
 
-refIdentToText :: RefIdent -> T.Text
-refIdentToText (RefIdent s) = s
-refIdentToText (RefIdentWithOID s i) = s `T.append` T.pack ("_" ++ show i)
+refIdentToTextIndex :: (TextIndexerMonad s m) => RefIdent -> m TextIndex
+refIdentToTextIndex (RefIdent s) = return s
+refIdentToTextIndex (RefIdentWithOID s i) = do
+  str <- tshow s
+  let x = T.pack str `T.append` T.pack ("_" ++ show i)
+  textToTextIndex x
 
 refIdentToLetTASeg :: RefIdent -> BlockTASeg
-refIdentToLetTASeg (RefIdent s) = LetTASeg (textToStringSeg s) Nothing
-refIdentToLetTASeg (RefIdentWithOID s i) = LetTASeg (textToStringSeg s) (Just i)
+refIdentToLetTASeg (RefIdent s) = LetTASeg s Nothing
+refIdentToLetTASeg (RefIdentWithOID s i) = LetTASeg s (Just i)
 
-letTASegToRefIdent :: StringSeg -> Maybe Int -> RefIdent
-letTASegToRefIdent s Nothing = RefIdent (stringSegToText s)
-letTASegToRefIdent s (Just i) = RefIdentWithOID (stringSegToText s) i
+letTASegToRefIdent :: TextIndex -> Maybe Int -> RefIdent
+letTASegToRefIdent s Nothing = RefIdent s
+letTASegToRefIdent s (Just i) = RefIdentWithOID s i
 
 showRefArg :: RefArg -> (Tree -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) (toList xs))
@@ -55,23 +59,23 @@ getIndexSegs r = case refArg r of
   RefPath _ _ -> Nothing
   RefIndex xs -> Just xs
 
-fieldPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe FieldPath
-fieldPathFromRefArg treeToA arg = case arg of
-  RefPath ident xs -> do
-    sels <-
-      mapM
-        ( \x -> case treeToA x of
-            Just (String s) -> return $ StringSel (TE.encodeUtf8 s)
-            Just (Int i) -> return $ IntSel (fromIntegral i)
-            _ -> Nothing
-        )
-        (toList xs)
-    return $ FieldPath (StringSel (TE.encodeUtf8 $ refIdentToText ident) : sels)
-  -- RefIndex does not start with a string.
-  RefIndex _ -> Nothing
+-- fieldPathFromRefArg :: (Tree -> Maybe Atom) -> RefArg -> Maybe FieldPath
+-- fieldPathFromRefArg treeToA arg = case arg of
+--   RefPath ident xs -> do
+--     sels <-
+--       mapM
+--         ( \x -> case treeToA x of
+--             Just (String s) -> return $ StringSel (TE.encodeUtf8 s)
+--             Just (Int i) -> return $ IntSel (fromIntegral i)
+--             _ -> Nothing
+--         )
+--         (toList xs)
+--     return $ FieldPath (StringSel (TE.encodeUtf8 $ refIdentToTextIndex ident) : sels)
+--   -- RefIndex does not start with a string.
+--   RefIndex _ -> Nothing
 
-fieldPathFromRef :: (Tree -> Maybe Atom) -> Reference -> Maybe FieldPath
-fieldPathFromRef treeToA ref = fieldPathFromRefArg treeToA (refArg ref)
+-- fieldPathFromRef :: (Tree -> Maybe Atom) -> Reference -> Maybe FieldPath
+-- fieldPathFromRef treeToA ref = fieldPathFromRefArg treeToA (refArg ref)
 
 appendRefArg :: Tree -> RefArg -> RefArg
 appendRefArg y (RefPath s xs) = RefPath s (xs Seq.|> y)
@@ -91,21 +95,20 @@ mkIndexRef ts =
     { refArg = RefIndex ts
     }
 
-emptyIdentRef :: T.Text -> Reference
+emptyIdentRef :: TextIndex -> Reference
 emptyIdentRef ident =
   Reference
     { refArg = RefPath (RefIdent ident) Seq.empty
     }
 
-mkRefFromFieldPath :: (Common.EnvIO r s m) => (Atom -> Tree) -> RefIdent -> FieldPath -> m Reference
+mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Tree) -> RefIdent -> FieldPath -> m Reference
 mkRefFromFieldPath aToTree ident (FieldPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
           StringSel s -> do
-            case TE.decodeUtf8' s of
-              Left err -> throwErrSt (show err)
-              Right str -> return $ aToTree (String str)
+            str <- tshow s
+            return $ aToTree (String $ T.pack str)
           IntSel i -> return $ aToTree (Int $ fromIntegral i)
       )
       xs

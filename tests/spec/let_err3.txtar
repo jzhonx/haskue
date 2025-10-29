@@ -6,4 +6,4 @@ x: {
   y: 2
 }
 -- exp --
-error: can not have both alias and field with name y in the same scope
+error: can not have both alias and field with name "y" in the same scope

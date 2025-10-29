@@ -5,22 +5,22 @@ module Value.Comprehension where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
-import qualified Data.Text as T
 import GHC.Generics (Generic)
+import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Tree
 
 data Comprehension = Comprehension
   { isListCompreh :: !Bool
   , args :: Seq.Seq ComprehArg
-  , iterBindings :: Map.Map T.Text Tree
+  , iterBindings :: Map.Map TextIndex Tree
   -- ^ Temporary iteration bindings for the comprehension so far.
   }
   deriving (Generic)
 
 data ComprehArg
-  = ComprehArgLet T.Text Tree
+  = ComprehArgLet TextIndex Tree
   | ComprehArgIf Tree
-  | ComprehArgFor T.Text (Maybe T.Text) Tree
+  | ComprehArgFor TextIndex (Maybe TextIndex) Tree
   | ComprehArgStructTmpl Tree
   deriving (Generic)
 

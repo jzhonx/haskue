@@ -3,4 +3,4 @@ let x = 1
 let x = 1
 y: x
 -- exp --
-error: x redeclared in same scope
+error: "x" redeclared in same scope

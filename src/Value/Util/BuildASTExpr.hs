@@ -23,6 +23,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textIndexToText, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
 import Value.Block
@@ -38,18 +39,18 @@ import Value.Tree
 import Value.UnifyOp
 import Value.Util.TreeRep
 
-buildASTExpr :: (ErrorEnv m, MonadReader r m) => Tree -> m AST.Expression
+buildASTExpr :: (ErrorEnv m, MonadReader r m, TextIndexerMonad s m) => Tree -> m AST.Expression
 buildASTExpr t = do
   conf <- ask
   runReaderT (buildASTExprExt t) (BuildConfig False conf)
 
-buildASTExprDebug :: (ErrorEnv m) => Tree -> m AST.Expression
+buildASTExprDebug :: (ErrorEnv m, TextIndexerMonad s m) => Tree -> m AST.Expression
 buildASTExprDebug t = runReaderT (buildASTExprExt t) (BuildConfig True ())
 
 class HasBuildConfig r where
   getIsDebug :: r -> Bool
 
-type BEnv r s m = (ErrorEnv m, MonadReader r m, HasBuildConfig r)
+type BEnv r s m = (ErrorEnv m, MonadReader r m, HasBuildConfig r, TextIndexerMonad s m)
 
 data BuildConfig a = BuildConfig
   { bcIsDebug :: Bool
@@ -127,7 +128,7 @@ buildMutableASTExprForce (Mutable mop _) t = case mop of
   Itp _ -> throwExprNotFound t
 
 buildRCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
-buildRCASTExpr t = do
+buildRCASTExpr _ = do
   isDebug <- asks getIsDebug
   if isDebug
     then return (AST.idCons $ pure $ T.pack "RC")
@@ -147,8 +148,9 @@ buildSCyclicASTExpr inner = do
     then buildArgsExpr "SC" [inner{isSCyclic = False}]
     else throwErrSt "structural cycle expression should not be built in non-debug mode"
 
-buildStaticFieldExpr :: (BEnv r s m) => (T.Text, Field) -> m AST.Declaration
-buildStaticFieldExpr (sel, sf) = do
+buildStaticFieldExpr :: (BEnv r s m) => (TextIndex, Field) -> m AST.Declaration
+buildStaticFieldExpr (sIdx, sf) = do
+  sel <- T.pack <$> tshow sIdx
   e <- buildASTExprExt (ssfValue sf)
   let decl =
         AST.FieldDecl
@@ -192,11 +194,11 @@ buildPatternExpr pat = do
 
 buildLetExpr :: (BEnv r s m) => (RefIdent, Binding) -> m AST.Declaration
 buildLetExpr (ident, binding) = do
-  let s = refIdentToText ident
+  s <- refIdentToTextIndex ident >>= tshow
   ve <- buildASTExprExt binding.value
   let
     letClause :: AST.LetClause
-    letClause = pure (AST.LetClause (pure s) ve)
+    letClause = pure (AST.LetClause (pure $ T.pack s) ve)
   return (pure $ AST.DeclLet letClause)
 
 -- buildEmbedExpr :: (BEnv r s m) => Embedding -> m AST.Declaration
@@ -231,7 +233,7 @@ buildStructASTExpr struct t = do
     else buildStructASTExprNormal struct t
 
 buildStructASTExprDebug :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
-buildStructASTExprDebug s t = do
+buildStructASTExprDebug s _ = do
   statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
   dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
   patterns <- mapM buildPatternExpr (IntMap.elems $ stcCnstrs s)
@@ -245,16 +247,18 @@ buildStructASTExprDebug s t = do
 buildStructASTExprNormal :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
 buildStructASTExprNormal _ (IsEmbedVal v) = buildASTExprExt v
 buildStructASTExprNormal s t = do
-  case buildStructOrdLabels rtrString s of
+  r <- buildStructOrdLabels rtrString s
+  case r of
     Just labels -> do
       fields <-
         mapM
           ( \l -> do
+              li <- textToTextIndex l
               pair <-
                 maybe
                   (throwErrSt $ "struct field not found: " ++ show l)
-                  (\f -> return (l, f))
-                  (lookupStructField l s)
+                  (\f -> return (li, f))
+                  (lookupStructField li s)
               buildStaticFieldExpr pair
           )
           labels
@@ -299,13 +303,18 @@ buildComprehASTExpr cph = do
     ComprehArgIf val -> do
       ve <- buildASTExprExt val
       return (AST.GuardClause ve)
-    ComprehArgFor varName secVarM val -> do
+    ComprehArgFor varNameIdx secVarIdxM val -> do
+      varName <- textIndexToText varNameIdx
+      secVarM <- case secVarIdxM of
+        Just sIdx -> Just <$> textIndexToText sIdx
+        Nothing -> return Nothing
       ve <- buildASTExprExt val
       return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
     _ -> throwErrSt "start clause should not be let clause"
 
   buildIterClause clause = case clause of
-    ComprehArgLet varName val -> do
+    ComprehArgLet varNameIdx val -> do
+      varName <- textIndexToText varNameIdx
       ve <- buildASTExprExt val
       return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
     _ -> do
@@ -416,11 +425,12 @@ buildDisjoinOpASTExpr op t = do
 buildRefASTExpr :: (BEnv r s m) => Reference -> m AST.Expression
 buildRefASTExpr ref = case refArg ref of
   RefPath var xs -> do
+    varS <- refIdentToTextIndex var >>= tshow
     let varE =
           AST.PrimExprOperand
             AST.<<^>> AST.OperandName
             AST.<<^>> AST.Identifier
-            AST.<^> pure (refIdentToText var)
+            AST.<^> pure (T.pack varS)
     r <-
       foldM
         ( \acc x -> do

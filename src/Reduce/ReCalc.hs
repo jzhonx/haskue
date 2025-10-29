@@ -248,7 +248,8 @@ recalcNode addr affectedAddrsSet fetch = do
     "recalcNode"
     (printf "affectedAddrsSet: %s" (show affectedAddrsSet))
     ( \r -> case r of
-        Just dep -> toJSON $ sufIrredToAddr dep
+        -- Just dep -> toJSON $ sufIrredToAddr dep
+        Just dep -> toJSON ()
         Nothing -> toJSON ()
     )
     $ do
@@ -292,9 +293,9 @@ checkSReady baseAddr affectedAddrsSet fetch struct = do
   let
     affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred affectedAddrsSet
     affectedFieldSegs =
-      [ StringTASeg (textToStringSeg name)
+      [ StringTASeg name
       | name <- Map.keys (stcFields struct)
-      , let a = trimAddrToSufIrred $ appendSeg baseAddr (textToStringTASeg name)
+      , let a = trimAddrToSufIrred $ appendSeg baseAddr (BlockTASeg $ StringTASeg name)
       , Set.member a affectedSufIrredAddrsSet
       ]
     affectedDynSegs =

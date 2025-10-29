@@ -5,18 +5,14 @@
 module Path where
 
 import Control.DeepSeq (NFData (..))
-import Data.Aeson (ToJSON)
-import Data.Aeson.Types (ToJSON (..))
-import qualified Data.ByteString as B
+import Control.Monad.State (MonadState)
 import Data.List (intercalate)
-import Data.List.Split (splitOn)
-import Data.Text (unpack)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import GHC.Generics (Generic)
+import StringIndex
 
-data Selector = StringSel B.ByteString | IntSel !Int
+data Selector = StringSel TextIndex | IntSel !Int
   deriving (Eq, Ord, Generic, NFData)
 
 {- FieldPath is a list of selectors.
@@ -58,24 +54,26 @@ isFieldPathEmpty (FieldPath []) = True
 isFieldPathEmpty _ = False
 
 fieldPathToAddr :: FieldPath -> TreeAddr
-fieldPathToAddr (FieldPath sels) = addrFromList $ map selToTASeg sels
+fieldPathToAddr (FieldPath sels) =
+  let xs = map selToTASeg sels
+   in addrFromList xs
 
 selToTASeg :: Selector -> TASeg
-selToTASeg (StringSel s) = textToStringTASeg (TE.decodeUtf8 s)
+selToTASeg (StringSel s) = BlockTASeg (StringTASeg s)
 selToTASeg (IntSel i) = IndexTASeg i
 
-fieldPathFromString :: String -> FieldPath
-fieldPathFromString s =
-  FieldPath
-    { getRefSels =
-        map
-          ( \x ->
-              case reads x of
-                [(i, "")] -> IntSel i
-                _ -> StringSel (TE.encodeUtf8 (T.pack x))
-          )
-          (splitOn "." s)
-    }
+-- fieldPathFromString :: String -> FieldPath
+-- fieldPathFromString s =
+--   FieldPath
+--     { getRefSels =
+--         map
+--           ( \x ->
+--               case reads x of
+--                 [(i, "")] -> IntSel i
+--                 _ -> StringSel (TE.encodeUtf8 (T.pack x))
+--           )
+--           (splitOn "." s)
+--     }
 
 -- == TASeg ==
 
@@ -90,8 +88,9 @@ data TASeg
   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
     MutArgTASeg !Int
   | TempTASeg
-  deriving (Eq, Ord, Generic, NFData, ToJSON)
+  deriving (Eq, Ord, Generic, NFData)
 
+-- showTASeg :: (MonadState s m, HasTextIndexer s) => TASeg -> m String
 instance Show TASeg where
   show RootTASeg = "/"
   show (BlockTASeg s) = show s
@@ -99,6 +98,10 @@ instance Show TASeg where
   show (DisjTASeg i) = "dj" ++ show i
   show (MutArgTASeg i) = "fa" ++ show i
   show TempTASeg = "tmp"
+
+instance ShowWithTextIndexer TASeg where
+  tshow (BlockTASeg s) = tshow s
+  tshow s = return $ show s
 
 isSegReducible :: TASeg -> Bool
 isSegReducible (MutArgTASeg _) = True
@@ -115,30 +118,15 @@ isSegReferable (IndexTASeg _) = True
 isSegReferable RootTASeg = True
 isSegReferable _ = False
 
-newtype StringSeg = StringSeg B.ByteString
-  deriving (Eq, Ord, Generic, NFData)
-
-instance Show StringSeg where
-  show (StringSeg s) = unpack $ stringSegToText (StringSeg s)
-
-instance ToJSON StringSeg where
-  toJSON (StringSeg s) = toJSON $ show s
-
-stringSegToText :: StringSeg -> T.Text
-stringSegToText (StringSeg s) = TE.decodeUtf8 s
-
-textToStringSeg :: T.Text -> StringSeg
-textToStringSeg t = StringSeg (TE.encodeUtf8 t)
-
 data BlockTASeg
-  = StringTASeg StringSeg
-  | LetTASeg StringSeg (Maybe Int)
+  = StringTASeg TextIndex
+  | LetTASeg TextIndex (Maybe Int)
   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
     PatternTASeg !Int !Int
   | -- | DynFieldTASeg is used to represent a dynamic field.
     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
     DynFieldTASeg !Int !Int
-  | StubFieldTASeg StringSeg
+  | StubFieldTASeg TextIndex
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show BlockTASeg where
@@ -148,14 +136,29 @@ instance Show BlockTASeg where
   show (StringTASeg s) = show s
   show (LetTASeg s m) = "let_" ++ show s ++ maybe "" (\i -> "_" ++ show i) m
 
-instance ToJSON BlockTASeg where
-  toJSON seg = toJSON $ show seg
+instance ShowWithTextIndexer BlockTASeg where
+  tshow (StubFieldTASeg s) = do
+    str <- tshow s
+    return $ "__" ++ str
+  tshow (StringTASeg s) = tshow s
+  tshow (LetTASeg s m) = do
+    str <- tshow s
+    return $ "let_" ++ str ++ maybe "" (\i -> "_" ++ show i) m
+  tshow s = return $ show s
 
-strToStringTASeg :: String -> TASeg
+-- toJSONBlockTASeg :: (MonadState s m, HasTextIndexer s) => BlockTASeg -> m Value
+-- toJSONBlockTASeg seg = do
+--   str <- showBlockTASeg seg
+--   return $ toJSON str
+
+tIdxToStringTASeg :: TextIndex -> TASeg
+tIdxToStringTASeg s = BlockTASeg (StringTASeg s)
+
+textToStringTASeg :: (MonadState s m, HasTextIndexer s) => T.Text -> m TASeg
+textToStringTASeg s = tIdxToStringTASeg <$> textToTextIndex s
+
+strToStringTASeg :: (MonadState s m, HasTextIndexer s) => String -> m TASeg
 strToStringTASeg s = textToStringTASeg (T.pack s)
-
-textToStringTASeg :: T.Text -> TASeg
-textToStringTASeg s = BlockTASeg $ StringTASeg $ textToStringSeg s
 
 unaryOpTASeg :: TASeg
 unaryOpTASeg = MutArgTASeg 0
@@ -180,21 +183,17 @@ instance Show BinOpDirect where
 the list.
 -}
 newtype TreeAddr = TreeAddr {getTreeAddrSegs :: V.Vector TASeg}
-  deriving (Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData)
 
-instance Show TreeAddr where
-  show = showTreeAddr
-
-instance ToJSON TreeAddr where
-  toJSON addr = toJSON $ show addr
-
-showTreeAddr :: TreeAddr -> String
-showTreeAddr (TreeAddr a)
-  | V.null a = "."
-  | otherwise =
-      if a V.! 0 == RootTASeg
-        then "/" ++ intercalate "/" (map show (V.toList $ V.drop 1 a))
-        else intercalate "/" $ map show (V.toList a)
+instance ShowWithTextIndexer TreeAddr where
+  tshow (TreeAddr a)
+    | V.null a = return "."
+    | a V.! 0 == RootTASeg = do
+        x <- mapM tshow (V.toList $ V.drop 1 a)
+        return $ "/" ++ intercalate "/" x
+    | otherwise = do
+        x <- mapM tshow (V.toList a)
+        return $ intercalate "/" x
 
 emptyTreeAddr :: TreeAddr
 emptyTreeAddr = TreeAddr V.empty
@@ -209,16 +208,17 @@ addrFromList :: [TASeg] -> TreeAddr
 addrFromList segs = TreeAddr (V.fromList segs)
 
 -- | This is mostly used for testing purpose.
-addrFromStringList :: [String] -> TreeAddr
-addrFromStringList segs =
-  TreeAddr (V.fromList $ map strToStringTASeg segs)
+addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m TreeAddr
+addrFromStringList segs = do
+  xs <- mapM strToStringTASeg segs
+  return $ TreeAddr (V.fromList xs)
 
-{- | This is mostly used for testing purpose.
+-- {- | This is mostly used for testing purpose.
 
-Segments are separated by dots, such as "a.b.c".
--}
-addrFromString :: String -> TreeAddr
-addrFromString s = addrFromStringList (splitOn "." s)
+-- Segments are separated by dots, such as "a.b.c".
+-- -}
+-- addrFromString :: String -> TreeAddr
+-- addrFromString s = addrFromStringList (splitOn "." s)
 
 addrToList :: TreeAddr -> [TASeg]
 addrToList (TreeAddr a) = V.toList a
@@ -284,10 +284,10 @@ trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
 Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
 -}
 newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector TASeg}
-  deriving (Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData)
 
-instance Show SuffixIrredAddr where
-  show a = show $ sufIrredToAddr a
+instance ShowWithTextIndexer SuffixIrredAddr where
+  tshow a = tshow $ sufIrredToAddr a
 
 addrIsSufIrred :: TreeAddr -> Maybe SuffixIrredAddr
 addrIsSufIrred (TreeAddr xs)
@@ -326,10 +326,10 @@ trimAddrToSufRef (TreeAddr xs) =
     SuffixReferableAddr $ V.reverse revYs
 
 newtype SuffixReferableAddr = SuffixReferableAddr {getReferableAddr :: V.Vector TASeg}
-  deriving (Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData)
 
-instance Show SuffixReferableAddr where
-  show a = show $ sufRefToAddr a
+instance ShowWithTextIndexer SuffixReferableAddr where
+  tshow a = tshow $ sufRefToAddr a
 
 sufRefToAddr :: SuffixReferableAddr -> TreeAddr
 sufRefToAddr (SuffixReferableAddr xs) = TreeAddr xs

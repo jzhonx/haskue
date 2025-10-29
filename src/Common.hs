@@ -10,6 +10,7 @@ import Control.Monad.Reader (MonadReader)
 import Control.Monad.State (MonadState)
 import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
+import StringIndex (HasTextIndexer (..), TextIndexer, emptyTextIndexer)
 import Util (HasTrace (..), Trace, emptyTrace)
 
 type EnvIO r s m =
@@ -64,6 +65,7 @@ emptyConfig =
 data CommonState = CommonState
   { eesObjID :: Int
   , eesTrace :: Trace
+  , tIndexer :: TextIndexer
   }
   deriving (Show)
 
@@ -75,5 +77,9 @@ instance HasTrace CommonState where
   getTrace = eesTrace
   setTrace s tr = s{eesTrace = tr}
 
+instance HasTextIndexer CommonState where
+  getTextIndexer = tIndexer
+  setTextIndexer ti s = s{tIndexer = ti}
+
 emptyCommonState :: CommonState
-emptyCommonState = CommonState{eesObjID = 0, eesTrace = emptyTrace}
+emptyCommonState = CommonState{eesObjID = 0, eesTrace = emptyTrace, tIndexer = emptyTextIndexer}

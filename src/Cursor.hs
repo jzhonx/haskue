@@ -220,14 +220,14 @@ subTree seg parentT = do
     (RootTASeg, _) -> Just t
     (BlockTASeg bseg, IsStruct struct) -> case bseg of
       StringTASeg name
-        | Just sf <- lookupStructField (stringSegToText name) struct ->
+        | Just sf <- lookupStructField name struct ->
             Just $ ssfValue sf
       LetTASeg name i -> lookupStructLet (letTASegToRefIdent name i) struct
       PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
       DynFieldTASeg i j ->
         (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
       StubFieldTASeg name
-        | Just sf <- lookupStructStaticFieldBase (stringSegToText name) struct ->
+        | Just sf <- lookupStructStaticFieldBase name struct ->
             Just $ ssfValue sf
       _ -> Nothing
     (IndexTASeg i, IsList vs) -> lstSubs vs `indexList` i
@@ -246,10 +246,10 @@ setSubTree seg subT parT = do
     (BlockTASeg (StringTASeg name), IsStruct parStruct)
       -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
       -- found.
-      | Just field <- lookupStructField (stringSegToText name) parStruct ->
+      | Just field <- lookupStructField name parStruct ->
           let
             newField = subT `updateFieldValue` field
-            newStruct = updateStructField (stringSegToText name) newField parStruct
+            newStruct = updateStructField name newField parStruct
            in
             return $ TNStruct newStruct
     (BlockTASeg (PatternTASeg i j), IsStruct parStruct) ->
@@ -257,7 +257,7 @@ setSubTree seg subT parT = do
     (BlockTASeg (DynFieldTASeg i j), IsStruct parStruct) ->
       return $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
     (BlockTASeg (StubFieldTASeg name), IsStruct parStruct) ->
-      return $ TNStruct (updateStructStaticFieldBase (stringSegToText name) subT parStruct)
+      return $ TNStruct (updateStructStaticFieldBase name subT parStruct)
     (BlockTASeg (LetTASeg name i), IsStruct parStruct) ->
       return $ TNStruct (updateStructLetBinding (letTASegToRefIdent name i) subT parStruct)
     (IndexTASeg i, IsList vs) ->
@@ -291,7 +291,7 @@ topTC tc = do
 
 -- = Traversal =
 
-data SubNodeSeg = SubNodeSegNormal TASeg | SubNodeSegEmbed TASeg deriving (Show, Eq)
+data SubNodeSeg = SubNodeSegNormal TASeg | SubNodeSegEmbed TASeg deriving (Eq)
 
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Bool -> TrCur -> [SubNodeSeg]
@@ -307,7 +307,7 @@ subTNSegsOpt withStub t = map SubNodeSegNormal $ subTNSegs t ++ if withStub then
 subTNSegs :: Tree -> [TASeg]
 subTNSegs t = case treeNode t of
   TNStruct s ->
-    [textToStringTASeg n | n <- Map.keys (stcFields s)]
+    [BlockTASeg $ StringTASeg n | n <- Map.keys (stcFields s)]
       ++ [BlockTASeg $ refIdentToLetTASeg ident | ident <- Map.keys (stcBindings s)]
       ++ [BlockTASeg $ PatternTASeg i 0 | i <- IntMap.keys $ stcCnstrs s]
       ++ [BlockTASeg $ DynFieldTASeg i 0 | i <- IntMap.keys $ stcDynFields s]
@@ -324,9 +324,7 @@ subStubSegs :: Tree -> [TASeg]
 subStubSegs (IsStruct s) =
   [BlockTASeg $ PatternTASeg i 1 | i <- IntMap.keys $ stcCnstrs s]
     ++ [BlockTASeg $ DynFieldTASeg i 1 | i <- IntMap.keys $ stcDynFields s]
-    ++ [ BlockTASeg $ StubFieldTASeg $ textToStringSeg name
-       | name <- Map.keys $ stcStaticFieldBases s
-       ]
+    ++ [BlockTASeg $ StubFieldTASeg name | name <- Map.keys $ stcStaticFieldBases s]
 subStubSegs _ = []
 
 {- | Go to the absolute addr in the tree. No propagation is involved.

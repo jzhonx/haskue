@@ -36,6 +36,7 @@ import Reduce.RMonad (
   throwFatal,
  )
 import Reduce.RefSys (IdentType (..), searchTCIdent)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, textIndexToText)
 import Text.Printf (printf)
 import Value
 
@@ -674,7 +675,7 @@ mkPermItem st opSt =
 
 The structs can not be both embedded.
 -}
-unionFields :: Map.Map T.Text Field -> Map.Map T.Text Field -> [(T.Text, Field)]
+unionFields :: Map.Map TextIndex Field -> Map.Map TextIndex Field -> [(TextIndex, Field)]
 unionFields fields1 fields2 =
   foldr
     ( \label acc ->
@@ -784,12 +785,13 @@ prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = debugSpanAdaptRM "prepS
         m <- searchTCIdent ident tc
         case m of
           -- Return the last error if there are multiple errors.
-          Nothing ->
+          Nothing -> do
+            idStr <- tshow ident
             return
               ( tc
               , emptyPSS
                   { error =
-                      Just $ mkBottomTree $ printf "identifier %s is not found" (show ident)
+                      Just $ mkBottomTree $ printf "identifier %s is not found" (show idStr)
                   }
               )
           Just (dstTC, typ) -> do
@@ -965,14 +967,15 @@ removeIncompleteDisjuncts defIdxes ts =
 
 The pattern is expected to be an Atom or a Bounds.
 -}
-patMatchLabel :: (ResolveMonad r s m) => Tree -> T.Text -> TrCur -> m Bool
-patMatchLabel pat name tc = debugSpanAdaptRM "patMatchLabel" (const Nothing) toJSON tc $ do
+patMatchLabel :: (ResolveMonad r s m) => Tree -> TextIndex -> TrCur -> m Bool
+patMatchLabel pat tidx tc = debugSpanAdaptRM "patMatchLabel" (const Nothing) toJSON tc $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match vM
  where
   match :: (ResolveMonad r s m) => Tree -> m Bool
   match v = do
+    name <- textIndexToText tidx
     let f =
           mergeBinUTrees
             (UTree L (v `setTCFocus` tc) ETNone)

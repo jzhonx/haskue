@@ -10,10 +10,14 @@ module Reduce.RMonad where
 
 import qualified AST
 import Common (
+  CommonState,
   Config (..),
   HasConfig (..),
   IDStore (..),
+  eesObjID,
+  eesTrace,
   emptyConfig,
+  tIndexer,
  )
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
@@ -29,6 +33,7 @@ import EvalExpr (evalExpr)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import NotifGraph
 import Path
+import StringIndex (HasTextIndexer (..), TextIndexer, TextIndexerMonad, emptyTextIndexer)
 import Text.Printf (printf)
 import Util (HasTrace (..), Trace, debugInstant, debugSpan, emptyTrace)
 import Value
@@ -98,6 +103,7 @@ data Context = Context
   , ctxLetMap :: Map.Map TreeAddr Bool
   , rcdIsReducingRCs :: !Bool
   , ctxTrace :: Trace
+  , tIndexer :: TextIndexer
   }
   deriving (Eq, Show)
 
@@ -108,6 +114,10 @@ instance HasTrace Context where
 instance IDStore Context where
   getID = ctxObjID
   setID ctx i = ctx{ctxObjID = i}
+
+instance HasTextIndexer Context where
+  getTextIndexer = Reduce.RMonad.tIndexer
+  setTextIndexer ti ctx = ctx{Reduce.RMonad.tIndexer = ti}
 
 instance HasContext Context where
   getContext = id
@@ -125,6 +135,7 @@ emptyContext =
     , ctxLetMap = Map.empty
     , rcdIsReducingRCs = False
     , ctxTrace = emptyTrace
+    , tIndexer = emptyTextIndexer
     }
 
 showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
@@ -164,6 +175,7 @@ type ResolveMonad r s m =
   , HasContext s
   , HasReduceParams r
   , IDStore s
+  , TextIndexerMonad s m
   )
 
 -- | ReduceMonad is the environment for reducing the tree with tree cursor stored.
@@ -194,14 +206,19 @@ instance IDStore RTCState where
   getID = getID . rtsCtx
   setID s newID = s{rtsCtx = setID (rtsCtx s) newID}
 
-mkRTState :: TrCur -> Int -> Trace -> RTCState
-mkRTState tc oid trace =
+instance HasTextIndexer RTCState where
+  getTextIndexer = getTextIndexer . rtsCtx
+  setTextIndexer ti s = s{rtsCtx = setTextIndexer ti (rtsCtx s)}
+
+mkRTState :: TrCur -> CommonState -> RTCState
+mkRTState tc common =
   RTCState
     { rtsTC = tc
     , rtsCtx =
         emptyContext
-          { ctxObjID = oid
-          , ctxTrace = trace
+          { ctxObjID = common.eesObjID
+          , ctxTrace = common.eesTrace
+          , tIndexer = common.tIndexer
           }
     }
 

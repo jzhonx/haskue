@@ -6,4 +6,4 @@
 	y: x
 }
 -- exp --
-error: identifier x is not found
+error: identifier "x" is not found

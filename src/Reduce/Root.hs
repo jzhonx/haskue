@@ -247,7 +247,8 @@ reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwFatal "reduceArgs: not a mutable tree"
  where
-  adapt (xs, b) = toJSON (map (fmap oneLinerStringOfTree) xs, b)
+  -- adapt (xs, b) = toJSON (map (fmap oneLinerStringOfTree) xs, b)
+  adapt (xs, b) = toJSON ()
 
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: (ReduceMonad r s m) => ResolvedPConjuncts -> m ()

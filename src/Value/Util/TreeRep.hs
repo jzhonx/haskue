@@ -18,7 +18,6 @@ import qualified Data.Text as T
 import Path (
   BlockTASeg (..),
   TASeg (..),
-  textToStringSeg,
   textToStringTASeg,
  )
 import Text.Printf (printf)
@@ -27,6 +26,7 @@ import Value.Block
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Instances
 import Value.List
 import Value.Mutable
 import Value.Reference
@@ -251,7 +251,7 @@ buildRepTreeStruct struct opt =
         ++ foldr
           ( \(l, ssf) acc ->
               TreeRepField
-                (show (BlockTASeg $ StubFieldTASeg (textToStringSeg l)))
+                (show (BlockTASeg $ StubFieldTASeg l))
                 (staticlFieldAttr ssf)
                 (buildFieldRepValue (ssfValue ssf) opt)
                 : acc
@@ -261,7 +261,7 @@ buildRepTreeStruct struct opt =
         ++ foldr
           ( \(l, ssf) acc ->
               TreeRepField
-                (show (textToStringTASeg l))
+                (show l)
                 (staticlFieldAttr ssf)
                 (buildFieldRepValue (ssfValue ssf) opt)
                 : acc
@@ -321,14 +321,15 @@ staticFieldMeta sf =
 dlabelAttr :: DynamicField -> String
 dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 
-buildFieldRep :: Struct -> T.Text -> TreeRepBuildOption -> TreeRepField
-buildFieldRep s label opt =
-  case lookupStructField label s of
-    Just sf -> TreeRepField (T.unpack label) (staticFieldMeta sf) (buildFieldRepValue (ssfValue sf) opt)
-    Nothing -> TreeRepField (T.unpack label) "" (buildFieldRepValue (mkBottomTree "not found") opt)
+-- buildFieldRep :: Struct -> T.Text -> TreeRepBuildOption -> TreeRepField
+-- buildFieldRep s label opt =
+--   case lookupStructField label s of
+--     Just sf -> TreeRepField (T.unpack label) (staticFieldMeta sf) (buildFieldRepValue (ssfValue sf) opt)
+--     Nothing -> TreeRepField (T.unpack label) "" (buildFieldRepValue (mkBottomTree "not found") opt)
 
 buildFieldRepValue :: Tree -> TreeRepBuildOption -> TreeRepFieldValue
 buildFieldRepValue fv opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} =
   if recurOnSub
     then TreeRepFieldValueRegular (buildRepTree fv opt)
-    else TreeRepFieldValueSimple (printf "orig:%s, v: %s" (showTreeSymbol fv) (oneLinerStringOfTree fv))
+    -- else TreeRepFieldValueSimple (printf "orig:%s, v: %s" (showTreeSymbol fv) (oneLinerStringOfTree fv))
+    else TreeRepFieldValueSimple (printf "orig:%s, v: %s" (showTreeSymbol fv) (showTreeSymbol fv))

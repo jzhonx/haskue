@@ -12,6 +12,7 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
 import Value.Reference (RefIdent (..))
 import {-# SOURCE #-} Value.Tree
 
@@ -21,12 +22,12 @@ data Struct = Struct
   , stcClosed :: !Bool
   -- ^ The closed flag is used to indicate that the struct is closed, but the fields may not be closed, if directly
   -- referenced. Should be directly copied from the block.
-  , stcFields :: Map.Map T.Text Field
+  , stcFields :: Map.Map TextIndex Field
   -- ^ It is the fields.
   , stcBindings :: Map.Map RefIdent Binding
   , stcDynFields :: IntMap.IntMap DynamicField
   , stcCnstrs :: IntMap.IntMap StructCnstr
-  , stcStaticFieldBases :: Map.Map T.Text Field
+  , stcStaticFieldBases :: Map.Map TextIndex Field
   -- ^ The un-evaluated fields that defined in this block. They shold be copied to the struct when building the struct.
   , stcOrdLabels :: [StructFieldLabel]
   , stcIsConcrete :: !Bool
@@ -36,12 +37,14 @@ data Struct = Struct
   }
   deriving (Generic)
 
-data StructFieldLabel = StructStaticFieldLabel T.Text | StructDynFieldOID !Int
-  deriving (Eq, Generic, NFData, Ord)
+data StructFieldLabel = StructStaticFieldLabel TextIndex | StructDynFieldOID !Int
+  deriving (Show, Eq, Generic, NFData, Ord)
 
-instance Show StructFieldLabel where
-  show (StructStaticFieldLabel n) = T.unpack n
-  show (StructDynFieldOID i) = show i
+instance ShowWithTextIndexer StructFieldLabel where
+  tshow (StructStaticFieldLabel n) = do
+    s <- tshow n
+    return $ "StaticFieldLabel(" ++ s ++ ")"
+  tshow s = return $ show s
 
 data LabelAttr = LabelAttr
   { lbAttrCnstr :: StructFieldCnstr
@@ -135,6 +138,20 @@ instance Show PermItem where
       ++ show (Set.toList $ piOpLabels p)
       ++ "}"
 
+instance ShowWithTextIndexer PermItem where
+  tshow p = do
+    lbls <- mapM tshow (Set.toList $ piLabels p)
+    opLbls <- mapM tshow (Set.toList $ piOpLabels p)
+    return $
+      "PermItem{"
+        ++ "cnstrs="
+        ++ show (Set.toList $ piCnstrs p)
+        ++ ",labels="
+        ++ show lbls
+        ++ ",opLabels="
+        ++ show opLbls
+        ++ "}"
+
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
   LabelAttr
@@ -200,7 +217,7 @@ lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
 
 Caller should ensure that the name is not already in the block.
 -}
-insertStructLet :: T.Text -> Tree -> Struct -> Struct
+insertStructLet :: TextIndex -> Tree -> Struct -> Struct
 insertStructLet s t struct =
   struct
     { stcBindings = Map.insert (RefIdent s) (Binding t False) (stcBindings struct)
@@ -221,7 +238,7 @@ getFieldType ident
 
 The name could be in both the fields and let bindings, or either.
 -}
-lookupStructStubVal :: T.Text -> Struct -> [StructStubVal]
+lookupStructStubVal :: TextIndex -> Struct -> [StructStubVal]
 lookupStructStubVal name struct =
   catMaybes
     [ StructStubField <$> Map.lookup name (stcStaticFieldBases struct)
@@ -231,13 +248,13 @@ lookupStructStubVal name struct =
 lookupStructDynField :: Int -> Struct -> Maybe DynamicField
 lookupStructDynField oid struct = IntMap.lookup oid (stcDynFields struct)
 
-lookupStructField :: T.Text -> Struct -> Maybe Field
+lookupStructField :: TextIndex -> Struct -> Maybe Field
 lookupStructField name struct = Map.lookup name (stcFields struct)
 
-lookupStructStaticFieldBase :: T.Text -> Struct -> Maybe Field
+lookupStructStaticFieldBase :: TextIndex -> Struct -> Maybe Field
 lookupStructStaticFieldBase name struct = Map.lookup name (stcStaticFieldBases struct)
 
-lookupStructIdentField :: T.Text -> Struct -> Maybe Field
+lookupStructIdentField :: TextIndex -> Struct -> Maybe Field
 lookupStructIdentField name struct =
   case Map.lookup name (stcFields struct) of
     Just field ->
@@ -247,14 +264,14 @@ lookupStructIdentField name struct =
     Nothing -> Nothing
 
 -- | Update the struct with the given label name and field.
-updateStructField :: T.Text -> Field -> Struct -> Struct
+updateStructField :: TextIndex -> Field -> Struct -> Struct
 updateStructField name sub struct = struct{stcFields = Map.insert name sub (stcFields struct)}
 
-updateStructWithFields :: [(T.Text, Field)] -> Struct -> Struct
+updateStructWithFields :: [(TextIndex, Field)] -> Struct -> Struct
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
 
 -- | Remove the static fields by names from the struct.
-removeStructFieldsByNames :: [T.Text] -> Struct -> Struct
+removeStructFieldsByNames :: [TextIndex] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
 
 updateStructCnstrByID :: Int -> Bool -> Tree -> Struct -> Struct
@@ -289,7 +306,7 @@ updateStructDynFieldByID oid isLabel sub struct =
           (stcDynFields struct)
     }
 
-updateStructStaticFieldBase :: T.Text -> Tree -> Struct -> Struct
+updateStructStaticFieldBase :: TextIndex -> Tree -> Struct -> Struct
 updateStructStaticFieldBase name sub struct =
   struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
 
@@ -299,27 +316,34 @@ updateStructLetBinding name sub struct =
     { stcBindings = Map.update (\b -> Just (b{value = sub})) name (stcBindings struct)
     }
 
-buildStructOrdLabels :: (Tree -> Maybe T.Text) -> Struct -> Maybe [T.Text]
-buildStructOrdLabels rtrString struct =
-  let
-    r :: Maybe ([T.Text], Set.Set T.Text)
-    r =
-      foldM
-        ( \(revAcc, seen) blkLabel -> do
-            newLabel <- case blkLabel of
-              StructStaticFieldLabel n -> return n
-              StructDynFieldOID i -> do
+{- | Build the ordered list of labels in the struct.
+
+If not all dynamic field labels can be resolved to strings, return Nothing.
+-}
+buildStructOrdLabels :: (TextIndexerMonad s m) => (Tree -> Maybe T.Text) -> Struct -> m (Maybe [T.Text])
+buildStructOrdLabels rtrString struct = do
+  r <-
+    foldM
+      ( \acc blkLabel -> case acc of
+          Nothing -> return Nothing
+          Just (revAcc, seen) -> do
+            newLabelM <- case blkLabel of
+              StructStaticFieldLabel n -> Just . T.pack <$> tshow n
+              StructDynFieldOID i -> return $ do
                 dsf <- lookupStructDynField i struct
                 rtrString (dsfLabel dsf)
-            return $
-              if Set.member newLabel seen
-                then (revAcc, seen)
-                else (newLabel : revAcc, Set.insert newLabel seen)
-        )
-        ([], Set.empty)
-        (stcOrdLabels struct)
-   in
-    reverse . fst <$> r
+            case newLabelM of
+              Nothing -> return Nothing
+              Just newLabel ->
+                return $
+                  Just
+                    if Set.member newLabel seen
+                      then (revAcc, seen)
+                      else (newLabel : revAcc, Set.insert newLabel seen)
+      )
+      (Just ([], Set.empty))
+      (stcOrdLabels struct)
+  return $ reverse . fst <$> r
 
 {- | Update the stub static field that has already existed with the given name.
 
@@ -327,7 +351,7 @@ Also update the field.
 
 It is used in parsing the AST to a struct.
 -}
-updateStubAndField :: T.Text -> Field -> Struct -> Struct
+updateStubAndField :: TextIndex -> Field -> Struct -> Struct
 updateStubAndField name field struct =
   struct
     { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
@@ -335,7 +359,7 @@ updateStubAndField name field struct =
     }
 
 -- | Insert a new static field into the stub struct.
-insertNewStubAndField :: T.Text -> Field -> Struct -> Struct
+insertNewStubAndField :: TextIndex -> Field -> Struct -> Struct
 insertNewStubAndField name field struct =
   struct
     { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
@@ -360,7 +384,7 @@ insertStructNewCnstr cid pat val struct =
 the same label.
 -}
 dedupStructFieldLabels ::
-  (Tree -> Maybe T.Text) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
+  (Tree -> Maybe TextIndex) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
 dedupStructFieldLabels rtrString dynFields labels =
   reverse . fst $ foldl go ([], Set.empty) labels
  where

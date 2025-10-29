@@ -6,4 +6,4 @@ let a = {
 
 x: a.ib
 -- exp --
-error: unreferenced let clause let ib
+error: unreferenced let clause let "ib"

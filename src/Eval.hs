@@ -18,7 +18,7 @@ where
 
 import AST
 import Common (
-  CommonState,
+  CommonState (..),
   Config (..),
   eesObjID,
   eesTrace,
@@ -97,29 +97,32 @@ runIO eStr conf = do
     _ -> throwErrSt "Expected a struct literal"
 
 runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
-runTreeIO s = runTreeStr s emptyEvalConfig
+runTreeIO s = fst <$> runTreeStr s emptyEvalConfig
 
 runStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Either String AST.Expression)
 runStr s conf = do
-  t <- runTreeStr s conf
+  (t, cs) <- runTreeStr s conf
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyConfig) emptyTrace
+    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyConfig) cs
 
-strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m Tree
+strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Tree, CommonState)
 strToCUEVal s conf = do
   e <- parseExpr s
   evalToTree (evalExpr e) conf
 
-runTreeStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m Tree
+runTreeStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Tree, CommonState)
 runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 
-evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m Tree
+evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m (Tree, CommonState)
 evalFile sf = evalToTree (evalSourceFile sf)
 
 evalToTree ::
-  (MonadError String m, MonadIO m) => StateT CommonState (ReaderT ReduceConfig m) Tree -> EvalConfig -> m Tree
+  (MonadError String m, MonadIO m) =>
+  StateT CommonState (ReaderT ReduceConfig m) Tree ->
+  EvalConfig ->
+  m (Tree, CommonState)
 evalToTree f conf = do
   let config =
         Config
@@ -143,7 +146,7 @@ evalToTree f conf = do
                 "Initial eval result: " ++ treeToFullRepString root ++ "\n"
           let
             rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
-            cv = mkRTState rootTC (eesObjID eeState) (eesTrace eeState)
+            cv = mkRTState rootTC eeState
           execStateT (modifyError show reduce) cv
       )
       (ReduceConfig config (emptyReduceParams{createCnstr = True}))
@@ -158,4 +161,11 @@ evalToTree f conf = do
     liftIO $
       hPutStr stderr $
         "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
-  return $ tcFocus finalTC
+  return
+    ( tcFocus finalTC
+    , CommonState
+        { eesObjID = finalized.rtsCtx.ctxObjID
+        , eesTrace = finalized.rtsCtx.ctxTrace
+        , tIndexer = finalized.rtsCtx.tIndexer
+        }
+    )
