@@ -119,14 +119,14 @@ isSegReferable RootTASeg = True
 isSegReferable _ = False
 
 data BlockTASeg
-  = StringTASeg TextIndex
-  | LetTASeg TextIndex (Maybe Int)
+  = StringTASeg !TextIndex
+  | LetTASeg !TextIndex (Maybe Int)
   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
     PatternTASeg !Int !Int
   | -- | DynFieldTASeg is used to represent a dynamic field.
     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
     DynFieldTASeg !Int !Int
-  | StubFieldTASeg TextIndex
+  | StubFieldTASeg !TextIndex
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show BlockTASeg where
