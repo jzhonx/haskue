@@ -12,8 +12,9 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import Path (Feature, mkStringFeature, mkStubFieldFeature)
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
-import Value.Reference (RefIdent (..))
+import Text.Printf (printf)
 import {-# SOURCE #-} Value.Tree
 
 -- | A struct has concrete field labels and constraints that have no mutable patterns.
@@ -24,7 +25,7 @@ data Struct = Struct
   -- referenced. Should be directly copied from the block.
   , stcFields :: Map.Map TextIndex Field
   -- ^ It is the fields.
-  , stcBindings :: Map.Map RefIdent Binding
+  , stcBindings :: Map.Map TextIndex Binding
   , stcDynFields :: IntMap.IntMap DynamicField
   , stcCnstrs :: IntMap.IntMap StructCnstr
   , stcStaticFieldBases :: Map.Map TextIndex Field
@@ -43,8 +44,8 @@ data StructFieldLabel = StructStaticFieldLabel TextIndex | StructDynFieldOID !In
 instance ShowWithTextIndexer StructFieldLabel where
   tshow (StructStaticFieldLabel n) = do
     s <- tshow n
-    return $ "StaticFieldLabel(" ++ s ++ ")"
-  tshow s = return $ show s
+    return $ T.pack $ printf "StaticFieldLabel(%s)" s
+  tshow s = return $ T.pack $ show s
 
 data LabelAttr = LabelAttr
   { lbAttrCnstr :: StructFieldCnstr
@@ -143,14 +144,12 @@ instance ShowWithTextIndexer PermItem where
     lbls <- mapM tshow (Set.toList $ piLabels p)
     opLbls <- mapM tshow (Set.toList $ piOpLabels p)
     return $
-      "PermItem{"
-        ++ "cnstrs="
-        ++ show (Set.toList $ piCnstrs p)
-        ++ ",labels="
-        ++ show lbls
-        ++ ",opLabels="
-        ++ show opLbls
-        ++ "}"
+      T.pack $
+        printf
+          "PermItem{cnstrs=%s,labels=%s,opLabels=%s}"
+          (show (Set.toList $ piCnstrs p))
+          (show lbls)
+          (show opLbls)
 
 mergeAttrs :: LabelAttr -> LabelAttr -> LabelAttr
 mergeAttrs a1 a2 =
@@ -210,7 +209,7 @@ dynToField df sfM unifier = case sfM of
       , ssfObjects = Set.fromList [dsfID df]
       }
 
-lookupStructLet :: RefIdent -> Struct -> Maybe Tree
+lookupStructLet :: TextIndex -> Struct -> Maybe Tree
 lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
 
 {- | Insert a new let binding into the block.
@@ -220,7 +219,7 @@ Caller should ensure that the name is not already in the block.
 insertStructLet :: TextIndex -> Tree -> Struct -> Struct
 insertStructLet s t struct =
   struct
-    { stcBindings = Map.insert (RefIdent s) (Binding t False) (stcBindings struct)
+    { stcBindings = Map.insert s (Binding t False) (stcBindings struct)
     }
 
 -- | Determines whether the block has empty fields, including both static and dynamic fields.
@@ -242,7 +241,7 @@ lookupStructStubVal :: TextIndex -> Struct -> [StructStubVal]
 lookupStructStubVal name struct =
   catMaybes
     [ StructStubField <$> Map.lookup name (stcStaticFieldBases struct)
-    , StructStubLet . value <$> Map.lookup (RefIdent name) struct.stcBindings
+    , StructStubLet . value <$> Map.lookup name struct.stcBindings
     ]
 
 lookupStructDynField :: Int -> Struct -> Maybe DynamicField
@@ -310,7 +309,7 @@ updateStructStaticFieldBase :: TextIndex -> Tree -> Struct -> Struct
 updateStructStaticFieldBase name sub struct =
   struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
 
-updateStructLetBinding :: RefIdent -> Tree -> Struct -> Struct
+updateStructLetBinding :: TextIndex -> Tree -> Struct -> Struct
 updateStructLetBinding name sub struct =
   struct
     { stcBindings = Map.update (\b -> Just (b{value = sub})) name (stcBindings struct)
@@ -328,7 +327,7 @@ buildStructOrdLabels rtrString struct = do
           Nothing -> return Nothing
           Just (revAcc, seen) -> do
             newLabelM <- case blkLabel of
-              StructStaticFieldLabel n -> Just . T.pack <$> tshow n
+              StructStaticFieldLabel n -> Just <$> tshow n
               StructDynFieldOID i -> return $ do
                 dsf <- lookupStructDynField i struct
                 rtrString (dsfLabel dsf)

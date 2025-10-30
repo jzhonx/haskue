@@ -188,7 +188,7 @@ treeTests =
 -- --           evalResolveMonad
 -- --             ( do
 -- --                 let rootTC = TrCur t [(RootTASeg, mkNewTree TNTop)]
--- --                 aTC <- goDownTCSegMust (strToStringTASeg "a") rootTC
+-- --                 aTC <- goDownTCSegMust (strToStringFeature "a") rootTC
 -- --                 eliminateRCAndOtherRefs [absA, absB] [absA] aTC
 -- --             )
 -- --         return $ tcFocus r

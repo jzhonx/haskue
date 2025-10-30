@@ -13,7 +13,7 @@ options =
     <$> switch
       ( long "debug"
           <> short 'd'
-          <> help "Enable debug logging"
+          <> help "Enable debug mode"
       )
     <*> switch
       ( long "trace"
@@ -22,6 +22,10 @@ options =
     <*> switch
       ( long "trace-print-tree"
           <> help "Print the execution tree"
+      )
+    <*> switch
+      ( long "trace-print-extra-info"
+          <> help "Print the extra info in trace output"
       )
     <*> option
       str

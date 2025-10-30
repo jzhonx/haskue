@@ -8,7 +8,9 @@ import Control.Monad.State (MonadState, gets, modify)
 import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
-import Data.Text.Lazy (unpack)
+import Data.Text (pack)
+import qualified Data.Text as T
+import Data.Text.Lazy (toStrict, unpack)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
@@ -30,25 +32,26 @@ instance Show Trace where
 
 instance HasTrace Trace where
   getTrace = id
+  setTrace :: Trace -> Trace -> Trace
   setTrace s t = t{traceID = traceID s}
 
 data ChromeStartTrace = ChromeStartTrace
-  { cstrName :: String
-  , cstrTime :: Int
+  { cstrName :: !T.Text
+  , cstrTime :: !Int
   , cstrArgs :: ChromeStartTraceArgs
   }
   deriving (Eq, Show)
 
 data ChromeEndTrace = ChromeEndTrace
-  { cetrName :: String
-  , cetrTime :: Int
+  { cetrName :: !T.Text
+  , cetrTime :: !Int
   , cetrArgs :: ChromeEndTraceArgs
   }
   deriving (Eq, Show)
 
 data ChromeStartTraceArgs = ChromeStartTraceArgs
-  { cstaTraceID :: Int
-  , cstaAddr :: String
+  { cstaTraceID :: !Int
+  , cstaAddr :: !T.Text
   , cstaBeforeFocus :: Value
   , cstaCustomVal :: Maybe Value
   }
@@ -61,15 +64,15 @@ data ChromeEndTraceArgs = ChromeEndTraceArgs
   deriving (Eq, Show)
 
 data ChromeInstantTrace = ChromeInstantTrace
-  { ctiName :: String
-  , ctiStart :: Int
+  { ctiName :: !T.Text
+  , ctiStart :: !Int
   , ctiArgs :: ChromeInstantTraceArgs
   }
   deriving (Eq, Show)
 
 data ChromeInstantTraceArgs = ChromeInstantTraceArgs
-  { ctiTraceID :: Int
-  , ctiAddr :: String
+  { ctiTraceID :: !Int
+  , ctiAddr :: !T.Text
   , ctiCustomVal :: Maybe Value
   }
   deriving (Eq, Show)
@@ -79,7 +82,7 @@ instance ToJSON ChromeStartTrace where
     object
       [ "name" .= cstrName ct
       , "ts" .= cstrTime ct
-      , "ph" .= ("B" :: String)
+      , "ph" .= ("B" :: T.Text)
       , "pid" .= (0 :: Int)
       , "tid" .= (0 :: Int)
       , "args" .= toJSON (cstrArgs ct)
@@ -90,7 +93,7 @@ instance ToJSON ChromeEndTrace where
     object
       [ "name" .= cetrName ct
       , "ts" .= cetrTime ct
-      , "ph" .= ("E" :: String)
+      , "ph" .= ("E" :: T.Text)
       , "pid" .= (0 :: Int)
       , "tid" .= (0 :: Int)
       , "args" .= toJSON (cetrArgs ct)
@@ -120,8 +123,8 @@ instance ToJSON ChromeInstantTrace where
     object
       [ "name" .= ctiName c
       , "ts" .= ctiStart c
-      , "ph" .= ("i" :: String)
-      , "s" .= ("g" :: String)
+      , "ph" .= ("i" :: T.Text)
+      , "s" .= ("g" :: T.Text)
       , "pid" .= (0 :: Int)
       , "tid" .= (0 :: Int)
       , "args" .= toJSON (ctiArgs c)
@@ -137,78 +140,88 @@ instance ToJSON ChromeInstantTraceArgs where
                 else ["ctm" .= fromJust (ctiCustomVal c)]
              )
       )
-debugSpan ::
+
+traceSpan ::
   (MonadState s m, MonadIO m, HasTrace s) =>
-  Bool ->
-  String ->
-  String ->
+  (Bool, Bool) ->
+  T.Text ->
+  T.Text ->
   Maybe Value ->
   Value ->
-  (a -> Value) ->
+  (a -> m Value) ->
   m (a, Value) ->
   m a
-debugSpan enable name addr args bTraced g action = do
-  _ <- debugSpanStart enable name addr args bTraced
-  debugSpanExec enable name addr g action
+traceSpan flags name addr args bTraced g action = do
+  _ <- traceSpanStart flags name addr args bTraced
+  traceSpanExec flags name addr g action
 
-debugSpanStart ::
+traceSpanStart ::
   (MonadState s m, HasTrace s, MonadIO m) =>
-  Bool ->
-  String ->
-  String ->
+  (Bool, Bool) ->
+  T.Text ->
+  T.Text ->
   Maybe Value ->
   Value ->
   m Trace
-debugSpanStart enable name addr args bTraced = do
-  let msg = printf "%s, at:%s" name addr
+traceSpanStart (enable, extraInfo) name addr args bTraced = do
+  let
+    msg = pack $ printf "%s, at:%s" name addr
+    bTracedInfo = if extraInfo then bTraced else object []
+    argsInfo = if extraInfo then args else Nothing
   tr <- newTrace
-  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  dumpTrace enable $
-    unpack
-      ( encodeToLazyText
-          ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTraced args)
-          )
-      )
+  let
+    timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+    st =
+      toStrict
+        ( encodeToLazyText
+            ( ChromeStartTrace msg timeInMicros (ChromeStartTraceArgs (traceID tr) addr bTracedInfo argsInfo)
+            )
+        )
+
+  dumpTrace enable st
   return tr
 
-debugSpanExec ::
+traceSpanExec ::
   (MonadState s m, HasTrace s, MonadIO m) =>
-  Bool ->
-  String ->
-  String ->
-  (a -> Value) ->
+  (Bool, Bool) ->
+  T.Text ->
+  T.Text ->
+  (a -> m Value) ->
   m (a, Value) ->
   m a
-debugSpanExec enable name addr g f = do
-  let msg = printf "%s, at:%s" name addr
+traceSpanExec (enable, extraInfo) name addr g f = do
+  let msg = pack $ printf "%s, at:%s" name addr
   (res, focus) <- f
   tr <- newTrace
-  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+  let
+    timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+    focusInfo = if extraInfo then focus else object []
+  tracedInfo <- if extraInfo then g res else return $ object []
   dumpTrace enable $
-    unpack
+    toStrict
       ( encodeToLazyText
-          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs (g res) focus)
+          ( ChromeEndTrace msg timeInMicros (ChromeEndTraceArgs tracedInfo focusInfo)
           )
       )
   return res
 
 debugInstant ::
-  (MonadState s m, HasTrace s, MonadIO m) => Bool -> String -> String -> Maybe Value -> m ()
-debugInstant enable name addr args = do
+  (MonadState s m, HasTrace s, MonadIO m) => (Bool, Bool) -> T.Text -> T.Text -> Maybe Value -> m ()
+debugInstant (enable, extraInfo) name addr args = do
   start <- lastTraceID
   tr <- gets getTrace
-  let msg = printf "%s, at:%s" name addr
-  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+  let msg = pack $ printf "%s, at:%s" name addr
+      timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+      argsInfo = if extraInfo then args else Nothing
   dumpTrace enable $
-    unpack
+    toStrict
       ( encodeToLazyText
-          ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr args)
+          ( ChromeInstantTrace msg timeInMicros (ChromeInstantTraceArgs start addr argsInfo)
           )
       )
 
-dumpTrace :: (MonadIO m) => Bool -> String -> m ()
-dumpTrace enable msg =
-  when enable $ liftIO $ hPutStr stderr $ "ChromeTrace" ++ msg ++ "\n"
+dumpTrace :: (MonadIO m) => Bool -> T.Text -> m ()
+dumpTrace enable msg = when enable $ liftIO $ hPutStr stderr $ printf "ChromeTrace%s\n" msg
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceID . getTrace

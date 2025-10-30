@@ -1,18 +1,23 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Path where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)
+import Data.Bits (Bits (..))
 import Data.List (intercalate)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import GHC.Generics (Generic)
+import GHC.Stack (HasCallStack)
 import StringIndex
+import Text.Printf (printf)
 
-data Selector = StringSel TextIndex | IntSel !Int
+data Selector = StringSel !TextIndex | IntSel !Int
   deriving (Eq, Ord, Generic, NFData)
 
 {- FieldPath is a list of selectors.
@@ -58,120 +63,245 @@ fieldPathToAddr (FieldPath sels) =
   let xs = map selToTASeg sels
    in addrFromList xs
 
-selToTASeg :: Selector -> TASeg
-selToTASeg (StringSel s) = BlockTASeg (StringTASeg s)
-selToTASeg (IntSel i) = IndexTASeg i
+selToTASeg :: Selector -> Feature
+selToTASeg (StringSel s) = mkStringFeature s
+selToTASeg (IntSel i) = mkIndexFeature i
 
--- fieldPathFromString :: String -> FieldPath
--- fieldPathFromString s =
---   FieldPath
---     { getRefSels =
---         map
---           ( \x ->
---               case reads x of
---                 [(i, "")] -> IntSel i
---                 _ -> StringSel (TE.encodeUtf8 (T.pack x))
---           )
---           (splitOn "." s)
---     }
-
--- == TASeg ==
-
--- | TASeg is paired with a tree node.
-data TASeg
-  = -- RootTASeg is a special segment that represents the root of the addr.
-    -- It is crucial to distinguish between the absolute addr and the relative addr.
-    RootTASeg
-  | IndexTASeg !Int
-  | BlockTASeg BlockTASeg
-  | DisjTASeg !Int
-  | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
-    MutArgTASeg !Int
-  | TempTASeg
+newtype Feature = Feature Int
   deriving (Eq, Ord, Generic, NFData)
 
--- showTASeg :: (MonadState s m, HasTextIndexer s) => TASeg -> m String
-instance Show TASeg where
-  show RootTASeg = "/"
-  show (BlockTASeg s) = show s
-  show (IndexTASeg i) = "i" ++ show i
-  show (DisjTASeg i) = "dj" ++ show i
-  show (MutArgTASeg i) = "fa" ++ show i
-  show TempTASeg = "tmp"
+instance Show Feature where
+  show f = case fetchLabelType f of
+    RootLabelType -> "/"
+    IndexLabelType -> "i" ++ show (fetchIndex f)
+    DisjLabelType -> "dj" ++ show (fetchIndex f)
+    MutArgLabelType -> "fa" ++ show (fetchIndex f)
+    TempLabelType -> "tmp"
+    StringLabelType -> "str_" ++ show (fetchIndex f)
+    LetLabelType -> "let_" ++ show (fetchIndex f)
+    PatternLabelType -> "cns_" ++ show (fetchIndex f)
+    DynFieldLabelType -> "dyn_" ++ show (fetchIndex f)
+    StubFieldLabelType -> "__" ++ show (fetchIndex f)
 
-instance ShowWithTextIndexer TASeg where
-  tshow (BlockTASeg s) = tshow s
-  tshow s = return $ show s
+instance ShowWithTextIndexer Feature where
+  tshow f = case fetchLabelType f of
+    StubFieldLabelType -> do
+      str <- tshow (TextIndex (fetchIndex f))
+      return $ T.pack $ printf "__%s" str
+    StringLabelType -> tshow (TextIndex (fetchIndex f))
+    LetLabelType -> do
+      str <- tshow (TextIndex (fetchIndex f))
+      return $ T.pack $ printf "let_%s" str
+    _ -> return $ T.pack $ show f
 
-isSegReducible :: TASeg -> Bool
-isSegReducible (MutArgTASeg _) = True
-isSegReducible (DisjTASeg _) = True
-isSegReducible _ = False
+pattern FeatureType :: LabelType -> Feature
+pattern FeatureType lType <- (fetchLabelType -> lType)
 
-isSegIrreducible :: TASeg -> Bool
-isSegIrreducible seg = not $ isSegReducible seg
+pattern IsRootFeature :: Feature
+pattern IsRootFeature <- (fetchLabelType -> RootLabelType)
 
-isSegReferable :: TASeg -> Bool
-isSegReferable (BlockTASeg (StringTASeg _)) = True
-isSegReferable (BlockTASeg (LetTASeg{})) = True
-isSegReferable (IndexTASeg _) = True
-isSegReferable RootTASeg = True
-isSegReferable _ = False
+fetchLabelType :: Feature -> LabelType
+fetchLabelType (Feature f) = toEnum $ (f `shiftR` 24) .&. 0x000000FF
 
-data BlockTASeg
-  = StringTASeg !TextIndex
-  | LetTASeg !TextIndex (Maybe Int)
-  | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
-    PatternTASeg !Int !Int
-  | -- | DynFieldTASeg is used to represent a dynamic field.
-    -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
-    DynFieldTASeg !Int !Int
-  | StubFieldTASeg !TextIndex
-  deriving (Eq, Ord, Generic, NFData)
+fetchIndex :: Feature -> Int
+fetchIndex (Feature f) = f .&. 0x00FFFFFF
 
-instance Show BlockTASeg where
-  show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
-  show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
-  show (StubFieldTASeg s) = "__" ++ show s
-  show (StringTASeg s) = show s
-  show (LetTASeg s m) = "let_" ++ show s ++ maybe "" (\i -> "_" ++ show i) m
+-- | TODO: document the bit layout.
+mkFeature :: Int -> LabelType -> Feature
+mkFeature i lType = Feature $ (fromEnum lType `shiftL` 24) .|. (i .&. 0x00FFFFFF)
 
-instance ShowWithTextIndexer BlockTASeg where
-  tshow (StubFieldTASeg s) = do
-    str <- tshow s
-    return $ "__" ++ str
-  tshow (StringTASeg s) = tshow s
-  tshow (LetTASeg s m) = do
-    str <- tshow s
-    return $ "let_" ++ str ++ maybe "" (\i -> "_" ++ show i) m
-  tshow s = return $ show s
+mkStringFeature :: TextIndex -> Feature
+mkStringFeature (TextIndex i) = mkFeature i StringLabelType
 
--- toJSONBlockTASeg :: (MonadState s m, HasTextIndexer s) => BlockTASeg -> m Value
--- toJSONBlockTASeg seg = do
---   str <- showBlockTASeg seg
---   return $ toJSON str
+mkMutArgFeature :: Int -> Feature
+mkMutArgFeature i = mkFeature i MutArgLabelType
 
-tIdxToStringTASeg :: TextIndex -> TASeg
-tIdxToStringTASeg s = BlockTASeg (StringTASeg s)
+mkIndexFeature :: Int -> Feature
+mkIndexFeature i = mkFeature i IndexLabelType
 
-textToStringTASeg :: (MonadState s m, HasTextIndexer s) => T.Text -> m TASeg
-textToStringTASeg s = tIdxToStringTASeg <$> textToTextIndex s
+mkDisjFeature :: Int -> Feature
+mkDisjFeature i = mkFeature i DisjLabelType
 
-strToStringTASeg :: (MonadState s m, HasTextIndexer s) => String -> m TASeg
-strToStringTASeg s = textToStringTASeg (T.pack s)
+{- | The first is the ObjectID, the second indicates the i-th in the dynamic field.
 
-unaryOpTASeg :: TASeg
-unaryOpTASeg = MutArgTASeg 0
+The selector is shifted left by 23 bits to make room for larger object IDs.
+-}
+mkDynFieldFeature :: Int -> Int -> Feature
+mkDynFieldFeature objID selector = mkFeature combined DynFieldLabelType
+ where
+  shiftedSelector = selector `shiftL` 23
+  combined = objID .|. shiftedSelector
 
-binOpLeftTASeg :: TASeg
-binOpLeftTASeg = MutArgTASeg 0
+mkPatternFeature :: Int -> Int -> Feature
+mkPatternFeature objID selector = mkFeature combined PatternLabelType
+ where
+  shiftedSelector = selector `shiftL` 23
+  combined = objID .|. shiftedSelector
 
-binOpRightTASeg :: TASeg
-binOpRightTASeg = MutArgTASeg 1
+mkLetFeature :: (TextIndexerMonad s m) => TextIndex -> Maybe Int -> m Feature
+mkLetFeature (TextIndex i) Nothing = return $ mkFeature i LetLabelType
+mkLetFeature (TextIndex i) (Just j) = modifyLetFeature j (mkFeature i LetLabelType)
 
-toBinOpTASeg :: BinOpDirect -> TASeg
+modifyLetFeature :: (TextIndexerMonad s m) => Int -> Feature -> m Feature
+modifyLetFeature oid f = do
+  t <- tshow (getTextIndexFromFeature f)
+  -- "." is not a valid character in identifier, so we use it to separate the let name and the index.
+  case T.findIndex (== '.') t of
+    Just dotIdx ->
+      let prefix = T.take dotIdx t
+       in append prefix
+    Nothing -> append t
+ where
+  append prefix = do
+    let str = T.unpack prefix ++ "." ++ show oid
+    (TextIndex k) <- textToTextIndex (T.pack str)
+    return $ mkFeature k LetLabelType
+
+mkStubFieldFeature :: TextIndex -> Feature
+mkStubFieldFeature (TextIndex i) = mkFeature i StubFieldLabelType
+
+getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m T.Text
+getTextFromFeature f = case fetchLabelType f of
+  StringLabelType -> tshow (TextIndex (fetchIndex f))
+  LetLabelType -> tshow (TextIndex (fetchIndex f))
+  StubFieldLabelType -> tshow (TextIndex (fetchIndex f))
+  _ -> error $ "Feature does not have a text: " ++ show f
+
+getTextIndexFromFeature :: (HasCallStack) => Feature -> TextIndex
+getTextIndexFromFeature f = case fetchLabelType f of
+  StringLabelType -> TextIndex (fetchIndex f)
+  LetLabelType -> TextIndex (fetchIndex f)
+  StubFieldLabelType -> TextIndex (fetchIndex f)
+  _ -> error $ printf "Feature %s does not have a TextIndex" (show f)
+
+getPatternIndexesFromFeature :: Feature -> (Int, Int)
+getPatternIndexesFromFeature f = case fetchLabelType f of
+  PatternLabelType ->
+    let combined = fetchIndex f
+        objID = combined .&. 0x007FFFFF -- lower 23 bits
+        selector = (combined `shiftR` 23) .&. 1 -- next bit
+     in (objID, selector)
+  _ -> error $ "Feature is not a PatternLabelType: " ++ show f
+
+getDynFieldIndexesFromFeature :: Feature -> (Int, Int)
+getDynFieldIndexesFromFeature f = case fetchLabelType f of
+  DynFieldLabelType ->
+    let combined = fetchIndex f
+        objID = combined .&. 0x007FFFFF -- lower 23 bits
+        selector = (combined `shiftR` 23) .&. 1 -- next bit
+     in (objID, selector)
+  _ -> error $ "Feature is not a DynFieldLabelType: " ++ show f
+
+data LabelType
+  = RootLabelType
+  | IndexLabelType
+  | DisjLabelType
+  | MutArgLabelType
+  | TempLabelType
+  | StringLabelType
+  | LetLabelType
+  | PatternLabelType
+  | DynFieldLabelType
+  | StubFieldLabelType
+  deriving (Eq, Ord, Generic, NFData, Enum)
+
+-- -- == Feature ==
+
+-- -- | Feature is paired with a tree node.
+-- data Feature
+--   = -- RootTASeg is a special segment that represents the root of the addr.
+--     -- It is crucial to distinguish between the absolute addr and the relative addr.
+--     RootTASeg
+--   | IndexTASeg !Int
+--   | BlockTASeg !BlockTASeg
+--   | DisjTASeg !Int
+--   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
+--     MutArgTASeg !Int
+--   | TempTASeg
+--   deriving (Eq, Ord, Generic, NFData)
+
+-- -- showTASeg :: (MonadState s m, HasTextIndexer s) => Feature -> m String
+-- instance Show Feature where
+--   show RootTASeg = "/"
+--   show (BlockTASeg s) = show s
+--   show (IndexTASeg i) = "i" ++ show i
+--   show (DisjTASeg i) = "dj" ++ show i
+--   show (MutArgTASeg i) = "fa" ++ show i
+--   show TempTASeg = "tmp"
+
+-- instance ShowWithTextIndexer Feature where
+--   tshow (BlockTASeg s) = tshow s
+--   tshow s = return $ T.pack $ show s
+
+isFeatureReducible :: Feature -> Bool
+isFeatureReducible f = case fetchLabelType f of
+  MutArgLabelType -> True
+  DisjLabelType -> True
+  _ -> False
+
+isFeatureIrreducible :: Feature -> Bool
+isFeatureIrreducible f = not $ isFeatureReducible f
+
+isFeatureReferable :: Feature -> Bool
+isFeatureReferable f = case fetchLabelType f of
+  StringLabelType -> True
+  LetLabelType -> True
+  IndexLabelType -> True
+  RootLabelType -> True
+  _ -> False
+
+-- data BlockTASeg
+--   = StringTASeg !TextIndex
+--   | LetTASeg !TextIndex !(Maybe Int)
+--   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
+--     PatternTASeg !Int !Int
+--   | -- | DynFieldTASeg is used to represent a dynamic field.
+--     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
+--     DynFieldTASeg !Int !Int
+--   | StubFieldTASeg !TextIndex
+--   deriving (Eq, Ord, Generic, NFData)
+
+-- instance Show BlockTASeg where
+--   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
+--   show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
+--   show (StubFieldTASeg s) = "__" ++ show s
+--   show (StringTASeg s) = show s
+--   show (LetTASeg s m) = "let_" ++ show s ++ maybe "" (\i -> "_" ++ show i) m
+
+-- instance ShowWithTextIndexer BlockTASeg where
+--   tshow (StubFieldTASeg s) = do
+--     str <- tshow s
+--     return $ T.pack $ printf "__%s" str
+--   tshow (StringTASeg s) = tshow s
+--   tshow (LetTASeg s m) = do
+--     str <- tshow s
+--     return $ T.pack $ printf "let_%s%s" str (maybe "" (\i -> "_" ++ show i) m)
+--   tshow s = return $ T.pack $ show s
+
+textToStringFeature :: (MonadState s m, HasTextIndexer s) => T.Text -> m Feature
+textToStringFeature s = mkStringFeature <$> textToTextIndex s
+
+strToStringFeature :: (MonadState s m, HasTextIndexer s) => String -> m Feature
+strToStringFeature s = textToStringFeature (T.pack s)
+
+unaryOpTASeg :: Feature
+unaryOpTASeg = mkMutArgFeature 0
+
+binOpLeftTASeg :: Feature
+binOpLeftTASeg = mkMutArgFeature 0
+
+binOpRightTASeg :: Feature
+binOpRightTASeg = mkMutArgFeature 1
+
+toBinOpTASeg :: BinOpDirect -> Feature
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
+
+rootFeature :: Feature
+rootFeature = mkFeature 0 RootLabelType
+
+tempFeature :: Feature
+tempFeature = mkFeature 0 TempLabelType
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -182,48 +312,41 @@ instance Show BinOpDirect where
 {- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype TreeAddr = TreeAddr {getTreeAddrSegs :: V.Vector TASeg}
+newtype TreeAddr = TreeAddr {getFeatures :: V.Vector Feature}
   deriving (Show, Eq, Ord, Generic, NFData)
 
 instance ShowWithTextIndexer TreeAddr where
   tshow (TreeAddr a)
     | V.null a = return "."
-    | a V.! 0 == RootTASeg = do
-        x <- mapM tshow (V.toList $ V.drop 1 a)
-        return $ "/" ++ intercalate "/" x
+    | a V.! 0 == rootFeature = do
+        x <- mapM (\x -> T.unpack <$> tshow x) (V.toList $ V.drop 1 a)
+        return $ T.pack $ "/" ++ intercalate "/" x
     | otherwise = do
-        x <- mapM tshow (V.toList a)
-        return $ intercalate "/" x
+        x <- mapM (\x -> T.unpack <$> tshow x) (V.toList a)
+        return $ T.pack $ intercalate "/" x
 
 emptyTreeAddr :: TreeAddr
 emptyTreeAddr = TreeAddr V.empty
 
 rootTreeAddr :: TreeAddr
-rootTreeAddr = TreeAddr (V.singleton RootTASeg)
+rootTreeAddr = TreeAddr (V.singleton rootFeature)
 
 isTreeAddrEmpty :: TreeAddr -> Bool
-isTreeAddrEmpty a = V.null (getTreeAddrSegs a)
+isTreeAddrEmpty a = V.null (getFeatures a)
 
-addrFromList :: [TASeg] -> TreeAddr
+addrFromList :: [Feature] -> TreeAddr
 addrFromList segs = TreeAddr (V.fromList segs)
 
 -- | This is mostly used for testing purpose.
 addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m TreeAddr
 addrFromStringList segs = do
-  xs <- mapM strToStringTASeg segs
+  xs <- mapM strToStringFeature segs
   return $ TreeAddr (V.fromList xs)
 
--- {- | This is mostly used for testing purpose.
-
--- Segments are separated by dots, such as "a.b.c".
--- -}
--- addrFromString :: String -> TreeAddr
--- addrFromString s = addrFromStringList (splitOn "." s)
-
-addrToList :: TreeAddr -> [TASeg]
+addrToList :: TreeAddr -> [Feature]
 addrToList (TreeAddr a) = V.toList a
 
-appendSeg :: TreeAddr -> TASeg -> TreeAddr
+appendSeg :: TreeAddr -> Feature -> TreeAddr
 appendSeg (TreeAddr a) seg = TreeAddr (V.snoc a seg)
 
 {- | Append the new addr to old addr.
@@ -251,13 +374,13 @@ tailTreeAddr (TreeAddr a)
   | otherwise = Just $ TreeAddr (V.tail a)
 
 -- | Get the last segment of a addr.
-lastSeg :: TreeAddr -> Maybe TASeg
+lastSeg :: TreeAddr -> Maybe Feature
 lastSeg (TreeAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.last a
 
 -- | Get the head segment of a addr.
-headSeg :: TreeAddr -> Maybe TASeg
+headSeg :: TreeAddr -> Maybe Feature
 headSeg (TreeAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.head a
@@ -266,7 +389,7 @@ headSeg (TreeAddr a)
 isPrefix :: TreeAddr -> TreeAddr -> Bool
 isPrefix (TreeAddr x) (TreeAddr y) = isSegVPrefix x y
 
-isSegVPrefix :: V.Vector TASeg -> V.Vector TASeg -> Bool
+isSegVPrefix :: V.Vector Feature -> V.Vector Feature -> Bool
 isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 
 {- | Trim the address by cutting off the prefix.
@@ -283,7 +406,7 @@ trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
 
 Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
 -}
-newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector TASeg}
+newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector Feature}
   deriving (Show, Eq, Ord, Generic, NFData)
 
 instance ShowWithTextIndexer SuffixIrredAddr where
@@ -292,14 +415,14 @@ instance ShowWithTextIndexer SuffixIrredAddr where
 addrIsSufIrred :: TreeAddr -> Maybe SuffixIrredAddr
 addrIsSufIrred (TreeAddr xs)
   | V.null xs = Just $ SuffixIrredAddr V.empty
-  | isSegIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
+  | isFeatureIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
   | otherwise = Nothing
 
 trimAddrToSufIrred :: TreeAddr -> SuffixIrredAddr
 trimAddrToSufIrred (TreeAddr xs) =
   let
     revXs = V.reverse xs
-    revNonMutArgs = V.dropWhile isSegReducible revXs
+    revNonMutArgs = V.dropWhile isFeatureReducible revXs
    in
     SuffixIrredAddr $ V.reverse revNonMutArgs
 
@@ -309,7 +432,7 @@ sufIrredToAddr (SuffixIrredAddr xs) = TreeAddr xs
 sufIrredIsSufRef :: SuffixIrredAddr -> Maybe SuffixReferableAddr
 sufIrredIsSufRef (SuffixIrredAddr xs)
   | V.null xs = Just $ SuffixReferableAddr V.empty
-  | isSegReferable (V.last xs) = Just $ SuffixReferableAddr xs
+  | isFeatureReferable (V.last xs) = Just $ SuffixReferableAddr xs
   | otherwise = Nothing
 
 initSufIrred :: SuffixIrredAddr -> Maybe SuffixIrredAddr
@@ -317,15 +440,25 @@ initSufIrred (SuffixIrredAddr xs)
   | V.null xs = Nothing
   | otherwise = Just $ SuffixIrredAddr (V.init xs)
 
+{- | Trim the addr to the suffix referable addr.
+trimAddrToSufRef :: TreeAddr -> SuffixReferableAddr
+trimAddrToSufRef (TreeAddr xs) = SuffixReferableAddr (V.slice 0 trimmedLen xs)
+ where
+  -- Use fusion to find the trim size.
+  trimmedLen = V.length (V.dropWhile (not . isFeatureReferable) (V.reverse xs))
+-}
 trimAddrToSufRef :: TreeAddr -> SuffixReferableAddr
 trimAddrToSufRef (TreeAddr xs) =
-  let
-    revXs = V.reverse xs
-    revYs = V.dropWhile (not . isSegReferable) revXs
-   in
-    SuffixReferableAddr $ V.reverse revYs
+  let len = V.length xs
+      trimmedLen = go (len - 1)
+       where
+        go i
+          | i < 0 = 0
+          | isFeatureReferable (xs V.! i) = i + 1
+          | otherwise = go (i - 1)
+   in SuffixReferableAddr (V.slice 0 trimmedLen xs)
 
-newtype SuffixReferableAddr = SuffixReferableAddr {getReferableAddr :: V.Vector TASeg}
+newtype SuffixReferableAddr = SuffixReferableAddr {getReferableAddr :: V.Vector Feature}
   deriving (Show, Eq, Ord, Generic, NFData)
 
 instance ShowWithTextIndexer SuffixReferableAddr where
@@ -340,5 +473,5 @@ sufRefToSufIrred (SuffixReferableAddr xs) = SuffixIrredAddr xs
 addrIsSufRef :: TreeAddr -> Maybe SuffixReferableAddr
 addrIsSufRef (TreeAddr xs)
   | V.null xs = Just $ SuffixReferableAddr V.empty
-  | isSegReferable (V.last xs) = Just $ SuffixReferableAddr xs
+  | isFeatureReferable (V.last xs) = Just $ SuffixReferableAddr xs
   | otherwise = Nothing

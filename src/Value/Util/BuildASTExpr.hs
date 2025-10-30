@@ -23,7 +23,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textIndexToText, textToTextIndex)
+import Path (Feature, mkStringFeature)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
 import Value.Block
@@ -150,7 +151,7 @@ buildSCyclicASTExpr inner = do
 
 buildStaticFieldExpr :: (BEnv r s m) => (TextIndex, Field) -> m AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
-  sel <- T.pack <$> tshow sIdx
+  sel <- tshow sIdx
   e <- buildASTExprExt (ssfValue sf)
   let decl =
         AST.FieldDecl
@@ -192,13 +193,13 @@ buildPatternExpr pat = do
     AST.FieldDecl
       AST.<^> pure (AST.Field [labelPatternCons pte] ve)
 
-buildLetExpr :: (BEnv r s m) => (RefIdent, Binding) -> m AST.Declaration
+buildLetExpr :: (BEnv r s m) => (TextIndex, Binding) -> m AST.Declaration
 buildLetExpr (ident, binding) = do
-  s <- refIdentToTextIndex ident >>= tshow
+  s <- tshow ident
   ve <- buildASTExprExt binding.value
   let
     letClause :: AST.LetClause
-    letClause = pure (AST.LetClause (pure $ T.pack s) ve)
+    letClause = pure (AST.LetClause (pure s) ve)
   return (pure $ AST.DeclLet letClause)
 
 -- buildEmbedExpr :: (BEnv r s m) => Embedding -> m AST.Declaration
@@ -304,9 +305,9 @@ buildComprehASTExpr cph = do
       ve <- buildASTExprExt val
       return (AST.GuardClause ve)
     ComprehArgFor varNameIdx secVarIdxM val -> do
-      varName <- textIndexToText varNameIdx
+      varName <- tshow varNameIdx
       secVarM <- case secVarIdxM of
-        Just sIdx -> Just <$> textIndexToText sIdx
+        Just sIdx -> Just <$> tshow sIdx
         Nothing -> return Nothing
       ve <- buildASTExprExt val
       return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
@@ -314,7 +315,7 @@ buildComprehASTExpr cph = do
 
   buildIterClause clause = case clause of
     ComprehArgLet varNameIdx val -> do
-      varName <- textIndexToText varNameIdx
+      varName <- tshow varNameIdx
       ve <- buildASTExprExt val
       return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
     _ -> do
@@ -425,12 +426,12 @@ buildDisjoinOpASTExpr op t = do
 buildRefASTExpr :: (BEnv r s m) => Reference -> m AST.Expression
 buildRefASTExpr ref = case refArg ref of
   RefPath var xs -> do
-    varS <- refIdentToTextIndex var >>= tshow
+    varS <- tshow var
     let varE =
           AST.PrimExprOperand
             AST.<<^>> AST.OperandName
             AST.<<^>> AST.Identifier
-            AST.<^> pure (T.pack varS)
+            AST.<^> pure varS
     r <-
       foldM
         ( \acc x -> do

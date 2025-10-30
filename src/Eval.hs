@@ -40,19 +40,19 @@ import qualified Data.Set as Set
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
 import Parser (parseExpr, parseSourceFile)
-import Path (TASeg (RootTASeg))
+import Path (rootFeature)
 import Reduce (postValidation, reduce)
 import Reduce.RMonad
 import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
-import Util (emptyTrace)
 import Value
 import Value.Util.TreeRep (treeToFullRepString)
 
 data EvalConfig = EvalConfig
-  { ecDebugLogging :: Bool
+  { ecDebugMode :: Bool
   , ecTraceExec :: Bool
   , ecTracePrintTree :: Bool
+  , ecTraceExtraInfo :: Bool
   , ecTraceFilter :: String
   , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
@@ -62,9 +62,10 @@ data EvalConfig = EvalConfig
 emptyEvalConfig :: EvalConfig
 emptyEvalConfig =
   EvalConfig
-    { ecDebugLogging = False
+    { ecDebugMode = False
     , ecTraceExec = False
     , ecTracePrintTree = False
+    , ecTraceExtraInfo = False
     , ecTraceFilter = ""
     , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
@@ -126,9 +127,9 @@ evalToTree ::
 evalToTree f conf = do
   let config =
         Config
-          { stDebugLogging = ecDebugLogging conf
-          , stTraceExec = ecTraceExec conf
+          { stTraceEnable = ecTraceExec conf
           , stTracePrintTree = ecTracePrintTree conf
+          , stTraceExtraInfo = ecTraceExtraInfo conf
           , stTraceFilter =
               let s = ecTraceFilter conf
                in if null s then Set.empty else Set.fromList $ splitOn "," s
@@ -140,12 +141,12 @@ evalToTree f conf = do
     runReaderT
       ( do
           (root, eeState) <- runStateT f emptyCommonState
-          when (ecDebugLogging conf) $
+          when (ecDebugMode conf) $
             liftIO $
               hPutStr stderr $
                 "Initial eval result: " ++ treeToFullRepString root ++ "\n"
           let
-            rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
+            rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
             cv = mkRTState rootTC eeState
           execStateT (modifyError show reduce) cv
       )
@@ -157,7 +158,7 @@ evalToTree f conf = do
       (ReduceConfig config emptyReduceParams)
 
   let finalTC = getTreeCursor finalized
-  when (ecDebugLogging conf) $
+  when (ecDebugMode conf) $
     liftIO $
       hPutStr stderr $
         "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"

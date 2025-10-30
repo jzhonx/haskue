@@ -16,9 +16,14 @@ import Data.Maybe (catMaybes, isJust, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Path (
-  BlockTASeg (..),
-  TASeg (..),
-  textToStringTASeg,
+  Feature (..),
+  mkDisjFeature,
+  mkDynFieldFeature,
+  mkIndexFeature,
+  mkMutArgFeature,
+  mkPatternFeature,
+  mkStubFieldFeature,
+  textToStringFeature,
  )
 import Text.Printf (printf)
 import Value.Atom
@@ -165,10 +170,10 @@ buildRepTreeTN Tree{treeNode = tn} opt = case tn of
   TNBounds b -> consRep ([show b], [], [])
   TNStruct struct -> buildRepTreeStruct struct opt
   TNList vs ->
-    let fields = zipWith (\j v -> (show (IndexTASeg j), mempty, v)) [0 ..] (lstSubs vs)
+    let fields = zipWith (\j v -> (show (mkIndexFeature j), mempty, v)) [0 ..] (lstSubs vs)
      in consRep ([], [], consFields fields opt)
   TNDisj d ->
-    let djFields = zipWith (\j v -> (show $ DisjTASeg j, mempty, v)) [0 ..] (dsjDisjuncts d)
+    let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (dsjDisjuncts d)
      in consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], consFields djFields opt)
   TNAtomCnstr c ->
     consRep
@@ -191,7 +196,7 @@ buildRepTreeMutable (IsTGenOp mut@(Mutable op mf)) opt =
   let
     args =
       if trboShowMutArgs opt
-        then zipWith (\j v -> (show (MutArgTASeg j), mempty, v)) [0 ..] (toList $ getMutArgs mut)
+        then zipWith (\j v -> (show (mkMutArgFeature j), mempty, v)) [0 ..] (toList $ getMutArgs mut)
         else []
     metas = [("tgen", showOpType op), ("ridxes", show $ Set.toList $ mfArgsReduced mf)]
    in
@@ -215,7 +220,7 @@ buildRepTreeMutable (IsTGenOp mut@(Mutable op mf)) opt =
               then
                 zipWith
                   ( \j v ->
-                      (show (MutArgTASeg j), if dstMarked v then ",*" else "", dstValue v)
+                      (show (mkMutArgFeature j), if dstMarked v then ",*" else "", dstValue v)
                   )
                   [0 ..]
                   (toList $ djoTerms d)
@@ -233,7 +238,7 @@ buildRepTreeStruct struct opt =
       foldr
         ( \(j, dsf) acc ->
             TreeRepField
-              (show (BlockTASeg $ DynFieldTASeg j 0))
+              (show (mkDynFieldFeature j 0))
               (dlabelAttr dsf <> ",dynf_val:" ++ showTreeSymbol (dsfValue dsf))
               (buildFieldRepValue (dsfLabel dsf) opt)
               : acc
@@ -243,7 +248,7 @@ buildRepTreeStruct struct opt =
         ++ map
           ( \(j, k) ->
               TreeRepField
-                (show (BlockTASeg $ PatternTASeg j 0))
+                (show (mkPatternFeature j 0))
                 (",cns_val:" ++ showTreeSymbol (scsValue k))
                 (buildFieldRepValue (scsPattern k) opt)
           )
@@ -251,7 +256,7 @@ buildRepTreeStruct struct opt =
         ++ foldr
           ( \(l, ssf) acc ->
               TreeRepField
-                (show (BlockTASeg $ StubFieldTASeg l))
+                (show l)
                 (staticlFieldAttr ssf)
                 (buildFieldRepValue (ssfValue ssf) opt)
                 : acc

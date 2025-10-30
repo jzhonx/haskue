@@ -31,8 +31,7 @@ import Reduce.RMonad (
   Context (..),
   ReduceMonad,
   debugInstantTM,
-  debugSpanAdaptTM,
-  debugSpanTM,
+  emptySpanValue,
   getIsReducingRC,
   getRMContext,
   getTMAbsAddr,
@@ -46,6 +45,8 @@ import Reduce.RMonad (
   preVisitTree,
   pushRecalcRootQ,
   throwFatal,
+  traceSpanAdaptTM,
+  traceSpanTM,
   treeDepthCheck,
  )
 import Reduce.Recalc (recalc)
@@ -63,7 +64,7 @@ import Value
 reduce :: (ReduceMonad r s m) => m ()
 reduce = do
   origAddr <- getTMAbsAddr
-  debugSpanTM "reduce" reducePureFocus
+  traceSpanTM "reduce" reducePureFocus
 
   -- Add affected labels as new source of change.
   ng <- ctxNotifGraph <$> getRMContext
@@ -222,7 +223,7 @@ It writes the reduced arguments back to the mutable tree and returns the reduced
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
 reduceArgs :: (ReduceMonad r s m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
-reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
+reduceArgs reduceFunc rtr = traceSpanAdaptTM "reduceArgs" emptySpanValue $ do
   tc <- getTMCursor
   case tcFocus tc of
     IsTGenOp mut@(Mutable _ mf) -> do
@@ -231,10 +232,10 @@ reduceArgs reduceFunc rtr = debugSpanAdaptTM "reduceArgs" adapt $ do
           ( \(accArgs, argsReducedSet) (i, _) -> do
               if not (i `Set.member` argsReducedSet)
                 then do
-                  r <- inSubTM (MutArgTASeg i) $ reduceFunc >> rtr <$> getTMTree
+                  r <- inSubTM (mkMutArgFeature i) $ reduceFunc >> rtr <$> getTMTree
                   return (r : accArgs, Set.insert i argsReducedSet)
                 else do
-                  r <- inSubTM (MutArgTASeg i) $ rtr <$> getTMTree
+                  r <- inSubTM (mkMutArgFeature i) $ rtr <$> getTMTree
                   return (r : accArgs, argsReducedSet)
           )
           ([], mfArgsReduced mf)

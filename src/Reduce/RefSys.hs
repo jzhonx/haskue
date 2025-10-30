@@ -26,7 +26,6 @@ import Reduce.RMonad (
   ResolveMonad,
   ctxNotifGraph,
   debugInstantRM,
-  debugSpanAdaptRM,
   descendTM,
   fetch,
   getRMContext,
@@ -39,11 +38,12 @@ import Reduce.RMonad (
   putRMContext,
   throwDirty,
   throwFatal,
+  traceSpanAdaptRM,
  )
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textIndexToText)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (treeToFullRepString, treeToRepString)
+import Value.Util.TreeRep (treeToFullRepString)
 
 data DerefResult = DerefResult
   { drValue :: Maybe Tree
@@ -85,8 +85,9 @@ The index should have a list of arguments where the first argument is the tree t
 arguments are the segments.
 -}
 index :: (ResolveMonad r s m) => TrCur -> m DerefResult
-index tc@(TCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) =
-  debugSpanAdaptRM (printf "index: ident: %s" (show ident)) adaptDRFetch adaptDRRep tc $ do
+index tc@(TCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) = do
+  identStr <- tshow ident
+  traceSpanAdaptRM (printf "index: ident: %s" identStr) adaptDRFetch (return . adaptDRRep) tc $ do
     lbM <- searchTCIdent ident tc
     case lbM of
       Just (TCFocus (IsRef mut rf), typ)
@@ -117,8 +118,8 @@ index tc@(TCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) =
           refTCM
 
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index tc@(TCFocus (IsRef _ Reference{refArg = arg@(RefIndex _)})) = debugSpanAdaptRM "index" adaptDRFetch adaptDRRep tc $ do
-  operandTC <- liftFatal $ goDownTCSegMust (MutArgTASeg 0) tc
+index tc@(TCFocus (IsRef _ Reference{refArg = arg@(RefIndex _)})) = traceSpanAdaptRM "index" adaptDRFetch (return . adaptDRRep) tc $ do
+  operandTC <- liftFatal $ goDownTCSegMust (mkMutArgFeature 0) tc
   idxFieldPathM <- convertRefArgTreesToSels arg
   let
     reducedOperandM = rtrNonMut (tcFocus operandTC)
@@ -157,10 +158,9 @@ Notice that even if the selector tree is concrete, it might not be valid selecto
 convertRefArgTreesToSels :: (TextIndexerMonad s m) => RefArg -> m (Maybe FieldPath)
 convertRefArgTreesToSels arg = case arg of
   (RefPath ident sels) -> do
-    idx <- refIdentToTextIndex ident
     restM <- mapM treeToSel (toList sels)
     return $ do
-      let h = StringSel idx
+      let h = StringSel ident
       rest <- sequence restM
       return $ FieldPath (h : rest)
   (RefIndex (_ Seq.:<| rest)) -> do
@@ -175,7 +175,7 @@ The env is to provide the context for the dereferencing the reference.
 getDstTC :: (ResolveMonad r s m) => FieldPath -> TrCur -> m DerefResult
 getDstTC fieldPath env = do
   -- Make deref see the latest tree, even with unreduced nodes.
-  debugSpanAdaptRM "getDstTC" adaptDRFetch adaptDRRep env $ do
+  traceSpanAdaptRM "getDstTC" adaptDRFetch (return . adaptDRRep) env $ do
     lr <- locateRef fieldPath env
     case lr of
       LRIdentNotFound err -> return (DerefResult (Just err) Nothing NoCycleDetected False)
@@ -222,10 +222,9 @@ watch tarAddr refEnv = do
   debugInstantRM
     "watchFound"
     ( printf
-        "tried to detect if tar: %s forms a cycle with %s's dependents. graph: %s, result: %s"
+        "tried to detect if tar: %s forms a cycle with %s's dependents. result: %s"
         (show tarAddr)
         (show refAddr)
-        (show newG)
         (show cd)
     )
     refEnv
@@ -254,7 +253,7 @@ markCyclic val = do
   return $ tcFocus utc
  where
   -- Create a tree cursor based on the value.
-  valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
+  valTC = TrCur val [(rootFeature, mkNewTree TNTop)]
 
   mark :: (ResolveMonad r s m) => TrCur -> m TrCur
   mark tc = do
@@ -320,7 +319,7 @@ isInnerScope fieldPath originAddr tAddr tc = do
   searchIdent ref xtc = do
     let fstSel = fromJust $ headSel ref
     ident <- selToIdent fstSel
-    resM <- searchTCIdent (RefIdent ident) xtc
+    resM <- searchTCIdent ident xtc
     return $ tcAddr . fst <$> resM
 
 markRecurClosed :: (ResolveMonad r s m) => Tree -> m Tree
@@ -329,7 +328,7 @@ markRecurClosed val = do
   return $ tcFocus utc
  where
   -- Create a tree cursor based on the value.
-  valTC = TrCur val [(RootTASeg, mkNewTree TNTop)]
+  valTC = TrCur val [(rootFeature, mkNewTree TNTop)]
 
   mark tc = do
     let focus = tcFocus tc
@@ -352,7 +351,7 @@ getRefIdentAddr :: (ResolveMonad r s m) => FieldPath -> Maybe TreeAddr -> TrCur 
 getRefIdentAddr fieldPath origAddrsM tc = do
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  let f x = searchTCIdent (RefIdent ident) x >>= (\r -> return $ tcAddr . fst <$> r)
+  let f x = searchTCIdent ident x >>= (\r -> return $ tcAddr . fst <$> r)
 
   -- Search the address of the first identifier, whether from the current env or the original env.
   maybe
@@ -401,7 +400,7 @@ locateRef fieldPath tc = do
   when (isFieldPathEmpty fieldPath) $ throwFatal "empty fieldPath"
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  searchTCIdent (RefIdent ident) tc >>= \case
+  searchTCIdent ident tc >>= \case
     Nothing -> do
       errMsg <- notFoundMsg ident (treeExpr (tcFocus tc) >>= AST.anPos)
       return . LRIdentNotFound $ mkBottomTree errMsg
@@ -468,9 +467,9 @@ inAbsAddrRM p f = do
 -- | Go to the absolute addr in the tree.
 goRMAbsAddr :: (ReduceMonad r s m) => TreeAddr -> m Bool
 goRMAbsAddr dst = do
-  when (headSeg dst /= Just RootTASeg) $
+  when (headSeg dst /= Just rootFeature) $
     throwFatal (printf "the addr %s should start with the root segment" (show dst))
-  propUpTMUntilSeg RootTASeg
+  propUpTMUntilSeg rootFeature
   let dstNoRoot = fromJust $ tailTreeAddr dst
   descendTM dstNoRoot
 
@@ -489,9 +488,9 @@ addrHasDef :: (TextIndexerMonad s m) => TreeAddr -> m Bool
 addrHasDef p = do
   xs <-
     mapM
-      ( \case
-          BlockTASeg (StringTASeg s) -> do
-            t <- textIndexToText s
+      ( \f -> case f of
+          FeatureType StringLabelType -> do
+            t <- tshow f
             return $ fromMaybe False $ do
               typ <- getFieldType (T.unpack t)
               return $ typ == SFTDefinition
@@ -523,25 +522,24 @@ already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCIdent :: (ResolveMonad r s m) => RefIdent -> TrCur -> m (Maybe (TrCur, IdentType))
+searchTCIdent :: (ResolveMonad r s m) => TextIndex -> TrCur -> m (Maybe (TrCur, IdentType))
 searchTCIdent ident tc = do
   subM <- findIdent ident tc
   maybe
     (goUpOrLeft tc)
     ( \(identTC, typ) -> do
-        when (typ == ITLetBinding) $ do
-          -- Mark the ident as referred if it is a let binding.
-          markRMLetReferred (tcAddr identTC)
+        -- Mark the ident as referred if it is a let binding.
+        when (typ == ITLetBinding) $ markRMLetReferred (tcAddr identTC)
         return $ Just (identTC, typ)
     )
     subM
  where
   goUpOrLeft :: (ResolveMonad r s m) => TrCur -> m (Maybe (TrCur, IdentType))
-  goUpOrLeft (TrCur _ [(RootTASeg, _)]) = return Nothing -- stop at the root.
+  goUpOrLeft (TrCur _ [(FeatureType RootLabelType, _)]) = return Nothing -- stop at the root.
   -- If the current node is an embedding, we should go to the parent block which by convention is the first mutable
   -- argument.
-  goUpOrLeft utc@(TrCur t ((MutArgTASeg i, _) : _))
-    | i > 0
+  goUpOrLeft utc@(TrCur t ((f@(FeatureType MutArgLabelType), _) : _))
+    | fetchIndex f > 0
     , ETEmbedded sid <- t.embType = do
         ptc <- liftFatal (propUpTC utc)
         args <- case ptc of
@@ -562,13 +560,13 @@ searchTCIdent ident tc = do
           Nothing -> throwFatal $ printf "searchTCIdent: embedding %s's parent does not have the embedding struct" (show sid)
           Just j -> do
             debugInstantRM "searchTCIdent" (printf "going up from embedding to parent block arg %s" (show j)) utc
-            structTC <- liftFatal (goDownTCSegMust (MutArgTASeg j) ptc)
+            structTC <- liftFatal (goDownTCSegMust (mkMutArgFeature j) ptc)
             searchTCIdent ident structTC
   goUpOrLeft utc = do
     ptc <- liftFatal (propUpTC utc)
     searchTCIdent ident ptc
 
-findIdent :: (ResolveMonad r s m) => RefIdent -> TrCur -> m (Maybe (TrCur, IdentType))
+findIdent :: (ResolveMonad r s m) => TextIndex -> TrCur -> m (Maybe (TrCur, IdentType))
 findIdent ident tc = do
   case tcFocus tc of
     IsStruct struct -> do
@@ -577,23 +575,21 @@ findIdent ident tc = do
       -- For example, { x: {a:1, c:d, e}, e: {a: int} | {b: int}, d:1 }
       -- - merge -> {x: {a:1, c:d} | {a:1, c:d, b:int}, d:1, e: {..}}
       -- Then when we reduce the merged value, at /x/dj0/c, it finds d in the top /.
+      lf <- mkLetFeature ident Nothing
       let
         m =
           catMaybes
             [ do
-                name <- case ident of RefIdent name -> Just name; _ -> Nothing
-                field <- lookupStructField name struct
+                let f = mkStringFeature ident
+                field <- lookupStructField ident struct
                 if field.ssfAttr.lbAttrIsIdent
                   then do
-                    subTC <- goDownTCSeg (tIdxToStringTASeg name) tc
+                    subTC <- goDownTCSeg f tc
                     return (subTC, ITField)
                   else
                     Nothing
             , do
-                seg <- case ident of
-                  RefIdent name -> Just $ BlockTASeg $ LetTASeg name Nothing
-                  RefIdentWithOID name oid -> Just $ BlockTASeg $ LetTASeg name (Just oid)
-                subTC <- goDownTCSeg seg tc
+                subTC <- goDownTCSeg lf tc
                 binding <- Map.lookup ident struct.stcBindings
                 let typ = if binding.isIterVar then ITIterBinding else ITLetBinding
                 return (subTC, typ)
@@ -610,7 +606,7 @@ findIdent ident tc = do
     IsTGenOp (MutOp (Compreh c)) -> do
       debugInstantRM "searchTCIdent" (printf "search in the compreh, bindings: %s" (show c.iterBindings)) tc
       return $ do
-        name <- case ident of RefIdent name -> Just name; _ -> Nothing
-        v <- Map.lookup name c.iterBindings
+        -- name <- case ident of RefIdent name -> Just name; _ -> Nothing
+        v <- Map.lookup ident c.iterBindings
         return (v `setTCFocus` tc, ITIterBinding)
     _ -> return Nothing

@@ -129,7 +129,6 @@ deriving instance NFData ComprehArg
 
 deriving instance NFData Reference
 deriving instance NFData RefArg
-deriving instance NFData RefIdent
 
 deriving instance NFData Interpolation
 

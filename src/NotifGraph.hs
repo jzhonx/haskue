@@ -220,10 +220,10 @@ scc edges vertexes = execState ({-# SCC "sccGo" #-} go) initState
         sccDFS v
 
 data TarjanNodeMeta = TarjanNodeMeta
-  { dnmLowLink :: Int
-  , dnmIndex :: Int
-  , dnmOnStack :: Bool
-  , dnmSCDescendant :: Maybe SuffixIrredAddr
+  { dnmLowLink :: !Int
+  , dnmIndex :: !Int
+  , dnmOnStack :: !Bool
+  , dnmSCDescendant :: !(Maybe SuffixIrredAddr)
   -- ^ It contains the descendant address of the node that forms a structural cycle.
   }
   deriving (Show)
@@ -233,7 +233,7 @@ emptyTarjanNodeMeta = TarjanNodeMeta 0 0 False Nothing
 
 data TarjanState = TarjanState
   { tsEdges :: Map.Map SuffixReferableAddr [SuffixIrredAddr]
-  , tsIndex :: Int
+  , tsIndex :: !Int
   , tsStack :: [SuffixIrredAddr]
   , tsMetaMap :: Map.Map SuffixIrredAddr TarjanNodeMeta
   , tsSCCs :: [SCC]
@@ -383,7 +383,7 @@ isSufIrredParent parent child =
    in
     isParentPrefix
       && ( let TreeAddr diff = trimPrefixTreeAddr parentAddr childAddr
-               rest = V.filter isSegReferable diff
+               rest = V.filter isFeatureReferable diff
             in not (V.null rest)
          )
 

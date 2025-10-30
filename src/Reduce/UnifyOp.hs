@@ -26,19 +26,21 @@ import Reduce.RMonad (
   allocRMObjID,
   createCnstr,
   debugInstantRM,
-  debugSpanAdaptRM,
-  debugSpanMTreeArgsRM,
-  debugSpanTreeArgsRM,
-  debugSpanTreeRM,
   liftFatal,
   preVisitTree,
   preVisitTreeSimple,
   throwFatal,
+  traceSpanAdaptRM,
+  traceSpanMTreeArgsRM,
+  traceSpanMTreeRM,
+  traceSpanTreeArgsRM,
+  traceSpanTreeRM,
  )
 import Reduce.RefSys (IdentType (..), searchTCIdent)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, textIndexToText)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
 import Text.Printf (printf)
 import Value
+import Value.Util.TreeRep (treeToFullRepString)
 
 -- | UTree is a tree with a direction.
 data UTree = UTree
@@ -100,7 +102,7 @@ If RC can not be cancelled, then the result is Nothing.
 The order of the unification is the same as the order of the trees.
 -}
 unifyNormalizedTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m (Maybe Tree)
-unifyNormalizedTCs tcs unifyTC = debugSpanMTreeArgsRM "unifyNormalizedTCs" (showTCList tcs) unifyTC $ do
+unifyNormalizedTCs tcs unifyTC = traceSpanMTreeRM "unifyNormalizedTCs" unifyTC $ do
   when (length tcs < 2) $ throwFatal "not enough arguments for unification"
 
   let isAllCyclic = all (isSCyclic . tcFocus) tcs
@@ -171,7 +173,7 @@ unifyForNewConjs uts tc = do
     Nothing -> return Nothing
 
 mergeTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m Tree
-mergeTCs tcs unifyTC = debugSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
+mergeTCs tcs unifyTC = traceSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
   when (null tcs) $ throwFatal "not enough arguments"
   let headTC = head tcs
   -- TODO: does the first tree need to be not embedded?
@@ -230,7 +232,7 @@ mergeBinUTrees :: (ResolveMonad r s m) => UTree -> UTree -> TrCur -> m Tree
 mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = tcFocus tc1
       t2 = tcFocus tc2
-  debugSpanTreeArgsRM
+  traceSpanTreeArgsRM
     "mergeBinUTrees"
     ( printf
         ("merging %s, %s" ++ "\n" ++ "with %s, %s")
@@ -270,7 +272,7 @@ mergeLeftTop ut1 ut2 unifyTC = do
 
 mergeLeftAtom :: (ResolveMonad r s m) => (Atom, UTree) -> UTree -> TrCur -> m Tree
 mergeLeftAtom (v1, ut1@(UTree{dir = d1})) ut2@(UTree{utTC = tc2, dir = d2}) unifyTC =
-  debugSpanTreeRM "mergeLeftAtom" unifyTC $ do
+  traceSpanTreeRM "mergeLeftAtom" unifyTC $ do
     let t2 = tcFocus tc2
     case (v1, t2) of
       (String x, IsAtom s)
@@ -598,7 +600,7 @@ For closedness, unification only generates a closed struct but not a recursively
 recursively, the only way is to reference the struct via a #ident.
 -}
 mergeStructs :: (ResolveMonad r s m) => (Struct, UTree) -> (Struct, UTree) -> TrCur -> m Tree
-mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = debugSpanTreeArgsRM
+mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = traceSpanTreeArgsRM
   "mergeStructs"
   (printf "ut1: %s\nut2: %s" (show ut1) (show ut2))
   unifyTC
@@ -623,7 +625,14 @@ mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = debugSpanTreeArgsRM
             | otherwise -> allocRMObjID
 
         let s = mergeStructsInner rs1 rs2 neitherEmbedded
-        return $ mkStructTree s{stcID = newID}
+        renamedLets1 <- renameLets (stcID s1) (stcBindings s1)
+        renamedLets2 <- renameLets (stcID s2) (stcBindings s2)
+        return $
+          mkStructTree
+            s
+              { stcID = newID
+              , stcBindings = Map.union renamedLets1 renamedLets2
+              }
       (IsBottom _, _) -> return rtc1.tcFocus
       (_, IsBottom _) -> return rtc2.tcFocus
       _ ->
@@ -646,7 +655,6 @@ fieldsToStruct st1 st2 =
   emptyStruct
     { stcClosed = stcClosed st1 || stcClosed st2
     , stcFields = Map.fromList (unionFields (stcFields st1) (stcFields st2))
-    , stcBindings = Map.union (renameLets (stcID st1) (stcBindings st1)) (renameLets (stcID st2) (stcBindings st2))
     , stcDynFields = IntMap.union (stcDynFields st1) (stcDynFields st2)
     , -- The combined patterns are the patterns of the first struct and the patterns of the second struct.
       stcCnstrs = IntMap.union (stcCnstrs st1) (stcCnstrs st2)
@@ -655,13 +663,22 @@ fieldsToStruct st1 st2 =
     , stcPerms = stcPerms st1 ++ stcPerms st2
     }
 
-renameLets :: Int -> Map.Map RefIdent Binding -> Map.Map RefIdent Binding
-renameLets suffix =
-  Map.mapKeys
-    ( \case
-        RefIdent n -> RefIdentWithOID n suffix
-        RefIdentWithOID n old -> RefIdentWithOID n old
+renameLets :: (TextIndexerMonad s m) => Int -> Map.Map TextIndex Binding -> m (Map.Map TextIndex Binding)
+renameLets suffix m = do
+  foldM
+    ( \acc (k, v) -> do
+        nk <- mkLetFeature k (Just suffix)
+        let nidx = getTextIndexFromFeature nk
+        return $ Map.insert nidx v acc
     )
+    Map.empty
+    (Map.toList m)
+
+-- Map.mapKeys
+--   ( \case
+--       RefIdent n -> RefIdentWithOID n suffix
+--       RefIdentWithOID n old -> RefIdentWithOID n old
+--   )
 
 mkPermItem :: Struct -> Struct -> PermItem
 mkPermItem st opSt =
@@ -752,7 +769,7 @@ The scope of a declared identifier is the extent of source text in which the ide
 alias, or package.
 -}
 prepStruct :: (ResolveMonad r s m) => Map.Map TreeAddr Int -> TrCur -> m TrCur
-prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = debugSpanAdaptRM "prepStruct" treeFetchAdapt resAdapt structTC $ do
+prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepStruct" treeFetchAdapt resAdapt structTC $ do
   (updatedTC, updatedPSS) <- preVisitTree (subNodes True) firstPass (structTC, emptyPSS)
   debugInstantRM
     "prepStruct"
@@ -762,16 +779,13 @@ prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = debugSpanAdaptRM "prepS
     Just err -> return $ err `setTCFocus` updatedTC
     Nothing -> do
       let origAddr = tcAddr structTC
-
       foldM
-        ( \acc addr -> liftFatal (goTCAbsAddrMust addr acc) >>= preVisitTreeSimple (subNodes True) invalidate
-        )
+        (\acc addr -> liftFatal (goTCAbsAddrMust addr acc) >>= preVisitTreeSimple (subNodes True) invalidate)
         updatedTC
         (Set.toList $ invAddrs updatedPSS)
         >>= ( \x ->
                 foldM
-                  ( \acc (addr, suffix) -> liftFatal (goTCAbsAddrMust addr acc) >>= rewrite suffix
-                  )
+                  (\acc (addr, suffix) -> liftFatal (goTCAbsAddrMust addr acc) >>= rewrite suffix)
                   x
                   (rwLetIdents updatedPSS)
             )
@@ -827,21 +841,27 @@ prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = debugSpanAdaptRM "prepS
       _ -> setTN focus TNNoVal `setTCFocus` tc
 
   rewrite suffix tc = case tc of
-    TCFocus t@(IsRef mut ref@(Reference{refArg = RefPath ident xs})) ->
-      do
-        let newIdent = case ident of
-              RefIdent name -> RefIdentWithOID name suffix
-              RefIdentWithOID{} -> ident
-        let
-          newRef = ref{refArg = RefPath newIdent xs}
-          newMut = setMutOp (Ref newRef) mut
-        return
-          (t{valGenEnv = TGenOp newMut} `setTCFocus` tc)
+    TCFocus t@(IsRef mut ref@(Reference{refArg = RefPath ident xs})) -> do
+      newIdentF <- mkLetFeature ident (Just suffix)
+      let newIdx = getTextIndexFromFeature newIdentF
+      identStr <- tshow ident
+      newIdentStr <- tshow newIdentF
+      debugInstantRM
+        "prepStruct.rewrite"
+        ( printf "rewriting ref ident %s to %s with suffix %d, newidx: %s" (show identStr) (show newIdentStr) suffix (show newIdx)
+        )
+        tc
+      let
+        newRef = ref{refArg = RefPath newIdx xs}
+        newMut = setMutOp (Ref newRef) mut
+      return (t{valGenEnv = TGenOp newMut} `setTCFocus` tc)
     _ -> return tc
 
   treeFetchAdapt x = Just $ tcFocus x
 
-  resAdapt _ = toJSON ()
+  resAdapt r = do
+    -- t <- oneLinerStringOfTree r.tcFocus
+    return $ toJSON (treeToFullRepString r.tcFocus)
 prepStruct _ tc = do
   debugInstantRM "prepStruct" (printf "none struct focus: %s" (show tc.tcFocus)) tc
   return tc
@@ -879,7 +899,7 @@ mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
 -- In current CUE's implementation, CUE puts the fields of the single value first.
 mergeDisjWithVal :: (ResolveMonad r s m) => (Disj, UTree) -> UTree -> TrCur -> m Tree
 mergeDisjWithVal (dj1, _ut1@(UTree{dir = fstDir})) _ut2 unifyTC =
-  debugSpanTreeRM "mergeDisjWithVal" unifyTC $ do
+  traceSpanTreeRM "mergeDisjWithVal" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     let defIdxes1 = dsjDefIndexes dj1
     if fstDir == L
@@ -905,7 +925,7 @@ U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj :: (ResolveMonad r s m) => (Disj, UTree) -> (Disj, UTree) -> TrCur -> m Tree
 mergeDisjWithDisj (dj1, _ut1@(UTree{dir = fstDir})) (dj2, _ut2) unifyTC =
-  debugSpanTreeRM "mergeDisjWithDisj" unifyTC $ do
+  traceSpanTreeRM "mergeDisjWithDisj" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     uts2 <- utsFromDisjs (length $ dsjDisjuncts dj2) _ut2
     let
@@ -926,7 +946,7 @@ utsFromDisjs :: (ResolveMonad r s m) => Int -> UTree -> m [UTree]
 utsFromDisjs n ut@(UTree{utTC = tc}) = do
   mapM
     ( \i -> do
-        djTC <- modifyError FatalErr (goDownTCSegMust (DisjTASeg i) tc)
+        djTC <- modifyError FatalErr (goDownTCSegMust (mkDisjFeature i) tc)
         -- make disjucnt inherit the embedded property of the disjunction.
         return $ ut{utTC = modifyTCFocus (\t -> t{Value.embType = ut.embType}) djTC}
     )
@@ -968,14 +988,14 @@ removeIncompleteDisjuncts defIdxes ts =
 The pattern is expected to be an Atom or a Bounds.
 -}
 patMatchLabel :: (ResolveMonad r s m) => Tree -> TextIndex -> TrCur -> m Bool
-patMatchLabel pat tidx tc = debugSpanAdaptRM "patMatchLabel" (const Nothing) toJSON tc $ do
+patMatchLabel pat tidx tc = traceSpanAdaptRM "patMatchLabel" (const Nothing) (return . toJSON) tc $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match vM
  where
   match :: (ResolveMonad r s m) => Tree -> m Bool
   match v = do
-    name <- textIndexToText tidx
+    name <- tshow tidx
     let f =
           mergeBinUTrees
             (UTree L (v `setTCFocus` tc) ETNone)

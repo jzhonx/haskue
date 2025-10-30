@@ -28,9 +28,6 @@ import Reduce.RMonad (
   ResolveMonad,
   ctxNotifGraph,
   debugInstantTM,
-  debugSpanAdaptTM,
-  debugSpanArgsAdaptTM,
-  debugSpanTM,
   fetch,
   getRMContext,
   getTMAbsAddr,
@@ -43,6 +40,9 @@ import Reduce.RMonad (
   pushRecalcRootQ,
   putTMTree,
   setIsReducingRC,
+  traceSpanAdaptTM,
+  traceSpanArgsAdaptTM,
+  traceSpanTM,
  )
 import {-# SOURCE #-} Reduce.Root (reduce)
 import Text.Printf (printf)
@@ -60,9 +60,9 @@ recalc = do
     Just gAddr | not (isRecalcing ctx) -> return $ Just gAddr
     _ -> return Nothing
 
-  debugInstantTM "recalc" (printf "startGrpAddrM %s, ng: %s" (show startGrpAddrM) (show ng))
+  debugInstantTM "recalc" (printf "startGrpAddrM %s" (show startGrpAddrM))
 
-  when (isJust startGrpAddrM) $ debugSpanTM "recalc" $ do
+  when (isJust startGrpAddrM) $ traceSpanTM "recalc" $ do
     modifyRMContext $ \c -> c{isRecalcing = True}
     let startGrpAddr = fromJust startGrpAddrM
     pushRecalcRootQ startGrpAddr
@@ -135,7 +135,7 @@ recalcGroup sccAddr@(CyclicBaseAddr _) dirtySet allAffected = do
 
   ng <- ctxNotifGraph <$> getRMContext
   let addrs = getElemAddrInGrp sccAddr ng
-  r <- debugSpanArgsAdaptTM "recalcCyclic" (printf "addrs: %s" (show addrs)) (const $ toJSON ()) $ do
+  r <- traceSpanArgsAdaptTM "recalcCyclic" (printf "addrs: %s" (show addrs)) (const $ return $ toJSON ()) $ do
     (r, store) <-
       foldM
         ( \(acc, accStore) siAddr -> case acc of
@@ -144,7 +144,7 @@ recalcGroup sccAddr@(CyclicBaseAddr _) dirtySet allAffected = do
               do
                 goTMAbsAddrMust (sufIrredToAddr siAddr)
                 r <-
-                  debugSpanAdaptTM (printf "recalcCyclic %s" (show siAddr)) (\r -> toJSON (show r)) $
+                  traceSpanAdaptTM (printf "recalcCyclic %s" (show siAddr)) (\r -> return $ toJSON (show r)) $
                     recalcRC
                       (RCCalHelper allAffected addrs [siAddr] [])
                       (\k -> if Set.member k dirtySet then FRDirty else FRNormal)
@@ -244,13 +244,13 @@ recalcNode ::
 recalcNode addr affectedAddrsSet fetch = do
   let baseAddr = sufIrredToAddr addr
   goTMAbsAddrMust baseAddr
-  debugSpanArgsAdaptTM
+  traceSpanArgsAdaptTM
     "recalcNode"
     (printf "affectedAddrsSet: %s" (show affectedAddrsSet))
-    ( \r -> case r of
-        -- Just dep -> toJSON $ sufIrredToAddr dep
-        Just dep -> toJSON ()
-        Nothing -> toJSON ()
+    ( const $ return $ toJSON ()
+    -- Just dep -> toJSON $ sufIrredToAddr dep
+    -- Just dep -> toJSON ()
+    -- Nothing -> toJSON ()
     )
     $ do
       let withDirtyCheck = local (modifyReduceParams (\p -> p{fetch}))
@@ -261,7 +261,7 @@ recalcNode addr affectedAddrsSet fetch = do
         IsStruct struct
           | IsTGenOp mut <- t
           , let
-              allArgAddrs = map (\i -> appendSeg baseAddr (MutArgTASeg i)) [0 .. length (getMutArgs mut) - 1]
+              allArgAddrs = map (\i -> appendSeg baseAddr (mkMutArgFeature i)) [0 .. length (getMutArgs mut) - 1]
               anyArgAffected = any (`Set.member` affectedAddrsSet) allArgAddrs
           , MutOp (UOp _) <- mut
           , not anyArgAffected -> do
@@ -293,25 +293,25 @@ checkSReady baseAddr affectedAddrsSet fetch struct = do
   let
     affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred affectedAddrsSet
     affectedFieldSegs =
-      [ StringTASeg name
+      [ mkStringFeature name
       | name <- Map.keys (stcFields struct)
-      , let a = trimAddrToSufIrred $ appendSeg baseAddr (BlockTASeg $ StringTASeg name)
+      , let a = trimAddrToSufIrred $ appendSeg baseAddr (mkStringFeature name)
       , Set.member a affectedSufIrredAddrsSet
       ]
     affectedDynSegs =
-      [ DynFieldTASeg i 0
+      [ mkDynFieldFeature i 0
       | i <- IntMap.keys (stcDynFields struct)
       , let
-          seg = BlockTASeg $ DynFieldTASeg i 0
+          seg = mkDynFieldFeature i 0
           a = trimAddrToSufIrred $ appendSeg baseAddr seg
          in
           Set.member a affectedSufIrredAddrsSet
       ]
     affectedCnstrSegs =
-      [ PatternTASeg i 0
+      [ mkPatternFeature i 0
       | i <- IntMap.keys (stcCnstrs struct)
       , let
-          seg = BlockTASeg $ PatternTASeg i 0
+          seg = mkPatternFeature i 0
           a = trimAddrToSufIrred $ appendSeg baseAddr seg
          in
           Set.member a affectedSufIrredAddrsSet
@@ -319,7 +319,7 @@ checkSReady baseAddr affectedAddrsSet fetch struct = do
     allAffected = affectedFieldSegs ++ affectedDynSegs ++ affectedCnstrSegs
     deps =
       map
-        (\seg -> let a = appendSeg baseAddr (BlockTASeg seg) in (trimAddrToSufIrred a, fetch (trimAddrToSufIrred a)))
+        (\seg -> let a = appendSeg baseAddr seg in (trimAddrToSufIrred a, fetch (trimAddrToSufIrred a)))
         allAffected
     allClean = all (\x -> snd x == FRNormal) deps
   if allClean

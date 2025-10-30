@@ -17,8 +17,6 @@ import Reduce.RMonad (
   ReduceMonad,
   ctxNotifGraph,
   debugInstantRM,
-  debugSpanArgsTM,
-  debugSpanTM,
   descendTMSeg,
   getRMContext,
   getTMCursor,
@@ -31,6 +29,8 @@ import Reduce.RMonad (
   putTMCursor,
   putTMTree,
   throwFatal,
+  traceSpanArgsTM,
+  traceSpanTM,
   withTN,
  )
 import Reduce.Root (reduce)
@@ -38,7 +38,7 @@ import Text.Printf (printf)
 import Value
 
 postValidation :: (ReduceMonad r s m) => m ()
-postValidation = debugSpanTM "postValidation" $ do
+postValidation = traceSpanTM "postValidation" $ do
   ctx <- getRMContext
   -- remove all notifiers.
   putRMContext $ ctx{ctxNotifGraph = emptyNotifGraph}
@@ -47,7 +47,7 @@ postValidation = debugSpanTM "postValidation" $ do
   simplifyRM
 
   t <- getTMTree
-  debugSpanArgsTM "validate" (show t) $ do
+  traceSpanArgsTM "validate" (show t) $ do
     -- then validate all constraints.
     traverseTM $ withTN $ \case
       TNAtomCnstr c -> validateCnstr c
@@ -59,7 +59,7 @@ postValidation = debugSpanTM "postValidation" $ do
 2. Extract the embedded value from the block.
 -}
 simplifyRM :: (ReduceMonad r s m) => m ()
-simplifyRM = debugSpanTM "simplifyRM" $ do
+simplifyRM = traceSpanTM "simplifyRM" $ do
   tc <- getTMCursor
   putTMCursor
     =<< postVisitTreeSimple
@@ -116,7 +116,7 @@ It creates a validate function, and then evaluates the function. Notice that the
 constraint in the propValUp.
 -}
 validateCnstr :: (ReduceMonad r s m) => AtomCnstr -> m ()
-validateCnstr c = debugSpanTM "validateCnstr" $ do
+validateCnstr c = traceSpanTM "validateCnstr" $ do
   -- Run the validator in a forced reduce args mode.
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
   -- get an incomplete value if the RC node did not yield a concrete value.

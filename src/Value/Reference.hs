@@ -10,6 +10,7 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 import Path
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
+import Text.Printf (printf)
 import Value.Atom
 import {-# SOURCE #-} Value.Tree
 
@@ -17,33 +18,37 @@ newtype Reference = Reference {refArg :: RefArg} deriving (Generic)
 
 data RefArg
   = -- | RefPath denotes a reference starting with an identifier.
-    RefPath RefIdent (Seq.Seq Tree)
+    RefPath TextIndex (Seq.Seq Tree)
   | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
     RefIndex (Seq.Seq Tree)
   deriving (Generic)
 
-data RefIdent = RefIdent TextIndex | RefIdentWithOID TextIndex Int deriving (Show, Generic, Eq, Ord)
+-- newtype RefIdent = RefIdent TextIndex deriving (Show, Generic, Eq, Ord)
 
-instance ShowWithTextIndexer RefIdent where
-  tshow (RefIdent s) = tshow s
-  tshow (RefIdentWithOID s i) = do
-    sStr <- tshow s
-    return $ sStr ++ "_" ++ show i
+-- instance ShowWithTextIndexer RefIdent where
+--   tshow (RefIdent s) = tshow s
 
-refIdentToTextIndex :: (TextIndexerMonad s m) => RefIdent -> m TextIndex
-refIdentToTextIndex (RefIdent s) = return s
-refIdentToTextIndex (RefIdentWithOID s i) = do
-  str <- tshow s
-  let x = T.pack str `T.append` T.pack ("_" ++ show i)
-  textToTextIndex x
+-- tshow (RefIdentWithOID s i) = do
+--   sStr <- tshow s
+--   return $ T.pack $ printf "%s_%s" sStr (show i)
 
-refIdentToLetTASeg :: RefIdent -> BlockTASeg
-refIdentToLetTASeg (RefIdent s) = LetTASeg s Nothing
-refIdentToLetTASeg (RefIdentWithOID s i) = LetTASeg s (Just i)
+-- refIdentToTextIndex :: (TextIndexerMonad s m) => RefIdent -> m TextIndex
+-- refIdentToTextIndex (RefIdent s) = return s
 
-letTASegToRefIdent :: TextIndex -> Maybe Int -> RefIdent
-letTASegToRefIdent s Nothing = RefIdent s
-letTASegToRefIdent s (Just i) = RefIdentWithOID s i
+-- refIdentToTextIndex (RefIdentWithOID s i) = do
+--   str <- tshow s
+--   let x = str `T.append` T.pack ("_" ++ show i)
+--   textToTextIndex x
+
+-- refIdentToLetTASeg :: (TextIndexerMonad s m) => RefIdent -> m Feature
+-- refIdentToLetTASeg (RefIdent s) = mkLetFeature s Nothing
+
+-- refIdentToLetTASeg (RefIdentWithOID s i) = mkLetFeature s (Just i)
+
+-- letTASegToRefIdent :: TextIndex -> RefIdent
+-- letTASegToRefIdent s = RefIdent s
+
+-- letTASegToRefIdent s (Just i) = RefIdentWithOID s i
 
 showRefArg :: RefArg -> (Tree -> Maybe String) -> String
 showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) (toList xs))
@@ -98,17 +103,17 @@ mkIndexRef ts =
 emptyIdentRef :: TextIndex -> Reference
 emptyIdentRef ident =
   Reference
-    { refArg = RefPath (RefIdent ident) Seq.empty
+    { refArg = RefPath ident Seq.empty
     }
 
-mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Tree) -> RefIdent -> FieldPath -> m Reference
+mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Tree) -> TextIndex -> FieldPath -> m Reference
 mkRefFromFieldPath aToTree ident (FieldPath xs) = do
   ys <-
     mapM
       ( \y -> case y of
           StringSel s -> do
             str <- tshow s
-            return $ aToTree (String $ T.pack str)
+            return $ aToTree (String str)
           IntSel i -> return $ aToTree (Int $ fromIntegral i)
       )
       xs

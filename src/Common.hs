@@ -37,8 +37,8 @@ class IDStore s where
   setID :: s -> Int -> s
 
 data Config = Config
-  { stDebugLogging :: Bool
-  , stTraceExec :: Bool
+  { stTraceEnable :: Bool
+  , stTraceExtraInfo :: Bool
   , stTracePrintTree :: Bool
   , stTraceFilter :: Set.Set String
   , stShowMutArgs :: Bool
@@ -54,8 +54,8 @@ instance HasConfig Config where
 emptyConfig :: Config
 emptyConfig =
   Config
-    { stDebugLogging = False
-    , stTraceExec = False
+    { stTraceEnable = False
+    , stTraceExtraInfo = False
     , stTracePrintTree = False
     , stTraceFilter = Set.empty
     , stShowMutArgs = False

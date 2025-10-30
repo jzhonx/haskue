@@ -91,8 +91,8 @@ runRM f = do
               ( Common.Config
                   { Common.cfSettings =
                       Common.Settings
-                        { Common.stDebugLogging = False
-                        , Common.stTraceExec = False
+                        { Common.stTraceExtraInfo = False
+                        , Common.stTraceEnable = False
                         , Common.stTracePrintTree = False
                         , Common.stTraceFilter = Set.empty
                         , Common.stShowMutArgs = False

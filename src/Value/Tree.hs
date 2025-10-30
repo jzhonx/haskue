@@ -20,14 +20,16 @@ import qualified Data.Text as T
 import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import Path (
-  BlockTASeg (..),
   FieldPath (FieldPath),
+  LabelType (..),
   Selector (..),
-  TASeg (..),
   TreeAddr,
   addrToList,
+  fetchIndex,
+  fetchLabelType,
+  getTextFromFeature,
  )
-import StringIndex (ShowWithTextIndexer (..), TextIndexerMonad, textToTextIndex)
+import StringIndex (TextIndexerMonad, textToTextIndex)
 import Value.Atom
 import Value.Block
 import Value.Bottom
@@ -382,11 +384,13 @@ addrToTrees p = do
   xs <- mapM selToTree (addrToList p)
   return $ sequence xs
  where
-  selToTree sel = case sel of
-    (BlockTASeg (StringTASeg s)) -> do
-      str <- tshow s
-      return $ Just $ mkAtomTree (String (T.pack str))
-    IndexTASeg j -> return $ Just $ mkAtomTree (Int (fromIntegral j))
+  selToTree sel = case fetchLabelType sel of
+    StringLabelType -> do
+      str <- getTextFromFeature sel
+      return $ Just $ mkAtomTree (String str)
+    IndexLabelType -> do
+      let j = fetchIndex sel
+      return $ Just $ mkAtomTree (Int (fromIntegral j))
     _ -> return Nothing
 
 -- built-in functions
@@ -407,13 +411,13 @@ builtinMutableTable =
   ]
 
 -- | Create a one-liner string representation of the snapshot of the tree.
-oneLinerStringOfTree :: (TextIndexerMonad s m) => Tree -> m String
+oneLinerStringOfTree :: (TextIndexerMonad s m) => Tree -> m T.Text
 oneLinerStringOfTree t = do
   let m = buildASTExprDebug t
   e <- runExceptT m
   case e of
-    Left err -> return err
-    Right expr -> return $ exprToOneLinerStr expr
+    Left err -> return $ T.pack err
+    Right expr -> return $ T.pack $ exprToOneLinerStr expr
 
 invalidateMutable :: Tree -> Tree
 invalidateMutable t@(IsTGenOp _) = t{treeNode = TNNoVal}

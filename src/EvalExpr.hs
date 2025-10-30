@@ -18,7 +18,8 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import StringIndex (TextIndex, TextIndexerMonad, textIndexToText, textToTextIndex)
+import Path (Feature, getTextIndexFromFeature, mkLetFeature, mkStringFeature)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value
 
@@ -260,7 +261,7 @@ If the field is already in the struct, then unify the field with the new field.
 insertElemToStruct :: (EvalEnv r s m) => StructElemAdder -> Struct -> m Tree
 insertElemToStruct adder struct = case adder of
   (StaticSAdder name sf) -> do
-    nameStr <- textIndexToText name
+    nameStr <- tshow name
     maybe
       ( case lookupStructStubVal name struct of
           -- The label is already in the struct, so we need to unify the field.
@@ -286,7 +287,8 @@ insertElemToStruct adder struct = case adder of
   (DynamicSAdder i dsf) -> return . mkStructTree $ insertStructNewDynField i dsf struct
   (CnstrSAdder i pattern val) -> return . mkStructTree $ insertStructNewCnstr i pattern val struct
   (LetSAdder name val) -> do
-    nameStr <- textIndexToText name
+    -- Use the pure identifier for error messages.
+    nameStr <- tshow name
     return $
       fromMaybe
         -- The name is not seen before in the block.

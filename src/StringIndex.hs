@@ -7,20 +7,20 @@ module StringIndex where
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState, gets, modify)
 import qualified Data.Map.Strict as Map
-import Data.Text (unpack)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import GHC.Generics (Generic)
+import GHC.Stack (HasCallStack)
 
-type TextIndexerMonad s m = (MonadState s m, HasTextIndexer s)
+type TextIndexerMonad s m = (MonadState s m, HasTextIndexer s, HasCallStack)
 
 class HasTextIndexer a where
   getTextIndexer :: a -> TextIndexer
   setTextIndexer :: TextIndexer -> a -> a
 
 class (Show a) => ShowWithTextIndexer a where
-  tshow :: (MonadState s m, HasTextIndexer s) => a -> m String
-  tshow = return . show
+  tshow :: (MonadState s m, HasTextIndexer s) => a -> m T.Text
+  tshow = return . T.pack . show
 
 data TextIndexer = TextIndexer
   { labels :: V.Vector T.Text
@@ -31,8 +31,8 @@ data TextIndexer = TextIndexer
 emptyTextIndexer :: TextIndexer
 emptyTextIndexer = TextIndexer V.empty Map.empty
 
-getTextIndex :: T.Text -> TextIndexer -> (Int, TextIndexer)
-getTextIndex t indexer =
+fetchTextIndex :: T.Text -> TextIndexer -> (Int, TextIndexer)
+fetchTextIndex t indexer =
   case Map.lookup t indexer.labelToIndex of
     Just i -> (i, indexer)
     Nothing ->
@@ -45,25 +45,22 @@ getTextIndex t indexer =
         (i, newIndexer)
 
 -- | TextIndex is an index to a text in the TextIndexer.
-newtype TextIndex = TextIndex Int
+newtype TextIndex = TextIndex {getTextIndex :: Int}
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show TextIndex where
   show (TextIndex i) = "ti_" ++ show i
 
 instance ShowWithTextIndexer TextIndex where
-  tshow s = unpack <$> textIndexToText s
-
-textIndexToText :: (TextIndexerMonad s m) => TextIndex -> m T.Text
-textIndexToText (TextIndex i) = do
-  indexer <- gets getTextIndexer
-  -- It must exist.
-  return $ indexer.labels V.! i
+  tshow (TextIndex i) = do
+    indexer <- gets getTextIndexer
+    -- It must exist.
+    return $ indexer.labels V.! i
 
 textToTextIndex :: (TextIndexerMonad s m) => T.Text -> m TextIndex
 textToTextIndex t = do
   indexer <- gets getTextIndexer
-  let (i, newIndexer) = getTextIndex t indexer
+  let (i, newIndexer) = fetchTextIndex t indexer
   modify (setTextIndexer newIndexer)
   return $ TextIndex i
 

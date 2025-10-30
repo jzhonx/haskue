@@ -5,6 +5,7 @@
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Cursor where
 
@@ -27,6 +28,7 @@ import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import Path
+import StringIndex (getTextIndex)
 import Text.Printf (printf)
 import Value
 
@@ -48,7 +50,7 @@ Suppose the cursor is at the struct that contains the value 42. The cursor is
 -}
 data TrCur = TrCur
   { tcFocus :: Tree
-  , tcCrumbs :: [(TASeg, Tree)]
+  , tcCrumbs :: [(Feature, Tree)]
   }
   deriving (Eq, Generic, NFData)
 
@@ -59,7 +61,7 @@ instance Show TrCur where
 pattern TCFocus :: Tree -> TrCur
 pattern TCFocus t <- TrCur{tcFocus = t}
 
-addrFromCrumbs :: [(TASeg, Tree)] -> TreeAddr
+addrFromCrumbs :: [(Feature, Tree)] -> TreeAddr
 addrFromCrumbs crumbs = addrFromList $ go crumbs []
  where
   go [] acc = acc
@@ -73,12 +75,12 @@ tcAddr :: TrCur -> TreeAddr
 tcAddr c = addrFromCrumbs (tcCrumbs c)
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSeg :: TrCur -> Maybe TASeg
+tcFocusSeg :: TrCur -> Maybe Feature
 tcFocusSeg (TrCur _ []) = Nothing
 tcFocusSeg tc = return $ fst . head $ tcCrumbs tc
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSegMust :: (ErrorEnv m) => TrCur -> m TASeg
+tcFocusSegMust :: (ErrorEnv m) => TrCur -> m Feature
 tcFocusSegMust tc = maybe (throwErrSt "already top") return (tcFocusSeg tc)
 
 isTCTop :: TrCur -> Bool
@@ -86,7 +88,7 @@ isTCTop (TrCur _ []) = True
 isTCTop _ = False
 
 isTCRoot :: TrCur -> Bool
-isTCRoot (TrCur _ [(RootTASeg, _)]) = True
+isTCRoot (TrCur _ [(IsRootFeature, _)]) = True
 isTCRoot _ = False
 
 showCursor :: TrCur -> String
@@ -111,7 +113,7 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         cs
 
 -- | Create a sub cursor with the given segment and tree, and the updated parent tree from the current cursor.
-mkSubTC :: Tree -> TASeg -> Tree -> [(TASeg, Tree)] -> TrCur
+mkSubTC :: Tree -> Feature -> Tree -> [(Feature, Tree)] -> TrCur
 mkSubTC t seg parT crumbs = TrCur t ((seg, parT) : crumbs)
 
 modifyTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
@@ -126,7 +128,7 @@ setTCFocusMut mut = modifyTCFocus (setTValGenEnv (TGenOp mut))
 goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
 goDownTCAddr a = go (addrToList a)
  where
-  go :: [TASeg] -> TrCur -> Maybe TrCur
+  go :: [Feature] -> TrCur -> Maybe TrCur
   go [] cursor = Just cursor
   go (x : xs) cursor = do
     nextCur <- goDownTCSeg x cursor
@@ -146,7 +148,7 @@ goDownTCAddrMust addr tc =
 
 It handles the cases when a node can be accessed without segments, such as the default value of a disjunction.
 -}
-goDownTCSeg :: TASeg -> TrCur -> Maybe TrCur
+goDownTCSeg :: Feature -> TrCur -> Maybe TrCur
 goDownTCSeg seg tc = do
   let focus = tcFocus tc
   case subTree seg focus of
@@ -166,11 +168,11 @@ goDownTCSeg seg tc = do
                                   take i (dsjDisjuncts d) ++ [singletonNoVal] ++ drop (i + 1) (dsjDisjuncts d)
                               }
                       }
-              return $ mkSubTC dft (DisjTASeg i) updatedParT (tcCrumbs tc)
+              return $ mkSubTC dft (mkDisjFeature i) updatedParT (tcCrumbs tc)
         _ -> Nothing
       goDownTCSeg seg nextTC
 
-goDownTCSegMust :: (ErrorEnv m) => TASeg -> TrCur -> m TrCur
+goDownTCSegMust :: (ErrorEnv m) => Feature -> TrCur -> m TrCur
 goDownTCSegMust seg tc =
   maybe
     ( throwErrSt $
@@ -185,7 +187,7 @@ It stops at the root.
 -}
 propUpTC :: (ErrorEnv m) => TrCur -> m TrCur
 propUpTC (TrCur _ []) = throwErrSt "already at the top"
-propUpTC tc@(TrCur _ [(RootTASeg, _)]) = return tc
+propUpTC tc@(TrCur _ [(IsRootFeature, _)]) = return tc
 propUpTC (TrCur subT ((seg, parT) : cs)) = do
   let tM = setSubTree seg subT parT
   case tM of
@@ -208,73 +210,79 @@ It returns the sub tree and the updated parent tree with
 
 This should only be used by TreeCursor.
 -}
-subTree :: (HasCallStack) => TASeg -> Tree -> Maybe (Tree, Tree)
+subTree :: (HasCallStack) => Feature -> Tree -> Maybe (Tree, Tree)
 subTree seg parentT = do
   sub <- go seg parentT
   updatedParT <- setSubTree seg singletonNoVal parentT
   return (sub, updatedParT)
  where
-  go (MutArgTASeg i) (IsTGenOp mut) = getMutArgs mut Seq.!? i
-  go TempTASeg t = tmpSub t
-  go _ t = case (seg, t) of
-    (RootTASeg, _) -> Just t
-    (BlockTASeg bseg, IsStruct struct) -> case bseg of
-      StringTASeg name
-        | Just sf <- lookupStructField name struct ->
-            Just $ ssfValue sf
-      LetTASeg name i -> lookupStructLet (letTASegToRefIdent name i) struct
-      PatternTASeg i j -> (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
-      DynFieldTASeg i j ->
-        (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
-      StubFieldTASeg name
-        | Just sf <- lookupStructStaticFieldBase name struct ->
-            Just $ ssfValue sf
-      _ -> Nothing
-    (IndexTASeg i, IsList vs) -> lstSubs vs `indexList` i
-    (_, IsDisj d) | DisjTASeg i <- seg -> dsjDisjuncts d `indexList` i
+  go f t = case (fetchLabelType f, t) of
+    (RootLabelType, _) -> Just t
+    (MutArgLabelType, IsTGenOp mut) -> getMutArgs mut Seq.!? fetchIndex f
+    (TempLabelType, _) -> tmpSub t
+    (StringLabelType, IsStruct struct)
+      | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
+    (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
+    (PatternLabelType, IsStruct struct) ->
+      let
+        (i, j) = getPatternIndexesFromFeature f
+       in
+        (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
+    (DynFieldLabelType, IsStruct struct) ->
+      let (i, j) = getDynFieldIndexesFromFeature f
+       in (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i
+    (StubFieldLabelType, IsStruct struct)
+      | Just sf <- lookupStructStaticFieldBase (getTextIndexFromFeature f) struct ->
+          Just $ ssfValue sf
+    (IndexLabelType, IsList vs) -> lstSubs vs `indexList` fetchIndex f
+    (DisjLabelType, IsDisj d) -> dsjDisjuncts d `indexList` fetchIndex f
     _ -> Nothing
 
 {- | Set the sub tree with the given segment and new tree.
 
 The sub tree should already exist in the parent tree.
 -}
-setSubTree :: TASeg -> Tree -> Tree -> Maybe Tree
-setSubTree (MutArgTASeg i) subT parT@(IsTGenOp mut) = return $ setTValGenEnv (TGenOp $ updateMutArg i subT mut) parT
-setSubTree TempTASeg subT parT = return $ parT{tmpSub = Just subT}
-setSubTree seg subT parT = do
-  n <- case (seg, parT) of
-    (BlockTASeg (StringTASeg name), IsStruct parStruct)
+setSubTree :: (HasCallStack) => Feature -> Tree -> Tree -> Maybe Tree
+setSubTree f@(fetchLabelType -> MutArgLabelType) subT parT@(IsTGenOp mut) =
+  return $ setTValGenEnv (TGenOp $ updateMutArg (fetchIndex f) subT mut) parT
+setSubTree (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
+setSubTree f subT parT = do
+  n <- case (fetchLabelType f, parT) of
+    (StringLabelType, IsStruct parStruct)
       -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
       -- found.
-      | Just field <- lookupStructField name parStruct ->
+      | Just field <- lookupStructField (getTextIndexFromFeature f) parStruct ->
           let
             newField = subT `updateFieldValue` field
-            newStruct = updateStructField name newField parStruct
+            newStruct = updateStructField (getTextIndexFromFeature f) newField parStruct
            in
             return $ TNStruct newStruct
-    (BlockTASeg (PatternTASeg i j), IsStruct parStruct) ->
-      return $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
-    (BlockTASeg (DynFieldTASeg i j), IsStruct parStruct) ->
-      return $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
-    (BlockTASeg (StubFieldTASeg name), IsStruct parStruct) ->
-      return $ TNStruct (updateStructStaticFieldBase name subT parStruct)
-    (BlockTASeg (LetTASeg name i), IsStruct parStruct) ->
-      return $ TNStruct (updateStructLetBinding (letTASegToRefIdent name i) subT parStruct)
-    (IndexTASeg i, IsList vs) ->
+    (PatternLabelType, IsStruct parStruct) ->
+      let (i, j) = getPatternIndexesFromFeature f
+       in return $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
+    (DynFieldLabelType, IsStruct parStruct) ->
+      let (i, j) = getDynFieldIndexesFromFeature f
+       in return $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
+    (StubFieldLabelType, IsStruct parStruct) ->
+      return $ TNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
+    (LetLabelType, IsStruct parStruct) ->
+      return $ TNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
+    (IndexLabelType, IsList vs) ->
       let subs = lstSubs vs
+          i = fetchIndex f
           l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
        in return l
-    (_, IsDisj d)
-      | DisjTASeg i <- seg ->
-          return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    (RootTASeg, _) -> Nothing
+    (DisjLabelType, IsDisj d) ->
+      let i = fetchIndex f
+       in return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+    (RootLabelType, _) -> Nothing
     _ -> Nothing
   return parT{treeNode = n}
 
 indexList :: [a] -> Int -> Maybe a
 indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
-setSubTreeMust :: (ErrorEnv m) => TASeg -> Tree -> Tree -> m Tree
+setSubTreeMust :: (ErrorEnv m) => Feature -> Tree -> Tree -> m Tree
 setSubTreeMust seg subT parT =
   maybe
     (throwErrSt $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT))
@@ -284,19 +292,19 @@ setSubTreeMust seg subT parT =
 -- | Go to the top of the tree cursor.
 topTC :: (ErrorEnv m) => TrCur -> m TrCur
 topTC (TrCur _ []) = throwErrSt "already at the top"
-topTC tc@(TrCur _ ((RootTASeg, _) : _)) = return tc
+topTC tc@(TrCur _ ((IsRootFeature, _) : _)) = return tc
 topTC tc = do
   parTC <- propUpTC tc
   topTC parTC
 
 -- = Traversal =
 
-data SubNodeSeg = SubNodeSegNormal TASeg | SubNodeSegEmbed TASeg deriving (Eq)
+data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (Eq)
 
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Bool -> TrCur -> [SubNodeSeg]
 subNodes withStub (TCFocus t@(IsTGenOp mut)) =
-  let xs = [SubNodeSegNormal (MutArgTASeg i) | (i, _) <- zip [0 ..] (toList $ getMutArgs mut)]
+  let xs = [SubNodeSegNormal (mkMutArgFeature i) | (i, _) <- zip [0 ..] (toList $ getMutArgs mut)]
       ys = subTNSegsOpt withStub t
    in xs ++ ys
 subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)
@@ -304,27 +312,27 @@ subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)
 subTNSegsOpt :: Bool -> Tree -> [SubNodeSeg]
 subTNSegsOpt withStub t = map SubNodeSegNormal $ subTNSegs t ++ if withStub then subStubSegs t else []
 
-subTNSegs :: Tree -> [TASeg]
+subTNSegs :: Tree -> [Feature]
 subTNSegs t = case treeNode t of
   TNStruct s ->
-    [BlockTASeg $ StringTASeg n | n <- Map.keys (stcFields s)]
-      ++ [BlockTASeg $ refIdentToLetTASeg ident | ident <- Map.keys (stcBindings s)]
-      ++ [BlockTASeg $ PatternTASeg i 0 | i <- IntMap.keys $ stcCnstrs s]
-      ++ [BlockTASeg $ DynFieldTASeg i 0 | i <- IntMap.keys $ stcDynFields s]
-  TNList l -> [IndexTASeg i | (i, _) <- zip [0 ..] (lstSubs l)]
+    [mkStringFeature i | i <- Map.keys (stcFields s)]
+      ++ [mkFeature (getTextIndex i) LetLabelType | i <- Map.keys (stcBindings s)]
+      ++ [mkPatternFeature i 0 | i <- IntMap.keys $ stcCnstrs s]
+      ++ [mkDynFieldFeature i 0 | i <- IntMap.keys $ stcDynFields s]
+  TNList l -> [mkIndexFeature i | (i, _) <- zip [0 ..] (lstSubs l)]
   TNDisj d ->
-    [DisjTASeg i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
+    [mkDisjFeature i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
 {- | Generate a list of sub-trees that are stubs.
 
 TODO: comprehension struct
 -}
-subStubSegs :: Tree -> [TASeg]
+subStubSegs :: Tree -> [Feature]
 subStubSegs (IsStruct s) =
-  [BlockTASeg $ PatternTASeg i 1 | i <- IntMap.keys $ stcCnstrs s]
-    ++ [BlockTASeg $ DynFieldTASeg i 1 | i <- IntMap.keys $ stcDynFields s]
-    ++ [BlockTASeg $ StubFieldTASeg name | name <- Map.keys $ stcStaticFieldBases s]
+  [mkPatternFeature i 1 | i <- IntMap.keys $ stcCnstrs s]
+    ++ [mkDynFieldFeature i 1 | i <- IntMap.keys $ stcDynFields s]
+    ++ [mkStubFieldFeature i | i <- Map.keys (stcStaticFieldBases s)]
 subStubSegs _ = []
 
 {- | Go to the absolute addr in the tree. No propagation is involved.
@@ -333,7 +341,7 @@ The tree must have all the latest changes.
 -}
 goTCAbsAddr :: (ErrorEnv m) => TreeAddr -> TrCur -> m (Maybe TrCur)
 goTCAbsAddr dst tc = do
-  when (headSeg dst /= Just RootTASeg) $
+  when (headSeg dst /= Just rootFeature) $
     throwErrSt (printf "the addr %s should start with the root segment" (show dst))
   top <- topTC tc
   let dstNoRoot = fromJust $ tailTreeAddr dst
