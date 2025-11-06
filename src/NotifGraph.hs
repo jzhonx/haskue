@@ -3,7 +3,7 @@
 module NotifGraph where
 
 import Control.Monad (forM_, when)
-import Control.Monad.State.Strict (State, execState, gets, modify)
+import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as Set
@@ -16,17 +16,18 @@ import Text.Printf (printf)
 data NotifGraph = NotifGraph
   { deptsMap :: Map.Map SuffixReferableAddr [TreeAddr]
   -- ^ The notification edges maps a dependency address to a list of dependent addresses.
-  , notifGEdges :: Map.Map SuffixReferableAddr [SuffixIrredAddr]
-  -- ^ The notification edges maps a dependency address to a list of dependent addresses, all of which are irreducible.
-  -- The irreducible edges are used to compute the strongly connected components (SCCs) in the notification graph.
-  , notifGVertexes :: Set.Set SuffixIrredAddr
   , dagEdges :: Map.Map GrpAddr [GrpAddr]
   -- ^ Maps from a SCC address of a strongly connected component to a list of SCC addresses that represents
   -- the dependencies.
   , sccMap :: Map.Map GrpAddr (Set.Set SuffixIrredAddr)
   -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
+  , notifGEdges :: Map.Map RefVertex [IrredVertex]
+  -- ^ The notification edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
+  -- The irreducible edges are used to compute the strongly connected components (SCCs) in the notification graph.
+  , notifGVertexes :: Set.Set IrredVertex
   , addrToGrpAddr :: Map.Map SuffixIrredAddr GrpAddr
   -- ^ Maps from an address to its base address in the SCC graph.
+  , vidMapping :: VIDMapping
   }
   deriving (Eq)
 
@@ -63,7 +64,71 @@ emptyNotifGraph =
     , dagEdges = Map.empty
     , sccMap = Map.empty
     , addrToGrpAddr = Map.empty
+    , vidMapping = defaultVIDMapping
     }
+
+newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord, Show)
+
+newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Show)
+
+data VIDMapping = VIDMapping
+  { vidToAddr :: Map.Map Int TreeAddr
+  , addrToVid :: Map.Map TreeAddr Int
+  , nextVid :: Int
+  }
+  deriving (Eq)
+
+getVID :: TreeAddr -> VIDMapping -> (Int, VIDMapping)
+getVID addr m =
+  case Map.lookup addr (addrToVid m) of
+    Just vid -> (vid, m)
+    Nothing ->
+      let vid = nextVid m
+          newVidToAddr = Map.insert vid addr (vidToAddr m)
+          newAddrToVid = Map.insert addr vid (addrToVid m)
+       in ( vid
+          , VIDMapping
+              { vidToAddr = newVidToAddr
+              , addrToVid = newAddrToVid
+              , nextVid = vid + 1
+              }
+          )
+
+getAddrFromVID :: Int -> VIDMapping -> Maybe TreeAddr
+getAddrFromVID vid m = Map.lookup vid (vidToAddr m)
+
+getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> TreeAddr
+getAddrFromVIDMust vid m = case Map.lookup vid (vidToAddr m) of
+  Just addr -> addr
+  Nothing -> error $ printf "VID %d not found in VIDMapping" vid
+
+getIrredAddrFromVIDMust :: (HasCallStack) => IrredVertex -> VIDMapping -> SuffixIrredAddr
+getIrredAddrFromVIDMust iv m = case getAddrFromVID (getIrredVertex iv) m >>= addrIsSufIrred of
+  Just addr -> addr
+  Nothing -> error $ printf "VID %s does not correspond to an irreducible address" (show iv)
+
+defaultVIDMapping :: VIDMapping
+defaultVIDMapping =
+  VIDMapping
+    { vidToAddr = Map.fromList [(rootVID, rootTreeAddr)]
+    , addrToVid = Map.fromList [(rootTreeAddr, rootVID)]
+    , nextVid = rootVID + 1
+    }
+
+irredVToRefV :: IrredVertex -> VIDMapping -> (Maybe RefVertex, VIDMapping)
+irredVToRefV iv m = case irredVToRefAddr iv m of
+  Just rAddr -> do
+    let (rid, m1) = getVID (sufRefToAddr rAddr) m
+    (Just (RefVertex rid), m1)
+  Nothing -> (Nothing, m)
+
+irredVToRefAddr :: IrredVertex -> VIDMapping -> Maybe SuffixReferableAddr
+irredVToRefAddr iv m = do
+  addr <- getAddrFromVID (getIrredVertex iv) m
+  addrIsSufRef addr
+
+rootVID :: Int
+rootVID = 0
 
 -- | Get the dependents of a given dependency address (which should be referable) in the notification graph.
 getDependents :: SuffixReferableAddr -> NotifGraph -> [TreeAddr]
@@ -104,56 +169,62 @@ lookupGrpAddr rfbAddr ng = Map.lookup rfbAddr (addrToGrpAddr ng)
 - The dependency (def) address should be a referable address.
 -}
 addNewDepToNG :: (HasCallStack) => (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
-addNewDepToNG (ref, def) ng = updateNotifGraph $ addNewDepToNGNoUpdate (ref, def) ng
+addNewDepToNG (ref, def) ng = updateNotifGraph $ addDepToNGRaw (ref, def) ng
 
-{- | Add a new dependency to the notification graph.
-
-This is mainly used for internal purposes.
+{- | Add a new dependency to the notification graph without updating the SCC graph.
 
 - The dependent (ref) address does not need to be referable.
 - The def address will later notify the dependent address if it changes.
 - The def address should be a referable address.
 -}
-addNewDepToNGNoUpdate :: (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
-addNewDepToNGNoUpdate (ref, def) ng = ng{deptsMap = edges, notifGEdges = irredEdges, notifGVertexes = vertexes}
- where
-  oldRefList = fromMaybe [] $ Map.lookup def (deptsMap ng)
-  newRefList = if ref `elem` oldRefList then oldRefList else ref : oldRefList
-  edges = Map.insert def newRefList (deptsMap ng)
+addDepToNGRaw :: (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
+addDepToNGRaw (ref, def) =
+  execState
+    ( do
+        -- refID <- liftGetVIDForG ref
+        refTrimmedID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
+        -- defID <- liftGetVIDForG (sufRefToAddr def)
+        defTrimmedID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (sufRefToAddr def))
+        modify $ \g ->
+          g
+            { deptsMap =
+                Map.insertWith
+                  (\old _ -> if ref `elem` old then old else ref : old)
+                  def
+                  [ref]
+                  (deptsMap g)
+            , notifGEdges =
+                Map.insertWith
+                  (\old _ -> if IrredVertex refTrimmedID `elem` old then old else IrredVertex refTrimmedID : old)
+                  (RefVertex defTrimmedID)
+                  [IrredVertex refTrimmedID]
+                  (notifGEdges g)
+            , notifGVertexes = Set.union (Set.fromList [IrredVertex refTrimmedID, IrredVertex defTrimmedID]) (notifGVertexes g)
+            }
+    )
 
-  irredEdges =
-    Map.insert
-      def
-      ( fst $
-          foldr
-            ( \x (acc, visited) ->
-                let s = trimAddrToSufIrred x
-                 in if s `elem` visited
-                      then (acc, visited)
-                      else (s : acc, Set.insert s visited)
-            )
-            ([], Set.empty)
-            newRefList
-      )
-      (notifGEdges ng)
-  vertexes =
-    Set.union
-      (Set.fromList [trimAddrToSufIrred ref, sufRefToSufIrred def])
-      (notifGVertexes ng)
+liftGetVIDForG :: TreeAddr -> State NotifGraph Int
+liftGetVIDForG addr = state $ \g -> let (i, m) = getVID addr g.vidMapping in (i, g{vidMapping = m})
 
 -- | Remove all dependents from the notification graph that start with the given prefix.
 delDepPrefixFromNG :: (HasCallStack) => TreeAddr -> NotifGraph -> NotifGraph
-delDepPrefixFromNG prefix ng =
-  updateNotifGraph
-    (ng{deptsMap = edges, notifGEdges = irredEdges})
+delDepPrefixFromNG prefix =
+  execState
+    ( do
+        m <- gets vidMapping
+        modify $ \g ->
+          updateNotifGraph
+            ( g
+                { deptsMap = Map.map (filter isAncestor) (deptsMap g)
+                , notifGEdges =
+                    Map.filterWithKey
+                      (\k _ -> isAncestor (getAddrFromVIDMust (getRefVertex k) m))
+                      (notifGEdges g)
+                }
+            )
+    )
  where
   isAncestor x = not (isPrefix prefix x)
-  -- vertexes = Set.filter (isAncestor . sufIrredToAddr) (notifGVertexes ng)
-  irredEdges = Map.filterWithKey (\k _ -> isAncestor (sufRefToAddr k)) (notifGEdges ng)
-  edges =
-    Map.map
-      (\l -> filter isAncestor l)
-      (deptsMap ng)
 
 -- | Update the SCC graph based on the current notification graph.
 updateNotifGraph :: (HasCallStack) => NotifGraph -> NotifGraph
@@ -169,18 +240,25 @@ updateNotifGraph graph =
       { dagEdges = newSCCDAG
       , sccMap = newSCCs
       , addrToGrpAddr = newAddrToGrpAddr
+      , vidMapping = newMapping
       }
  where
-  newTarjanState = scc (notifGEdges graph) (notifGVertexes graph)
+  newTarjanState = scc (notifGEdges graph) (notifGVertexes graph) graph.vidMapping
+  newMapping = newTarjanState.tsVIDMapping
   newSCCs =
     foldr
       ( \a acc -> case a of
-          AcyclicSCC x -> Map.insert (ACyclicGrpAddr x) (Set.singleton x) acc
+          AcyclicSCC x ->
+            let addr = getIrredAddrFromVIDMust x newMapping
+             in Map.insert
+                  (ACyclicGrpAddr addr)
+                  (Set.singleton addr)
+                  acc
           -- Use the first element of the SCC as the base address
           CyclicSCC xs ->
             Map.insert
-              (CyclicBaseAddr (head xs))
-              (Set.fromList xs)
+              (CyclicBaseAddr $ getIrredAddrFromVIDMust (head xs) newMapping)
+              (Set.fromList $ [getIrredAddrFromVIDMust x newMapping | x <- xs])
               acc
       )
       Map.empty
@@ -207,10 +285,10 @@ updateNotifGraph graph =
         Map.empty
         (deptsMap graph)
 
-scc :: (HasCallStack) => Map.Map SuffixReferableAddr [SuffixIrredAddr] -> Set.Set SuffixIrredAddr -> TarjanState
-scc edges vertexes = execState ({-# SCC "sccGo" #-} go) initState
+scc :: (HasCallStack) => Map.Map RefVertex [IrredVertex] -> Set.Set IrredVertex -> VIDMapping -> TarjanState
+scc edges vertexes m = execState ({-# SCC "sccGo" #-} go) initState
  where
-  initState = emptyTarjanState edges (Set.toList vertexes)
+  initState = emptyTarjanState edges (Set.toList vertexes) m
 
   go :: (HasCallStack) => State TarjanState ()
   go = do
@@ -223,7 +301,7 @@ data TarjanNodeMeta = TarjanNodeMeta
   { dnmLowLink :: !Int
   , dnmIndex :: !Int
   , dnmOnStack :: !Bool
-  , dnmSCDescendant :: !(Maybe SuffixIrredAddr)
+  , dnmSCDescendant :: !(Maybe IrredVertex)
   -- ^ It contains the descendant address of the node that forms a structural cycle.
   }
   deriving (Show)
@@ -232,25 +310,34 @@ emptyTarjanNodeMeta :: TarjanNodeMeta
 emptyTarjanNodeMeta = TarjanNodeMeta 0 0 False Nothing
 
 data TarjanState = TarjanState
-  { tsEdges :: Map.Map SuffixReferableAddr [SuffixIrredAddr]
+  { tsEdges :: Map.Map RefVertex [IrredVertex]
   , tsIndex :: !Int
-  , tsStack :: [SuffixIrredAddr]
-  , tsMetaMap :: Map.Map SuffixIrredAddr TarjanNodeMeta
+  , tsStack :: [IrredVertex]
+  , tsMetaMap :: Map.Map IrredVertex TarjanNodeMeta
   , tsSCCs :: [SCC]
-  , tsAncLinks :: Map.Map SuffixIrredAddr [SuffixReferableAddr]
+  , tsAncLinks :: Map.Map IrredVertex [RefVertex]
+  , tsVIDMapping :: VIDMapping
   }
 
-emptyTarjanState :: Map.Map SuffixReferableAddr [SuffixIrredAddr] -> [SuffixIrredAddr] -> TarjanState
-emptyTarjanState edges vertexes =
-  TarjanState edges 0 [] (Map.fromList $ map (\v -> (v, emptyTarjanNodeMeta)) vertexes) [] Map.empty
+emptyTarjanState :: Map.Map RefVertex [IrredVertex] -> [IrredVertex] -> VIDMapping -> TarjanState
+emptyTarjanState edges vertexes m =
+  TarjanState
+    { tsEdges = edges
+    , tsIndex = 0
+    , tsStack = []
+    , tsMetaMap = Map.fromList $ map (\v -> (v, emptyTarjanNodeMeta)) vertexes
+    , tsSCCs = []
+    , tsAncLinks = Map.empty
+    , tsVIDMapping = m
+    }
 
 data SCC
-  = AcyclicSCC SuffixIrredAddr
-  | CyclicSCC [SuffixIrredAddr]
+  = AcyclicSCC IrredVertex
+  | CyclicSCC [IrredVertex]
   deriving (Show)
 
 -- | Perform a depth-first search to find strongly connected components (SCCs) using Tarjan's algorithm.
-sccDFS :: (HasCallStack) => SuffixIrredAddr -> State TarjanState ()
+sccDFS :: (HasCallStack) => IrredVertex -> State TarjanState ()
 sccDFS v = do
   modify $ \ts ->
     let index = tsIndex ts
@@ -292,7 +379,9 @@ sccDFS v = do
   -- trace
   --   (printf "sccDFS: v=%s, isRoot=%s, neighbors=%s" (show v) (show isRoot) (show neighbors))
   --   (return ())
+  mapping <- gets tsVIDMapping
   when isRoot $ do
+    rvM <- liftIrredVToRefV v
     modify $ \ts ->
       let (sccRestNodes, restStack) = span (/= v) (tsStack ts)
           newStack = tail restStack
@@ -304,7 +393,7 @@ sccDFS v = do
                       then accSCycleM
                       else do
                         scDescendant <- (accMetaMap `lookupMust` addr).dnmSCDescendant
-                        rDesc <- sufIrredIsSufRef scDescendant
+                        rDesc <- irredVToRefAddr scDescendant mapping
                         return (addr, rDesc)
                   )
               )
@@ -313,7 +402,7 @@ sccDFS v = do
           newSCC =
             if
               | null sccRestNodes
-              , Just rv <- sufIrredIsSufRef v
+              , Just rv <- rvM
               , -- If the only address in the SCC leads to itself, it is still a cyclic SCC.
                 fromMaybe
                   False
@@ -345,29 +434,50 @@ cycle a -> p -> a.
 
 Or p: {(p): 1}. The edge is /p -> /p/dyn_0.
 -}
-getNeighbors :: SuffixIrredAddr -> State TarjanState [(SuffixIrredAddr, Bool)]
+getNeighbors :: IrredVertex -> State TarjanState [(IrredVertex, Bool)]
 getNeighbors v = do
   edges <- gets tsEdges
-  return $ {-# SCC "getNeighborsGo" #-} go v True edges []
+  go v True edges []
  where
   -- start is True if the current address is the getNeighbor address.
   go ::
-    SuffixIrredAddr ->
+    IrredVertex ->
     Bool ->
-    Map.Map SuffixReferableAddr [SuffixIrredAddr] ->
-    [(SuffixIrredAddr, Bool)] ->
-    [(SuffixIrredAddr, Bool)]
+    Map.Map RefVertex [IrredVertex] ->
+    [(IrredVertex, Bool)] ->
+    State TarjanState [(IrredVertex, Bool)]
   go x start edges acc
-    | sufIrredToAddr x == rootTreeAddr = acc
-    | start
-    , Just rx <- sufIrredIsSufRef x =
-        let newAcc = maybe acc (\ns -> foldr (\w nacc -> (w, isSufIrredParent w v) : nacc) acc ns) (Map.lookup rx edges)
-         in go (sufRefToSufIrred $ getParentSufRefAddr x) False edges newAcc
-    | not start
-    , Just rx <- sufIrredIsSufRef x =
-        let newAcc = if Map.member rx edges then (x, True) : acc else acc
-         in go (sufRefToSufIrred $ getParentSufRefAddr x) False edges newAcc
-    | otherwise = go (sufRefToSufIrred $ getParentSufRefAddr x) False edges acc
+    | getIrredVertex x == rootVID = return acc
+    | otherwise = do
+        parV <- getParentVertex x
+        m <- gets tsVIDMapping
+        let xAddrM = getAddrFromVID (getIrredVertex x) m
+        if
+          | start
+          , Just xAddrRef <- xAddrM >>= addrIsSufRef -> do
+              y <- liftGetVIDForTS (sufRefToAddr xAddrRef)
+              let
+                vIrredAddr = addMustBeSufIrred $ getAddrFromVIDMust (getIrredVertex v) m
+                newAcc =
+                  maybe
+                    acc
+                    ( foldr
+                        ( \w nacc ->
+                            let
+                              wIrredAddr = addMustBeSufIrred $ getAddrFromVIDMust (getIrredVertex w) m
+                             in
+                              (w, isSufIrredParent wIrredAddr vIrredAddr) : nacc
+                        )
+                        acc
+                    )
+                    (Map.lookup (RefVertex y) edges)
+              go parV False edges newAcc
+          | not start
+          , Just xAddrRef <- xAddrM >>= addrIsSufRef -> do
+              y <- liftGetVIDForTS (sufRefToAddr xAddrRef)
+              let newAcc = if Map.member (RefVertex y) edges then (x, True) : acc else acc
+              go parV False edges newAcc
+          | otherwise -> go parV False edges acc
 
 {- | Check if the first address is a parent of the second address.
 
@@ -387,12 +497,22 @@ isSufIrredParent parent child =
             in not (V.null rest)
          )
 
+liftGetVIDForTS :: TreeAddr -> State TarjanState Int
+liftGetVIDForTS addr = state $ \ts -> let (i, m) = getVID addr ts.tsVIDMapping in (i, ts{tsVIDMapping = m})
+
+liftIrredVToRefV :: IrredVertex -> State TarjanState (Maybe RefVertex)
+liftIrredVToRefV iv = state $ \s -> let (r, m) = irredVToRefV iv s.tsVIDMapping in (r, s{tsVIDMapping = m})
+
 {- | Get the parent referable address of a given irreducible address.
 
 It first converts the irreducible address to a referable address, then get the parent of the referable address.
 -}
-getParentSufRefAddr :: SuffixIrredAddr -> SuffixReferableAddr
-getParentSufRefAddr addr = {-# SCC "getParentSufRefAddrGo" #-} go (trimAddrToSufRef (sufIrredToAddr addr))
+getParentVertex :: IrredVertex -> State TarjanState IrredVertex
+getParentVertex v = do
+  addr <- gets (fromJust . getAddrFromVID (getIrredVertex v) . tsVIDMapping)
+  let r = go (trimAddrToSufRef addr)
+  rid <- liftGetVIDForTS (sufRefToAddr r)
+  return $ IrredVertex rid
  where
   go x
     | rootTreeAddr == sufRefToAddr x = x

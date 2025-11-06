@@ -9,7 +9,7 @@ import System.IO (readFile, stdout)
 
 work :: IO ()
 work = do
-  let conf = emptyEvalConfig{ecFilePath = "tests/large_spec/mid1.cue"}
+  let conf = emptyEvalConfig{ecFilePath = "tests/bench_spec/large1.cue"}
   file <- readFile (ecFilePath conf)
   x <- runExceptT $ runIO file conf
   case x of

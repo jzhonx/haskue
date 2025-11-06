@@ -12,25 +12,23 @@ import Test.Tasty.HUnit
 import Text.Printf (printf)
 
 ngTests :: IO TestTree
-ngTests = return $ testGroup "ngtests" []
+ngTests =
+  return $
+    testGroup
+      "ngtests"
+      []
 
--- ngTests :: IO TestTree
--- ngTests =
---   return $
---     testGroup
---       "ngtests"
---       [ testACyclic
---       , testCyclic
---       , testCyclic2
---       , testCyclic3
---       , testCyclicSelf
---       , testCyclicSelf2
---       , testCyclicSelf3
---       , testSCyclic
---       , testSCyclic2
---       , testSCyclic3
---       , testSCyclic4
---       ]
+-- testACyclic
+--   , testCyclic
+--   , testCyclic2
+--   , testCyclic3
+--   , testCyclicSelf
+--   , testCyclicSelf2
+--   , testCyclicSelf3
+--   , testSCyclic
+--   , testSCyclic2
+--   , testSCyclic3
+--   , testSCyclic4
 
 -- buildAbsTA :: String -> SuffixIrredAddr
 -- buildAbsTA path = fromJust $ addrIsSufIrred $ appendTreeAddr rootTreeAddr (addrFromString path)
@@ -43,14 +41,14 @@ ngTests = return $ testGroup "ngtests" []
 -- absC = buildAbsTA "c"
 -- absY = buildAbsTA "y"
 
--- irredToRef :: SuffixIrredAddr -> SuffixReferableAddr
--- irredToRef a = fromJust $ sufIrredIsSufRef a
+-- -- irredToRef :: SuffixIrredAddr -> SuffixReferableAddr
+-- -- irredToRef a = fromJust $ sufIrredIsSufRef a
 
 -- buildG :: [(SuffixIrredAddr, SuffixIrredAddr)] -> NotifGraph
 -- buildG =
 --   foldr
 --     ( \(dep, target) acc ->
---         addNewDepToNGNoUpdate
+--         addDepToNGRaw
 --           (sufIrredToAddr dep, fromJust $ sufIrredIsSufRef target)
 --           acc
 --     )
@@ -60,7 +58,7 @@ ngTests = return $ testGroup "ngtests" []
 -- buildGExt =
 --   foldr
 --     ( \(dep, target) acc ->
---         addNewDepToNGNoUpdate
+--         addDepToNGRaw
 --           (dep, fromJust $ sufIrredIsSufRef target)
 --           acc
 --     )

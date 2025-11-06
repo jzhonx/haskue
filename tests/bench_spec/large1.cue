@@ -34,16 +34,16 @@ EnvironmentsInfo: {
 	"brln01":      rio & fts
 	"cgco01":      rio & fts & rccs
 	"cgcy01":      rio & fts
-	// "chi01":       rio & fts & rccs
-	// "chlw01":      rio & fts
-	// "corl01":      rio & fts & rccs
-	// "ddtc01":      rio & fts
-	// "dnvr01":      rio & fts & rccs
-	// "dvtc01":      rio & fts
-	// "eden01":      rio & fts & rccs
-	// "fox01":       rio & fts & rccs & canary
-	// "gma2de01":    rio & fts
-	// "gma2it01":    rio & fts
+	"chi01":       rio & fts & rccs
+	"chlw01":      rio & fts
+	"corl01":      rio & fts & rccs
+	"ddtc01":      rio & fts
+	"dnvr01":      rio & fts & rccs
+	"dvtc01":      rio & fts
+	"eden01":      rio & fts & rccs
+	"fox01":       rio & fts & rccs & canary
+	"gma2de01":    rio & fts
+	"gma2it01":    rio & fts
 	// "hahd01":           rio & fts & rccs
 	// "hdc01":            rio & fts
 	// "jack01":           rio & fts & rccs

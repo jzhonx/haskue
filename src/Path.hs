@@ -418,6 +418,11 @@ addrIsSufIrred (TreeAddr xs)
   | isFeatureIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
   | otherwise = Nothing
 
+addMustBeSufIrred :: (HasCallStack) => TreeAddr -> SuffixIrredAddr
+addMustBeSufIrred addr = case addrIsSufIrred addr of
+  Just sufIrred -> sufIrred
+  Nothing -> error $ printf "Addr %s is not suffix irreducible" (show addr)
+
 trimAddrToSufIrred :: TreeAddr -> SuffixIrredAddr
 trimAddrToSufIrred (TreeAddr xs) =
   let
