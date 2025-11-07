@@ -25,9 +25,9 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import Exception (throwErrSt)
+import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
-import Path
 import StringIndex (getTextIndex)
 import Text.Printf (printf)
 import Value
@@ -234,7 +234,8 @@ subTree seg parentT = do
     (StubFieldLabelType, IsStruct struct)
       | Just sf <- lookupStructStaticFieldBase (getTextIndexFromFeature f) struct ->
           Just $ ssfValue sf
-    (IndexLabelType, IsList vs) -> lstSubs vs `indexList` fetchIndex f
+    (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
+    (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
     (DisjLabelType, IsDisj d) -> dsjDisjuncts d `indexList` fetchIndex f
     _ -> Nothing
 
@@ -267,11 +268,10 @@ setSubTree f subT parT = do
       return $ TNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
     (LetLabelType, IsStruct parStruct) ->
       return $ TNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
-    (IndexLabelType, IsList vs) ->
-      let subs = lstSubs vs
-          i = fetchIndex f
-          l = TNList $ vs{lstSubs = take i subs ++ [subT] ++ drop (i + 1) subs}
-       in return l
+    (ListStoreIdxLabelType, IsList l) ->
+      let i = fetchIndex f in return $ TNList $ updateListStoreAt i subT l
+    (ListIdxLabelType, IsList l) ->
+      let i = fetchIndex f in return $ TNList $ updateListFinalAt i subT l
     (DisjLabelType, IsDisj d) ->
       let i = fetchIndex f
        in return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
@@ -319,7 +319,7 @@ subTNSegs t = case treeNode t of
       ++ [mkFeature (getTextIndex i) LetLabelType | i <- Map.keys (stcBindings s)]
       ++ [mkPatternFeature i 0 | i <- IntMap.keys $ stcCnstrs s]
       ++ [mkDynFieldFeature i 0 | i <- IntMap.keys $ stcDynFields s]
-  TNList l -> [mkIndexFeature i | (i, _) <- zip [0 ..] (lstSubs l)]
+  TNList l -> [mkListStoreIdxFeature i | (i, _) <- zip [0 ..] (toList l.store)]
   TNDisj d ->
     [mkDisjFeature i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []

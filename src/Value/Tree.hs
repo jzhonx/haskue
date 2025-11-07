@@ -17,9 +17,9 @@ import Control.Monad.Except (runExceptT)
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import Exception (throwErrSt)
-import GHC.Generics (Generic)
-import Path (
+import Feature (
   FieldPath (FieldPath),
   LabelType (..),
   Selector (..),
@@ -29,6 +29,7 @@ import Path (
   fetchLabelType,
   getTextFromFeature,
  )
+import GHC.Generics (Generic)
 import StringIndex (TextIndexerMonad, textToTextIndex)
 import Value.Atom
 import Value.Block
@@ -347,8 +348,8 @@ mkDisjTree d = mkNewTree (TNDisj d)
 mkMutableTree :: Mutable -> Tree
 mkMutableTree fn = (mkNewTree TNNoVal){valGenEnv = TGenOp fn}
 
-mkListTree :: [Tree] -> Tree
-mkListTree ts = mkNewTree (TNList $ List{lstSubs = ts})
+mkListTree :: [Tree] -> [Tree] -> Tree
+mkListTree x y = mkNewTree (TNList $ mkList x y)
 
 mkStructTree :: Struct -> Tree
 mkStructTree s = mkNewTree (TNStruct s)
@@ -388,7 +389,7 @@ addrToTrees p = do
     StringLabelType -> do
       str <- getTextFromFeature sel
       return $ Just $ mkAtomTree (String str)
-    IndexLabelType -> do
+    ListStoreIdxLabelType -> do
       let j = fetchIndex sel
       return $ Just $ mkAtomTree (Int (fromIntegral j))
     _ -> return Nothing

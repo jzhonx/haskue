@@ -18,7 +18,6 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import Path (Feature, getTextIndexFromFeature, mkLetFeature, mkStringFeature)
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value
@@ -314,7 +313,7 @@ insertElemToStruct adder struct = case adder of
 evalListLit :: (EvalEnv r s m) => AST.ElementList -> m Tree
 evalListLit (anVal -> AST.EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
-  return $ mkListTree xs
+  return $ mkListTree xs []
 
 evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m Tree
 evalUnaryExpr ue = do

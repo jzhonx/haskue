@@ -19,7 +19,7 @@ import Eval (
   strToCUEVal,
  )
 import qualified Eval
-import Path
+import Feature
 import Reduce.RMonad
 import Reduce.RefSys
 import qualified Value as VT

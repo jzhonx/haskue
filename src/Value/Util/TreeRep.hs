@@ -15,11 +15,12 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Path (
+import Feature (
   Feature (..),
   mkDisjFeature,
   mkDynFieldFeature,
-  mkIndexFeature,
+  mkListIdxFeature,
+  mkListStoreIdxFeature,
   mkMutArgFeature,
   mkPatternFeature,
   mkStubFieldFeature,
@@ -170,8 +171,11 @@ buildRepTreeTN Tree{treeNode = tn} opt = case tn of
   TNBounds b -> consRep ([show b], [], [])
   TNStruct struct -> buildRepTreeStruct struct opt
   TNList vs ->
-    let fields = zipWith (\j v -> (show (mkIndexFeature j), mempty, v)) [0 ..] (lstSubs vs)
-     in consRep ([], [], consFields fields opt)
+    let
+      sfields = zipWith (\j v -> (show (mkListStoreIdxFeature j), mempty, v)) [0 ..] (toList vs.store)
+      ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, v)) [0 ..] (toList vs.final)
+     in
+      consRep ([], [], consFields (sfields ++ ffields) opt)
   TNDisj d ->
     let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (dsjDisjuncts d)
      in consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], consFields djFields opt)

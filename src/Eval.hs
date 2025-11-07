@@ -39,8 +39,8 @@ import Data.List.Split (splitOn)
 import qualified Data.Set as Set
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
+import Feature (rootFeature)
 import Parser (parseExpr, parseSourceFile)
-import Path (rootFeature)
 import Reduce (postValidation, reduce)
 import Reduce.RMonad
 import System.IO (hPutStr, stderr)

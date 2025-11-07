@@ -1,0 +1,11 @@
+-- cp_for3 --
+// It failed previously in complex test.
+result: [for k, _ in data {k}]
+c: 1
+data: {"s": c}
+-- exp --
+result: ["s"]
+c: 1
+data: {
+    s: 1
+}

@@ -22,6 +22,21 @@ class (Show a) => ShowWithTextIndexer a where
   tshow :: (MonadState s m, HasTextIndexer s) => a -> m T.Text
   tshow = return . T.pack . show
 
+instance (ShowWithTextIndexer a) => ShowWithTextIndexer [a] where
+  tshow xs = do
+    ts <- mapM tshow xs
+    return $ if null ts then "[]" else T.pack $ "[" ++ T.unpack (T.intercalate "," ts) ++ "]"
+
+instance (ShowWithTextIndexer k, ShowWithTextIndexer v) => ShowWithTextIndexer (Map.Map k v) where
+  tshow xs = do
+    kvs <- mapM go (Map.toList xs)
+    return $ T.pack $ "{" ++ T.unpack (T.intercalate "," kvs) ++ "}"
+   where
+    go (k, v) = do
+      kt <- tshow k
+      vt <- tshow v
+      return $ kt <> ":" <> vt
+
 data TextIndexer = TextIndexer
   { labels :: V.Vector T.Text
   , labelToIndex :: Map.Map T.Text Int

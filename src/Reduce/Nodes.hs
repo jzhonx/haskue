@@ -18,7 +18,8 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Path
+import qualified Data.Vector as V
+import Feature
 import Reduce.RMonad (
   HasReduceParams (..),
   ReduceMonad,
@@ -29,7 +30,7 @@ import Reduce.RMonad (
   debugInstantOpRM,
   debugInstantRM,
   debugInstantTM,
-  delTMDependentPrefix,
+  delTMDepPrefix,
   descendTMSegMust,
   emptySpanValue,
   getRMDanglingLets,
@@ -43,7 +44,6 @@ import Reduce.RMonad (
   modifyTMTree,
   propUpTM,
   putTMCursor,
-  putTMTree,
   throwFatal,
   traceSpanAdaptRM,
   traceSpanAdaptTM,
@@ -58,7 +58,7 @@ import Reduce.RMonad (
 import Reduce.RefSys (IdentType (..), searchTCIdent)
 import {-# SOURCE #-} Reduce.Root (reduce, reducePureTN, reduceToNonMut)
 import Reduce.UnifyOp (patMatchLabel)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, getTextIndex, textToTextIndex)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value
 import Value.Util.TreeRep (treeToRepString)
@@ -292,11 +292,11 @@ reduceStructField i = whenStruct $ \_ -> do
       case r of
         IsBottom _ | IsTGenImmutable <- r -> do
           modifyTMTN (treeNode r)
-          delTMDependentPrefix addr
+          delTMDepPrefix addr
         _
           | isSCyclic r -> do
               modifyTMTN (treeNode $ mkBottomTree "structural cycle")
-              delTMDependentPrefix addr
+              delTMDepPrefix addr
           | otherwise -> return ()
 
 -- | Handle the post process of the mutable object change in the struct.
@@ -317,7 +317,7 @@ handleSObjChange = do
           case errM of
             Just err -> do
               modifyTMTN (treeNode err)
-              delTMDependentPrefix $ tcAddr stc
+              delTMDepPrefix $ tcAddr stc
             Nothing -> return ()
           return []
       | FeatureType DynFieldLabelType <- seg -> traceSpanAdaptTM (printf "handleSObjChange, seg: %s" (show seg)) emptySpanValue do
@@ -597,19 +597,26 @@ reduceList l = do
   r <-
     foldM
       ( \acc (i, origElem) -> do
-          r <- inSubTM (mkIndexFeature i) (reduce >> getTMTree)
+          r <- inSubTM (mkListStoreIdxFeature i) (reduce >> getTMTree)
           case origElem of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
             IsTGenOp (MutOp (Compreh cph))
               | cph.isListCompreh
               , Just rList <- rtrList r ->
-                  return $ acc ++ lstSubs rList
+                  return $ acc ++ toList rList.final
             _ -> return $ acc ++ [r]
       )
       []
-      (zip [0 ..] (lstSubs l))
-  putTMTree $ mkListTree r
+      (zip [0 ..] (toList l.store))
+  t <- getTMTree
+  case t of
+    IsList lst -> do
+      let newList = lst{final = V.fromList r}
+      modifyTMTN (TNList newList)
+    _ -> return ()
+
+-- putTMTree $ mkListTree r
 
 -- | Closes a struct when the tree has struct.
 resolveCloseFunc :: (ResolveMonad r s m) => [Tree] -> TrCur -> m (Maybe Tree)
@@ -950,7 +957,7 @@ reduceCompreh cph = traceSpanTM "reduceCompreh" $ do
     Left t -> return t
     Right vs ->
       if cph.isListCompreh
-        then return $ mkListTree vs
+        then return $ mkListTree vs vs
         else case vs of
           [] -> return $ mkStructTree emptyStruct
           [x] -> return x
@@ -958,6 +965,7 @@ reduceCompreh cph = traceSpanTM "reduceCompreh" $ do
             let mutT = mkMutableTree $ mkUnifyOp vs
             inTempTM mutT $ reduce >> getTMTree
 
+  debugInstantTM "reduceCompreh" (printf "comprehension result: %s" (show res))
   -- The result could be a struct, list or noval. But we should get rid of the mutable if there is any.
   modifyTMTN (treeNode res)
   reducePureTN
@@ -988,9 +996,9 @@ bindings and adds the struct to the result list.
 -}
 comprehend :: (ReduceMonad r s m) => Int -> Seq.Seq ComprehArg -> IterCtx -> m IterCtx
 comprehend i args iterCtx
-  -- The leaf case where the iteration is done.
+  -- The case for the template struct.
   | i >= length args - 1 = traceSpanArgsAdaptTM
-      (printf "comprehend itercnt:%s" (show iterCtx.iterCnt))
+      (printf "comprehend itercnt:%s, arg: %d" (show iterCtx.iterCnt) i)
       (printf "iterctx: %s" (show iterCtx))
       (return . toJSON)
       $ case iterCtx.res of
@@ -1118,7 +1126,7 @@ reduceClause i args iterCtx = case args `Seq.index` i of
             )
             iterCtx
             (Map.toList $ stcFields struct)
-      | Just (List{lstSubs = list}) <- rtrList t ->
+      | Just (List{store}) <- rtrList t ->
           foldM
             ( \acc (idx, element) ->
                 comprehend
@@ -1138,7 +1146,7 @@ reduceClause i args iterCtx = case args `Seq.index` i of
                   )
             )
             iterCtx
-            (zip [0 ..] list)
+            (zip [0 ..] (toList store))
       | otherwise ->
           return $
             iterCtx

@@ -4,7 +4,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Path where
+module Feature where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)
@@ -46,13 +46,13 @@ tailFieldPath :: FieldPath -> Maybe FieldPath
 tailFieldPath (FieldPath []) = Nothing
 tailFieldPath (FieldPath sels) = Just $ FieldPath (tail sels)
 
-appendFieldPaths ::
-  -- | front
-  FieldPath ->
-  -- | back
-  FieldPath ->
-  FieldPath
-appendFieldPaths (FieldPath xs) (FieldPath ys) = FieldPath (xs ++ ys)
+-- appendFieldPaths ::
+--   -- | front
+--   FieldPath ->
+--   -- | back
+--   FieldPath ->
+--   FieldPath
+-- appendFieldPaths (FieldPath xs) (FieldPath ys) = FieldPath (xs ++ ys)
 
 isFieldPathEmpty :: FieldPath -> Bool
 isFieldPathEmpty (FieldPath []) = True
@@ -65,15 +65,30 @@ fieldPathToAddr (FieldPath sels) =
 
 selToTASeg :: Selector -> Feature
 selToTASeg (StringSel s) = mkStringFeature s
-selToTASeg (IntSel i) = mkIndexFeature i
+selToTASeg (IntSel i) = mkListIdxFeature i
 
 newtype Feature = Feature Int
   deriving (Eq, Ord, Generic, NFData)
 
+data LabelType
+  = RootLabelType
+  | ListStoreIdxLabelType
+  | ListIdxLabelType
+  | DisjLabelType
+  | MutArgLabelType
+  | TempLabelType
+  | StringLabelType
+  | LetLabelType
+  | PatternLabelType
+  | DynFieldLabelType
+  | StubFieldLabelType
+  deriving (Eq, Ord, Generic, NFData, Enum)
+
 instance Show Feature where
   show f = case fetchLabelType f of
     RootLabelType -> "/"
-    IndexLabelType -> "i" ++ show (fetchIndex f)
+    ListStoreIdxLabelType -> "lsi" ++ show (fetchIndex f)
+    ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
     MutArgLabelType -> "fa" ++ show (fetchIndex f)
     TempLabelType -> "tmp"
@@ -116,8 +131,11 @@ mkStringFeature (TextIndex i) = mkFeature i StringLabelType
 mkMutArgFeature :: Int -> Feature
 mkMutArgFeature i = mkFeature i MutArgLabelType
 
-mkIndexFeature :: Int -> Feature
-mkIndexFeature i = mkFeature i IndexLabelType
+mkListStoreIdxFeature :: Int -> Feature
+mkListStoreIdxFeature i = mkFeature i ListStoreIdxLabelType
+
+mkListIdxFeature :: Int -> Feature
+mkListIdxFeature i = mkFeature i ListIdxLabelType
 
 mkDisjFeature :: Int -> Feature
 mkDisjFeature i = mkFeature i DisjLabelType
@@ -192,47 +210,6 @@ getDynFieldIndexesFromFeature f = case fetchLabelType f of
      in (objID, selector)
   _ -> error $ "Feature is not a DynFieldLabelType: " ++ show f
 
-data LabelType
-  = RootLabelType
-  | IndexLabelType
-  | DisjLabelType
-  | MutArgLabelType
-  | TempLabelType
-  | StringLabelType
-  | LetLabelType
-  | PatternLabelType
-  | DynFieldLabelType
-  | StubFieldLabelType
-  deriving (Eq, Ord, Generic, NFData, Enum)
-
--- -- == Feature ==
-
--- -- | Feature is paired with a tree node.
--- data Feature
---   = -- RootTASeg is a special segment that represents the root of the addr.
---     -- It is crucial to distinguish between the absolute addr and the relative addr.
---     RootTASeg
---   | IndexTASeg !Int
---   | BlockTASeg !BlockTASeg
---   | DisjTASeg !Int
---   | -- | MutArgTASeg is different in that the seg would be omitted when canonicalizing the addr.
---     MutArgTASeg !Int
---   | TempTASeg
---   deriving (Eq, Ord, Generic, NFData)
-
--- -- showTASeg :: (MonadState s m, HasTextIndexer s) => Feature -> m String
--- instance Show Feature where
---   show RootTASeg = "/"
---   show (BlockTASeg s) = show s
---   show (IndexTASeg i) = "i" ++ show i
---   show (DisjTASeg i) = "dj" ++ show i
---   show (MutArgTASeg i) = "fa" ++ show i
---   show TempTASeg = "tmp"
-
--- instance ShowWithTextIndexer Feature where
---   tshow (BlockTASeg s) = tshow s
---   tshow s = return $ T.pack $ show s
-
 isFeatureReducible :: Feature -> Bool
 isFeatureReducible f = case fetchLabelType f of
   MutArgLabelType -> True
@@ -246,37 +223,9 @@ isFeatureReferable :: Feature -> Bool
 isFeatureReferable f = case fetchLabelType f of
   StringLabelType -> True
   LetLabelType -> True
-  IndexLabelType -> True
+  ListIdxLabelType -> True
   RootLabelType -> True
   _ -> False
-
--- data BlockTASeg
---   = StringTASeg !TextIndex
---   | LetTASeg !TextIndex !(Maybe Int)
---   | -- | The first is the ObjectID, the second indicates the i-th value in the constraint.
---     PatternTASeg !Int !Int
---   | -- | DynFieldTASeg is used to represent a dynamic field.
---     -- The first is the ObjectID, the second indicates the i-th in the dynamic field.
---     DynFieldTASeg !Int !Int
---   | StubFieldTASeg !TextIndex
---   deriving (Eq, Ord, Generic, NFData)
-
--- instance Show BlockTASeg where
---   show (PatternTASeg i j) = "cns_" ++ show i ++ "_" ++ show j
---   show (DynFieldTASeg i j) = "dyn_" ++ show i ++ "_" ++ show j
---   show (StubFieldTASeg s) = "__" ++ show s
---   show (StringTASeg s) = show s
---   show (LetTASeg s m) = "let_" ++ show s ++ maybe "" (\i -> "_" ++ show i) m
-
--- instance ShowWithTextIndexer BlockTASeg where
---   tshow (StubFieldTASeg s) = do
---     str <- tshow s
---     return $ T.pack $ printf "__%s" str
---   tshow (StringTASeg s) = tshow s
---   tshow (LetTASeg s m) = do
---     str <- tshow s
---     return $ T.pack $ printf "let_%s%s" str (maybe "" (\i -> "_" ++ show i) m)
---   tshow s = return $ T.pack $ show s
 
 textToStringFeature :: (MonadState s m, HasTextIndexer s) => T.Text -> m Feature
 textToStringFeature s = mkStringFeature <$> textToTextIndex s
@@ -385,7 +334,10 @@ headSeg (TreeAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.head a
 
--- | Check if addr x is a prefix of addr y.
+{- | Check if addr x is a prefix of addr y.
+
+For example, isPrefix (a.b) (a.b.c.d) = True, isPrefix (a.b.c) (a.b) = False.
+-}
 isPrefix :: TreeAddr -> TreeAddr -> Bool
 isPrefix (TreeAddr x) (TreeAddr y) = isSegVPrefix x y
 

@@ -31,9 +31,9 @@ import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import EvalExpr (evalExpr)
+import Feature
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import NotifGraph
-import Path
 import StringIndex (HasTextIndexer (..), ShowWithTextIndexer (..), TextIndexer, TextIndexerMonad, emptyTextIndexer)
 import Text.Printf (printf)
 import Util (HasTrace (..), Trace, debugInstant, emptyTrace, traceSpan)
@@ -138,12 +138,12 @@ emptyContext =
     , ctxTrace = emptyTrace
     , tIndexer = emptyTextIndexer
     }
-
-showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
-showRefNotifiers notifiers =
-  let s = Map.foldrWithKey go "" notifiers
-   in if null s then "[]" else "[" ++ s ++ "\n]"
  where
+  -- showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
+  -- showRefNotifiers notifiers =
+  --   let s = Map.foldrWithKey go "" notifiers
+  --    in if null s then "[]" else "[" ++ s ++ "\n]"
+
   go :: TreeAddr -> [TreeAddr] -> String -> String
   go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
 
@@ -265,9 +265,20 @@ we need to delete receiver starting with the addr, not only the addr. For exampl
 is index and the first argument is a reference, then the first argument dependency should also be
 deleted.
 -}
-delTMDependentPrefix :: (ResolveMonad r s m) => TreeAddr -> m ()
-delTMDependentPrefix addrPrefix = do
-  modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delDepPrefixFromNG addrPrefix (ctxNotifGraph ctx)}
+delTMDepPrefix :: (ResolveMonad r s m) => TreeAddr -> m ()
+delTMDepPrefix addrPrefix = do
+  modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delNGVertexPrefix addrPrefix (ctxNotifGraph ctx)}
+  ctx <- getRMContext
+  gstr <- tshow (ctxNotifGraph ctx)
+  addPStr <- tshow addrPrefix
+  debugInstantOpRM
+    "delTMDepPrefix"
+    ( printf
+        "after deleting dependent prefix %s, notif graph is: %s"
+        (show addPStr)
+        (show gstr)
+    )
+    rootTreeAddr
 
 delMutValRecvs :: (ResolveMonad r s m) => TreeAddr -> m ()
 delMutValRecvs = undefined
@@ -466,8 +477,9 @@ _discardTMAndPop = do
 
 goTMAbsAddr :: (ReduceMonad r s m) => TreeAddr -> m Bool
 goTMAbsAddr addr = do
-  when (headSeg addr /= Just rootFeature) $
-    throwFatal (printf "the addr %s should start with the root segment" (show addr))
+  when (headSeg addr /= Just rootFeature) $ do
+    addrStr <- tshow addr
+    throwFatal (printf "the addr %s should start with the root segment" (show addrStr))
   propUpTMUntilSeg rootFeature
   let dstWoRoot = fromJust $ tailTreeAddr addr
   rM <- goDownTCAddr dstWoRoot <$> getTMCursor
@@ -477,7 +489,10 @@ goTMAbsAddrMust :: (ReduceMonad r s m) => TreeAddr -> m ()
 goTMAbsAddrMust addr = do
   origAddr <- getTMAbsAddr
   ok <- goTMAbsAddr addr
-  unless ok $ throwFatal $ printf "cannot go to addr (%s) tree from %s" (show addr) (show origAddr)
+  unless ok $ do
+    addrStr <- tshow addr
+    origAddrStr <- tshow origAddr
+    throwFatal $ printf "cannot go to addr (%s) tree from %s" (show addrStr) (show origAddrStr)
 
 -- | TODO: some functions do not require going back to the original address.
 inRemoteTM :: (ReduceMonad r s m) => TreeAddr -> m a -> m a
@@ -495,7 +510,7 @@ inTempTM tmpT f = do
   modifyTMTree (\t -> t{tmpSub = Nothing})
   addr <- getTMAbsAddr
   let tmpAddr = appendSeg addr tempFeature
-  delTMDependentPrefix tmpAddr
+  delTMDepPrefix tmpAddr
   return res
 
 -- Mutable operations

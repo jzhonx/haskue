@@ -9,7 +9,7 @@ module Reduce.RegOps where
 
 import qualified AST
 import Cursor
-import Path
+import Feature
 import Reduce.RMonad (
   ResolveMonad,
   debugInstantOpRM,

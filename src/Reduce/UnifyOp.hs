@@ -18,7 +18,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Path
+import Feature
 import Reduce.RMonad (
   Error (..),
   HasReduceParams (..),

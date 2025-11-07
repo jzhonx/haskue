@@ -1,4 +1,5 @@
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module NotifGraph where
 
@@ -7,69 +8,98 @@ import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modi
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import qualified Data.Vector as V
 import Debug.Trace
+import Feature
 import GHC.Stack (HasCallStack)
-import Path
+import StringIndex (ShowWithTextIndexer (..))
 import Text.Printf (printf)
 
 data NotifGraph = NotifGraph
-  { deptsMap :: Map.Map SuffixReferableAddr [TreeAddr]
-  -- ^ The notification edges maps a dependency address to a list of dependent addresses.
-  , dagEdges :: Map.Map GrpAddr [GrpAddr]
-  -- ^ Maps from a SCC address of a strongly connected component to a list of SCC addresses that represents
-  -- the dependencies.
-  , sccMap :: Map.Map GrpAddr (Set.Set SuffixIrredAddr)
-  -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
+  { deptsMap :: Map.Map RefVertex [Int]
+  -- ^ The notification edges maps a dependency vertex to a list of dependent addresses, which are not necessarily
+  -- irreducible or referable.
   , notifGEdges :: Map.Map RefVertex [IrredVertex]
   -- ^ The notification edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
   -- The irreducible edges are used to compute the strongly connected components (SCCs) in the notification graph.
   , notifGVertexes :: Set.Set IrredVertex
-  , addrToGrpAddr :: Map.Map SuffixIrredAddr GrpAddr
-  -- ^ Maps from an address to its base address in the SCC graph.
+  -- ^ Above all three fields are used to represent the notification graph before computing the SCCs.
+  -- == Below are the SCC graph representation.
+  , dagEdges :: Map.Map IrredVertex [IrredVertex]
+  -- ^ Maps from an SCC address of a strongly connected component to a list of SCC addresses that represents
+  -- the dependencies.
+  , baseToComps :: Map.Map IrredVertex (Set.Set IrredVertex, Bool)
+  -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
+  , vToSCCBase :: Map.Map IrredVertex (IrredVertex, Bool)
+  -- ^ Maps from an irreducible address to its SCC representative address.
+  -- The Bool indicates whether the SCC is cyclic.
   , vidMapping :: VIDMapping
   }
   deriving (Eq)
 
 instance Show NotifGraph where
-  show ng =
-    "NotifGraph\n"
-      ++ "Dependents: "
-      ++ show (deptsMap ng)
-      ++ "\n"
-      ++ "SCCGraph: "
-      ++ show (dagEdges ng)
-      ++ "\n"
-      ++ "SCCs: "
-      ++ show (sccMap ng)
-      ++ "\n"
-      ++ "AddrToGrpAddr: "
-      ++ show (addrToGrpAddr ng)
+  show ng = printf "G(Deps: %s)" (show $ deptsMap ng)
 
-data GrpAddr
-  = ACyclicGrpAddr SuffixIrredAddr
-  | CyclicBaseAddr SuffixIrredAddr
-  deriving (Eq, Ord)
+instance ShowWithTextIndexer NotifGraph where
+  tshow ng = do
+    let
+      xs = map (\(k, v) -> (getAddrFromVIDMust (getRefVertex k) ng.vidMapping, v)) (Map.toList $ deptsMap ng)
+    deps <-
+      mapM
+        ( \(k, v) -> do
+            kt <- tshow k
+            vt <- mapM (\x -> tshow $ getAddrFromVIDMust x ng.vidMapping) v
+            return $ T.pack $ printf "%s: %s" (T.unpack kt) (show vt)
+        )
+        xs
+    return $ T.pack $ printf "G(Deps: %s)" (show deps)
+
+newtype GrpAddr = GrpAddr {getGrpAddr :: (SuffixIrredAddr, Bool)} deriving (Eq, Ord)
 
 instance Show GrpAddr where
-  show (ACyclicGrpAddr addr) = show addr
-  show (CyclicBaseAddr addr) = printf "Cyclic %s" (show addr)
+  show (GrpAddr (addr, isCyclic)) =
+    if isCyclic
+      then "Cyclic " ++ show addr
+      else show addr
+
+instance ShowWithTextIndexer GrpAddr where
+  tshow (GrpAddr (addr, isCyclic)) = do
+    addrText <- tshow addr
+    let cyclicText = if isCyclic then "Cyclic " else ""
+    return $ cyclicText <> addrText
+
+pattern IsAcyclicGrpAddr :: SuffixIrredAddr -> GrpAddr
+pattern IsAcyclicGrpAddr addr <- GrpAddr (addr, False)
+
+pattern IsCyclicGrpAddr :: SuffixIrredAddr -> GrpAddr
+pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
 
 emptyNotifGraph :: NotifGraph
 emptyNotifGraph =
   NotifGraph
     { deptsMap = Map.empty
+    , baseToComps = Map.empty
+    , vToSCCBase = Map.empty
     , notifGEdges = Map.empty
     , notifGVertexes = Set.empty
     , dagEdges = Map.empty
-    , sccMap = Map.empty
-    , addrToGrpAddr = Map.empty
     , vidMapping = defaultVIDMapping
     }
 
-newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord, Show)
+newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord)
 
-newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Show)
+newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord)
+
+instance Show IrredVertex where
+  show (IrredVertex i) = "iv_" ++ show i
+
+instance Show RefVertex where
+  show (RefVertex i) = "rv_" ++ show i
+
+instance ShowWithTextIndexer IrredVertex
+
+instance ShowWithTextIndexer RefVertex
 
 data VIDMapping = VIDMapping
   { vidToAddr :: Map.Map Int TreeAddr
@@ -102,10 +132,13 @@ getAddrFromVIDMust vid m = case Map.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
 
-getIrredAddrFromVIDMust :: (HasCallStack) => IrredVertex -> VIDMapping -> SuffixIrredAddr
-getIrredAddrFromVIDMust iv m = case getAddrFromVID (getIrredVertex iv) m >>= addrIsSufIrred of
+getIrredAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> SuffixIrredAddr
+getIrredAddrFromVIDMust vid m = case getAddrFromVID vid m >>= addrIsSufIrred of
   Just addr -> addr
-  Nothing -> error $ printf "VID %s does not correspond to an irreducible address" (show iv)
+  Nothing -> error $ printf "VID %s does not correspond to an irreducible address" (show vid)
+
+getIrredAddrFromIVMust :: (HasCallStack) => IrredVertex -> VIDMapping -> SuffixIrredAddr
+getIrredAddrFromIVMust iv = getIrredAddrFromVIDMust (getIrredVertex iv)
 
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
@@ -127,19 +160,48 @@ irredVToRefAddr iv m = do
   addr <- getAddrFromVID (getIrredVertex iv) m
   addrIsSufRef addr
 
+{- | Convert a referable vertex to an irreducible vertex.
+
+There is no need to use the VIDMapping here because referable addresses are a subset of irreducible addresses.
+-}
+refVToIrredV :: RefVertex -> IrredVertex
+refVToIrredV rv = IrredVertex (getRefVertex rv)
+
 rootVID :: Int
 rootVID = 0
 
 -- | Get the dependents of a given dependency address (which should be referable) in the notification graph.
 getDependents :: SuffixReferableAddr -> NotifGraph -> [TreeAddr]
-getDependents rfbAddr ng = fromMaybe [] $ Map.lookup rfbAddr (deptsMap ng)
+getDependents rfbAddr ng = case Map.lookup (RefVertex rfbAddrID) (deptsMap ng) of
+  Nothing -> []
+  Just deps -> map (`getAddrFromVIDMust` ng.vidMapping) deps
+ where
+  (rfbAddrID, _) = getVID (sufRefToAddr rfbAddr) ng.vidMapping
 
 -- | Get the component addresses of a given SCC address in the notification graph.
 getElemAddrInGrp :: GrpAddr -> NotifGraph -> [SuffixIrredAddr]
-getElemAddrInGrp sccAddr ng = maybe [] Set.toList $ Map.lookup sccAddr (sccMap ng)
+getElemAddrInGrp gaddr ng = case ( do
+                                    (baseID, _) <- Map.lookup (IrredVertex gaddrID) (vToSCCBase ng)
+                                    Map.lookup baseID (baseToComps ng)
+                                 ) of
+  Nothing -> []
+  Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
+ where
+  addr = fst $ getGrpAddr gaddr
+  (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 getDependentGroups :: GrpAddr -> NotifGraph -> [GrpAddr]
-getDependentGroups sccAddr ng = fromMaybe [] $ Map.lookup sccAddr (dagEdges ng)
+getDependentGroups gaddr ng = case Map.lookup (IrredVertex srcAddrID) (dagEdges ng) of
+  Nothing -> []
+  Just deps ->
+    map
+      ( \dep ->
+          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ Map.lookup dep ng.vToSCCBase)
+      )
+      deps
+ where
+  addr = fst $ getGrpAddr gaddr
+  (srcAddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 -- | Get all dependents of a given SCC address in the notification graph.
 getDependentsFromGroup :: GrpAddr -> NotifGraph -> [TreeAddr]
@@ -160,7 +222,14 @@ getDependentsFromGroup sccAddr ng =
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the notification graph.
 lookupGrpAddr :: SuffixIrredAddr -> NotifGraph -> Maybe GrpAddr
-lookupGrpAddr rfbAddr ng = Map.lookup rfbAddr (addrToGrpAddr ng)
+lookupGrpAddr rfbAddr ng = case Map.lookup (IrredVertex rfbAddrID) (vToSCCBase ng) of
+  Nothing -> Nothing
+  Just (baseID, isCyclic) ->
+    Just $
+      -- The baseID must have its corresponding irreducible address.
+      GrpAddr (getIrredAddrFromIVMust baseID ng.vidMapping, isCyclic)
+ where
+  (rfbAddrID, _) = getVID (sufIrredToAddr rfbAddr) ng.vidMapping
 
 {- | Add a new dependency to the notification graph and Update the SCC graph.
 
@@ -181,50 +250,60 @@ addDepToNGRaw :: (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
 addDepToNGRaw (ref, def) =
   execState
     ( do
-        -- refID <- liftGetVIDForG ref
-        refTrimmedID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
-        -- defID <- liftGetVIDForG (sufRefToAddr def)
-        defTrimmedID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (sufRefToAddr def))
+        refID <- liftGetVIDForG ref
+        irRefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
+        irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (sufRefToAddr def))
         modify $ \g ->
           g
             { deptsMap =
                 Map.insertWith
-                  (\old _ -> if ref `elem` old then old else ref : old)
-                  def
-                  [ref]
+                  (\old _ -> if refID `elem` old then old else refID : old)
+                  (RefVertex irDefID)
+                  [refID]
                   (deptsMap g)
             , notifGEdges =
                 Map.insertWith
-                  (\old _ -> if IrredVertex refTrimmedID `elem` old then old else IrredVertex refTrimmedID : old)
-                  (RefVertex defTrimmedID)
-                  [IrredVertex refTrimmedID]
+                  (\old _ -> if IrredVertex irRefID `elem` old then old else IrredVertex irRefID : old)
+                  (RefVertex irDefID)
+                  [IrredVertex irRefID]
                   (notifGEdges g)
-            , notifGVertexes = Set.union (Set.fromList [IrredVertex refTrimmedID, IrredVertex defTrimmedID]) (notifGVertexes g)
+            , notifGVertexes = Set.union (Set.fromList [IrredVertex irRefID, IrredVertex irDefID]) g.notifGVertexes
             }
     )
 
 liftGetVIDForG :: TreeAddr -> State NotifGraph Int
 liftGetVIDForG addr = state $ \g -> let (i, m) = getVID addr g.vidMapping in (i, g{vidMapping = m})
 
--- | Remove all dependents from the notification graph that start with the given prefix.
-delDepPrefixFromNG :: (HasCallStack) => TreeAddr -> NotifGraph -> NotifGraph
-delDepPrefixFromNG prefix =
+-- | Remove all vertexes from the notification graph that start with the given prefix.
+delNGVertexPrefix :: (HasCallStack) => TreeAddr -> NotifGraph -> NotifGraph
+delNGVertexPrefix prefix =
   execState
     ( do
         m <- gets vidMapping
         modify $ \g ->
           updateNotifGraph
             ( g
-                { deptsMap = Map.map (filter isAncestor) (deptsMap g)
+                { deptsMap =
+                    Map.map
+                      -- Then filter the values.
+                      (filter (keep m))
+                      -- First filter the keys.
+                      (Map.filterWithKey (\k _ -> keep m (getRefVertex k)) $ deptsMap g)
                 , notifGEdges =
-                    Map.filterWithKey
-                      (\k _ -> isAncestor (getAddrFromVIDMust (getRefVertex k) m))
-                      (notifGEdges g)
+                    Map.map
+                      -- Then filter the values.
+                      (filter (\v -> keep m (getIrredVertex v)))
+                      $ Map.filterWithKey (\k _ -> keep m (getRefVertex k)) (notifGEdges g)
+                , notifGVertexes =
+                    Set.filter
+                      (\v -> (keep m (getIrredVertex v)))
+                      (notifGVertexes g)
                 }
             )
     )
  where
-  isAncestor x = not (isPrefix prefix x)
+  keep :: VIDMapping -> Int -> Bool
+  keep m x = not (isPrefix prefix (getAddrFromVIDMust x m))
 
 -- | Update the SCC graph based on the current notification graph.
 updateNotifGraph :: (HasCallStack) => NotifGraph -> NotifGraph
@@ -238,55 +317,53 @@ updateNotifGraph graph =
    in
     y
       { dagEdges = newSCCDAG
-      , sccMap = newSCCs
-      , addrToGrpAddr = newAddrToGrpAddr
+      , baseToComps = newBaseToComps
+      , vToSCCBase = newVToSCCBase
       , vidMapping = newMapping
       }
  where
   newTarjanState = scc (notifGEdges graph) (notifGVertexes graph) graph.vidMapping
   newMapping = newTarjanState.tsVIDMapping
-  newSCCs =
+  newBaseToComps =
     foldr
       ( \a acc -> case a of
-          AcyclicSCC x ->
-            let addr = getIrredAddrFromVIDMust x newMapping
-             in Map.insert
-                  (ACyclicGrpAddr addr)
-                  (Set.singleton addr)
-                  acc
+          AcyclicSCC x -> Map.insert x (Set.singleton x, False) acc
           -- Use the first element of the SCC as the base address
-          CyclicSCC xs ->
-            Map.insert
-              (CyclicBaseAddr $ getIrredAddrFromVIDMust (head xs) newMapping)
-              (Set.fromList $ [getIrredAddrFromVIDMust x newMapping | x <- xs])
-              acc
+          CyclicSCC xs -> Map.insert (head xs) (Set.fromList xs, True) acc
       )
       Map.empty
       -- (trace (printf "newGraphSCCs: %s" (show newGraphSCCs)) newGraphSCCs)
       newTarjanState.tsSCCs
-  newAddrToGrpAddr =
-    Map.fromList
-      [ (addr, rep)
-      | (rep, addrs) <- Map.toList newSCCs
-      , addr <- Set.toList addrs
-      ]
+  newVToSCCBase =
+    Map.foldrWithKey
+      ( \base (comps, isCyclic) acc ->
+          foldr
+            (\addr nacc -> Map.insert addr (base, isCyclic) nacc)
+            acc
+            (Set.toList comps)
+      )
+      Map.empty
+      newBaseToComps
+  -- Convert the notification graph edges to SCC graph edges.
+  -- For each edge from src to deps, find the SCC address of src and each dep.
+  -- If two keys map to the same SCC address, we merge the values of the two keys.
   newSCCDAG =
     Map.map Set.toList $
       Map.foldrWithKey
         ( \src deps acc ->
-            let srcGrpAddr = newAddrToGrpAddr `lookupMust` sufRefToSufIrred src
-                depGrpAddrs = Set.fromList $ map (\dep -> newAddrToGrpAddr `lookupMust` trimAddrToSufIrred dep) deps
+            let (srcBase, _) = newVToSCCBase `lookupMust` refVToIrredV src
+                depBaseAddrs = Set.fromList $ map (\dep -> fst $ newVToSCCBase `lookupMust` dep) deps
                 -- Remove the source SCC address from the dependent SCC addresses.
                 -- This is because the source SCC address is not a dependency of itself.
-                depSccAddrsWoSrc :: Set.Set GrpAddr
-                depSccAddrsWoSrc = Set.delete srcGrpAddr depGrpAddrs
-             in Map.insertWith Set.union srcGrpAddr depSccAddrsWoSrc acc
+                depSccAddrsWoSrc :: Set.Set IrredVertex
+                depSccAddrsWoSrc = Set.delete srcBase depBaseAddrs
+             in Map.insertWith Set.union srcBase depSccAddrsWoSrc acc
         )
         Map.empty
-        (deptsMap graph)
+        (notifGEdges graph)
 
 scc :: (HasCallStack) => Map.Map RefVertex [IrredVertex] -> Set.Set IrredVertex -> VIDMapping -> TarjanState
-scc edges vertexes m = execState ({-# SCC "sccGo" #-} go) initState
+scc edges vertexes m = execState go initState
  where
   initState = emptyTarjanState edges (Set.toList vertexes) m
 

@@ -16,7 +16,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import EvalExpr (evalExpr)
 import Parser (parseExpr)
-import Path
+import Feature
 import Reduce (reduce)
 import Reduce.RMonad (
   Context,

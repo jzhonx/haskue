@@ -17,8 +17,8 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
+import Feature
 import NotifGraph
-import Path
 import Reduce.RMonad (
   FetchResult (..),
   HasReduceParams (..),
@@ -214,17 +214,20 @@ watch tarAddr refEnv = do
   putRMContext $ ctx{ctxNotifGraph = newG}
 
   cd <- case refGrpAddrM of
-    Nothing -> throwFatal $ printf "watchFound: refAddr %s is not in the notification graph" (show refAddr)
-    Just refGrpAddr -> case refGrpAddr of
-      ACyclicGrpAddr _ -> return NoCycleDetected
-      CyclicBaseAddr _ -> return $ RCDetected (map sufIrredToAddr $ getElemAddrInGrp refGrpAddr newG)
+    Nothing -> throwFatal $ printf "watch: refAddr %s is not in the notification graph" (show refAddr)
+    Just refGrpAddr ->
+      if snd $ getGrpAddr refGrpAddr
+        then return $ RCDetected (map sufIrredToAddr $ getElemAddrInGrp refGrpAddr newG)
+        else return NoCycleDetected
 
+  tarAddrStr <- tshow tarAddr
+  refAddrStr <- tshow refAddr
   debugInstantRM
-    "watchFound"
+    "watch"
     ( printf
         "tried to detect if tar: %s forms a cycle with %s's dependents. result: %s"
-        (show tarAddr)
-        (show refAddr)
+        (show tarAddrStr)
+        (show refAddrStr)
         (show cd)
     )
     refEnv

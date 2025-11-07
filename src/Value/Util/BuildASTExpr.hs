@@ -23,7 +23,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import Path (Feature, mkStringFeature)
+import Feature (Feature, mkStringFeature)
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
@@ -82,7 +82,7 @@ buildASTExprExt t = case treeNode t of
             e <- buildASTExprExt x
             return $ pure $ AST.AliasExpr e
         )
-        (lstSubs l)
+        (toList l.final)
     return $ AST.litCons $ AST.ListLit AST.<^> pure (AST.EmbeddingList ls)
   TNDisj dj
     | null (rtrDisjDefVal dj) -> disjunctsToAST (dsjDisjuncts dj)

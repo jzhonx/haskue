@@ -12,8 +12,8 @@ import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust)
 import qualified Data.Set as Set
+import Feature
 import NotifGraph (lookupGrpAddr)
-import Path
 import Reduce.Nodes (
   ResolvedPConjuncts (..),
   discoverPConjsFromUnifyOp,

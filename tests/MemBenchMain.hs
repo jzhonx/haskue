@@ -2,7 +2,7 @@ module Main where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
-import Path
+import Feature
 import Reduce.Mutate
 import Weigh
 

@@ -10,8 +10,8 @@ module Reduce.PostReduce where
 import Control.Monad (unless)
 import Cursor
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
+import Feature
 import NotifGraph
-import Path
 import Reduce.Nodes (normalizeDisj)
 import Reduce.RMonad (
   ReduceMonad,

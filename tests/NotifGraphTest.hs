@@ -3,8 +3,8 @@ module NotifGraphTest where
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
+import Feature
 import NotifGraph
-import Path
 import System.Directory (listDirectory)
 import System.IO (readFile)
 import Test.Tasty
@@ -186,9 +186,9 @@ ngTests =
 --       "sccDAG"
 --       (Map.fromList [(sscAAddr, [])])
 --       (dagEdges newGraph)
---     let dg = delDepPrefixFromNG (sufIrredToAddr absB) newGraph
+--     let dg = delNGVertexPrefix (sufIrredToAddr absB) newGraph
 --     assertEqual
---       "delDepPrefixFromNG"
+--       "delNGVertexPrefix"
 --       3
 --       (length $ sccMap dg)
 --  where
