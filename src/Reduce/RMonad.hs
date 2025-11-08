@@ -23,7 +23,7 @@ import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (MonadReader, asks)
-import Control.Monad.State.Strict (MonadState, get, gets, modify)
+import Control.Monad.State.Strict (MonadState, get, gets, modify')
 import Cursor
 import Data.Aeson (ToJSON, Value, toJSON)
 import qualified Data.Map.Strict as Map
@@ -138,14 +138,6 @@ emptyContext =
     , ctxTrace = emptyTrace
     , tIndexer = emptyTextIndexer
     }
- where
-  -- showRefNotifiers :: Map.Map TreeAddr [TreeAddr] -> String
-  -- showRefNotifiers notifiers =
-  --   let s = Map.foldrWithKey go "" notifiers
-  --    in if null s then "[]" else "[" ++ s ++ "\n]"
-
-  go :: TreeAddr -> [TreeAddr] -> String -> String
-  go src deps acc = acc ++ "\n" ++ show src ++ " -> " ++ show deps
 
 data Error
   = FatalErr String
@@ -229,7 +221,7 @@ getRMContext :: (ResolveMonad r s m) => m Context
 getRMContext = gets getContext
 
 putRMContext :: (ResolveMonad r s m) => Context -> m ()
-putRMContext ctx = modify $ \s -> setContext s ctx
+putRMContext ctx = modify' $ \s -> setContext s ctx
 
 modifyRMContext :: (ResolveMonad r s m) => (Context -> Context) -> m ()
 modifyRMContext f = do
@@ -320,13 +312,14 @@ getTMTASeg = do
 
 -- Cursor
 
+{-# INLINE getTMCursor #-}
 getTMCursor :: (ReduceMonad r s m) => m TrCur
 getTMCursor = do
-  x <- get
-  return $ getTreeCursor x
+  x <- {-# SCC getTreeCursor_get #-} get
+  return $ {-# SCC getTreeCursor_fetch #-} getTreeCursor x
 
 putTMCursor :: (ReduceMonad r s m) => TrCur -> m ()
-putTMCursor tc = modify $ \s -> setTreeCursor s tc
+putTMCursor tc = modify' $ \s -> setTreeCursor s tc
 
 -- Crumbs
 

@@ -139,11 +139,11 @@ reduceMutable (Mutable mop _) = case mop of
           -- mutval populated.
           -- TODO: set NoValRef
           tc <- getTMCursor
-          (DerefResult rM tarAddr _ isIterBinding) <- index tc
+          (DerefResult rM _ _ isIterBinding) <- index tc
           handleRefRes isIterBinding rM
       | otherwise -> do
           tc <- getTMCursor
-          (DerefResult rM tarAddr cd isIterBinding) <- index tc
+          (DerefResult rM _ cd isIterBinding) <- index tc
           case cd of
             NoCycleDetected -> handleRefRes isIterBinding rM
             RCDetected rcs -> do

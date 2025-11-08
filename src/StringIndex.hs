@@ -5,7 +5,7 @@
 module StringIndex where
 
 import Control.DeepSeq (NFData (..))
-import Control.Monad.State (MonadState, gets, modify)
+import Control.Monad.State (MonadState, gets, modify')
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -76,7 +76,7 @@ textToTextIndex :: (TextIndexerMonad s m) => T.Text -> m TextIndex
 textToTextIndex t = do
   indexer <- gets getTextIndexer
   let (i, newIndexer) = fetchTextIndex t indexer
-  modify (setTextIndexer newIndexer)
+  modify' (setTextIndexer newIndexer)
   return $ TextIndex i
 
 strToTextIndex :: (TextIndexerMonad s m) => String -> m TextIndex

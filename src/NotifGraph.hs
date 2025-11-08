@@ -5,10 +5,9 @@
 module NotifGraph where
 
 import Control.Monad (forM_, when)
-import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify)
+import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify')
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
-import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -257,7 +256,7 @@ addDepToNGRaw (ref, def) =
         refID <- liftGetVIDForG ref
         irRefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
         irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (sufRefToAddr def))
-        modify $ \g ->
+        modify' $ \g ->
           g
             { deptsMap =
                 HashMap.insertWith
@@ -288,7 +287,7 @@ delNGVertexPrefix prefix =
   execState
     ( do
         m <- gets vidMapping
-        modify $ \g ->
+        modify' $ \g ->
           updateNotifGraph
             ( g
                 { deptsMap =
@@ -424,7 +423,7 @@ data SCC
 -- | Perform a depth-first search to find strongly connected components (SCCs) using Tarjan's algorithm.
 sccDFS :: (HasCallStack) => IrredVertex -> State TarjanState ()
 sccDFS v = do
-  modify $ \ts ->
+  modify' $ \ts ->
     let index = tsIndex ts
         newIndex = index + 1
         newMeta =
@@ -438,7 +437,7 @@ sccDFS v = do
   neighbors <- getNeighbors v
   forM_ neighbors $ \(w, isWParent) -> do
     -- If the neighbor is a parent, mark it with v being its structural cycle descendant.
-    when isWParent $ modify $ \ts ->
+    when isWParent $ modify' $ \ts ->
       let tm = tsMetaMap ts
           elemW = tm `lookupMust` w
           newMeta = elemW{dnmSCDescendant = Just v}
@@ -448,12 +447,12 @@ sccDFS v = do
     if
       | not isWVisited -> do
           sccDFS w
-          modify $ \ts ->
+          modify' $ \ts ->
             let tm = tsMetaMap ts
                 lowlinkV = dnmLowLink $ tm `lookupMust` v
                 lowlinkW = dnmLowLink $ tm `lookupMust` w
              in ts{tsMetaMap = HashMap.adjust (\entry -> entry{dnmLowLink = min lowlinkV lowlinkW}) v tm}
-      | isWOnStack -> modify $ \ts ->
+      | isWOnStack -> modify' $ \ts ->
           let tm = tsMetaMap ts
               lowlinkV = dnmLowLink $ tm `lookupMust` v
               indexW = dnmIndex $ tm `lookupMust` w
@@ -467,7 +466,7 @@ sccDFS v = do
   mapping <- gets tsVIDMapping
   when isRoot $ do
     rvM <- liftIrredVToRefV v
-    modify $ \ts ->
+    modify' $ \ts ->
       let (sccRestNodes, restStack) = span (/= v) (tsStack ts)
           newStack = tail restStack
           (newMetaMap, sCycleM) =

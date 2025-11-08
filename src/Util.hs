@@ -4,13 +4,13 @@ module Util where
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.State (MonadState, gets, modify)
+import Control.Monad.State (MonadState, gets, modify')
 import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import Data.Aeson.Text (encodeToLazyText)
 import Data.Maybe (fromJust, isNothing)
 import Data.Text (pack)
 import qualified Data.Text as T
-import Data.Text.Lazy (toStrict, unpack)
+import Data.Text.Lazy (toStrict)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
@@ -231,7 +231,7 @@ newTrace = do
   tr <- gets getTrace
   currentTime <- liftIO getCurrentTime
   let ntr = Trace{traceTime = currentTime, traceID = traceID tr + 1}
-  modify $ \s -> setTrace s ntr
+  modify' $ \s -> setTrace s ntr
   return ntr
 
 lastTraceID :: (MonadState s m, HasTrace s) => m Int

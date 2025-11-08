@@ -9,7 +9,7 @@ module AST where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
-import Control.Monad.State (MonadState, evalState, gets, modify)
+import Control.Monad.State (MonadState, evalState, gets, modify')
 import Data.ByteString.Builder (
   Builder,
   byteString,
@@ -388,9 +388,9 @@ getOneLiner = gets absOneLiner
 withIncIndent :: (M m) => m a -> m a
 withIncIndent action = do
   indent <- getIndent
-  modify (\s -> s{absIndent = indent + 1})
+  modify' (\s -> s{absIndent = indent + 1})
   r <- action
-  modify (\s -> s{absIndent = indent})
+  modify' (\s -> s{absIndent = indent})
   return r
 
 exprBld :: (M m) => Expression -> m Builder

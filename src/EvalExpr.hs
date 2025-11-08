@@ -11,7 +11,7 @@ import AST
 import qualified Common
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError)
-import Control.Monad.State.Strict (gets, modify)
+import Control.Monad.State.Strict (gets, modify')
 import Data.Foldable (toList)
 import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
@@ -483,5 +483,5 @@ allocOID :: (EvalEnv r s m) => m Int
 allocOID = do
   i <- gets Common.getID
   let j = i + 1
-  modify (`Common.setID` j)
+  modify' (`Common.setID` j)
   return j
