@@ -111,20 +111,21 @@ data VIDMapping = VIDMapping
   }
   deriving (Eq)
 
-getVID :: TreeAddr -> VIDMapping -> (Int, VIDMapping)
+getVID :: TreeAddr -> VIDMapping -> (Int, Maybe VIDMapping)
 getVID addr m =
   case HashMap.lookup addr (addrToVid m) of
-    Just vid -> (vid, m)
+    Just vid -> (vid, Nothing)
     Nothing ->
       let vid = nextVid m
           newVidToAddr = HashMap.insert vid addr (vidToAddr m)
           newAddrToVid = HashMap.insert addr vid (addrToVid m)
        in ( vid
-          , VIDMapping
-              { vidToAddr = newVidToAddr
-              , addrToVid = newAddrToVid
-              , nextVid = vid + 1
-              }
+          , Just $
+              VIDMapping
+                { vidToAddr = newVidToAddr
+                , addrToVid = newAddrToVid
+                , nextVid = vid + 1
+                }
           )
 
 getAddrFromVID :: Int -> VIDMapping -> Maybe TreeAddr
@@ -151,12 +152,12 @@ defaultVIDMapping =
     , nextVid = rootVID + 1
     }
 
-irredVToRefV :: IrredVertex -> VIDMapping -> (Maybe RefVertex, VIDMapping)
+irredVToRefV :: IrredVertex -> VIDMapping -> (Maybe RefVertex, Maybe VIDMapping)
 irredVToRefV iv m = case irredVToRefAddr iv m of
   Just rAddr -> do
     let (rid, m1) = getVID (sufRefToAddr rAddr) m
     (Just (RefVertex rid), m1)
-  Nothing -> (Nothing, m)
+  Nothing -> (Nothing, Nothing)
 
 irredVToRefAddr :: IrredVertex -> VIDMapping -> Maybe SuffixReferableAddr
 irredVToRefAddr iv m = do
@@ -275,7 +276,11 @@ addDepToNGRaw (ref, def) =
     )
 
 liftGetVIDForG :: TreeAddr -> State NotifGraph Int
-liftGetVIDForG addr = state $ \g -> let (i, m) = getVID addr g.vidMapping in (i, g{vidMapping = m})
+liftGetVIDForG addr = state $ \g ->
+  let (i, newM) = getVID addr g.vidMapping
+   in case newM of
+        Just new -> (i, g{vidMapping = new})
+        Nothing -> (i, g)
 
 -- | Remove all vertexes from the notification graph that start with the given prefix.
 delNGVertexPrefix :: (HasCallStack) => TreeAddr -> NotifGraph -> NotifGraph
@@ -578,10 +583,18 @@ isSufIrredParent parent child =
          )
 
 liftGetVIDForTS :: TreeAddr -> State TarjanState Int
-liftGetVIDForTS addr = state $ \ts -> let (i, m) = getVID addr ts.tsVIDMapping in (i, ts{tsVIDMapping = m})
+liftGetVIDForTS addr = state $ \ts ->
+  let (i, newM) = getVID addr ts.tsVIDMapping
+   in case newM of
+        Just new -> (i, ts{tsVIDMapping = new})
+        Nothing -> (i, ts)
 
 liftIrredVToRefV :: IrredVertex -> State TarjanState (Maybe RefVertex)
-liftIrredVToRefV iv = state $ \s -> let (r, m) = irredVToRefV iv s.tsVIDMapping in (r, s{tsVIDMapping = m})
+liftIrredVToRefV iv = state $ \s ->
+  let (r, newM) = irredVToRefV iv s.tsVIDMapping
+   in case newM of
+        Just new -> (r, s{tsVIDMapping = new})
+        Nothing -> (r, s)
 
 {- | Get the parent referable address of a given irreducible address.
 
