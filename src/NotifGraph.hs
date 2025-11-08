@@ -1,3 +1,4 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -5,6 +6,8 @@ module NotifGraph where
 
 import Control.Monad (forM_, when)
 import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify)
+import qualified Data.HashMap.Strict as HashMap
+import Data.Hashable (Hashable)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as Set
@@ -17,21 +20,21 @@ import StringIndex (ShowWithTextIndexer (..))
 import Text.Printf (printf)
 
 data NotifGraph = NotifGraph
-  { deptsMap :: Map.Map RefVertex [Int]
+  { deptsMap :: HashMap.HashMap RefVertex [Int]
   -- ^ The notification edges maps a dependency vertex to a list of dependent addresses, which are not necessarily
   -- irreducible or referable.
-  , notifGEdges :: Map.Map RefVertex [IrredVertex]
+  , notifGEdges :: HashMap.HashMap RefVertex [IrredVertex]
   -- ^ The notification edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
   -- The irreducible edges are used to compute the strongly connected components (SCCs) in the notification graph.
   , notifGVertexes :: Set.Set IrredVertex
   -- ^ Above all three fields are used to represent the notification graph before computing the SCCs.
   -- == Below are the SCC graph representation.
-  , dagEdges :: Map.Map IrredVertex [IrredVertex]
+  , dagEdges :: HashMap.HashMap IrredVertex [IrredVertex]
   -- ^ Maps from an SCC address of a strongly connected component to a list of SCC addresses that represents
   -- the dependencies.
-  , baseToComps :: Map.Map IrredVertex (Set.Set IrredVertex, Bool)
+  , baseToComps :: HashMap.HashMap IrredVertex (Set.Set IrredVertex, Bool)
   -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
-  , vToSCCBase :: Map.Map IrredVertex (IrredVertex, Bool)
+  , vToSCCBase :: HashMap.HashMap IrredVertex (IrredVertex, Bool)
   -- ^ Maps from an irreducible address to its SCC representative address.
   -- The Bool indicates whether the SCC is cyclic.
   , vidMapping :: VIDMapping
@@ -44,7 +47,7 @@ instance Show NotifGraph where
 instance ShowWithTextIndexer NotifGraph where
   tshow ng = do
     let
-      xs = map (\(k, v) -> (getAddrFromVIDMust (getRefVertex k) ng.vidMapping, v)) (Map.toList $ deptsMap ng)
+      xs = map (\(k, v) -> (getAddrFromVIDMust (getRefVertex k) ng.vidMapping, v)) (HashMap.toList $ deptsMap ng)
     deps <-
       mapM
         ( \(k, v) -> do
@@ -78,18 +81,18 @@ pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
 emptyNotifGraph :: NotifGraph
 emptyNotifGraph =
   NotifGraph
-    { deptsMap = Map.empty
-    , baseToComps = Map.empty
-    , vToSCCBase = Map.empty
-    , notifGEdges = Map.empty
+    { deptsMap = HashMap.empty
+    , baseToComps = HashMap.empty
+    , vToSCCBase = HashMap.empty
+    , notifGEdges = HashMap.empty
     , notifGVertexes = Set.empty
-    , dagEdges = Map.empty
+    , dagEdges = HashMap.empty
     , vidMapping = defaultVIDMapping
     }
 
-newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord)
+newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord, Hashable)
 
-newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord)
+newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Hashable)
 
 instance Show IrredVertex where
   show (IrredVertex i) = "iv_" ++ show i
@@ -102,20 +105,20 @@ instance ShowWithTextIndexer IrredVertex
 instance ShowWithTextIndexer RefVertex
 
 data VIDMapping = VIDMapping
-  { vidToAddr :: Map.Map Int TreeAddr
-  , addrToVid :: Map.Map TreeAddr Int
+  { vidToAddr :: HashMap.HashMap Int TreeAddr
+  , addrToVid :: HashMap.HashMap TreeAddr Int
   , nextVid :: Int
   }
   deriving (Eq)
 
 getVID :: TreeAddr -> VIDMapping -> (Int, VIDMapping)
 getVID addr m =
-  case Map.lookup addr (addrToVid m) of
+  case HashMap.lookup addr (addrToVid m) of
     Just vid -> (vid, m)
     Nothing ->
       let vid = nextVid m
-          newVidToAddr = Map.insert vid addr (vidToAddr m)
-          newAddrToVid = Map.insert addr vid (addrToVid m)
+          newVidToAddr = HashMap.insert vid addr (vidToAddr m)
+          newAddrToVid = HashMap.insert addr vid (addrToVid m)
        in ( vid
           , VIDMapping
               { vidToAddr = newVidToAddr
@@ -125,10 +128,10 @@ getVID addr m =
           )
 
 getAddrFromVID :: Int -> VIDMapping -> Maybe TreeAddr
-getAddrFromVID vid m = Map.lookup vid (vidToAddr m)
+getAddrFromVID vid m = HashMap.lookup vid (vidToAddr m)
 
 getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> TreeAddr
-getAddrFromVIDMust vid m = case Map.lookup vid (vidToAddr m) of
+getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
 
@@ -143,8 +146,8 @@ getIrredAddrFromIVMust iv = getIrredAddrFromVIDMust (getIrredVertex iv)
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
   VIDMapping
-    { vidToAddr = Map.fromList [(rootVID, rootTreeAddr)]
-    , addrToVid = Map.fromList [(rootTreeAddr, rootVID)]
+    { vidToAddr = HashMap.fromList [(rootVID, rootTreeAddr)]
+    , addrToVid = HashMap.fromList [(rootTreeAddr, rootVID)]
     , nextVid = rootVID + 1
     }
 
@@ -172,7 +175,7 @@ rootVID = 0
 
 -- | Get the dependents of a given dependency address (which should be referable) in the notification graph.
 getDependents :: SuffixReferableAddr -> NotifGraph -> [TreeAddr]
-getDependents rfbAddr ng = case Map.lookup (RefVertex rfbAddrID) (deptsMap ng) of
+getDependents rfbAddr ng = case HashMap.lookup (RefVertex rfbAddrID) (deptsMap ng) of
   Nothing -> []
   Just deps -> map (`getAddrFromVIDMust` ng.vidMapping) deps
  where
@@ -181,8 +184,8 @@ getDependents rfbAddr ng = case Map.lookup (RefVertex rfbAddrID) (deptsMap ng) o
 -- | Get the component addresses of a given SCC address in the notification graph.
 getElemAddrInGrp :: GrpAddr -> NotifGraph -> [SuffixIrredAddr]
 getElemAddrInGrp gaddr ng = case ( do
-                                    (baseID, _) <- Map.lookup (IrredVertex gaddrID) (vToSCCBase ng)
-                                    Map.lookup baseID (baseToComps ng)
+                                    (baseID, _) <- HashMap.lookup (IrredVertex gaddrID) (vToSCCBase ng)
+                                    HashMap.lookup baseID (baseToComps ng)
                                  ) of
   Nothing -> []
   Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
@@ -191,12 +194,12 @@ getElemAddrInGrp gaddr ng = case ( do
   (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 getDependentGroups :: GrpAddr -> NotifGraph -> [GrpAddr]
-getDependentGroups gaddr ng = case Map.lookup (IrredVertex srcAddrID) (dagEdges ng) of
+getDependentGroups gaddr ng = case HashMap.lookup (IrredVertex srcAddrID) (dagEdges ng) of
   Nothing -> []
   Just deps ->
     map
       ( \dep ->
-          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ Map.lookup dep ng.vToSCCBase)
+          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ HashMap.lookup dep ng.vToSCCBase)
       )
       deps
  where
@@ -222,7 +225,7 @@ getDependentsFromGroup sccAddr ng =
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the notification graph.
 lookupGrpAddr :: SuffixIrredAddr -> NotifGraph -> Maybe GrpAddr
-lookupGrpAddr rfbAddr ng = case Map.lookup (IrredVertex rfbAddrID) (vToSCCBase ng) of
+lookupGrpAddr rfbAddr ng = case HashMap.lookup (IrredVertex rfbAddrID) (vToSCCBase ng) of
   Nothing -> Nothing
   Just (baseID, isCyclic) ->
     Just $
@@ -256,13 +259,13 @@ addDepToNGRaw (ref, def) =
         modify $ \g ->
           g
             { deptsMap =
-                Map.insertWith
+                HashMap.insertWith
                   (\old _ -> if refID `elem` old then old else refID : old)
                   (RefVertex irDefID)
                   [refID]
                   (deptsMap g)
             , notifGEdges =
-                Map.insertWith
+                HashMap.insertWith
                   (\old _ -> if IrredVertex irRefID `elem` old then old else IrredVertex irRefID : old)
                   (RefVertex irDefID)
                   [IrredVertex irRefID]
@@ -284,16 +287,16 @@ delNGVertexPrefix prefix =
           updateNotifGraph
             ( g
                 { deptsMap =
-                    Map.map
+                    HashMap.map
                       -- Then filter the values.
                       (filter (keep m))
                       -- First filter the keys.
-                      (Map.filterWithKey (\k _ -> keep m (getRefVertex k)) $ deptsMap g)
+                      (HashMap.filterWithKey (\k _ -> keep m (getRefVertex k)) $ deptsMap g)
                 , notifGEdges =
-                    Map.map
+                    HashMap.map
                       -- Then filter the values.
                       (filter (\v -> keep m (getIrredVertex v)))
-                      $ Map.filterWithKey (\k _ -> keep m (getRefVertex k)) (notifGEdges g)
+                      $ HashMap.filterWithKey (\k _ -> keep m (getRefVertex k)) (notifGEdges g)
                 , notifGVertexes =
                     Set.filter
                       (\v -> (keep m (getIrredVertex v)))
@@ -327,29 +330,29 @@ updateNotifGraph graph =
   newBaseToComps =
     foldr
       ( \a acc -> case a of
-          AcyclicSCC x -> Map.insert x (Set.singleton x, False) acc
+          AcyclicSCC x -> HashMap.insert x (Set.singleton x, False) acc
           -- Use the first element of the SCC as the base address
-          CyclicSCC xs -> Map.insert (head xs) (Set.fromList xs, True) acc
+          CyclicSCC xs -> HashMap.insert (head xs) (Set.fromList xs, True) acc
       )
-      Map.empty
+      HashMap.empty
       -- (trace (printf "newGraphSCCs: %s" (show newGraphSCCs)) newGraphSCCs)
       newTarjanState.tsSCCs
   newVToSCCBase =
-    Map.foldrWithKey
+    HashMap.foldrWithKey
       ( \base (comps, isCyclic) acc ->
           foldr
-            (\addr nacc -> Map.insert addr (base, isCyclic) nacc)
+            (\addr nacc -> HashMap.insert addr (base, isCyclic) nacc)
             acc
             (Set.toList comps)
       )
-      Map.empty
+      HashMap.empty
       newBaseToComps
   -- Convert the notification graph edges to SCC graph edges.
   -- For each edge from src to deps, find the SCC address of src and each dep.
   -- If two keys map to the same SCC address, we merge the values of the two keys.
   newSCCDAG =
-    Map.map Set.toList $
-      Map.foldrWithKey
+    HashMap.map Set.toList $
+      HashMap.foldrWithKey
         ( \src deps acc ->
             let (srcBase, _) = newVToSCCBase `lookupMust` refVToIrredV src
                 depBaseAddrs = Set.fromList $ map (\dep -> fst $ newVToSCCBase `lookupMust` dep) deps
@@ -357,12 +360,12 @@ updateNotifGraph graph =
                 -- This is because the source SCC address is not a dependency of itself.
                 depSccAddrsWoSrc :: Set.Set IrredVertex
                 depSccAddrsWoSrc = Set.delete srcBase depBaseAddrs
-             in Map.insertWith Set.union srcBase depSccAddrsWoSrc acc
+             in HashMap.insertWith Set.union srcBase depSccAddrsWoSrc acc
         )
-        Map.empty
+        HashMap.empty
         (notifGEdges graph)
 
-scc :: (HasCallStack) => Map.Map RefVertex [IrredVertex] -> Set.Set IrredVertex -> VIDMapping -> TarjanState
+scc :: (HasCallStack) => HashMap.HashMap RefVertex [IrredVertex] -> Set.Set IrredVertex -> VIDMapping -> TarjanState
 scc edges vertexes m = execState go initState
  where
   initState = emptyTarjanState edges (Set.toList vertexes) m
@@ -387,24 +390,24 @@ emptyTarjanNodeMeta :: TarjanNodeMeta
 emptyTarjanNodeMeta = TarjanNodeMeta 0 0 False Nothing
 
 data TarjanState = TarjanState
-  { tsEdges :: Map.Map RefVertex [IrredVertex]
+  { tsEdges :: HashMap.HashMap RefVertex [IrredVertex]
   , tsIndex :: !Int
   , tsStack :: [IrredVertex]
-  , tsMetaMap :: Map.Map IrredVertex TarjanNodeMeta
+  , tsMetaMap :: HashMap.HashMap IrredVertex TarjanNodeMeta
   , tsSCCs :: [SCC]
-  , tsAncLinks :: Map.Map IrredVertex [RefVertex]
+  , tsAncLinks :: HashMap.HashMap IrredVertex [RefVertex]
   , tsVIDMapping :: VIDMapping
   }
 
-emptyTarjanState :: Map.Map RefVertex [IrredVertex] -> [IrredVertex] -> VIDMapping -> TarjanState
+emptyTarjanState :: HashMap.HashMap RefVertex [IrredVertex] -> [IrredVertex] -> VIDMapping -> TarjanState
 emptyTarjanState edges vertexes m =
   TarjanState
     { tsEdges = edges
     , tsIndex = 0
     , tsStack = []
-    , tsMetaMap = Map.fromList $ map (\v -> (v, emptyTarjanNodeMeta)) vertexes
+    , tsMetaMap = HashMap.fromList $ map (\v -> (v, emptyTarjanNodeMeta)) vertexes
     , tsSCCs = []
-    , tsAncLinks = Map.empty
+    , tsAncLinks = HashMap.empty
     , tsVIDMapping = m
     }
 
@@ -426,7 +429,7 @@ sccDFS v = do
             , dnmOnStack = True
             , dnmSCDescendant = Nothing
             }
-     in ts{tsIndex = newIndex, tsStack = v : tsStack ts, tsMetaMap = Map.insert v newMeta (tsMetaMap ts)}
+     in ts{tsIndex = newIndex, tsStack = v : tsStack ts, tsMetaMap = HashMap.insert v newMeta (tsMetaMap ts)}
   neighbors <- getNeighbors v
   forM_ neighbors $ \(w, isWParent) -> do
     -- If the neighbor is a parent, mark it with v being its structural cycle descendant.
@@ -434,7 +437,7 @@ sccDFS v = do
       let tm = tsMetaMap ts
           elemW = tm `lookupMust` w
           newMeta = elemW{dnmSCDescendant = Just v}
-       in ts{tsMetaMap = Map.insert w newMeta tm}
+       in ts{tsMetaMap = HashMap.insert w newMeta tm}
     isWVisited <- gets (\ts -> (\m -> dnmIndex m /= 0) $ tsMetaMap ts `lookupMust` w)
     isWOnStack <- gets (\ts -> dnmOnStack $ tsMetaMap ts `lookupMust` w)
     if
@@ -444,12 +447,12 @@ sccDFS v = do
             let tm = tsMetaMap ts
                 lowlinkV = dnmLowLink $ tm `lookupMust` v
                 lowlinkW = dnmLowLink $ tm `lookupMust` w
-             in ts{tsMetaMap = Map.adjust (\entry -> entry{dnmLowLink = min lowlinkV lowlinkW}) v tm}
+             in ts{tsMetaMap = HashMap.adjust (\entry -> entry{dnmLowLink = min lowlinkV lowlinkW}) v tm}
       | isWOnStack -> modify $ \ts ->
           let tm = tsMetaMap ts
               lowlinkV = dnmLowLink $ tm `lookupMust` v
               indexW = dnmIndex $ tm `lookupMust` w
-           in ts{tsMetaMap = Map.adjust (\entry -> entry{dnmLowLink = min lowlinkV indexW}) v tm}
+           in ts{tsMetaMap = HashMap.adjust (\entry -> entry{dnmLowLink = min lowlinkV indexW}) v tm}
       | otherwise -> return ()
 
   isRoot <- gets (\ts -> let m = tsMetaMap ts `lookupMust` v in dnmLowLink m == dnmIndex m)
@@ -465,7 +468,7 @@ sccDFS v = do
           (newMetaMap, sCycleM) =
             foldr
               ( \addr (accMetaMap, accSCycleM) ->
-                  ( Map.adjust (\m -> m{dnmOnStack = False}) addr accMetaMap
+                  ( HashMap.adjust (\m -> m{dnmOnStack = False}) addr accMetaMap
                   , if isJust accSCycleM
                       then accSCycleM
                       else do
@@ -484,7 +487,7 @@ sccDFS v = do
                 fromMaybe
                   False
                   ( do
-                      dependents <- Map.lookup rv (tsEdges ts)
+                      dependents <- HashMap.lookup rv (tsEdges ts)
                       return $ length dependents == 1 && head dependents == v
                   ) ->
                   CyclicSCC [v]
@@ -520,7 +523,7 @@ getNeighbors v = do
   go ::
     IrredVertex ->
     Bool ->
-    Map.Map RefVertex [IrredVertex] ->
+    HashMap.HashMap RefVertex [IrredVertex] ->
     [(IrredVertex, Bool)] ->
     State TarjanState [(IrredVertex, Bool)]
   go x start edges acc
@@ -547,12 +550,12 @@ getNeighbors v = do
                         )
                         acc
                     )
-                    (Map.lookup (RefVertex y) edges)
+                    (HashMap.lookup (RefVertex y) edges)
               go parV False edges newAcc
           | not start
           , Just xAddrRef <- xAddrM >>= addrIsSufRef -> do
               y <- liftGetVIDForTS (sufRefToAddr xAddrRef)
-              let newAcc = if Map.member (RefVertex y) edges then (x, True) : acc else acc
+              let newAcc = if HashMap.member (RefVertex y) edges then (x, True) : acc else acc
               go parV False edges newAcc
           | otherwise -> go parV False edges acc
 
@@ -569,8 +572,8 @@ isSufIrredParent parent child =
     isParentPrefix = isPrefix parentAddr childAddr
    in
     isParentPrefix
-      && ( let TreeAddr diff = trimPrefixTreeAddr parentAddr childAddr
-               rest = V.filter isFeatureReferable diff
+      && ( let diff = trimPrefixTreeAddr parentAddr childAddr
+               rest = V.filter isFeatureReferable diff.vFeatures
             in not (V.null rest)
          )
 
@@ -595,8 +598,8 @@ getParentVertex v = do
     | rootTreeAddr == sufRefToAddr x = x
     | otherwise = trimAddrToSufRef (fromJust $ initTreeAddr (sufRefToAddr x))
 
-lookupMust :: (HasCallStack, Ord k, Show k, Show a) => Map.Map k a -> k -> a
-lookupMust m k = case Map.lookup k m of
+lookupMust :: (HasCallStack, Show k, Show a, Hashable k) => HashMap.HashMap k a -> k -> a
+lookupMust m k = case HashMap.lookup k m of
   Just v -> v
   Nothing -> error $ printf "key %s not found in map %s" (show k) (show m)
 

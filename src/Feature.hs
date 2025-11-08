@@ -9,6 +9,7 @@ module Feature where
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)
 import Data.Bits (Bits (..))
+import Data.Hashable (Hashable (..))
 import Data.List (intercalate)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -46,14 +47,6 @@ tailFieldPath :: FieldPath -> Maybe FieldPath
 tailFieldPath (FieldPath []) = Nothing
 tailFieldPath (FieldPath sels) = Just $ FieldPath (tail sels)
 
--- appendFieldPaths ::
---   -- | front
---   FieldPath ->
---   -- | back
---   FieldPath ->
---   FieldPath
--- appendFieldPaths (FieldPath xs) (FieldPath ys) = FieldPath (xs ++ ys)
-
 isFieldPathEmpty :: FieldPath -> Bool
 isFieldPathEmpty (FieldPath []) = True
 isFieldPathEmpty _ = False
@@ -67,8 +60,8 @@ selToTASeg :: Selector -> Feature
 selToTASeg (StringSel s) = mkStringFeature s
 selToTASeg (IntSel i) = mkListIdxFeature i
 
-newtype Feature = Feature Int
-  deriving (Eq, Ord, Generic, NFData)
+newtype Feature = Feature {getFeature :: Int}
+  deriving (Eq, Ord, Generic, NFData, Hashable)
 
 data LabelType
   = RootLabelType
@@ -261,7 +254,9 @@ instance Show BinOpDirect where
 {- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype TreeAddr = TreeAddr {getFeatures :: V.Vector Feature}
+newtype TreeAddr = TreeAddr
+  { vFeatures :: V.Vector Feature
+  }
   deriving (Show, Eq, Ord, Generic, NFData)
 
 instance ShowWithTextIndexer TreeAddr where
@@ -274,29 +269,35 @@ instance ShowWithTextIndexer TreeAddr where
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList a)
         return $ T.pack $ intercalate "/" x
 
+instance Hashable TreeAddr where
+  hashWithSalt salt (TreeAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
+
+mkTreeAddr :: V.Vector Feature -> TreeAddr
+mkTreeAddr = TreeAddr
+
 emptyTreeAddr :: TreeAddr
-emptyTreeAddr = TreeAddr V.empty
+emptyTreeAddr = mkTreeAddr V.empty
 
 rootTreeAddr :: TreeAddr
-rootTreeAddr = TreeAddr (V.singleton rootFeature)
+rootTreeAddr = mkTreeAddr (V.singleton rootFeature)
 
 isTreeAddrEmpty :: TreeAddr -> Bool
-isTreeAddrEmpty a = V.null (getFeatures a)
+isTreeAddrEmpty a = V.null (vFeatures a)
 
 addrFromList :: [Feature] -> TreeAddr
-addrFromList segs = TreeAddr (V.fromList segs)
+addrFromList segs = mkTreeAddr (V.fromList segs)
 
 -- | This is mostly used for testing purpose.
 addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m TreeAddr
 addrFromStringList segs = do
   xs <- mapM strToStringFeature segs
-  return $ TreeAddr (V.fromList xs)
+  return $ mkTreeAddr (V.fromList xs)
 
 addrToList :: TreeAddr -> [Feature]
 addrToList (TreeAddr a) = V.toList a
 
 appendSeg :: TreeAddr -> Feature -> TreeAddr
-appendSeg (TreeAddr a) seg = TreeAddr (V.snoc a seg)
+appendSeg (TreeAddr a) seg = mkTreeAddr (V.snoc a seg)
 
 {- | Append the new addr to old addr.
 new and old are reversed, such as [z, y, x] and [b, a]. The appended addr should be [z, y, x, b, a], which is
@@ -308,19 +309,19 @@ appendTreeAddr ::
   -- | new addr to be appended to the old addr
   TreeAddr ->
   TreeAddr
-appendTreeAddr (TreeAddr old) (TreeAddr new) = TreeAddr (old V.++ new)
+appendTreeAddr (TreeAddr old) (TreeAddr new) = mkTreeAddr (old V.++ new)
 
 -- | Get the parent addr of a addr by removing the last segment.
 initTreeAddr :: TreeAddr -> Maybe TreeAddr
 initTreeAddr (TreeAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ TreeAddr (V.init a)
+  | otherwise = Just $ mkTreeAddr (V.init a)
 
 -- | Get the tail addr of a addr, excluding the head segment.
 tailTreeAddr :: TreeAddr -> Maybe TreeAddr
 tailTreeAddr (TreeAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ TreeAddr (V.tail a)
+  | otherwise = Just $ mkTreeAddr (V.tail a)
 
 -- | Get the last segment of a addr.
 lastSeg :: TreeAddr -> Maybe Feature
@@ -352,7 +353,7 @@ first addr is returned.
 trimPrefixTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
 trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
   | not (isPrefix pre x) = x
-  | otherwise = TreeAddr (V.drop (V.length pa) xa)
+  | otherwise = mkTreeAddr (V.drop (V.length pa) xa)
 
 {- | SuffixIrredAddr is an addr that ends with an irreducible segment.
 
@@ -384,7 +385,7 @@ trimAddrToSufIrred (TreeAddr xs) =
     SuffixIrredAddr $ V.reverse revNonMutArgs
 
 sufIrredToAddr :: SuffixIrredAddr -> TreeAddr
-sufIrredToAddr (SuffixIrredAddr xs) = TreeAddr xs
+sufIrredToAddr (SuffixIrredAddr xs) = mkTreeAddr xs
 
 sufIrredIsSufRef :: SuffixIrredAddr -> Maybe SuffixReferableAddr
 sufIrredIsSufRef (SuffixIrredAddr xs)
@@ -422,7 +423,7 @@ instance ShowWithTextIndexer SuffixReferableAddr where
   tshow a = tshow $ sufRefToAddr a
 
 sufRefToAddr :: SuffixReferableAddr -> TreeAddr
-sufRefToAddr (SuffixReferableAddr xs) = TreeAddr xs
+sufRefToAddr (SuffixReferableAddr xs) = mkTreeAddr xs
 
 sufRefToSufIrred :: SuffixReferableAddr -> SuffixIrredAddr
 sufRefToSufIrred (SuffixReferableAddr xs) = SuffixIrredAddr xs
