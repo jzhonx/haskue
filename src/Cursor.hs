@@ -49,7 +49,7 @@ Suppose the cursor is at the struct that contains the value 42. The cursor is
 (struct_c, [("b", struct_b), ("a", struct_a)]).
 -}
 data TrCur = TrCur
-  { tcFocus :: Tree
+  { tcFocus :: !Tree
   , tcCrumbs :: [(Feature, Tree)]
   }
   deriving (Eq, Generic, NFData)

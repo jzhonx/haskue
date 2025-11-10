@@ -1,9 +1,11 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module NotifGraph where
 
+import Control.DeepSeq (NFData)
 import Control.Monad (forM_, when)
 import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify')
 import qualified Data.HashMap.Strict as HashMap
@@ -14,6 +16,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import Debug.Trace
 import Feature
+import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import StringIndex (ShowWithTextIndexer (..))
 import Text.Printf (printf)
@@ -38,7 +41,7 @@ data NotifGraph = NotifGraph
   -- The Bool indicates whether the SCC is cyclic.
   , vidMapping :: VIDMapping
   }
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 instance Show NotifGraph where
   show ng = printf "G(Deps: %s)" (show $ deptsMap ng)
@@ -57,7 +60,7 @@ instance ShowWithTextIndexer NotifGraph where
         xs
     return $ T.pack $ printf "G(Deps: %s)" (show deps)
 
-newtype GrpAddr = GrpAddr {getGrpAddr :: (SuffixIrredAddr, Bool)} deriving (Eq, Ord)
+newtype GrpAddr = GrpAddr {getGrpAddr :: (SuffixIrredAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
 
 instance Show GrpAddr where
   show (GrpAddr (addr, isCyclic)) =
@@ -89,9 +92,9 @@ emptyNotifGraph =
     , vidMapping = defaultVIDMapping
     }
 
-newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord, Hashable)
+newtype IrredVertex = IrredVertex {getIrredVertex :: Int} deriving (Eq, Ord, Hashable, Generic, NFData)
 
-newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Hashable)
+newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Hashable, Generic, NFData)
 
 instance Show IrredVertex where
   show (IrredVertex i) = "iv_" ++ show i
@@ -108,7 +111,7 @@ data VIDMapping = VIDMapping
   , addrToVid :: HashMap.HashMap TreeAddr Int
   , nextVid :: Int
   }
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 getVID :: TreeAddr -> VIDMapping -> (Int, Maybe VIDMapping)
 getVID addr m =

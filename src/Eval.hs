@@ -119,6 +119,12 @@ runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m (Tree, CommonState)
 evalFile sf = evalToTree (evalSourceFile sf)
 
+initializeRM ::
+  (MonadError String m, MonadIO m) =>
+  StateT CommonState (ReaderT ReduceConfig m) a ->
+  StateT CommonState (ReaderT ReduceConfig m) a
+initializeRM f = f
+
 evalToTree ::
   (MonadError String m, MonadIO m) =>
   StateT CommonState (ReaderT ReduceConfig m) Tree ->

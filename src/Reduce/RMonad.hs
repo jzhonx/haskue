@@ -1,4 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ImpredicativeTypes #-}
@@ -9,6 +11,7 @@
 module Reduce.RMonad where
 
 import qualified AST
+import Control.DeepSeq (NFData)
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
 import Control.Monad.IO.Class (MonadIO)
@@ -32,6 +35,7 @@ import Env (
  )
 import EvalExpr (evalExpr)
 import Feature
+import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import NotifGraph
 import StringIndex (HasTextIndexer (..), ShowWithTextIndexer (..), TextIndexer, TextIndexerMonad, emptyTextIndexer)
@@ -106,7 +110,7 @@ data Context = Context
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 instance HasTrace Context where
   getTrace = ctxTrace
@@ -181,6 +185,7 @@ data RTCState = RTCState
   { rtsTC :: !TrCur
   , rtsCtx :: Context
   }
+  deriving (Eq, Show, Generic, NFData)
 
 instance HasTreeCursor RTCState where
   getTreeCursor = rtsTC
@@ -217,6 +222,7 @@ mkRTState tc common =
 
 -- Context
 
+{-# INLINE getRMContext #-}
 getRMContext :: (ResolveMonad r s m) => m Context
 getRMContext = gets getContext
 
@@ -314,9 +320,7 @@ getTMTASeg = do
 
 {-# INLINE getTMCursor #-}
 getTMCursor :: (ReduceMonad r s m) => m TrCur
-getTMCursor = do
-  x <- {-# SCC getTreeCursor_get #-} get
-  return $ {-# SCC getTreeCursor_fetch #-} getTreeCursor x
+getTMCursor = gets getTreeCursor
 
 putTMCursor :: (ReduceMonad r s m) => TrCur -> m ()
 putTMCursor tc = modify' $ \s -> setTreeCursor s tc
@@ -328,6 +332,7 @@ getTMCrumbs = tcCrumbs <$> getTMCursor
 
 -- Tree
 
+{-# INLINE getTMTree #-}
 getTMTree :: (ReduceMonad r s m) => m Tree
 getTMTree = tcFocus <$> getTMCursor
 

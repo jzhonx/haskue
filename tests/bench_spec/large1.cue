@@ -7,7 +7,7 @@
 // #Environment: or(Environments)
 
 // Environments represents the make-it-so deployable environments.
-Environments: [for env, _ in EnvironmentsInfo {env}]
+// Environments: [for env, _ in EnvironmentsInfo {env}]
 // Sites: RioSites
 // RioSites: [for env, info in EnvironmentsInfo let isRio = info["rio"] != _|_ if isRio {env}]
 // RCCSSites: [for env, info in EnvironmentsInfo let isRCCS = info["rccs"] != _|_ if isRCCS {env}]

@@ -1,7 +1,10 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Util where
 
+import Control.DeepSeq (NFData)
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.State (MonadState, gets, modify')
@@ -14,6 +17,7 @@ import Data.Text.Lazy (toStrict)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import GHC.Generics (Generic)
 import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 
@@ -25,7 +29,7 @@ data Trace = Trace
   { traceID :: Int
   , traceTime :: UTCTime
   }
-  deriving (Eq)
+  deriving (Eq, Generic, NFData)
 
 instance Show Trace where
   show t = printf "id=%s" (show $ traceID t)

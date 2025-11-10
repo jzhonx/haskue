@@ -1,6 +1,5 @@
 module Main (main) where
 
-import Common
 import Control.Monad.Except (MonadError, runExceptT, throwError)
 import Criterion.Main
 import Data.ByteString.Builder (hPutBuilder)
