@@ -8,7 +8,6 @@
 module EvalExpr where
 
 import AST
-import qualified Common
 import Control.Monad (foldM)
 import Control.Monad.Except (MonadError)
 import Control.Monad.State.Strict (gets, modify')
@@ -17,12 +16,13 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import qualified Env
 import Exception (throwErrSt)
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
 import Text.Printf (printf)
 import Value
 
-type EvalEnv r s m = (Common.EnvIO r s m, Common.IDStore s, TextIndexerMonad s m)
+type EvalEnv r s m = (Env.EnvIO r s m, Env.IDStore s, TextIndexerMonad s m)
 
 evalSourceFile :: (EvalEnv r s m) => SourceFile -> m Tree
 evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
@@ -481,7 +481,7 @@ flattenDisj l r = case getLeftAcc of
 
 allocOID :: (EvalEnv r s m) => m Int
 allocOID = do
-  i <- gets Common.getID
+  i <- gets Env.getID
   let j = i + 1
-  modify' (`Common.setID` j)
+  modify' (`Env.setID` j)
   return j

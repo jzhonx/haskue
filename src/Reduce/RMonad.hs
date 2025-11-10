@@ -9,16 +9,6 @@
 module Reduce.RMonad where
 
 import qualified AST
-import Common (
-  CommonState,
-  Config (..),
-  HasConfig (..),
-  IDStore (..),
-  eesObjID,
-  eesTrace,
-  emptyConfig,
-  tIndexer,
- )
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
 import Control.Monad.IO.Class (MonadIO)
@@ -30,6 +20,16 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import Env (
+  CommonState,
+  Config (..),
+  HasConfig (..),
+  IDStore (..),
+  eesObjID,
+  eesTrace,
+  emptyConfig,
+  tIndexer,
+ )
 import EvalExpr (evalExpr)
 import Feature
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)

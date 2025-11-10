@@ -12,12 +12,11 @@ module Value.Tree where
 
 import AST (exprToOneLinerStr)
 import qualified AST
-import Common (ErrorEnv)
 import Control.Monad.Except (runExceptT)
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import qualified Data.Vector as V
+import Env (ErrorEnv)
 import Exception (throwErrSt)
 import Feature (
   FieldPath (FieldPath),

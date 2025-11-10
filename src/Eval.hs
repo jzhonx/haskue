@@ -17,14 +17,6 @@ module Eval (
 where
 
 import AST
-import Common (
-  CommonState (..),
-  Config (..),
-  eesObjID,
-  eesTrace,
-  emptyCommonState,
-  emptyConfig,
- )
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, modifyError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -37,6 +29,14 @@ import Data.ByteString.Builder (
  )
 import Data.List.Split (splitOn)
 import qualified Data.Set as Set
+import Env (
+  CommonState (..),
+  Config (..),
+  eesObjID,
+  eesTrace,
+  emptyCommonState,
+  emptyConfig,
+ )
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
 import Feature (rootFeature)

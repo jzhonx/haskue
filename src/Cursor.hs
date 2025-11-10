@@ -9,7 +9,6 @@
 
 module Cursor where
 
-import Common (ErrorEnv)
 import Control.DeepSeq (NFData (..))
 import Control.Monad (when)
 import Data.ByteString.Builder (
@@ -24,6 +23,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
+import Env (ErrorEnv)
 import Exception (throwErrSt)
 import Feature
 import GHC.Generics (Generic)

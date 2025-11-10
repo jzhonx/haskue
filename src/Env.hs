@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Common where
+module Env where
 
 import Control.Monad.Except (MonadError)
 import Control.Monad.IO.Class (MonadIO)

@@ -3,7 +3,6 @@
 module TreeTest where
 
 import AST (exprToOneLinerStr)
-import Common (CommonState, Config, emptyCommonState, emptyConfig)
 import Control.Monad.Except (ExceptT, MonadError (throwError), modifyError, runExcept, runExceptT)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (ReaderT (runReaderT))

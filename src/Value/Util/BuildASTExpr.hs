@@ -14,7 +14,6 @@ module Value.Util.BuildASTExpr (
 where
 
 import qualified AST
-import Common (ErrorEnv, HasConfig (..))
 import Control.Monad (foldM)
 import Control.Monad.Reader (MonadReader, ask, asks, runReaderT)
 import Data.Foldable (toList)
@@ -22,6 +21,7 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
+import Env (ErrorEnv, HasConfig (..))
 import Exception (throwErrSt)
 import Feature (Feature, mkStringFeature)
 import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
