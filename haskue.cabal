@@ -56,7 +56,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O2 -fspecialise-aggressively -ddump-simpl -ddump-to-file -dsuppress-coercions
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -113,7 +113,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
-    ghc-options: -Wall -Wpartial-fields -O2 -fspecialise-aggressively -ddump-simpl -ddump-to-file -dsuppress-coercions
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
@@ -136,6 +136,8 @@ Test-Suite haskue-unit-test
         text,
         aeson,
   default-language: Haskell2010
+  ghc-options: -Wall -Wpartial-fields -O0
+
 
 
 benchmark time

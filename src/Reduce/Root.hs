@@ -203,13 +203,11 @@ handleMutRes Nothing _ = return ()
 handleMutRes (Just result) furtherReduce = do
   tc <- getTMCursor
   case tc of
-    -- (TCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
-    (TCFocus (IsRef _ _)) -> return ()
+    (TCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
     (TCFocus (IsTGenOp _)) -> do
       modifyTMTN (treeNode result)
       when furtherReduce reducePureTN
-    -- _ -> throwFatal "handleMutRes: not a mutable tree"
-    _ -> return ()
+    _ -> throwFatal "handleMutRes: not a mutable tree"
 
 reducePureTN :: (ReduceMonad r s m) => m ()
 reducePureTN = do

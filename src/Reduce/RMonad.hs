@@ -16,7 +16,7 @@ import Control.Monad (foldM, unless, when)
 import Control.Monad.Except (ExceptT, MonadError, modifyError, throwError)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (MonadReader, asks)
-import Control.Monad.State.Strict (MonadState, get, gets, modify')
+import Control.Monad.State.Strict (MonadState, gets, modify')
 import Cursor
 import Data.Aeson (ToJSON, Value, toJSON)
 import qualified Data.Map.Strict as Map
@@ -26,7 +26,6 @@ import qualified Data.Text as T
 import Env (
   CommonState,
   Config (..),
-  ErrorEnv,
   HasConfig (..),
   IDStore (..),
   eesObjID,
@@ -277,14 +276,6 @@ getRMObjID = gets getID
 setRMObjID :: (IDStoreStM s m) => Int -> m ()
 setRMObjID newID = modify' (\s -> setID s newID)
 
--- Trace
-
--- getRMTrace :: (TraceStM s m) => m Trace
--- getRMTrace = gets getTrace
-
--- setRMTrace :: (TraceStM s m) => Trace -> m ()
--- setRMTrace trace = modify' (\s -> setTrace s trace)
-
 {- | Delete the notification receivers that have the specified prefix.
 
 we need to delete receiver starting with the addr, not only the addr. For example, if the function
@@ -292,21 +283,8 @@ is index and the first argument is a reference, then the first argument dependen
 deleted.
 -}
 delTMDepPrefix :: (CtxStM s m) => TreeAddr -> m ()
-delTMDepPrefix addrPrefix = do
+delTMDepPrefix addrPrefix =
   modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delNGVertexPrefix addrPrefix (ctxNotifGraph ctx)}
-
--- ctx <- getRMContext
--- gstr <- tshow (ctxNotifGraph ctx)
--- addPStr <- tshow addrPrefix
-
--- debugInstantOpRM
---   "delTMDepPrefix"
---   ( printf
---       "after deleting dependent prefix %s, notif graph is: %s"
---       (show addPStr)
---       (show gstr)
---   )
---   rootTreeAddr
 
 delMutValRecvs :: (CtxStM s m) => TreeAddr -> m ()
 delMutValRecvs = undefined
@@ -571,10 +549,7 @@ getRecalcRootQ :: (CtxStM s m) => m [GrpAddr]
 getRecalcRootQ = recalcRootQ <$> getRMContext
 
 pushRecalcRootQ :: (CtxStM s m) => GrpAddr -> m ()
-pushRecalcRootQ gAddr = do
-  -- debugInstantTM
-  --   "pushRecalcRootQ"
-  --   (printf "pushing gAddr %s to recalcRootQ" (show gAddr))
+pushRecalcRootQ gAddr =
   modifyRMContext $ \ctx -> ctx{recalcRootQ = gAddr : recalcRootQ ctx}
 
 popRecalcRootQ :: (CtxStM s m) => m (Maybe GrpAddr)

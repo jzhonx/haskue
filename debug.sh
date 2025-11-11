@@ -79,6 +79,14 @@ if [[ "$1" == "runp" ]]; then
   exit 0
 fi
 
+if [[ "$1" == "build" ]]; then
+  cabal build --ghc-options="-O2 -fspecialise-aggressively"
+
+  echo ""
+
+  exit 0
+fi
+
 # invalid command
 echo "Invalid command: $1"
 exit 1
