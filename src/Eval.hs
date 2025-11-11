@@ -20,7 +20,7 @@ import AST
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, modifyError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Reader (ReaderT (runReaderT))
+import Control.Monad.Reader (MonadReader (..), ReaderT (runReaderT))
 import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
 import Cursor
 import Data.ByteString.Builder (
@@ -119,12 +119,6 @@ runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
 evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m (Tree, CommonState)
 evalFile sf = evalToTree (evalSourceFile sf)
 
-initializeRM ::
-  (MonadError String m, MonadIO m) =>
-  StateT CommonState (ReaderT ReduceConfig m) a ->
-  StateT CommonState (ReaderT ReduceConfig m) a
-initializeRM f = f
-
 evalToTree ::
   (MonadError String m, MonadIO m) =>
   StateT CommonState (ReaderT ReduceConfig m) Tree ->
@@ -154,16 +148,16 @@ evalToTree f conf = do
           let
             rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
             cv = mkRTState rootTC eeState
-          execStateT (modifyError show reduce) cv
+          execStateT
+            ( do
+                modifyError show reduce
+                local (\r -> modifyReduceParams (\p -> p{createCnstr = False}) r) $ modifyError show postValidation
+            )
+            cv
       )
       (ReduceConfig config (emptyReduceParams{createCnstr = True}))
 
-  finalized <-
-    runReaderT
-      (execStateT (modifyError show postValidation) reduced)
-      (ReduceConfig config emptyReduceParams)
-
-  let finalTC = getTreeCursor finalized
+  let finalTC = getTreeCursor reduced
   when (ecDebugMode conf) $
     liftIO $
       hPutStr stderr $
@@ -171,8 +165,8 @@ evalToTree f conf = do
   return
     ( tcFocus finalTC
     , CommonState
-        { eesObjID = finalized.rtsCtx.ctxObjID
-        , eesTrace = finalized.rtsCtx.ctxTrace
-        , tIndexer = finalized.rtsCtx.tIndexer
+        { eesObjID = reduced.rtsCtx.ctxObjID
+        , eesTrace = reduced.rtsCtx.ctxTrace
+        , tIndexer = reduced.rtsCtx.tIndexer
         }
     )
