@@ -197,16 +197,19 @@ handleRefRes _ (Just result) = do
       when result.isSCyclic $ modifyTMTree $ \t -> t{isSCyclic = True}
     _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show tc)
 
+{-# INLINE handleMutRes #-}
 handleMutRes :: (ReduceMonad r s m) => Maybe Tree -> Bool -> m ()
 handleMutRes Nothing _ = return ()
 handleMutRes (Just result) furtherReduce = do
   tc <- getTMCursor
   case tc of
-    (TCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
+    -- (TCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
+    (TCFocus (IsRef _ _)) -> return ()
     (TCFocus (IsTGenOp _)) -> do
       modifyTMTN (treeNode result)
       when furtherReduce reducePureTN
-    _ -> throwFatal "handleMutRes: not a mutable tree"
+    -- _ -> throwFatal "handleMutRes: not a mutable tree"
+    _ -> return ()
 
 reducePureTN :: (ReduceMonad r s m) => m ()
 reducePureTN = do

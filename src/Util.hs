@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -38,6 +39,12 @@ instance HasTrace Trace where
   getTrace = id
   setTrace :: Trace -> Trace -> Trace
   setTrace s t = t{traceID = traceID s}
+
+type TraceM s m =
+  ( MonadState s m
+  , HasTrace s
+  , MonadIO m
+  )
 
 data ChromeStartTrace = ChromeStartTrace
   { cstrName :: !T.Text
@@ -146,7 +153,7 @@ instance ToJSON ChromeInstantTraceArgs where
       )
 
 traceSpan ::
-  (MonadState s m, MonadIO m, HasTrace s) =>
+  (TraceM s m) =>
   (Bool, Bool) ->
   T.Text ->
   T.Text ->
@@ -160,7 +167,7 @@ traceSpan flags name addr args bTraced g action = do
   traceSpanExec flags name addr g action
 
 traceSpanStart ::
-  (MonadState s m, HasTrace s, MonadIO m) =>
+  (TraceM s m) =>
   (Bool, Bool) ->
   T.Text ->
   T.Text ->
@@ -186,7 +193,7 @@ traceSpanStart (enable, extraInfo) name addr args bTraced = do
   return tr
 
 traceSpanExec ::
-  (MonadState s m, HasTrace s, MonadIO m) =>
+  (TraceM s m) =>
   (Bool, Bool) ->
   T.Text ->
   T.Text ->
@@ -210,7 +217,7 @@ traceSpanExec (enable, extraInfo) name addr g f = do
   return res
 
 debugInstant ::
-  (MonadState s m, HasTrace s, MonadIO m) => (Bool, Bool) -> T.Text -> T.Text -> Maybe Value -> m ()
+  (TraceM s m) => (Bool, Bool) -> T.Text -> T.Text -> Maybe Value -> m ()
 debugInstant (enable, extraInfo) name addr args = do
   start <- lastTraceID
   tr <- gets getTrace
@@ -230,7 +237,7 @@ dumpTrace enable msg = when enable $ liftIO $ hPutStr stderr $ printf "ChromeTra
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceID . getTrace
 
-newTrace :: (MonadState s m, HasTrace s, MonadIO m) => m Trace
+newTrace :: (TraceM s m) => m Trace
 newTrace = do
   tr <- gets getTrace
   currentTime <- liftIO getCurrentTime

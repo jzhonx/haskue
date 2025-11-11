@@ -56,7 +56,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields
+    ghc-options: -Wall -Wpartial-fields -O2 -fspecialise-aggressively -ddump-simpl -ddump-to-file -dsuppress-coercions
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -113,6 +113,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
+    ghc-options: -Wall -Wpartial-fields -O2 -fspecialise-aggressively -ddump-simpl -ddump-to-file -dsuppress-coercions
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
@@ -141,7 +142,7 @@ benchmark time
   type: exitcode-stdio-1.0
   main-is: FuncBenchMain.hs
   hs-source-dirs: tests
-  ghc-options: -fprof-late -rtsopts
+  ghc-options: -O2 -fprof-late -rtsopts
   build-depends:
       base,
       criterion,
@@ -173,7 +174,7 @@ benchmark spec
   type: exitcode-stdio-1.0
   main-is: SpecBenchMain.hs
   hs-source-dirs: tests
-  ghc-options: -fprof-late -rtsopts
+  ghc-options: -O2 -fprof-late -rtsopts -fspecialise-aggressively
   build-depends:
       base,
       criterion,

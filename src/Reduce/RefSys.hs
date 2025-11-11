@@ -20,10 +20,11 @@ import qualified Data.Text as T
 import Feature
 import NotifGraph
 import Reduce.RMonad (
+  ErrM,
   FetchResult (..),
   HasReduceParams (..),
-  ReduceMonad,
   ResolveMonad,
+  TrCurStErrM,
   ctxNotifGraph,
   debugInstantRM,
   descendTM,
@@ -187,9 +188,9 @@ getDstTC fieldPath env = do
         vM <- copyConcrete tarTC
         return $ DerefResult vM (Just (tcAddr tarTC)) cd False
 
-whenNoCD :: (ResolveMonad r s m) => m CycleDetection -> CycleDetection -> m CycleDetection
-whenNoCD m NoCycleDetected = m
-whenNoCD _ cd = return cd
+-- whenNoCD :: (ResolveMonad r s m) => m CycleDetection -> CycleDetection -> m CycleDetection
+-- whenNoCD m NoCycleDetected = m
+-- whenNoCD _ cd = return cd
 
 {- | Watch the target address from the reference environment.
 
@@ -250,7 +251,7 @@ We have to mark all descendants as cyclic here instead of just marking the focus
 it is immediately unified with a non-cyclic value, the descendants of the merged value, which does not have the
 cyclic attribute, would lose the cyclic attribute.
 -}
-markCyclic :: (ResolveMonad r s m) => Tree -> m Tree
+markCyclic :: (ErrM m) => Tree -> m Tree
 markCyclic val = do
   utc <- preVisitTreeSimple (subNodes False) mark valTC
   return $ tcFocus utc
@@ -258,7 +259,7 @@ markCyclic val = do
   -- Create a tree cursor based on the value.
   valTC = TrCur val [(rootFeature, mkNewTree TNTop)]
 
-  mark :: (ResolveMonad r s m) => TrCur -> m TrCur
+  mark :: (ErrM m) => TrCur -> m TrCur
   mark tc = do
     let focus = tcFocus tc
     return $ focus{isSCyclic = True} `setTCFocus` tc
@@ -325,7 +326,7 @@ isInnerScope fieldPath originAddr tAddr tc = do
     resM <- searchTCIdent ident xtc
     return $ tcAddr . fst <$> resM
 
-markRecurClosed :: (ResolveMonad r s m) => Tree -> m Tree
+markRecurClosed :: (ErrM m) => Tree -> m Tree
 markRecurClosed val = do
   utc <- preVisitTreeSimple (subNodes True) mark valTC
   return $ tcFocus utc
@@ -369,12 +370,12 @@ getRefIdentAddr fieldPath origAddrsM tc = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrTCMust :: (ResolveMonad r s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
+inAbsAddrTCMust :: (ErrM m, TextIndexerMonad s m) => TreeAddr -> TrCur -> (TrCur -> m a) -> m a
 inAbsAddrTCMust p tc f = do
   tarM <- liftFatal (goTCAbsAddr p tc)
   maybe (throwFatal $ printf "%s is not found" (show p)) f tarM
 
-notFoundMsg :: (ResolveMonad r s m) => TextIndex -> Maybe AST.Position -> m String
+notFoundMsg :: (ErrM m, TextIndexerMonad s m) => TextIndex -> Maybe AST.Position -> m String
 notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) = do
   idStr <- tshow ident
   return $
@@ -448,7 +449,7 @@ locateRef fieldPath tc = do
 
 If the addr does not exist, return Nothing.
 -}
-inAbsAddrRM :: (ReduceMonad r s m) => TreeAddr -> m a -> m (Maybe a)
+inAbsAddrRM :: (TrCurStErrM s m) => TreeAddr -> m a -> m (Maybe a)
 inAbsAddrRM p f = do
   origAbsAddr <- getTMAbsAddr
 
@@ -462,13 +463,13 @@ inAbsAddrRM p f = do
         (show p)
   return tarM
  where
-  whenM :: (ReduceMonad r s m) => m Bool -> m a -> m (Maybe a)
+  whenM :: (Monad m) => m Bool -> m a -> m (Maybe a)
   whenM cond g = do
     b <- cond
     if b then Just <$> g else return Nothing
 
 -- | Go to the absolute addr in the tree.
-goRMAbsAddr :: (ReduceMonad r s m) => TreeAddr -> m Bool
+goRMAbsAddr :: (TrCurStErrM s m) => TreeAddr -> m Bool
 goRMAbsAddr dst = do
   when (headSeg dst /= Just rootFeature) $
     throwFatal (printf "the addr %s should start with the root segment" (show dst))
@@ -476,7 +477,7 @@ goRMAbsAddr dst = do
   let dstNoRoot = fromJust $ tailTreeAddr dst
   descendTM dstNoRoot
 
-goRMAbsAddrMust :: (ReduceMonad r s m) => TreeAddr -> m ()
+goRMAbsAddrMust :: (TrCurStErrM s m) => TreeAddr -> m ()
 goRMAbsAddrMust dst = do
   from <- getTMAbsAddr
   ok <- goRMAbsAddr dst
@@ -502,7 +503,7 @@ addrHasDef p = do
       (addrToList p)
   return $ or xs
 
-selToIdent :: (ResolveMonad r s m) => Selector -> m TextIndex
+selToIdent :: (ErrM m) => Selector -> m TextIndex
 selToIdent (StringSel s) = return s
 selToIdent _ = throwFatal "invalid selector"
 

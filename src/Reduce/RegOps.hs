@@ -11,7 +11,7 @@ import qualified AST
 import Cursor
 import Feature
 import Reduce.RMonad (
-  ResolveMonad,
+  ErrM,
   debugInstantOpRM,
   throwFatal,
  )
@@ -20,10 +20,10 @@ import Value
 
 -- * Regular Unary Ops
 
-retVal :: (ResolveMonad r s m) => Tree -> m (Maybe Tree)
+retVal :: (Monad m) => Tree -> m (Maybe Tree)
 retVal = return . Just
 
-resolveUnaryOp :: (ResolveMonad r s m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
+resolveUnaryOp :: (Monad m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
 resolveUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
@@ -64,16 +64,16 @@ resolveUnaryOp op tM = do
 -- * Regular Binary Ops
 
 resolveRegBinOp ::
-  (ResolveMonad r s m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
+  (ErrM m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
 resolveRegBinOp op t1M t2M opTC = do
-  debugInstantOpRM
-    "resolveRegBinOp"
-    (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
-    (tcAddr opTC)
+  -- debugInstantOpRM
+  --   "resolveRegBinOp"
+  --   (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
+  --   (tcAddr opTC)
   resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
-  (ResolveMonad r s m) =>
+  (ErrM m) =>
   AST.BinaryOp ->
   (BinOpDirect, Maybe Tree) ->
   (BinOpDirect, Maybe Tree) ->
