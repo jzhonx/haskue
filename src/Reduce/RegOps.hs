@@ -11,8 +11,7 @@ import qualified AST
 import Cursor
 import Feature
 import Reduce.RMonad (
-  ErrM,
-  debugInstantOpRM,
+  RM,
   throwFatal,
  )
 import Text.Printf (printf)
@@ -64,7 +63,7 @@ resolveUnaryOp op tM = do
 -- * Regular Binary Ops
 
 resolveRegBinOp ::
-  (ErrM m) => AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> m (Maybe Tree)
+  AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> RM (Maybe Tree)
 resolveRegBinOp op t1M t2M opTC = do
   -- debugInstantOpRM
   --   "resolveRegBinOp"
@@ -73,11 +72,10 @@ resolveRegBinOp op t1M t2M opTC = do
   resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
-  (ErrM m) =>
   AST.BinaryOp ->
   (BinOpDirect, Maybe Tree) ->
   (BinOpDirect, Maybe Tree) ->
-  m (Maybe Tree)
+  RM (Maybe Tree)
 resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
   if
     | opv `elem` cmpOps -> return $ cmp (opv == AST.Equ) (d1, t1M) (d2, t2M)

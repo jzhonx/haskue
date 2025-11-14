@@ -21,17 +21,16 @@ import qualified Data.Text as T
 import Feature
 import Reduce.RMonad (
   Error (..),
-  HasReduceParams (..),
-  ResolveMonad,
+  RM,
   allocRMObjID,
   createCnstr,
   debugInstantRM,
-  liftFatal,
+  liftEitherRM,
+  mapParams,
   preVisitTree,
   preVisitTreeSimple,
   throwFatal,
   traceSpanAdaptRM,
-  traceSpanMTreeArgsRM,
   traceSpanMTreeRM,
   traceSpanTreeArgsRM,
   traceSpanTreeRM,
@@ -101,7 +100,7 @@ If RC can not be cancelled, then the result is Nothing.
 
 The order of the unification is the same as the order of the trees.
 -}
-unifyNormalizedTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m (Maybe Tree)
+unifyNormalizedTCs :: [TrCur] -> TrCur -> RM (Maybe Tree)
 unifyNormalizedTCs tcs unifyTC = traceSpanMTreeRM "unifyNormalizedTCs" unifyTC $ do
   when (length tcs < 2) $ throwFatal "not enough arguments for unification"
 
@@ -153,11 +152,11 @@ The new conjuncts are not necessarily ready.
 
 The order of the operands is preserved.
 -}
-unifyForNewBinConjs :: (ResolveMonad r s m) => UTree -> UTree -> TrCur -> m (Maybe Tree)
+unifyForNewBinConjs :: UTree -> UTree -> TrCur -> RM (Maybe Tree)
 unifyForNewBinConjs ut1@(UTree{dir = L}) ut2 tc = unifyForNewConjs [ut1, ut2] tc
 unifyForNewBinConjs ut1@(UTree{dir = R}) ut2 tc = unifyForNewConjs [ut2, ut1] tc
 
-unifyForNewConjs :: (ResolveMonad r s m) => [UTree] -> TrCur -> m (Maybe Tree)
+unifyForNewConjs :: [UTree] -> TrCur -> RM (Maybe Tree)
 unifyForNewConjs uts tc = do
   let xs =
         map
@@ -172,7 +171,7 @@ unifyForNewConjs uts tc = do
     Just ys -> unifyNormalizedTCs ys tc
     Nothing -> return Nothing
 
-mergeTCs :: (ResolveMonad r s m) => [TrCur] -> TrCur -> m Tree
+mergeTCs :: [TrCur] -> TrCur -> RM Tree
 mergeTCs tcs unifyTC = traceSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
   when (null tcs) $ throwFatal "not enough arguments"
   let headTC = head tcs
@@ -228,7 +227,7 @@ dereferenced. If the reference is evaluated to a struct, the struct will be a ra
 
 opAddr is not necessarily equal to the parent of one of the tree cursors if the function is directly called.
 -}
-mergeBinUTrees :: (ResolveMonad r s m) => UTree -> UTree -> TrCur -> m Tree
+mergeBinUTrees :: UTree -> UTree -> TrCur -> RM Tree
 mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = tcFocus tc1
       t2 = tcFocus tc2
@@ -263,14 +262,14 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
       -- close the merged tree
       return (r{isRecurClosed = isRecurClosed t1 || isRecurClosed t2})
 
-mergeLeftTop :: (ResolveMonad r s m) => UTree -> UTree -> TrCur -> m Tree
+mergeLeftTop :: UTree -> UTree -> TrCur -> RM Tree
 mergeLeftTop ut1 ut2 unifyTC = do
   let t2 = tcFocus (utTC ut2)
   case t2 of
     IsStruct s2 | ut1 `isEmbeddedOf` ut2 -> mergeLeftStruct (s2, ut2) ut1 unifyTC
     _ -> return t2
 
-mergeLeftAtom :: (ResolveMonad r s m) => (Atom, UTree) -> UTree -> TrCur -> m Tree
+mergeLeftAtom :: (Atom, UTree) -> UTree -> TrCur -> RM Tree
 mergeLeftAtom (v1, ut1@(UTree{dir = d1})) ut2@(UTree{utTC = tc2, dir = d2}) unifyTC =
   traceSpanTreeRM "mergeLeftAtom" unifyTC $ do
     let t2 = tcFocus tc2
@@ -299,13 +298,13 @@ mergeLeftAtom (v1, ut1@(UTree{dir = d1})) ut2@(UTree{utTC = tc2, dir = d2}) unif
       (_, IsStruct s2) -> mergeLeftStruct (s2, ut2) ut1 unifyTC
       _ -> mergeLeftOther ut1 ut2 unifyTC
  where
-  rtn :: (ResolveMonad r s m) => TreeNode -> m Tree
+  rtn :: TreeNode -> RM Tree
   rtn = return . mkNewTree
 
   amismatch :: (Show a) => a -> a -> TreeNode
   amismatch x y = TNBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
-mergeLeftBound :: (ResolveMonad r s m) => (Bounds, UTree) -> UTree -> TrCur -> m Tree
+mergeLeftBound :: (Bounds, UTree) -> UTree -> TrCur -> RM Tree
 mergeLeftBound (b1, ut1@(UTree{dir = d1})) ut2@(UTree{utTC = tc2, dir = d2}) unifyTC = do
   let t2 = tcFocus tc2
   case treeNode t2 of
@@ -535,7 +534,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds = if d1 == L then [b1, b2] else [b2, b1]
 
 -- | mergeLeftOther is the sink of the unification process.
-mergeLeftOther :: (ResolveMonad r s m) => UTree -> UTree -> TrCur -> m Tree
+mergeLeftOther :: UTree -> UTree -> TrCur -> RM Tree
 mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
   let t1 = tcFocus tc1
   case t1 of
@@ -552,7 +551,7 @@ mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
         _ -> return t1
     _ -> returnNotUnifiable ut1 ut2
 
-returnNotUnifiable :: (ResolveMonad r s m) => UTree -> UTree -> m Tree
+returnNotUnifiable :: UTree -> UTree -> RM Tree
 returnNotUnifiable (UTree{utTC = tc1, dir = d1}) (UTree{utTC = tc2}) = do
   let t1 = tcFocus tc1
       t2 = tcFocus tc2
@@ -565,7 +564,7 @@ returnNotUnifiable (UTree{utTC = tc1, dir = d1}) (UTree{utTC = tc2}) = do
     ty <- modifyError FatalErr $ showValueType y
     return $ mkBottomTree $ printf "%s can not be unified with %s" tx ty
 
-mergeLeftStruct :: (ResolveMonad r s m) => (Struct, UTree) -> UTree -> TrCur -> m Tree
+mergeLeftStruct :: (Struct, UTree) -> UTree -> TrCur -> RM Tree
 mergeLeftStruct (s1, ut1) ut2 unifyTC
   -- If the left struct is an empty struct with an embedded value, we merge the embedded value with the right value.
   | hasEmptyFields s1
@@ -599,7 +598,7 @@ The s1 is made the left struct, and s2 is made the right struct.
 For closedness, unification only generates a closed struct but not a recursively closed struct since to close a struct
 recursively, the only way is to reference the struct via a #ident.
 -}
-mergeStructs :: (ResolveMonad r s m) => (Struct, UTree) -> (Struct, UTree) -> TrCur -> m Tree
+mergeStructs :: (Struct, UTree) -> (Struct, UTree) -> TrCur -> RM Tree
 mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = traceSpanTreeArgsRM
   "mergeStructs"
   (printf "ut1: %s\nut2: %s" (show ut1) (show ut2))
@@ -768,7 +767,7 @@ According to spec, a block is a possibly empty sequence of declarations.
 The scope of a declared identifier is the extent of source text in which the identifier denotes the specified field,
 alias, or package.
 -}
-prepStruct :: (ResolveMonad r s m) => Map.Map TreeAddr Int -> TrCur -> m TrCur
+prepStruct :: Map.Map TreeAddr Int -> TrCur -> RM TrCur
 prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepStruct" treeFetchAdapt resAdapt structTC $ do
   (updatedTC, updatedPSS) <- preVisitTree (subNodes True) firstPass (structTC, emptyPSS)
   debugInstantRM
@@ -780,16 +779,16 @@ prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepS
     Nothing -> do
       let origAddr = tcAddr structTC
       foldM
-        (\acc addr -> liftFatal (goTCAbsAddrMust addr acc) >>= preVisitTreeSimple (subNodes True) invalidate)
+        (\acc addr -> liftEitherRM (goTCAbsAddrMust addr acc) >>= preVisitTreeSimple (subNodes True) invalidate)
         updatedTC
         (Set.toList $ invAddrs updatedPSS)
         >>= ( \x ->
                 foldM
-                  (\acc (addr, suffix) -> liftFatal (goTCAbsAddrMust addr acc) >>= rewrite suffix)
+                  (\acc (addr, suffix) -> liftEitherRM (goTCAbsAddrMust addr acc) >>= rewrite suffix)
                   x
                   (rwLetIdents updatedPSS)
             )
-        >>= liftFatal . goTCAbsAddrMust origAddr
+        >>= liftEitherRM . goTCAbsAddrMust origAddr
  where
   -- First pass records the invalidated addresses and rewrites let variables.
   -- It also records the last ident not found error it encounters.
@@ -881,7 +880,7 @@ emptyPSS = PrepStructState{error = Nothing, invAddrs = Set.empty, rwLetIdents = 
 If a node is a mutable node, we do not return its tree node sub nodes, instead, return the sub nodes of the mutable.
 This is because the sub nodes of the tree node is not reduced and will be rewritten by the mutable.
 -}
-mergeLeftDisj :: (ResolveMonad r s m) => (Disj, UTree) -> UTree -> TrCur -> m Tree
+mergeLeftDisj :: (Disj, UTree) -> UTree -> TrCur -> RM Tree
 mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t2 = tcFocus tc2
   case treeNode t2 of
@@ -897,7 +896,7 @@ mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
 -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
-mergeDisjWithVal :: (ResolveMonad r s m) => (Disj, UTree) -> UTree -> TrCur -> m Tree
+mergeDisjWithVal :: (Disj, UTree) -> UTree -> TrCur -> RM Tree
 mergeDisjWithVal (dj1, _ut1@(UTree{dir = fstDir})) _ut2 unifyTC =
   traceSpanTreeRM "mergeDisjWithVal" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
@@ -923,7 +922,7 @@ U0: ⟨v1⟩ & ⟨v2⟩         => ⟨v1&v2⟩
 U1: ⟨v1, d1⟩ & ⟨v2⟩     => ⟨v1&v2, d1&v2⟩
 U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
-mergeDisjWithDisj :: (ResolveMonad r s m) => (Disj, UTree) -> (Disj, UTree) -> TrCur -> m Tree
+mergeDisjWithDisj :: (Disj, UTree) -> (Disj, UTree) -> TrCur -> RM Tree
 mergeDisjWithDisj (dj1, _ut1@(UTree{dir = fstDir})) (dj2, _ut2) unifyTC =
   traceSpanTreeRM "mergeDisjWithDisj" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
@@ -942,17 +941,17 @@ mergeDisjWithDisj (dj1, _ut1@(UTree{dir = fstDir})) (dj2, _ut2) unifyTC =
         matrix <- mapM (\ut2 -> mapM (\ut1 -> unifyForNewBinConjs ut2 ut1 unifyTC) uts1) uts2
         treeFromMatrix (defIdxes2, defIdxes1) (length uts2, length uts1) matrix
 
-utsFromDisjs :: (ResolveMonad r s m) => Int -> UTree -> m [UTree]
+utsFromDisjs :: Int -> UTree -> RM [UTree]
 utsFromDisjs n ut@(UTree{utTC = tc}) = do
   mapM
     ( \i -> do
-        djTC <- modifyError FatalErr (goDownTCSegMust (mkDisjFeature i) tc)
+        djTC <- liftEitherRM (goDownTCSegMust (mkDisjFeature i) tc)
         -- make disjucnt inherit the embedded property of the disjunction.
         return $ ut{utTC = modifyTCFocus (\t -> t{Value.embType = ut.embType}) djTC}
     )
     [0 .. (n - 1)]
 
-treeFromMatrix :: (ResolveMonad r s m) => ([Int], [Int]) -> (Int, Int) -> [[Maybe Tree]] -> m Tree
+treeFromMatrix :: ([Int], [Int]) -> (Int, Int) -> [[Maybe Tree]] -> RM Tree
 treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
   let defIndexes = case (lDefIndexes, rDefIndexes) of
         ([], []) -> []
@@ -987,13 +986,13 @@ removeIncompleteDisjuncts defIdxes ts =
 
 The pattern is expected to be an Atom or a Bounds.
 -}
-patMatchLabel :: (ResolveMonad r s m) => Tree -> TextIndex -> TrCur -> m Bool
+patMatchLabel :: Tree -> TextIndex -> TrCur -> RM Bool
 patMatchLabel pat tidx tc = traceSpanAdaptRM "patMatchLabel" (const Nothing) (return . toJSON) tc $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match vM
  where
-  match :: (ResolveMonad r s m) => Tree -> m Bool
+  match :: Tree -> RM Bool
   match v = do
     name <- tshow tidx
     let f =
@@ -1005,7 +1004,7 @@ patMatchLabel pat tidx tc = traceSpanAdaptRM "patMatchLabel" (const Nothing) (re
     -- pattern.
     r <-
       local
-        (modifyReduceParams (\p -> p{createCnstr = False}))
+        (mapParams (\p -> p{createCnstr = False}))
         f
     -- Filter the strings from the results. Non-string results are ignored meaning the fields do not match the
     -- pattern.

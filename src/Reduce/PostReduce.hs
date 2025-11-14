@@ -14,7 +14,7 @@ import Feature
 import NotifGraph
 import Reduce.Nodes (normalizeDisj)
 import Reduce.RMonad (
-  ReduceMonad,
+  RM,
   ctxNotifGraph,
   debugInstantRM,
   descendTMSeg,
@@ -37,7 +37,7 @@ import Reduce.Root (reduce)
 import Text.Printf (printf)
 import Value
 
-postValidation :: (ReduceMonad r s m) => m ()
+postValidation :: RM ()
 postValidation = traceSpanTM "postValidation" $ do
   ctx <- getRMContext
   -- remove all notifiers.
@@ -58,7 +58,7 @@ postValidation = traceSpanTM "postValidation" $ do
 1. Replace the Mutable node with the result of the mutator if it exists, otherwise the original mutator node is kept.
 2. Extract the embedded value from the block.
 -}
-simplifyRM :: (ReduceMonad r s m) => m ()
+simplifyRM :: RM ()
 simplifyRM = traceSpanTM "simplifyRM" $ do
   tc <- getTMCursor
   putTMCursor
@@ -115,7 +115,7 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
 It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: (ReduceMonad r s m) => AtomCnstr -> m ()
+validateCnstr :: AtomCnstr -> RM ()
 validateCnstr c = traceSpanTM "validateCnstr" $ do
   -- Run the validator in a forced reduce args mode.
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
@@ -139,7 +139,7 @@ validateCnstr c = traceSpanTM "validateCnstr" $ do
 1. Traverse the current node.
 2. Traverse the sub-tree with the segment.
 -}
-traverseTM :: (ReduceMonad r s m) => m () -> m ()
+traverseTM :: RM () -> RM ()
 traverseTM f = f >> traverseSub (traverseTM f)
 
 {- | Traverse all the one-level sub nodes of the tree.
@@ -148,7 +148,7 @@ For the bottom handling:
 1. It surfaces the bottom as field value.
 2. Normalize the disjunction if any of the sub node becomes bottom.
 -}
-traverseSub :: (ReduceMonad r s m) => m () -> m ()
+traverseSub :: RM () -> RM ()
 traverseSub f = do
   do
     tc <- getTMCursor

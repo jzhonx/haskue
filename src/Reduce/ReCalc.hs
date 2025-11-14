@@ -24,9 +24,7 @@ import Reduce.RMonad (
   Error (..),
   Fetch,
   FetchResult (..),
-  HasReduceParams (..),
-  ReduceMonad,
-  ResolveMonad,
+  RM,
   ctxNotifGraph,
   debugInstantTM,
   fetch,
@@ -36,6 +34,7 @@ import Reduce.RMonad (
   goTMAbsAddrMust,
   inRemoteTM,
   isRecalcing,
+  mapParams,
   modifyRMContext,
   popRecalcRootQ,
   pushRecalcRootQ,
@@ -51,7 +50,7 @@ import Text.Printf (printf)
 import Value
 
 -- | Start re-calculation from the current focus.
-recalc :: (ReduceMonad r s m) => m ()
+recalc :: RM ()
 recalc = do
   ctx <- getRMContext
   origAddr <- getTMAbsAddr
@@ -76,7 +75,7 @@ recalc = do
     -- Reset the context to not notifying.
     modifyRMContext $ \c -> c{isRecalcing = False}
 
-recalcRoot :: (ReduceMonad r s m) => (TreeAddr, GrpAddr) -> m ()
+recalcRoot :: (TreeAddr, GrpAddr) -> RM ()
 recalcRoot start = do
   gAddrM <- popRecalcRootQ
   case gAddrM of
@@ -104,11 +103,10 @@ recalcRoot start = do
 type ReCalcOrderState = (Set.Set SuffixIrredAddr, [GrpAddr])
 
 runOrder ::
-  (ReduceMonad r s m) =>
   Map.Map GrpAddr DirtyNodes ->
   Seq.Seq GrpAddr ->
   Set.Set SuffixIrredAddr ->
-  m ()
+  RM ()
 runOrder _ Seq.Empty _ = return ()
 runOrder allAffected (sccAddr Seq.:<| xs) orderSet = do
   rE <- recalcGroup sccAddr orderSet allAffected
@@ -127,7 +125,7 @@ runOrder allAffected (sccAddr Seq.:<| xs) orderSet = do
         (foldr Set.delete orderSet (getElemAddrInGrp sccAddr ng))
 
 recalcGroup ::
-  (ReduceMonad r s m) => GrpAddr -> Set.Set SuffixIrredAddr -> Map.Map GrpAddr DirtyNodes -> m (Maybe SuffixIrredAddr)
+  GrpAddr -> Set.Set SuffixIrredAddr -> Map.Map GrpAddr DirtyNodes -> RM (Maybe SuffixIrredAddr)
 recalcGroup (IsAcyclicGrpAddr addr) dirtySet allAffected =
   recalcNode
     addr
@@ -185,7 +183,7 @@ data RCCalHelper = RCCalHelper
   }
 
 -- | Calculate the reference cycle node given by the top of the onStack.
-recalcRC :: (ReduceMonad r s m) => RCCalHelper -> Fetch -> m (Maybe SuffixIrredAddr)
+recalcRC :: RCCalHelper -> Fetch -> RM (Maybe SuffixIrredAddr)
 recalcRC RCCalHelper{onStack = []} _ = return Nothing
 recalcRC h@RCCalHelper{onStack = node : xs} fetch = do
   goTMAbsAddrMust (sufIrredToAddr node)
@@ -242,7 +240,7 @@ kToTopHasParChildRel k onStack =
    in -- For any given node x in the path, check if any other node in the path is its parent.
       pathHasParChildRel path
 
-recalcNode :: (ReduceMonad r s m) => SuffixIrredAddr -> Set.Set TreeAddr -> Fetch -> m (Maybe SuffixIrredAddr)
+recalcNode :: SuffixIrredAddr -> Set.Set TreeAddr -> Fetch -> RM (Maybe SuffixIrredAddr)
 recalcNode addr affectedAddrsSet fetch = do
   let baseAddr = sufIrredToAddr addr
   goTMAbsAddrMust baseAddr
@@ -251,7 +249,7 @@ recalcNode addr affectedAddrsSet fetch = do
     (printf "affectedAddrsSet: %s" (show affectedAddrsSet))
     (const $ return $ toJSON ())
     $ do
-      let withDirtyCheck = local (modifyReduceParams (\p -> p{fetch}))
+      let withDirtyCheck = local (mapParams (\p -> p{fetch}))
       t <- getTMTree
       case t of
         -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
@@ -280,7 +278,7 @@ recalcNode addr affectedAddrsSet fetch = do
                          )
 
 -- | Incrementally update the struct at the given address.
-checkSReady :: (ReduceMonad r s m) => TreeAddr -> Set.Set TreeAddr -> Fetch -> Struct -> m (Maybe SuffixIrredAddr)
+checkSReady :: TreeAddr -> Set.Set TreeAddr -> Fetch -> Struct -> RM (Maybe SuffixIrredAddr)
 checkSReady baseAddr affectedAddrsSet fetch struct = do
   let
     affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred affectedAddrsSet
@@ -362,7 +360,7 @@ There are two types of dependencies:
 1. Parent-child dependencies: if a node is dirty, its parent nodes are also dirty.
 2. Reference dependencies: if a node is dirty, its dependent nodes are also dirty.
 -}
-findDirtyNodes :: (ResolveMonad r s m) => (TreeAddr, GrpAddr) -> DNDiscRes -> m DNDiscRes
+findDirtyNodes :: (TreeAddr, GrpAddr) -> DNDiscRes -> RM DNDiscRes
 findDirtyNodes (startAddr, startGrpAddr) state = do
   ng <- ctxNotifGraph <$> getRMContext
   case state.q of
@@ -405,7 +403,7 @@ findDirtyNodes (startAddr, startGrpAddr) state = do
 
 It handles the case that the cyclic group may contain structural cycles.
 -}
-getAncestorGrpAddrs :: (ResolveMonad r s m) => TreeAddr -> GrpAddr -> m [GrpAddr]
+getAncestorGrpAddrs :: TreeAddr -> GrpAddr -> RM [GrpAddr]
 getAncestorGrpAddrs startAddr (IsAcyclicGrpAddr addr) = do
   let rM = getAncSCCFromAddr startAddr addr
   return $ maybeToList rM

@@ -58,19 +58,3 @@ emptyIdentRef ident =
   Reference
     { refArg = RefPath ident Seq.empty
     }
-
-mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Tree) -> TextIndex -> FieldPath -> m Reference
-mkRefFromFieldPath aToTree ident (FieldPath xs) = do
-  ys <-
-    mapM
-      ( \y -> case y of
-          StringSel s -> do
-            str <- tshow s
-            return $ aToTree (String str)
-          IntSel i -> return $ aToTree (Int $ fromIntegral i)
-      )
-      xs
-  return $
-    Reference
-      { refArg = RefPath ident (Seq.fromList ys)
-      }

@@ -9,22 +9,17 @@ module EvalExpr where
 
 import AST
 import Control.Monad (foldM)
-import Control.Monad.Except (MonadError)
-import Control.Monad.State.Strict (gets, modify')
 import Data.Foldable (toList)
 import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import qualified Env
-import Exception (throwErrSt)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
+import Reduce.RMonad (RM, allocRMObjID, throwFatal)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, textToTextIndex)
 import Text.Printf (printf)
 import Value
 
-type EvalEnv r s m = (Env.EnvIO r s m, Env.IDStore s, TextIndexerMonad s m)
-
-evalSourceFile :: (EvalEnv r s m) => SourceFile -> m Tree
+evalSourceFile :: SourceFile -> RM Tree
 evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
@@ -34,14 +29,14 @@ Every eval* function should return a tree cursor that is at the same level as th
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: (EvalEnv r s m) => Expression -> m Tree
+evalExpr :: Expression -> RM Tree
 evalExpr e = do
   t <- case anVal e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
   return $ setExpr t (Just e)
 
-evalLiteral :: (EvalEnv r s m) => Literal -> m Tree
+evalLiteral :: Literal -> RM Tree
 evalLiteral (anVal -> LitStructLit s) = evalStructLit s
 evalLiteral (anVal -> ListLit l) = evalListLit l
 evalLiteral (anVal -> StringLit (anVal -> SimpleStringL s)) = do
@@ -60,9 +55,9 @@ evalLiteral lit = return v
     BottomLit -> mkBottomTree ""
     _ -> error "evalLiteral: invalid literal"
 
-evalStructLit :: (EvalEnv r s m) => StructLit -> m Tree
+evalStructLit :: StructLit -> RM Tree
 evalStructLit (anVal -> StructLit decls) = do
-  sid <- allocOID
+  sid <- allocRMObjID
   elems <- mapM evalDecl decls
   res <-
     foldM
@@ -80,7 +75,7 @@ evalStructLit (anVal -> StructLit decls) = do
           return $ mkMutableTree (mkUnifyOp $ res{embType = ETEnclosing} : embeds)
     _ -> return res
 
-simpleStringLitToStr :: (EvalEnv r s m) => SimpleStringLit -> m (Either Tree T.Text)
+simpleStringLitToStr :: SimpleStringLit -> RM (Either Tree T.Text)
 simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
   (asM, aSegs, aExprs) <-
     foldM
@@ -110,10 +105,10 @@ simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
     | not (null aExprs) ->
         return $ Left $ mkMutableTree $ mkItpMutable rSegs aExprs
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
-    | otherwise -> throwErrSt $ printf "invalid simple string literal: %s" (show segs)
+    | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
 -- | Evaluates a declaration.
-evalDecl :: (EvalEnv r s m) => Declaration -> m StructElemAdder
+evalDecl :: Declaration -> RM StructElemAdder
 evalDecl decl = case anVal decl of
   AST.Embedding ed -> do
     v <- evalEmbedding False ed
@@ -121,7 +116,7 @@ evalDecl decl = case anVal decl of
   EllipsisDecl (anVal -> Ellipsis cM) ->
     maybe
       (return EmptyAdder) -- TODO: implement real ellipsis handling
-      (\_ -> throwErrSt "default constraints are not implemented yet")
+      (\_ -> throwFatal "default constraints are not implemented yet")
       cM
   FieldDecl (anVal -> AST.Field ls e) ->
     evalFDeclLabels ls e
@@ -130,7 +125,7 @@ evalDecl decl = case anVal decl of
     val <- evalExpr binde
     return $ LetSAdder idIdx val
 
-evalEmbedding :: (EvalEnv r s m) => Bool -> AST.Embedding -> m Tree
+evalEmbedding :: Bool -> AST.Embedding -> RM Tree
 evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
 evalEmbedding
   isListCompreh
@@ -159,9 +154,9 @@ evalEmbedding
         withEmptyMutFrame $
           Compreh $
             mkComprehension isListCompreh (ComprehArgFor iidx jidxM fev : clsv) sv
-evalEmbedding _ _ = throwErrSt "invalid embedding"
+evalEmbedding _ _ = throwFatal "invalid embedding"
 
-evalClause :: (EvalEnv r s m) => Clause -> m ComprehArg
+evalClause :: Clause -> RM ComprehArg
 evalClause c = case anVal c of
   ClauseStartClause (anVal -> GuardClause e) -> do
     t <- evalExpr e
@@ -177,12 +172,12 @@ evalClause c = case anVal c of
     idIdx <- textToTextIndex ident
     lt <- evalExpr le
     return $ ComprehArgLet idIdx lt
-  _ -> throwErrSt $ printf "invalid clause: %s" (show c)
+  _ -> throwFatal $ printf "invalid clause: %s" (show c)
 
-evalFDeclLabels :: (EvalEnv r s m) => [AST.Label] -> AST.Expression -> m StructElemAdder
+evalFDeclLabels :: [AST.Label] -> AST.Expression -> RM StructElemAdder
 evalFDeclLabels lbls e =
   case lbls of
-    [] -> throwErrSt "empty labels"
+    [] -> throwFatal "empty labels"
     [l1] ->
       do
         val <- evalExpr e
@@ -190,11 +185,11 @@ evalFDeclLabels lbls e =
     l1 : l2 : rs ->
       do
         sf2 <- evalFDeclLabels (l2 : rs) e
-        sid <- allocOID
+        sid <- allocRMObjID
         val <- insertElemToStruct sf2 (emptyStruct{stcID = sid})
         mkAdder l1 val
  where
-  mkAdder :: (EvalEnv r s m) => Label -> Tree -> m StructElemAdder
+  mkAdder :: Label -> Tree -> RM StructElemAdder
   mkAdder (anVal -> Label le) val = case anVal le of
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
@@ -204,7 +199,7 @@ evalFDeclLabels lbls e =
               return $ StaticSAdder keyIdx (staticFieldMker val attr)
             (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
-              oid <- allocOID
+              oid <- allocRMObjID
               return $ DynamicSAdder oid (DynamicField oid attr selTree False val)
             (toSStrLabel -> Just ss) -> do
               rE <- simpleStringLitToStr ss
@@ -213,12 +208,12 @@ evalFDeclLabels lbls e =
                   strIdx <- textToTextIndex str
                   return $ StaticSAdder strIdx (staticFieldMker val attr)
                 Left t -> do
-                  oid <- allocOID
+                  oid <- allocRMObjID
                   return $ DynamicSAdder oid (DynamicField oid attr t True val)
-            _ -> throwErrSt "invalid label"
+            _ -> throwFatal "invalid label"
     AST.LabelPattern pe -> do
       pat <- evalExpr pe
-      oid <- allocOID
+      oid <- allocRMObjID
       return (CnstrSAdder oid pat val)
 
   -- Returns the label name and the whether the label is static.
@@ -257,7 +252,7 @@ data StructElemAdder
 
 If the field is already in the struct, then unify the field with the new field.
 -}
-insertElemToStruct :: (EvalEnv r s m) => StructElemAdder -> Struct -> m Tree
+insertElemToStruct :: StructElemAdder -> Struct -> RM Tree
 insertElemToStruct adder struct = case adder of
   (StaticSAdder name sf) -> do
     nameStr <- tshow name
@@ -310,12 +305,12 @@ insertElemToStruct adder struct = case adder of
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: (EvalEnv r s m) => AST.ElementList -> m Tree
+evalListLit :: AST.ElementList -> RM Tree
 evalListLit (anVal -> AST.EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
   return $ mkListTree xs []
 
-evalUnaryExpr :: (EvalEnv r s m) => UnaryExpr -> m Tree
+evalUnaryExpr :: UnaryExpr -> RM Tree
 evalUnaryExpr ue = do
   t <- case anVal ue of
     UnaryExprPrimaryExpr primExpr -> evalPrimExpr primExpr
@@ -330,7 +325,7 @@ builtinOpNameTable =
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable
 
-evalPrimExpr :: (EvalEnv r s m) => PrimaryExpr -> m Tree
+evalPrimExpr :: PrimaryExpr -> RM Tree
 evalPrimExpr e = case anVal e of
   (PrimExprOperand op) -> case anVal op of
     OpLiteral lit -> evalLiteral lit
@@ -354,7 +349,7 @@ evalPrimExpr e = case anVal e of
     replaceFuncArgs p args
 
 -- | Creates a new function tree for the original function with the arguments applied.
-replaceFuncArgs :: (MonadError String m) => Tree -> [Tree] -> m Tree
+replaceFuncArgs :: Tree -> [Tree] -> RM Tree
 replaceFuncArgs t args = case t of
   IsRegOp mut fn ->
     return $
@@ -365,7 +360,7 @@ replaceFuncArgs t args = case t of
               mut
         )
         t
-  _ -> throwErrSt $ printf "%s is not a Mutable" (show t)
+  _ -> throwFatal $ printf "%s is not a Mutable" (show t)
 
 {- | Evaluates the selector.
 Parameters:
@@ -376,7 +371,7 @@ For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
 -}
 evalSelector ::
-  (EvalEnv r s m) => PrimaryExpr -> AST.Selector -> Tree -> m Tree
+  PrimaryExpr -> AST.Selector -> Tree -> RM Tree
 evalSelector _ astSel oprnd = do
   let f sel = appendSelToRefTree oprnd (mkAtomTree (String sel))
   case anVal astSel of
@@ -388,7 +383,7 @@ evalSelector _ astSel oprnd = do
         Right str -> return $ f str
 
 evalIndex ::
-  (EvalEnv r s m) => PrimaryExpr -> AST.Index -> Tree -> m Tree
+  PrimaryExpr -> AST.Index -> Tree -> RM Tree
 evalIndex _ (anVal -> AST.Index e) oprnd = do
   sel <- evalExpr e
   return $ appendSelToRefTree oprnd sel
@@ -397,7 +392,7 @@ evalIndex _ (anVal -> AST.Index e) oprnd = do
 
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: (EvalEnv r s m) => UnaryOp -> UnaryExpr -> m Tree
+evalUnaryOp :: UnaryOp -> UnaryExpr -> RM Tree
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
   let tWithE = setExpr t (Just (AST.ExprUnaryExpr e <$ e))
@@ -407,7 +402,7 @@ evalUnaryOp op e = do
 
 left is always before right.
 -}
-evalBinary :: (EvalEnv r s m) => BinaryOp -> Expression -> Expression -> m Tree
+evalBinary :: BinaryOp -> Expression -> Expression -> RM Tree
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary (anVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
@@ -427,7 +422,7 @@ flattenUnify l r = case getLeftAcc of
     IsTGenOp (MutOp (UOp u)) -> Just (ufConjuncts u)
     _ -> Nothing
 
-evalDisj :: (EvalEnv r s m) => Expression -> Expression -> m Tree
+evalDisj :: Expression -> Expression -> RM Tree
 evalDisj e1 e2 = do
   ((isLStar, lt), (isRStar, rt)) <- case (anVal e1, anVal e2) of
     ( ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1)
@@ -478,10 +473,3 @@ flattenDisj l r = case getLeftAcc of
       -- If the left term is a marked term, it implies that it is a root.
       | not (dstMarked l) && not (isRootOfSubTree (dstValue l)) -> Just (djoTerms dj)
     _ -> Nothing
-
-allocOID :: (EvalEnv r s m) => m Int
-allocOID = do
-  i <- gets Env.getID
-  let j = i + 1
-  modify' (`Env.setID` j)
-  return j

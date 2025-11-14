@@ -137,10 +137,10 @@ goDownTCAddr a = go (addrToList a)
 goDownTAddr :: TreeAddr -> Tree -> Maybe TrCur
 goDownTAddr addr starT = goDownTCAddr addr (TrCur starT [])
 
-goDownTCAddrMust :: (ErrorEnv m) => TreeAddr -> TrCur -> m TrCur
+goDownTCAddrMust :: TreeAddr -> TrCur -> Either String TrCur
 goDownTCAddrMust addr tc =
   maybe
-    (throwErrSt $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcAddr tc))
+    (Left $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcAddr tc))
     return
     (goDownTCAddr addr tc)
 
@@ -172,10 +172,10 @@ goDownTCSeg seg tc = do
         _ -> Nothing
       goDownTCSeg seg nextTC
 
-goDownTCSegMust :: (ErrorEnv m) => Feature -> TrCur -> m TrCur
+goDownTCSegMust :: Feature -> TrCur -> Either String TrCur
 goDownTCSegMust seg tc =
   maybe
-    ( throwErrSt $
+    ( Left $
         printf "cannot go to sub (%s) tree from path: %s, parent: %s" (show seg) (show $ tcAddr tc) (show $ tcFocus tc)
     )
     return
@@ -185,13 +185,13 @@ goDownTCSegMust seg tc =
 
 It stops at the root.
 -}
-propUpTC :: (ErrorEnv m) => TrCur -> m TrCur
-propUpTC (TrCur _ []) = throwErrSt "already at the top"
+propUpTC :: TrCur -> Either String TrCur
+propUpTC (TrCur _ []) = Left "already at the top"
 propUpTC tc@(TrCur _ [(IsRootFeature, _)]) = return tc
 propUpTC (TrCur subT ((seg, parT) : cs)) = do
   let tM = setSubTree seg subT parT
   case tM of
-    Nothing -> throwErrSt $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT)
+    Nothing -> Left $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT)
     Just t -> return $ TrCur t cs
 
 {- | Propagates the changes made to the focus to the parent nodes.
@@ -282,16 +282,16 @@ setSubTree f subT parT = do
 indexList :: [a] -> Int -> Maybe a
 indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
-setSubTreeMust :: (ErrorEnv m) => Feature -> Tree -> Tree -> m Tree
+setSubTreeMust :: Feature -> Tree -> Tree -> Either String Tree
 setSubTreeMust seg subT parT =
   maybe
-    (throwErrSt $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT))
+    (Left $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT))
     return
     (setSubTree seg subT parT)
 
 -- | Go to the top of the tree cursor.
-topTC :: (ErrorEnv m) => TrCur -> m TrCur
-topTC (TrCur _ []) = throwErrSt "already at the top"
+topTC :: TrCur -> Either String TrCur
+topTC (TrCur _ []) = Left "already at the top"
 topTC tc@(TrCur _ ((IsRootFeature, _) : _)) = return tc
 topTC tc = do
   parTC <- propUpTC tc
@@ -339,15 +339,15 @@ subStubSegs _ = []
 
 The tree must have all the latest changes.
 -}
-goTCAbsAddr :: (ErrorEnv m) => TreeAddr -> TrCur -> m (Maybe TrCur)
+goTCAbsAddr :: TreeAddr -> TrCur -> Either String (Maybe TrCur)
 goTCAbsAddr dst tc = do
   when (headSeg dst /= Just rootFeature) $
-    throwErrSt (printf "the addr %s should start with the root segment" (show dst))
+    Left (printf "the addr %s should start with the root segment" (show dst))
   top <- topTC tc
   let dstNoRoot = fromJust $ tailTreeAddr dst
   return $ goDownTCAddr dstNoRoot top
 
-goTCAbsAddrMust :: (ErrorEnv m) => TreeAddr -> TrCur -> m TrCur
+goTCAbsAddrMust :: TreeAddr -> TrCur -> Either String TrCur
 goTCAbsAddrMust dst tc = do
   tarM <- goTCAbsAddr dst tc
-  maybe (throwErrSt $ printf "failed to go to the addr %s" (show dst)) return tarM
+  maybe (Left $ printf "failed to go to the addr %s" (show dst)) return tarM

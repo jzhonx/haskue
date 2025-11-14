@@ -2,45 +2,7 @@
 
 module TreeTest where
 
-import AST (exprToOneLinerStr)
-import Control.Monad.Except (ExceptT, MonadError (throwError), modifyError, runExcept, runExceptT)
-import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Reader (ReaderT (runReaderT))
-import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
-import Cursor (TrCur (..), goDownTCSegMust)
-import Data.Aeson (ToJSON, Value, encode, toJSON)
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import qualified Data.Text as T
-import EvalExpr (evalExpr)
-import Parser (parseExpr)
-import Feature
-import Reduce (reduce)
-import Reduce.RMonad (
-  Context,
-  Error (..),
-  RTCState (..),
-  ReduceConfig,
-  ResolveMonad,
-  emptyContext,
-  emptyReduceConfig,
-  getTMTree,
- )
-import System.Directory (listDirectory)
-import System.IO (readFile)
 import Test.Tasty
-import Test.Tasty.HUnit
-import Text.Printf (printf)
-import Value
-import Value.Util.TreeRep (
-  TreeRepBuildOption (..),
-  buildRepTree,
-  defaultTreeRepBuildOption,
-  repToString,
-  treeToFullRepString,
-  treeToRepString,
- )
 
 treeTests :: IO TestTree
 treeTests =

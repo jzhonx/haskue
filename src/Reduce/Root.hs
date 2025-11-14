@@ -29,7 +29,7 @@ import Reduce.Nodes (
  )
 import Reduce.RMonad (
   Context (..),
-  ReduceMonad,
+  RM,
   debugInstantTM,
   emptySpanValue,
   getIsReducingRC,
@@ -61,7 +61,7 @@ import Text.Printf (printf)
 import Value
 
 -- | Reduce the tree to the lowest form.
-reduce :: (ReduceMonad r s m) => m ()
+reduce :: RM ()
 reduce = do
   origAddr <- getTMAbsAddr
   traceSpanTM "reduce" reducePureFocus
@@ -98,7 +98,7 @@ reduce = do
 
   when (isJust $ addrIsSufRef origAddr) recalc
 
-withTreeDepthLimit :: (ReduceMonad r s m) => m a -> m a
+withTreeDepthLimit :: RM a -> RM a
 withTreeDepthLimit f = do
   tc <- getTMCursor
   let addr = tcAddr tc
@@ -113,7 +113,7 @@ withTreeDepthLimit f = do
 
   pop = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
-reducePureFocus :: (ReduceMonad r s m) => m ()
+reducePureFocus :: RM ()
 reducePureFocus = withTreeDepthLimit $ do
   orig <- getTMTree
 
@@ -127,7 +127,7 @@ reducePureFocus = withTreeDepthLimit $ do
       { isSCyclic = isSCyclic orig || isSCyclic t
       }
 
-reduceMutable :: (ReduceMonad r s m) => Mutable -> m ()
+reduceMutable :: Mutable -> RM ()
 reduceMutable (Mutable mop _) = case mop of
   Ref _ -> do
     (_, isReady) <- reduceArgs reduce rtrNonMut
@@ -187,7 +187,7 @@ reduceMutable (Mutable mop _) = case mop of
     tc <- getTMCursor
     resolvePendingConjuncts pconjs tc >>= handleResolvedPConjsForUnifyMut
 
-handleRefRes :: (ReduceMonad r s m) => Bool -> Maybe Tree -> m ()
+handleRefRes :: Bool -> Maybe Tree -> RM ()
 handleRefRes _ Nothing = return ()
 handleRefRes _ (Just result) = do
   tc <- getTMCursor
@@ -198,7 +198,7 @@ handleRefRes _ (Just result) = do
     _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show tc)
 
 {-# INLINE handleMutRes #-}
-handleMutRes :: (ReduceMonad r s m) => Maybe Tree -> Bool -> m ()
+handleMutRes :: Maybe Tree -> Bool -> RM ()
 handleMutRes Nothing _ = return ()
 handleMutRes (Just result) furtherReduce = do
   tc <- getTMCursor
@@ -209,7 +209,7 @@ handleMutRes (Just result) furtherReduce = do
       when furtherReduce reducePureTN
     _ -> throwFatal "handleMutRes: not a mutable tree"
 
-reducePureTN :: (ReduceMonad r s m) => m ()
+reducePureTN :: RM ()
 reducePureTN = do
   t <- getTMTree
   case t of
@@ -223,7 +223,7 @@ reducePureTN = do
 It writes the reduced arguments back to the mutable tree and returns the reduced tree cursor.
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
-reduceArgs :: (ReduceMonad r s m) => m () -> (Tree -> Maybe Tree) -> m ([Maybe Tree], Bool)
+reduceArgs :: RM () -> (Tree -> Maybe Tree) -> RM ([Maybe Tree], Bool)
 reduceArgs reduceFunc rtr = traceSpanAdaptTM "reduceArgs" emptySpanValue $ do
   tc <- getTMCursor
   case tcFocus tc of
@@ -253,7 +253,7 @@ reduceArgs reduceFunc rtr = traceSpanAdaptTM "reduceArgs" emptySpanValue $ do
   adapt (xs, b) = toJSON ()
 
 -- | Handle the resolved pending conjuncts for mutable trees.
-handleResolvedPConjsForUnifyMut :: (ReduceMonad r s m) => ResolvedPConjuncts -> m ()
+handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
 handleResolvedPConjsForUnifyMut IncompleteConjuncts = return ()
 handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = modifyTMTN (TNAtomCnstr ac)
 handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
@@ -261,7 +261,7 @@ handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
   rM <- unifyNormalizedTCs conjs tc
   handleMutRes rM True
 
-reduceToNonMut :: (ReduceMonad r s m) => m ()
+reduceToNonMut :: RM ()
 reduceToNonMut = do
   t <- getTMTree
   case t of

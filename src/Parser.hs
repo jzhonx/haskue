@@ -87,14 +87,14 @@ type WithTokenPos a = WithTokenInfo (ASTN a)
 emptyLexeme :: WithTokenInfo ()
 emptyLexeme = WithTokenInfo () TokenNone False
 
-parseExpr :: (MonadError String m) => String -> m Expression
+parseExpr :: String -> Either String Expression
 parseExpr s = case runParser (entry expr) 0 "" s of
-  Left err -> throwErrSt $ show err
+  Left err -> Left $ show err
   Right res -> return $ wtVal res
 
-parseSourceFile :: (MonadError String m) => String -> String -> m SourceFile
+parseSourceFile :: String -> String -> Either String SourceFile
 parseSourceFile filename s = case runParser (entry sourceFile) 0 filename s of
-  Left err -> throwErrSt $ show err
+  Left err -> Left $ show err
   Right res -> return $ wtVal res
 
 binopTable :: [(String, BinaryOpNode)]

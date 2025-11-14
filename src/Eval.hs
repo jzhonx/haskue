@@ -18,10 +18,11 @@ where
 
 import AST
 import Control.Monad (when)
-import Control.Monad.Except (MonadError, modifyError)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Except (ExceptT, liftEither, mapExceptT)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.RWS.Strict (RWST, runRWST)
 import Control.Monad.Reader (MonadReader (..), ReaderT (runReaderT))
-import Control.Monad.State.Strict (StateT, evalStateT, execStateT, runStateT)
+import Control.Monad.State.Strict (evalStateT)
 import Cursor
 import Data.ByteString.Builder (
   Builder,
@@ -34,7 +35,6 @@ import Env (
   Config (..),
   eesObjID,
   eesTrace,
-  emptyCommonState,
   emptyConfig,
  )
 import EvalExpr (evalExpr, evalSourceFile)
@@ -72,7 +72,7 @@ emptyEvalConfig =
     , ecFilePath = ""
     }
 
-runIO :: (MonadIO m, MonadError String m) => String -> EvalConfig -> m Builder
+runIO :: String -> EvalConfig -> ExceptT String IO Builder
 runIO eStr conf = do
   r <- runStr eStr conf
   case r of
@@ -97,10 +97,10 @@ runIO eStr conf = do
         return (declsToBuilder decls)
     _ -> throwErrSt "Expected a struct literal"
 
-runTreeIO :: (MonadIO m, MonadError String m) => String -> m Tree
+runTreeIO :: String -> ExceptT String IO Tree
 runTreeIO s = fst <$> runTreeStr s emptyEvalConfig
 
-runStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Either String AST.Expression)
+runStr :: String -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
 runStr s conf = do
   (t, cs) <- runTreeStr s conf
   case treeNode t of
@@ -108,65 +108,71 @@ runStr s conf = do
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyConfig) cs
 
-strToCUEVal :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Tree, CommonState)
+strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Tree, CommonState)
 strToCUEVal s conf = do
-  e <- parseExpr s
-  evalToTree (evalExpr e) conf
+  e <- liftEither $ parseExpr s
+  mapErrToString $ evalToTree (evalExpr e) conf
 
-runTreeStr :: (MonadError String m, MonadIO m) => String -> EvalConfig -> m (Tree, CommonState)
-runTreeStr s conf = parseSourceFile (ecFilePath conf) s >>= flip evalFile conf
+runTreeStr :: String -> EvalConfig -> ExceptT String IO (Tree, CommonState)
+runTreeStr s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
-evalFile :: (MonadError String m, MonadIO m) => SourceFile -> EvalConfig -> m (Tree, CommonState)
-evalFile sf = evalToTree (evalSourceFile sf)
+mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
+mapErrToString =
+  mapExceptT
+    ( \x -> do
+        e <- x
+        return $ case e of
+          Left err -> Left $ show err
+          Right v -> Right v
+    )
+
+evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Tree, CommonState)
+evalFile sf conf = mapErrToString $ evalToTree (evalSourceFile sf) conf
 
 evalToTree ::
-  (MonadError String m, MonadIO m) =>
-  StateT CommonState (ReaderT ReduceConfig m) Tree ->
+  RWST ReduceConfig () RTCState (ExceptT Error IO) Tree ->
   EvalConfig ->
-  m (Tree, CommonState)
-evalToTree f conf = do
-  let config =
-        Config
-          { stTraceEnable = ecTraceExec conf
-          , stTracePrintTree = ecTracePrintTree conf
-          , stTraceExtraInfo = ecTraceExtraInfo conf
-          , stTraceFilter =
-              let s = ecTraceFilter conf
-               in if null s then Set.empty else Set.fromList $ splitOn "," s
-          , stShowMutArgs = ecShowMutArgs conf
-          , stMaxTreeDepth = ecMaxTreeDepth conf
+  ExceptT Error IO (Tree, CommonState)
+evalToTree f conf =
+  do
+    let config =
+          Config
+            { stTraceEnable = ecTraceExec conf
+            , stTracePrintTree = ecTracePrintTree conf
+            , stTraceExtraInfo = ecTraceExtraInfo conf
+            , stTraceFilter =
+                let s = ecTraceFilter conf
+                 in if null s then Set.empty else Set.fromList $ splitOn "," s
+            , stShowMutArgs = ecShowMutArgs conf
+            , stMaxTreeDepth = ecMaxTreeDepth conf
+            }
+    (_, finalized, _) <-
+      runRWST
+        ( do
+            root <- f
+            when (ecDebugMode conf) $
+              liftIO $
+                hPutStr stderr $
+                  "Initial eval result: " ++ treeToFullRepString root ++ "\n"
+            let
+              rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
+            putTMCursor rootTC
+            local (mapParams (\p -> p{createCnstr = True})) reduce
+            local (mapParams (\p -> p{createCnstr = False})) postValidation
+        )
+        (ReduceConfig config (emptyReduceParams{createCnstr = True}))
+        (RTCState (TrCur (mkNewTree TNTop) []) emptyContext)
+
+    let finalTC = finalized.rtsTC
+    when (ecDebugMode conf) $
+      liftIO $
+        hPutStr stderr $
+          "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
+    return
+      ( tcFocus finalTC
+      , CommonState
+          { eesObjID = finalized.rtsCtx.ctxObjID
+          , eesTrace = finalized.rtsCtx.ctxTrace
+          , tIndexer = finalized.rtsCtx.tIndexer
           }
-
-  reduced <-
-    runReaderT
-      ( do
-          (root, eeState) <- runStateT f emptyCommonState
-          when (ecDebugMode conf) $
-            liftIO $
-              hPutStr stderr $
-                "Initial eval result: " ++ treeToFullRepString root ++ "\n"
-          let
-            rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
-            cv = mkRTState rootTC eeState
-          execStateT
-            ( do
-                modifyError show reduce
-                local (\r -> modifyReduceParams (\p -> p{createCnstr = False}) r) $ modifyError show postValidation
-            )
-            cv
       )
-      (ReduceConfig config (emptyReduceParams{createCnstr = True}))
-
-  let finalTC = getTreeCursor reduced
-  when (ecDebugMode conf) $
-    liftIO $
-      hPutStr stderr $
-        "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
-  return
-    ( tcFocus finalTC
-    , CommonState
-        { eesObjID = reduced.rtsCtx.ctxObjID
-        , eesTrace = reduced.rtsCtx.ctxTrace
-        , tIndexer = reduced.rtsCtx.tIndexer
-        }
-    )
