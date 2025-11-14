@@ -17,14 +17,14 @@ import qualified AST
 import Control.Monad (foldM)
 import Control.Monad.Except (Except, MonadError (..))
 import Control.Monad.RWS.Strict (RWST, runRWST)
-import Control.Monad.Reader (MonadTrans (lift), asks)
+import Control.Monad.Reader (asks)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexer, textToTextIndex)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexer, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
 import Value.Block
@@ -80,13 +80,13 @@ buildASTExprExt t = case treeNode t of
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
   TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   TNRefCycle -> buildRCASTExpr t
-  TNRefSubCycle _ -> maybe (lift $ throwExprNotFound t) return (treeExpr t)
-  TNNoVal -> lift $ throwExprNotFound t
+  TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
+  TNNoVal -> throwExprNotFound t
 
-throwExprNotFound :: Tree -> Except String a
+throwExprNotFound :: Tree -> EM a
 throwExprNotFound t = do
-  let rep = buildRepTree t defaultTreeRepBuildOption
-  throwError $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
+  rep <- treeToRepString t
+  throwError $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) rep
 
 buildMutableASTExpr :: Mutable -> Tree -> EM AST.Expression
 buildMutableASTExpr mut t = do
@@ -117,7 +117,7 @@ buildMutableASTExprForce (Mutable mop _) t = case mop of
         AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
   DisjOp dop -> buildDisjoinOpASTExpr dop t
   UOp u -> buildUnifyOpASTExpr u
-  Itp _ -> lift $ throwExprNotFound t
+  Itp _ -> throwExprNotFound t
 
 buildRCASTExpr :: Tree -> EM AST.Expression
 buildRCASTExpr _ = do
@@ -398,7 +398,7 @@ buildDisjoinOpASTExpr op t = do
   isDebug <- asks isDebug
   if isDebug
     then go
-    else lift $ throwExprNotFound t
+    else throwExprNotFound t
  where
   go
     | fstDisj Seq.:<| rest <- djoTerms op

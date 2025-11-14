@@ -12,7 +12,7 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad)
 import Text.Printf (printf)
 import {-# SOURCE #-} Value.Tree
 
@@ -40,7 +40,7 @@ data Struct = Struct
 data StructFieldLabel = StructStaticFieldLabel TextIndex | StructDynFieldOID !Int
   deriving (Show, Eq, Generic, NFData, Ord)
 
-instance ShowWithTextIndexer StructFieldLabel where
+instance ShowWTIndexer StructFieldLabel where
   tshow (StructStaticFieldLabel n) = do
     s <- tshow n
     return $ T.pack $ printf "StaticFieldLabel(%s)" s
@@ -138,7 +138,7 @@ instance Show PermItem where
       ++ show (Set.toList $ piOpLabels p)
       ++ "}"
 
-instance ShowWithTextIndexer PermItem where
+instance ShowWTIndexer PermItem where
   tshow p = do
     lbls <- mapM tshow (Set.toList $ piLabels p)
     opLbls <- mapM tshow (Set.toList $ piOpLabels p)

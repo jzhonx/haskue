@@ -11,7 +11,7 @@ import Control.Monad (foldM, forM, when)
 import Control.Monad.Except (modifyError)
 import Control.Monad.Reader (local)
 import Cursor
-import Data.Aeson (toJSON)
+import Data.Aeson (object, toJSON)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
@@ -31,15 +31,14 @@ import Reduce.RMonad (
   preVisitTreeSimple,
   throwFatal,
   traceSpanAdaptRM,
-  traceSpanMTreeRM,
-  traceSpanTreeArgsRM,
-  traceSpanTreeRM,
+  traceSpanArgsRMTC,
+  traceSpanRMTC,
  )
 import Reduce.RefSys (IdentType (..), searchTCIdent)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (ttoJSON))
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (treeToFullRepString)
+import Value.Util.TreeRep (treeToRepString)
 
 -- | UTree is a tree with a direction.
 data UTree = UTree
@@ -91,6 +90,8 @@ showTCList (x : xs) =
 
 {- | Unify a list of non-noval trees that are ready.
 
+Unification is always done in a pre-order manner.
+
 It handles the following cases:
 1. If all trees are structurally cyclic, return a bottom tree.
 2. Reference cycle.
@@ -101,42 +102,49 @@ If RC can not be cancelled, then the result is Nothing.
 The order of the unification is the same as the order of the trees.
 -}
 unifyNormalizedTCs :: [TrCur] -> TrCur -> RM (Maybe Tree)
-unifyNormalizedTCs tcs unifyTC = traceSpanMTreeRM "unifyNormalizedTCs" unifyTC $ do
-  when (length tcs < 2) $ throwFatal "not enough arguments for unification"
+unifyNormalizedTCs tcs unifyTC = traceSpanAdaptRM
+  "unifyNormalizedTCs"
+  ( \a -> case a of
+      Nothing -> return $ object []
+      Just t -> treeToRepString t >>= return . toJSON
+  )
+  unifyTC
+  $ do
+    when (length tcs < 2) $ throwFatal "not enough arguments for unification"
 
-  let isAllCyclic = all (isSCyclic . tcFocus) tcs
-  if isAllCyclic
-    then return $ Just $ mkBottomTree "structural cycle"
-    else do
-      debugInstantRM "unifyNormalizedTCs" (printf "normalized: %s" (show tcs)) unifyTC
-      let (regs, rcs) =
-            foldr
-              ( \tc (accRegs, accRCs) ->
-                  let
-                    t = tcFocus tc
-                    immutTC = makeTreeImmutable t `setTCFocus` tc
-                   in
-                    case t of
-                      IsRefCycle -> (accRegs, accRCs + 1)
-                      IsUnifiedWithRC True -> (immutTC : accRegs, accRCs + 1)
-                      _ -> (immutTC : accRegs, accRCs)
-              )
-              ([], 0 :: Int)
-              tcs
+    let isAllCyclic = all (isSCyclic . tcFocus) tcs
+    if isAllCyclic
+      then return $ Just $ mkBottomTree "structural cycle"
+      else do
+        debugInstantRM "unifyNormalizedTCs" (printf "normalized: %s" (show tcs)) unifyTC
+        let (regs, rcs) =
+              foldr
+                ( \tc (accRegs, accRCs) ->
+                    let
+                      t = tcFocus tc
+                      immutTC = makeTreeImmutable t `setTCFocus` tc
+                     in
+                      case t of
+                        IsRefCycle -> (accRegs, accRCs + 1)
+                        IsUnifiedWithRC True -> (immutTC : accRegs, accRCs + 1)
+                        _ -> (immutTC : accRegs, accRCs)
+                )
+                ([], 0 :: Int)
+                tcs
 
-      if
-        | null regs, rcs == 0 -> throwFatal "no trees to unify"
-        | null regs, canCancelRC unifyTC -> return $ Just $ mkNewTree TNTop
-        | null regs ->
-            -- If there are no regular trees.
-            return $ Just (mkNewTree TNRefCycle)
-        | otherwise -> do
-            r <- mergeTCs regs unifyTC
-            -- If there is no reference cycle, or the reference cycle can be cancelled, return the result of merging
-            -- regular conjuncts.
-            if rcs == 0 || canCancelRC unifyTC
-              then return $ Just r
-              else return $ Just $ r{isUnifiedWithRC = True}
+        if
+          | null regs, rcs == 0 -> throwFatal "no trees to unify"
+          | null regs, canCancelRC unifyTC -> return $ Just $ mkNewTree TNTop
+          | null regs ->
+              -- If there are no regular trees.
+              return $ Just (mkNewTree TNRefCycle)
+          | otherwise -> do
+              r <- mergeTCs regs unifyTC
+              -- If there is no reference cycle, or the reference cycle can be cancelled, return the result of merging
+              -- regular conjuncts.
+              if rcs == 0 || canCancelRC unifyTC
+                then return $ Just r
+                else return $ Just $ r{isUnifiedWithRC = True}
 
 {- | Check if the reference cycle can be cancelled.
 
@@ -144,7 +152,7 @@ A reference cycle can be cancelled if
 * in the form of f: RC & v
 -}
 canCancelRC :: TrCur -> Bool
-canCancelRC unifyTC = isJust $ addrIsSufRef (tcAddr unifyTC)
+canCancelRC unifyTC = isJust $ addrIsRfbAddr (tcAddr unifyTC)
 
 {- | Unify two UTrees that are discovered in the merging process.
 
@@ -172,7 +180,7 @@ unifyForNewConjs uts tc = do
     Nothing -> return Nothing
 
 mergeTCs :: [TrCur] -> TrCur -> RM Tree
-mergeTCs tcs unifyTC = traceSpanTreeArgsRM "mergeTCs" (showTCList tcs) unifyTC $ do
+mergeTCs tcs unifyTC = traceSpanArgsRMTC "mergeTCs" (showTCList tcs) unifyTC $ do
   when (null tcs) $ throwFatal "not enough arguments"
   let headTC = head tcs
   -- TODO: does the first tree need to be not embedded?
@@ -231,14 +239,17 @@ mergeBinUTrees :: UTree -> UTree -> TrCur -> RM Tree
 mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = tcFocus tc1
       t2 = tcFocus tc2
-  traceSpanTreeArgsRM
+
+  t1Str <- tshow t1
+  t2Str <- tshow t2
+  traceSpanArgsRMTC
     "mergeBinUTrees"
     ( printf
         ("merging %s, %s" ++ "\n" ++ "with %s, %s")
         (show $ dir ut1)
-        (show t1)
+        t1Str
         (show $ dir ut2)
-        (show t2)
+        t2Str
     )
     unifyTC
     $ do
@@ -271,7 +282,7 @@ mergeLeftTop ut1 ut2 unifyTC = do
 
 mergeLeftAtom :: (Atom, UTree) -> UTree -> TrCur -> RM Tree
 mergeLeftAtom (v1, ut1@(UTree{dir = d1})) ut2@(UTree{utTC = tc2, dir = d2}) unifyTC =
-  traceSpanTreeRM "mergeLeftAtom" unifyTC $ do
+  traceSpanRMTC "mergeLeftAtom" unifyTC $ do
     let t2 = tcFocus tc2
     case (v1, t2) of
       (String x, IsAtom s)
@@ -599,7 +610,7 @@ For closedness, unification only generates a closed struct but not a recursively
 recursively, the only way is to reference the struct via a #ident.
 -}
 mergeStructs :: (Struct, UTree) -> (Struct, UTree) -> TrCur -> RM Tree
-mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = traceSpanTreeArgsRM
+mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = traceSpanArgsRMTC
   "mergeStructs"
   (printf "ut1: %s\nut2: %s" (show ut1) (show ut2))
   unifyTC
@@ -768,7 +779,7 @@ The scope of a declared identifier is the extent of source text in which the ide
 alias, or package.
 -}
 prepStruct :: Map.Map TreeAddr Int -> TrCur -> RM TrCur
-prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepStruct" treeFetchAdapt resAdapt structTC $ do
+prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepStruct" ttoJSON structTC $ do
   (updatedTC, updatedPSS) <- preVisitTree (subNodes True) firstPass (structTC, emptyPSS)
   debugInstantRM
     "prepStruct"
@@ -855,12 +866,6 @@ prepStruct blockSufMap structTC@(TCFocus (IsStruct _)) = traceSpanAdaptRM "prepS
         newMut = setMutOp (Ref newRef) mut
       return (t{valGenEnv = TGenOp newMut} `setTCFocus` tc)
     _ -> return tc
-
-  treeFetchAdapt x = Just $ tcFocus x
-
-  resAdapt r = do
-    -- t <- oneLinerStringOfTree r.tcFocus
-    return $ toJSON (treeToFullRepString r.tcFocus)
 prepStruct _ tc = do
   debugInstantRM "prepStruct" (printf "none struct focus: %s" (show tc.tcFocus)) tc
   return tc
@@ -898,7 +903,7 @@ mergeLeftDisj (dj1, ut1) ut2@(UTree{utTC = tc2}) unifyTC = do
 -- In current CUE's implementation, CUE puts the fields of the single value first.
 mergeDisjWithVal :: (Disj, UTree) -> UTree -> TrCur -> RM Tree
 mergeDisjWithVal (dj1, _ut1@(UTree{dir = fstDir})) _ut2 unifyTC =
-  traceSpanTreeRM "mergeDisjWithVal" unifyTC $ do
+  traceSpanRMTC "mergeDisjWithVal" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     let defIdxes1 = dsjDefIndexes dj1
     if fstDir == L
@@ -924,7 +929,7 @@ U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj :: (Disj, UTree) -> (Disj, UTree) -> TrCur -> RM Tree
 mergeDisjWithDisj (dj1, _ut1@(UTree{dir = fstDir})) (dj2, _ut2) unifyTC =
-  traceSpanTreeRM "mergeDisjWithDisj" unifyTC $ do
+  traceSpanRMTC "mergeDisjWithDisj" unifyTC $ do
     uts1 <- utsFromDisjs (length $ dsjDisjuncts dj1) _ut1
     uts2 <- utsFromDisjs (length $ dsjDisjuncts dj2) _ut2
     let
@@ -987,7 +992,7 @@ removeIncompleteDisjuncts defIdxes ts =
 The pattern is expected to be an Atom or a Bounds.
 -}
 patMatchLabel :: Tree -> TextIndex -> TrCur -> RM Bool
-patMatchLabel pat tidx tc = traceSpanAdaptRM "patMatchLabel" (const Nothing) (return . toJSON) tc $ do
+patMatchLabel pat tidx tc = traceSpanAdaptRM "patMatchLabel" (return . toJSON) tc $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom pat >>= Just . mkAtomTree, rtrBounds pat >>= Just . mkBoundsTree]
   maybe (return False) match vM

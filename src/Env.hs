@@ -7,8 +7,6 @@ module Env where
 import Control.Monad.Except (MonadError)
 import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
-import StringIndex (HasTextIndexer (..), TextIndexer, emptyTextIndexer)
-import Util (HasTrace (..), Trace, emptyTrace)
 
 type ErrorEnv m =
   ( MonadError String m

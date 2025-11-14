@@ -3,13 +3,9 @@
 
 module Value.Reference where
 
-import Data.Foldable (toList)
-import Data.List (intercalate)
 import qualified Data.Sequence as Seq
-import Feature
 import GHC.Generics (Generic)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad)
-import Value.Atom
+import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Tree
 
 newtype Reference = Reference {refArg :: RefArg} deriving (Generic)
@@ -20,10 +16,6 @@ data RefArg
   | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
     RefIndex (Seq.Seq Tree)
   deriving (Generic)
-
-showRefArg :: RefArg -> (Tree -> Maybe String) -> String
-showRefArg (RefPath s xs) f = intercalate "." (show s : map (\x -> maybe "_" id (f x)) (toList xs))
-showRefArg (RefIndex xs) f = "index." ++ intercalate "." (map (\x -> maybe "_" id (f x)) (toList xs))
 
 refHasRefPath :: Reference -> Bool
 refHasRefPath r = case refArg r of

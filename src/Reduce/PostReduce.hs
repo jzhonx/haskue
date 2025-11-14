@@ -64,7 +64,7 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
   putTMCursor
     =<< postVisitTreeSimple
       (subNodes False)
-      ( \x -> case addrIsSufRef (tcAddr x) of
+      ( \x -> case addrIsRfbAddr (tcAddr x) of
           -- We only need to care about the referable node.
           Nothing -> return x
           Just _ -> do

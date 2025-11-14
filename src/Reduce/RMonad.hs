@@ -17,7 +17,8 @@ import Control.Monad.RWS.Strict (RWST, lift)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify')
 import Cursor
-import Data.Aeson (ToJSON, Value, toJSON)
+import Data.Aeson (KeyValue (..), ToJSON, Value, toJSON)
+import Data.Aeson.Types (object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
@@ -30,9 +31,9 @@ import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (callStack, prettyCallStack)
 import NotifGraph
-import StringIndex (HasTextIndexer (..), ShowWithTextIndexer (..), TextIndexer, emptyTextIndexer)
+import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndexer, ToJSONWTIndexer (ttoJSON), emptyTextIndexer)
 import Text.Printf (printf)
-import Util (HasTrace (..), Trace, debugInstant, emptyTrace, traceSpan)
+import Util (HasTrace (..), Trace, debugInstant, emptyTrace, getTraceID, traceSpanExec, traceSpanStart)
 import Value
 import Value.Util.TreeRep
 
@@ -338,7 +339,8 @@ descendTMSegMust seg = do
   ok <- descendTMSeg seg
   unless ok $ do
     t <- getTMTree
-    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
+    rep <- treeToRepString t
+    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) rep
 
 -- Push down operations
 
@@ -359,7 +361,8 @@ inSubTM seg f = do
   ok <- descendTMSeg seg
   unless ok $ do
     t <- getTMTree
-    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) (treeToRepString t)
+    rep <- treeToRepString t
+    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) rep
   r <- f
   propUpTM
   return r
@@ -473,125 +476,6 @@ unlessFocusBottom a f = do
     TNBottom _ -> return a
     _ -> f
 
-whenTraceEnabled :: String -> RM a -> RM a -> RM a
-whenTraceEnabled name f traced = do
-  Config{stTraceEnable = traceEnable, stTraceFilter = tFilter} <-
-    asks baseConfig
-  if traceEnable && (Set.null tFilter || Set.member name tFilter)
-    then traced
-    else f
-
-spanTreeMsgs :: Bool -> Tree -> RM Value
-spanTreeMsgs isTreeRoot t = do
-  Config{stTracePrintTree = tracePrintTree} <- asks baseConfig
-  return $
-    if not tracePrintTree
-      then ""
-      else
-        let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = isTreeRoot})
-         in toJSON rep
-
-traceSpanTM :: (ToJSON a) => String -> RM a -> RM a
-traceSpanTM name = traceActionTM name Nothing (return . toJSON)
-
-traceSpanArgsTM :: (ToJSON a) => String -> String -> RM a -> RM a
-traceSpanArgsTM name args = traceActionTM name (Just args) (return . toJSON)
-
-traceSpanAdaptTM :: String -> (a -> RM Value) -> RM a -> RM a
-traceSpanAdaptTM name = traceActionTM name Nothing
-
-traceSpanArgsAdaptTM :: String -> String -> (a -> RM Value) -> RM a -> RM a
-traceSpanArgsAdaptTM name args = traceActionTM name (Just args)
-
-traceActionTM :: String -> Maybe String -> (a -> RM Value) -> RM a -> RM a
-traceActionTM name argsM jsonfy f = whenTraceEnabled name f $ withAddrAndFocus $ \addr _ -> do
-  let isRoot = addr == rootTreeAddr
-  bTraced <- getTMTree >>= spanTreeMsgs isRoot
-  addrS <- tshow addr
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  traceSpan (True, extraInfo) (T.pack name) addrS (toJSON <$> argsM) bTraced jsonfy $ do
-    res <- f
-    traced <- getTMTree >>= spanTreeMsgs isRoot
-    return (res, traced)
-
-debugInstantTM :: String -> String -> RM ()
-debugInstantTM name args = whenTraceEnabled name (return ()) $
-  withAddrAndFocus $
-    \addr _ -> do
-      addrS <- tshow addr
-      extraInfo <- asks (stTraceExtraInfo . baseConfig)
-      debugInstant (True, extraInfo) (T.pack name) addrS (Just $ toJSON args)
-
-onelinerTree :: Tree -> RM Value
-onelinerTree t = do
-  r <- oneLinerStringOfTree t
-  return $ toJSON r
-
-traceSpanSimpleRM :: String -> TrCur -> RM a -> RM a
-traceSpanSimpleRM name = traceActionRM name Nothing (const Nothing) (const (return $ toJSON ()))
-
-traceSpanArgsSimpleRM :: String -> String -> TrCur -> RM a -> RM a
-traceSpanArgsSimpleRM name args = traceActionRM name (Just args) (const Nothing) (const (return $ toJSON ()))
-
-traceSpanTreeRM :: String -> TrCur -> RM Tree -> RM Tree
-traceSpanTreeRM name =
-  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  traceActionRM name Nothing Just onelinerTree
-
-traceSpanMTreeRM :: String -> TrCur -> RM (Maybe Tree) -> RM (Maybe Tree)
-traceSpanMTreeRM name =
-  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  traceActionRM name Nothing id (const (return $ toJSON ()))
-
-traceSpanTreeArgsRM :: String -> String -> TrCur -> RM Tree -> RM Tree
-traceSpanTreeArgsRM name args =
-  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  traceActionRM name (Just args) Just onelinerTree
-
-traceSpanMTreeArgsRM :: String -> String -> TrCur -> RM (Maybe Tree) -> RM (Maybe Tree)
-traceSpanMTreeArgsRM name args =
-  -- The result is a tree, so there is no need to adapt the result as the tree will be printed.
-  traceActionRM name (Just args) id (const (return $ toJSON ()))
-
-traceSpanAdaptRM :: String -> (a -> Maybe Tree) -> (a -> RM Value) -> TrCur -> RM a -> RM a
-traceSpanAdaptRM name = traceActionRM name Nothing
-
-traceSpanArgsAdaptRM ::
-  String -> String -> (a -> Maybe Tree) -> (a -> RM Value) -> TrCur -> RM a -> RM a
-traceSpanArgsAdaptRM name args = traceActionRM name (Just args)
-
-traceActionRM ::
-  String -> Maybe String -> (a -> Maybe Tree) -> (a -> RM Value) -> TrCur -> RM a -> RM a
-traceActionRM name argsM fetchTree resFetch tc action = whenTraceEnabled name action $ do
-  let
-    addr = tcAddr tc
-    bfocus = tcFocus tc
-    isRoot = addr == rootTreeAddr
-
-  bTraced <- spanTreeMsgs isRoot bfocus
-  addrS <- tshow addr
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  traceSpan (True, extraInfo) (T.pack name) addrS (toJSON <$> argsM) bTraced resFetch $ do
-    res <- action
-    traced <- maybe (return "") (spanTreeMsgs isRoot) (fetchTree res)
-    return (res, traced)
-
-debugInstantRM :: String -> String -> TrCur -> RM ()
-debugInstantRM name args tc = whenTraceEnabled name (return ()) $ do
-  let addr = tcAddr tc
-  addrS <- tshow addr
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  debugInstant (True, extraInfo) (T.pack name) addrS (Just $ toJSON args)
-
-debugInstantOpRM :: String -> String -> TreeAddr -> RM ()
-debugInstantOpRM name args addr = whenTraceEnabled name (return ()) $ do
-  addrS <- tshow addr
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  debugInstant (True, extraInfo) (T.pack name) addrS (Just $ toJSON args)
-
-emptySpanValue :: a -> RM Value
-emptySpanValue _ = return $ toJSON ()
-
 {- | Visit every node in the tree in pre-order and apply the function.
 
 It does not re-constrain struct fields.
@@ -678,3 +562,161 @@ postVisitTreeSimple subs f tc = do
       )
       (tc, ())
   return r
+
+data RMStartTraceArgs = RMStartTraceArgs
+  { cstaTraceID :: !Int
+  , cstaAddr :: !T.Text
+  , cstaBeforeFocus :: !Value
+  , cstaCustomVal :: !Value
+  }
+  deriving (Eq, Show)
+
+instance ToJSON RMStartTraceArgs where
+  toJSON cta =
+    object
+      [ "traceid" .= show (cstaTraceID cta)
+      , "addr" .= cstaAddr cta
+      , "bfcs" .= cstaBeforeFocus cta
+      , "ctm" .= cstaCustomVal cta
+      ]
+
+data RMEndTraceArgs = RMEndTraceArgs
+  { cetaResVal :: !Value
+  , cetaFocus :: !Value
+  }
+  deriving (Eq, Show)
+
+instance ToJSON RMEndTraceArgs where
+  toJSON cta =
+    object
+      [ "res" .= cetaResVal cta
+      , "fcs" .= cetaFocus cta
+      ]
+
+data RMInstantTraceArgs = RMInstantTraceArgs
+  { ctiTraceID :: !Int
+  , ctiAddr :: !T.Text
+  , ctiCustomVal :: !Value
+  }
+  deriving (Eq, Show)
+
+instance ToJSON RMInstantTraceArgs where
+  toJSON c =
+    object
+      [ "traceid" .= show (ctiTraceID c)
+      , "addr" .= ctiAddr c
+      , "ctm" .= ctiCustomVal c
+      ]
+
+whenTraceEnabled :: String -> RM a -> RM a -> RM a
+whenTraceEnabled name f traced = do
+  Config{stTraceEnable = traceEnable, stTraceFilter = tFilter} <-
+    asks baseConfig
+  if traceEnable && (Set.null tFilter || Set.member name tFilter)
+    then traced
+    else f
+
+spanTreeMsgs :: Bool -> Bool -> Tree -> RM Value
+spanTreeMsgs isTreeRoot ignore t = do
+  Config{stTracePrintTree = tracePrintTree} <- asks baseConfig
+  if not tracePrintTree || ignore
+    then return $ object []
+    else do
+      rep <- buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = isTreeRoot})
+      return $ toJSON rep
+
+traceSpanTM :: (ToJSONWTIndexer a) => String -> RM a -> RM a
+traceSpanTM name = traceActionTM name Nothing ttoJSON
+
+traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> String -> RM a -> RM a
+traceSpanArgsTM name args = traceActionTM name (Just args) ttoJSON
+
+traceSpanAdaptTM :: String -> (a -> RM Value) -> RM a -> RM a
+traceSpanAdaptTM name = traceActionTM name Nothing
+
+traceSpanArgsAdaptTM :: String -> String -> (a -> RM Value) -> RM a -> RM a
+traceSpanArgsAdaptTM name args = traceActionTM name (Just args)
+
+traceActionTM :: String -> Maybe String -> (a -> RM Value) -> RM a -> RM a
+traceActionTM name argsM jsonfy f = withAddrAndFocus $ \addr _ ->
+  traceAction name addr argsM jsonfy False f
+
+traceAction :: String -> TreeAddr -> Maybe String -> (a -> RM Value) -> Bool -> RM a -> RM a
+traceAction name addr argsM jsonfy ignoreFocus f = whenTraceEnabled name f do
+  let isRoot = addr == rootTreeAddr
+  bTraced <- getTMTree >>= spanTreeMsgs isRoot ignoreFocus
+  addrS <- tshow addr
+  trID <- getTraceID
+  extraInfo <- asks (stTraceExtraInfo . baseConfig)
+  let
+    header = T.pack $ printf "%s, at:%s" name addrS
+
+  traceSpanStart
+    header
+    ( toJSON $
+        RMStartTraceArgs
+          { cstaTraceID = trID
+          , cstaAddr = addrS
+          , cstaBeforeFocus = optVal extraInfo bTraced
+          , cstaCustomVal = optVal extraInfo (toJSON argsM)
+          }
+    )
+
+  res <- f
+  resVal <- jsonfy res
+  resFocus <- getTMTree >>= spanTreeMsgs isRoot ignoreFocus
+
+  traceSpanExec
+    header
+    ( toJSON $
+        RMEndTraceArgs
+          { cetaResVal = optVal extraInfo resVal
+          , cetaFocus = optVal extraInfo resFocus
+          }
+    )
+  return res
+
+optVal :: Bool -> Value -> Value
+optVal extraInfo v = if extraInfo then v else object []
+
+debugInstantTM :: String -> String -> RM ()
+debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInst name args addr
+
+debugInst :: String -> String -> TreeAddr -> RM ()
+debugInst name args addr = whenTraceEnabled name (return ()) $ do
+  addrS <- tshow addr
+  extraInfo <- asks (stTraceExtraInfo . baseConfig)
+  trID <- getTraceID
+  debugInstant
+    (T.pack name)
+    ( toJSON $
+        RMInstantTraceArgs
+          { ctiTraceID = trID
+          , ctiAddr = addrS
+          , ctiCustomVal = optVal extraInfo (toJSON args)
+          }
+    )
+
+traceSpanRMTC :: (ToJSONWTIndexer a) => String -> TrCur -> RM a -> RM a
+traceSpanRMTC name = traceActionRM name Nothing ttoJSON
+
+traceSpanArgsRMTC :: (ToJSONWTIndexer a) => String -> String -> TrCur -> RM a -> RM a
+traceSpanArgsRMTC name args = traceActionRM name (Just args) ttoJSON
+
+traceSpanAdaptRM :: String -> (a -> RM Value) -> TrCur -> RM a -> RM a
+traceSpanAdaptRM name = traceActionRM name Nothing
+
+traceSpanArgsAdaptRM :: String -> String -> (a -> RM Value) -> TrCur -> RM a -> RM a
+traceSpanArgsAdaptRM name args = traceActionRM name (Just args)
+
+traceActionRM :: String -> Maybe String -> (a -> RM Value) -> TrCur -> RM a -> RM a
+traceActionRM name argsM resFetch tc = traceAction name (tcAddr tc) argsM resFetch True
+
+debugInstantRM :: String -> String -> TrCur -> RM ()
+debugInstantRM name args tc = debugInst name args (tcAddr tc)
+
+debugInstantOpRM :: String -> String -> TreeAddr -> RM ()
+debugInstantOpRM = debugInst
+
+emptySpanValue :: a -> RM Value
+emptySpanValue _ = return $ toJSON ()

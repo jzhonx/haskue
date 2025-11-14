@@ -18,7 +18,7 @@ import Debug.Trace
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
-import StringIndex (ShowWithTextIndexer (..))
+import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
 data NotifGraph = NotifGraph
@@ -46,7 +46,7 @@ data NotifGraph = NotifGraph
 instance Show NotifGraph where
   show ng = printf "G(Deps: %s)" (show $ deptsMap ng)
 
-instance ShowWithTextIndexer NotifGraph where
+instance ShowWTIndexer NotifGraph where
   tshow ng = do
     let
       xs = map (\(k, v) -> (getAddrFromVIDMust (getRefVertex k) ng.vidMapping, v)) (HashMap.toList $ deptsMap ng)
@@ -68,7 +68,7 @@ instance Show GrpAddr where
       then "Cyclic " ++ show addr
       else show addr
 
-instance ShowWithTextIndexer GrpAddr where
+instance ShowWTIndexer GrpAddr where
   tshow (GrpAddr (addr, isCyclic)) = do
     addrText <- tshow addr
     let cyclicText = if isCyclic then "Cyclic " else ""
@@ -102,9 +102,9 @@ instance Show IrredVertex where
 instance Show RefVertex where
   show (RefVertex i) = "rv_" ++ show i
 
-instance ShowWithTextIndexer IrredVertex
+instance ShowWTIndexer IrredVertex
 
-instance ShowWithTextIndexer RefVertex
+instance ShowWTIndexer RefVertex
 
 data VIDMapping = VIDMapping
   { vidToAddr :: HashMap.HashMap Int TreeAddr
@@ -157,14 +157,14 @@ defaultVIDMapping =
 irredVToRefV :: IrredVertex -> VIDMapping -> (Maybe RefVertex, Maybe VIDMapping)
 irredVToRefV iv m = case irredVToRefAddr iv m of
   Just rAddr -> do
-    let (rid, m1) = getVID (sufRefToAddr rAddr) m
+    let (rid, m1) = getVID (rfbAddrToAddr rAddr) m
     (Just (RefVertex rid), m1)
   Nothing -> (Nothing, Nothing)
 
-irredVToRefAddr :: IrredVertex -> VIDMapping -> Maybe SuffixReferableAddr
+irredVToRefAddr :: IrredVertex -> VIDMapping -> Maybe ReferableAddr
 irredVToRefAddr iv m = do
   addr <- getAddrFromVID (getIrredVertex iv) m
-  addrIsSufRef addr
+  addrIsRfbAddr addr
 
 {- | Convert a referable vertex to an irreducible vertex.
 
@@ -177,12 +177,12 @@ rootVID :: Int
 rootVID = 0
 
 -- | Get the dependents of a given dependency address (which should be referable) in the notification graph.
-getDependents :: SuffixReferableAddr -> NotifGraph -> [TreeAddr]
+getDependents :: ReferableAddr -> NotifGraph -> [TreeAddr]
 getDependents rfbAddr ng = case HashMap.lookup (RefVertex rfbAddrID) (deptsMap ng) of
   Nothing -> []
   Just deps -> map (`getAddrFromVIDMust` ng.vidMapping) deps
  where
-  (rfbAddrID, _) = getVID (sufRefToAddr rfbAddr) ng.vidMapping
+  (rfbAddrID, _) = getVID (rfbAddrToAddr rfbAddr) ng.vidMapping
 
 -- | Get the component addresses of a given SCC address in the notification graph.
 getElemAddrInGrp :: GrpAddr -> NotifGraph -> [SuffixIrredAddr]
@@ -219,7 +219,7 @@ getDependentsFromGroup sccAddr ng =
         mapMaybe
           ( \compAddr -> do
               -- If the component address is referable, get its dependents.
-              referable <- sufIrredIsSufRef compAddr
+              referable <- sufIrredIsRfb compAddr
               return $ getDependents referable ng
           )
           compsAddrs
@@ -243,7 +243,7 @@ lookupGrpAddr rfbAddr ng = case HashMap.lookup (IrredVertex rfbAddrID) (vToSCCBa
 - The dependency (def) address will later notify the dependent address if it changes.
 - The dependency (def) address should be a referable address.
 -}
-addNewDepToNG :: (HasCallStack) => (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
+addNewDepToNG :: (HasCallStack) => (TreeAddr, ReferableAddr) -> NotifGraph -> NotifGraph
 addNewDepToNG (ref, def) ng = updateNotifGraph $ addDepToNGRaw (ref, def) ng
 
 {- | Add a new dependency to the notification graph without updating the SCC graph.
@@ -252,13 +252,13 @@ addNewDepToNG (ref, def) ng = updateNotifGraph $ addDepToNGRaw (ref, def) ng
 - The def address will later notify the dependent address if it changes.
 - The def address should be a referable address.
 -}
-addDepToNGRaw :: (TreeAddr, SuffixReferableAddr) -> NotifGraph -> NotifGraph
+addDepToNGRaw :: (TreeAddr, ReferableAddr) -> NotifGraph -> NotifGraph
 addDepToNGRaw (ref, def) =
   execState
     ( do
         refID <- liftGetVIDForG ref
         irRefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
-        irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (sufRefToAddr def))
+        irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (rfbAddrToAddr def))
         modify' $ \g ->
           g
             { deptsMap =
@@ -541,8 +541,8 @@ getNeighbors v = do
         let xAddrM = getAddrFromVID (getIrredVertex x) m
         if
           | start
-          , Just xAddrRef <- xAddrM >>= addrIsSufRef -> do
-              y <- liftGetVIDForTS (sufRefToAddr xAddrRef)
+          , Just xAddrRef <- xAddrM >>= addrIsRfbAddr -> do
+              y <- liftGetVIDForTS (rfbAddrToAddr xAddrRef)
               let
                 vIrredAddr = addMustBeSufIrred $ getAddrFromVIDMust (getIrredVertex v) m
                 newAcc =
@@ -560,8 +560,8 @@ getNeighbors v = do
                     (HashMap.lookup (RefVertex y) edges)
               go parV False edges newAcc
           | not start
-          , Just xAddrRef <- xAddrM >>= addrIsSufRef -> do
-              y <- liftGetVIDForTS (sufRefToAddr xAddrRef)
+          , Just xAddrRef <- xAddrM >>= addrIsRfbAddr -> do
+              y <- liftGetVIDForTS (rfbAddrToAddr xAddrRef)
               let newAcc = if HashMap.member (RefVertex y) edges then (x, True) : acc else acc
               go parV False edges newAcc
           | otherwise -> go parV False edges acc
@@ -605,13 +605,13 @@ It first converts the irreducible address to a referable address, then get the p
 getParentVertex :: IrredVertex -> State TarjanState IrredVertex
 getParentVertex v = do
   addr <- gets (fromJust . getAddrFromVID (getIrredVertex v) . tsVIDMapping)
-  let r = go (trimAddrToSufRef addr)
-  rid <- liftGetVIDForTS (sufRefToAddr r)
+  let r = go (trimAddrToRfb addr)
+  rid <- liftGetVIDForTS (rfbAddrToAddr r)
   return $ IrredVertex rid
  where
   go x
-    | rootTreeAddr == sufRefToAddr x = x
-    | otherwise = trimAddrToSufRef (fromJust $ initTreeAddr (sufRefToAddr x))
+    | rootTreeAddr == rfbAddrToAddr x = x
+    | otherwise = trimAddrToRfb (fromJust $ initTreeAddr (rfbAddrToAddr x))
 
 lookupMust :: (HasCallStack, Show k, Show a, Hashable k) => HashMap.HashMap k a -> k -> a
 lookupMust m k = case HashMap.lookup k m of

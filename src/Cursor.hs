@@ -11,6 +11,7 @@ module Cursor where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (when)
+import Data.Aeson (ToJSON (..))
 import Data.ByteString.Builder (
   Builder,
   char7,
@@ -26,7 +27,7 @@ import qualified Data.Sequence as Seq
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
-import StringIndex (getTextIndex)
+import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), getTextIndex)
 import Text.Printf (printf)
 import Value
 
@@ -55,6 +56,15 @@ data TrCur = TrCur
 -- | By default, only show the focus of the cursor.
 instance Show TrCur where
   show = show . tcFocus
+
+instance ToJSON TrCur where
+  toJSON = toJSON . tcFocus
+
+instance ShowWTIndexer TrCur where
+  tshow tc = tshow (tcFocus tc)
+
+instance ToJSONWTIndexer TrCur where
+  ttoJSON tc = ttoJSON (tcFocus tc)
 
 pattern TCFocus :: Tree -> TrCur
 pattern TCFocus t <- TrCur{tcFocus = t}
@@ -216,7 +226,7 @@ subTree seg parentT = do
  where
   go f t = case (fetchLabelType f, t) of
     (RootLabelType, _) -> Just t
-    (MutArgLabelType, IsTGenOp mut) -> getMutArgs mut Seq.!? fetchIndex f
+    (MutArgLabelType, IsTGenOp mut) -> snd <$> (getMutArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
     (TempLabelType, _) -> tmpSub t
     (StringLabelType, IsStruct struct)
       | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
@@ -243,7 +253,7 @@ The sub tree should already exist in the parent tree.
 -}
 setSubTree :: (HasCallStack) => Feature -> Tree -> Tree -> Maybe Tree
 setSubTree f@(fetchLabelType -> MutArgLabelType) subT parT@(IsTGenOp mut) =
-  return $ setTValGenEnv (TGenOp $ updateMutArg (fetchIndex f) subT mut) parT
+  return $ setTValGenEnv (TGenOp $ updateMutArg (fst (getMutArgInfoFromFeature f)) subT mut) parT
 setSubTree (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
 setSubTree f subT parT = do
   n <- case (fetchLabelType f, parT) of
@@ -302,7 +312,7 @@ data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (E
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Bool -> TrCur -> [SubNodeSeg]
 subNodes withStub (TCFocus t@(IsTGenOp mut)) =
-  let xs = [SubNodeSegNormal (mkMutArgFeature i) | (i, _) <- zip [0 ..] (toList $ getMutArgs mut)]
+  let xs = [SubNodeSegNormal f | (f, _) <- toList $ getMutArgs mut]
       ys = subTNSegsOpt withStub t
    in xs ++ ys
 subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)

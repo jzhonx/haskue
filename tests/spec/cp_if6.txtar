@@ -1,0 +1,13 @@
+-- cp_if6 --
+// This tests whether embedded reference can be notified correctly.
+x: {
+	y: 1 == 1
+  if y {
+    z: 1
+  }
+}
+-- exp --
+x: {
+    y: true
+    z: 1
+}

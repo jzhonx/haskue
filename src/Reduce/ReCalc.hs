@@ -40,12 +40,11 @@ import Reduce.RMonad (
   pushRecalcRootQ,
   putTMTree,
   setIsReducingRC,
-  traceSpanAdaptTM,
   traceSpanArgsAdaptTM,
   traceSpanTM,
  )
 import {-# SOURCE #-} Reduce.Root (reduce)
-import StringIndex (ShowWithTextIndexer (tshow))
+import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
 import Value
 
@@ -145,7 +144,7 @@ recalcGroup sccAddr dirtySet allAffected = do
               do
                 goTMAbsAddrMust (sufIrredToAddr siAddr)
                 r <-
-                  traceSpanAdaptTM (printf "recalcCyclic %s" (show siAddr)) (\r -> return $ toJSON (show r)) $
+                  traceSpanTM (printf "recalcCyclic %s" (show siAddr)) $
                     recalcRC
                       (RCCalHelper allAffected addrs [siAddr] [])
                       (\k -> if Set.member k dirtySet then FRDirty else FRNormal)
@@ -257,7 +256,7 @@ recalcNode addr affectedAddrsSet fetch = do
         IsStruct struct
           | IsTGenOp mut <- t
           , let
-              allArgAddrs = map (\i -> appendSeg baseAddr (mkMutArgFeature i)) [0 .. length (getMutArgs mut) - 1]
+              allArgAddrs = map (\(f, _) -> appendSeg baseAddr f) (toList $ getMutArgs mut)
               anyArgAffected = any (`Set.member` affectedAddrsSet) allArgAddrs
           , MutOp (UOp _) <- mut
           , not anyArgAffected -> do

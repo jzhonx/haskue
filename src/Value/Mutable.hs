@@ -10,8 +10,9 @@ module Value.Mutable where
 
 import qualified AST
 import Control.DeepSeq (NFData (..))
+import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
-import qualified Data.Set as Set
+import Feature (Feature, mkMutArgFeature)
 import GHC.Generics (Generic)
 import Value.Comprehension
 import Value.DisjoinOp
@@ -39,28 +40,27 @@ data MutOp
 pattern MutOp :: MutOp -> Mutable
 pattern MutOp op <- Mutable op _
 
-newtype MutFrame = MutFrame
-  { mfArgsReduced :: Set.Set Int
-  -- ^ mfArgsReduced keeps track of which argument has been reduced. It is used to avoid re-reducing the same argument.
-  }
+data MutFrame = MutFrame {}
   deriving (Generic)
 
 emptyMutFrame :: MutFrame
-emptyMutFrame = MutFrame{mfArgsReduced = Set.empty}
+emptyMutFrame = MutFrame{}
 
 withEmptyMutFrame :: MutOp -> Mutable
 withEmptyMutFrame op = Mutable op emptyMutFrame
 
-getMutArgs :: Mutable -> Seq.Seq Tree
-getMutArgs (Mutable op _) = mutOpArgs op
+getMutArgs :: Mutable -> Seq.Seq (Feature, Tree)
+getMutArgs (Mutable op _) =
+  let (xs, isUnify) = mutOpArgs op
+   in Seq.fromList $ zip (map (`mkMutArgFeature` isUnify) [0 ..]) (toList xs)
 
-mutOpArgs :: MutOp -> Seq.Seq Tree
-mutOpArgs (RegOp rop) = ropArgs rop
-mutOpArgs (Ref ref) = subRefArgs $ refArg ref
-mutOpArgs (Compreh c) = fmap getValFromIterClause c.args
-mutOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
-mutOpArgs (UOp u) = ufConjuncts u
-mutOpArgs (Itp itp) = itpExprs itp
+mutOpArgs :: MutOp -> (Seq.Seq Tree, Bool)
+mutOpArgs (RegOp rop) = (ropArgs rop, False)
+mutOpArgs (Ref ref) = (subRefArgs $ refArg ref, False)
+mutOpArgs (Compreh c) = (fmap getValFromIterClause c.args, False)
+mutOpArgs (DisjOp d) = (fmap dstValue (djoTerms d), False)
+mutOpArgs (UOp u) = (ufConjuncts u, True)
+mutOpArgs (Itp itp) = (itpExprs itp, False)
 
 updateMutArg :: Int -> Tree -> Mutable -> Mutable
 updateMutArg i t (Mutable op frame) = Mutable (updateMutOpArg i t op) frame
@@ -76,9 +76,6 @@ updateMutOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp
 modifyRegMut :: (RegularOp -> RegularOp) -> Mutable -> Mutable
 modifyRegMut f (Mutable (RegOp m) frame) = Mutable (RegOp $ f m) frame
 modifyRegMut _ r = r
-
-updateArgsReduced :: Set.Set Int -> Mutable -> Mutable
-updateArgsReduced s (Mutable op frame) = Mutable op (frame{mfArgsReduced = s})
 
 -- | RegularOp is a tree node that represents a function.
 data RegularOp = RegularOp

@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 
 module Value.Disj where
@@ -18,6 +17,8 @@ data Disj = Disj
   , dsjDisjuncts :: [Tree]
   -- ^ Disjuncts should not have values of type Disj or Bottom.
   -- It should have at least two disjuncts.
+  -- It is a result of reducing a disjunction operation. Each time a reduction is done, a new disjunct is created. It
+  -- means that the dependency should be cleared before reducing a disjunction operation.
   }
   deriving (Generic)
 

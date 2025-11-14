@@ -5,8 +5,9 @@
 module Value.Instances where
 
 import Control.DeepSeq (NFData (..))
+import Data.Aeson (ToJSON (..))
 import Data.Maybe (fromJust, isNothing)
-import StringIndex (ShowWithTextIndexer (..))
+import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Value.Block
 import Value.Comprehension
 import Value.Constraint
@@ -115,10 +116,16 @@ deriving instance Show TreeNode
 deriving instance Show TreeValGenEnv
 deriving instance Show Tree
 
-instance ShowWithTextIndexer Tree where
-  tshow t = do
+instance ShowWTIndexer Tree where
+  tshow = oneLinerStringOfTree
+
+instance ToJSON Tree where
+  toJSON t = toJSON (show t)
+
+instance ToJSONWTIndexer Tree where
+  ttoJSON t = do
     s <- oneLinerStringOfTree t
-    return s
+    return $ toJSON s
 
 -----
 -- NFData

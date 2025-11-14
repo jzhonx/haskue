@@ -20,7 +20,7 @@ import AST
 import Control.Monad (when)
 import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.RWS.Strict (RWST, runRWST)
+import Control.Monad.RWS.Strict (MonadState (get), RWST, runRWST)
 import Control.Monad.Reader (MonadReader (..))
 import Cursor
 import Data.ByteString.Builder (
@@ -150,25 +150,29 @@ evalToTree f conf =
       runRWST
         ( do
             root <- f
-            when (ecDebugMode conf) $
+            when (ecDebugMode conf) $ do
+              rep <- treeToFullRepString root
               liftIO $
                 hPutStr stderr $
-                  "Initial eval result: " ++ treeToFullRepString root ++ "\n"
+                  "Initial eval result: " ++ rep ++ "\n"
             let
               rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
             putTMCursor rootTC
             local (mapParams (\p -> p{createCnstr = True})) reduce
             local (mapParams (\p -> p{createCnstr = False})) postValidation
+
+            finalized <- get
+            let finalTC = finalized.rtsTC
+            when (ecDebugMode conf) $ do
+              rep <- treeToFullRepString (tcFocus finalTC)
+              liftIO $
+                hPutStr stderr $
+                  "Final eval result: " ++ rep ++ "\n"
         )
         (ReduceConfig config (emptyReduceParams{createCnstr = True}))
         (RTCState (TrCur (mkNewTree TNTop) []) emptyContext)
 
-    let finalTC = finalized.rtsTC
-    when (ecDebugMode conf) $
-      liftIO $
-        hPutStr stderr $
-          "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
     return
-      ( tcFocus finalTC
+      ( finalized.rtsTC.tcFocus
       , finalized.rtsCtx.tIndexer
       )

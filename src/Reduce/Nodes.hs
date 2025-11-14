@@ -13,6 +13,7 @@ import Cursor
 import Data.Aeson (KeyValue (..), ToJSON (..), object)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
+import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
@@ -45,19 +46,15 @@ import Reduce.RMonad (
   putTMCursor,
   throwFatal,
   traceSpanAdaptRM,
-  traceSpanAdaptTM,
   traceSpanArgsAdaptRM,
-  traceSpanArgsAdaptTM,
-  traceSpanArgsSimpleRM,
-  traceSpanMTreeRM,
-  traceSpanSimpleRM,
+  traceSpanArgsRMTC,
+  traceSpanRMTC,
   traceSpanTM,
-  traceSpanTreeRM,
  )
 import Reduce.RefSys (IdentType (..), searchTCIdent)
 import {-# SOURCE #-} Reduce.Root (reduce, reducePureTN, reduceToNonMut)
 import Reduce.UnifyOp (patMatchLabel)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..), textToTextIndex)
 import Text.Printf (printf)
 import Value
 import Value.Util.TreeRep (treeToRepString)
@@ -154,7 +151,8 @@ validateStructPerm = traceSpanTM "validateStructPerm" $ whenStruct $ \s -> do
       (stcPerms s)
   case r of
     Just err -> do
-      debugInstantTM "validateStructPerm" (printf "permission error: %s" (treeToRepString err))
+      rep <- treeToRepString err
+      debugInstantTM "validateStructPerm" (printf "permission error: %s" rep)
       modifyTMTN (TNStruct $ s{stcPermErr = Just err})
     Nothing -> modifyTMTN (TNStruct $ s{stcPermErr = Nothing})
 
@@ -165,7 +163,7 @@ A struct must be provided so that dynamic fields and constraints can be found.
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
 validatePermItem :: Struct -> PermItem -> TrCur -> RM (Maybe Tree)
-validatePermItem struct p tc = traceSpanSimpleRM "validatePermItem" tc $ do
+validatePermItem struct p tc = traceSpanRMTC "validatePermItem" tc $ do
   labelMs <- mapM convertLabel $ Set.toList $ piLabels p
   opLabelMs <- mapM convertLabel $ Set.toList $ piOpLabels p
   let
@@ -207,7 +205,7 @@ checkLabelAllowed ::
   TrCur ->
   RM Bool
 checkLabelAllowed baseLabels baseAllCnstrs newLabel tc =
-  traceSpanArgsSimpleRM
+  traceSpanArgsRMTC
     "checkLabelAllowed"
     ( printf
         "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s"
@@ -305,7 +303,7 @@ handleSObjChange = do
   let r = tcFocus tc
   case tcFocus stc of
     IsStruct struct
-      | FeatureType StringLabelType <- seg -> traceSpanAdaptTM (printf "handleSObjChange, seg: %s" (show seg)) emptySpanValue do
+      | FeatureType StringLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           let errM = case r of
                 IsBottom _ | IsTGenImmutable <- r -> Just r
                 _
@@ -317,7 +315,7 @@ handleSObjChange = do
               delTMDepPrefix $ tcAddr stc
             Nothing -> return ()
           return []
-      | FeatureType DynFieldLabelType <- seg -> traceSpanAdaptTM (printf "handleSObjChange, seg: %s" (show seg)) emptySpanValue do
+      | FeatureType DynFieldLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           let (i, _) = getDynFieldIndexesFromFeature seg
           (oldLRmd, remAffLabels) <- removeAppliedObject i struct stc
           let dsf = stcDynFields struct IntMap.! i
@@ -349,7 +347,7 @@ handleSObjChange = do
 
               propUpTM >> modifyTMTN (TNStruct newS) >> descendTMSegMust seg
               return $ genAddrs (tcAddr stc) affectedLabels
-      | FeatureType PatternLabelType <- seg -> traceSpanAdaptTM (printf "handleSObjChange, seg: %s" (show seg)) emptySpanValue do
+      | FeatureType PatternLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           -- Constrain all fields with the new constraint if it exists.
           let
             (i, _) = getPatternIndexesFromFeature seg
@@ -493,7 +491,7 @@ This is done by re-applying existing objects except the one that is removed beca
 -}
 removeAppliedObject :: Int -> Struct -> TrCur -> RM (Struct, [TextIndex])
 removeAppliedObject objID struct tc =
-  traceSpanAdaptRM "removeAppliedObject" (Just . mkStructTree . fst) emptySpanValue tc $ do
+  traceSpanAdaptRM "removeAppliedObject" emptySpanValue tc $ do
     (remAffFields, removedLabels) <-
       foldM
         ( \(accUpdated, accRemoved) (name, field) -> do
@@ -561,7 +559,7 @@ removeAppliedObject objID struct tc =
 
 -- | Apply the additional constraint to the fields.
 applyCnstrToFields :: StructCnstr -> Struct -> TrCur -> RM (Struct, [TextIndex])
-applyCnstrToFields cnstr struct tc = traceSpanSimpleRM "applyCnstrToFields" tc $ do
+applyCnstrToFields cnstr struct tc = traceSpanAdaptRM "applyCnstrToFields" (\x -> ttoJSON $ snd x) tc $ do
   (addAffFields, addAffLabels) <-
     foldM
       ( \(accFields, accLabels) (name, field) -> do
@@ -644,17 +642,14 @@ It reduces every conjunct node it finds.
 It should not be directly called.
 -}
 discoverPConjs :: RM [Maybe TrCur]
-discoverPConjs = traceSpanAdaptTM "discoverPConjs" emptySpanValue $ do
+discoverPConjs = traceSpanTM "discoverPConjs" $ do
   conjTC <- getTMCursor
   case tcFocus conjTC of
     IsTGenOp (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
     _ -> do
-      reduce
+      reduceToNonMut
       vM <- rtrNonMut <$> getTMTree
       return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
- where
-  -- adapt xs = toJSON (map (fmap (oneLinerStringOfTree . tcFocus)) xs)
-  adapt xs = toJSON ()
 
 {- | Discover pending conjuncts from a unify operation.
 
@@ -669,12 +664,12 @@ discoverPConjsFromUnifyOp = do
     TCFocus (IsTGenOp mut@(MutOp (UOp _))) -> do
       -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
       foldM
-        ( \acc (i, _) -> do
-            subs <- inSubTM (mkMutArgFeature i) discoverPConjs
+        ( \acc (f, _) -> do
+            subs <- inSubTM f discoverPConjs
             return (acc ++ subs)
         )
         []
-        (zip [0 ..] (toList $ getMutArgs mut))
+        (toList $ getMutArgs mut)
     _ -> throwFatal "discoverPConjsFromUnifyOp: not a mutable unify operation"
 
 data ResolvedPConjuncts
@@ -717,7 +712,7 @@ resolvePendingConjuncts pconjs tc = do
 
 resolveDisjOp :: TrCur -> RM (Maybe Tree)
 resolveDisjOp disjOpTC@(TCFocus (IsTGenOp (MutOp (DisjOp disjOp)))) =
-  traceSpanMTreeRM "resolveDisjOp" disjOpTC $ do
+  traceSpanRMTC "resolveDisjOp" disjOpTC $ do
     let terms = toList $ djoTerms disjOp
     when (length terms < 2) $
       throwFatal $
@@ -745,7 +740,7 @@ resolveDisjOp _ = throwFatal "resolveDisjOp: focus is not a disjunction operatio
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
 normalizeDisj :: (Tree -> Bool) -> Disj -> TrCur -> RM Tree
-normalizeDisj discardDisjunct d tc = traceSpanTreeRM "normalizeDisj" tc $ do
+normalizeDisj discardDisjunct d tc = traceSpanRMTC "normalizeDisj" tc $ do
   debugInstantRM "normalizeDisj" (printf "before: %s" (show $ mkDisjTree d)) tc
   flattened <- flattenDisjunction discardDisjunct d
   final <- modifyDisjuncts discardDisjunct flattened tc
@@ -795,9 +790,10 @@ TODO: more efficiency
 -}
 flattenDisjunction :: (Tree -> Bool) -> Disj -> RM Disj
 flattenDisjunction discardDisjunct (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
+  reps <- mapM treeToRepString disjuncts
   debugInstantOpRM
     "flattenDisjunction"
-    (printf "before disjuncts: %s, defIdxes: %s" (show $ map treeToRepString disjuncts) (show idxes))
+    (printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes))
     emptyTreeAddr
 
   -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
@@ -856,7 +852,6 @@ modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjunct
   traceSpanArgsAdaptRM
     "modifyDisjuncts"
     (show $ mkDisjTree idisj)
-    (const Nothing)
     -- (\x -> toJSON $ oneLinerStringOfTree $ mkDisjTree x)
     emptySpanValue
     tc
@@ -868,7 +863,7 @@ modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjunct
   origDefIdxesSet = Set.fromList dfIdxes
 
   go (accIs, accXs) (idx, v) = do
-    let canCancelRC = isJust $ addrIsSufRef (tcAddr tc)
+    let canCancelRC = isJust $ addrIsRfbAddr (tcAddr tc)
     case v of
       IsRefCycle | canCancelRC -> return (accIs, accXs)
       IsUnifiedWithRC True | canCancelRC -> return $ updateDisjuncts (accIs, accXs) (idx, v{isUnifiedWithRC = False})
@@ -977,7 +972,7 @@ data IterCtx = IterCtx
   deriving (Show)
 
 instance ToJSON IterCtx where
-  toJSON IterCtx{iterCnt, bindings, res} =
+  toJSON IterCtx{iterCnt} =
     object
       [ "iterCnt" .= iterCnt
       -- , "bindings" .= Map.map oneLinerStringOfTree bindings
@@ -985,6 +980,35 @@ instance ToJSON IterCtx where
       --     Left t -> object ["error" .= oneLinerStringOfTree t]
       --     Right ts -> object ["values" .= map oneLinerStringOfTree ts]
       ]
+
+instance ToJSONWTIndexer IterCtx where
+  ttoJSON i = do
+    bds <- ttoJSON i.bindings
+    r <- case i.res of
+      Left t -> do
+        tRep <- oneLinerStringOfTree t
+        return $ toJSON tRep
+      Right ts -> do
+        tReps <- mapM oneLinerStringOfTree ts
+        return $ toJSON tReps
+    return $
+      object
+        [ "iterCnt" .= i.iterCnt
+        , "bindings" .= bds
+        , "res" .= r
+        ]
+
+tshowBindings :: Map.Map TextIndex Binding -> RM T.Text
+tshowBindings binds = do
+  pairs <-
+    mapM
+      ( \(nameIdx, b) -> do
+          name <- tshow nameIdx
+          trep <- oneLinerStringOfTree b.value
+          return $ printf "%s: %s" (T.unpack name) (T.unpack trep)
+      )
+      (Map.toList binds)
+  return $ T.pack $ "{" ++ intercalate ", " pairs ++ "}"
 
 {- | Iterate through the comprehension clauses.
 
@@ -994,22 +1018,20 @@ bindings and adds the struct to the result list.
 comprehend :: Int -> Seq.Seq ComprehArg -> IterCtx -> RM IterCtx
 comprehend i args iterCtx
   -- The case for the template struct.
-  | i >= length args - 1 = traceSpanArgsAdaptTM
+  | i >= length args - 1 = traceSpanTM
       (printf "comprehend itercnt:%s, arg: %d" (show iterCtx.iterCnt) i)
-      (printf "iterctx: %s" (show iterCtx))
-      (return . toJSON)
       $ case iterCtx.res of
-        Left err ->
-          throwFatal $
-            printf "should not reach the leaf node if the result is already an error: %s" (treeToRepString err)
+        Left err -> do
+          rep <- treeToRepString err
+          throwFatal $ printf "should not reach the leaf node if the result is already an error: %s" rep
         Right vs -> do
           -- Reduce the template struct so that references in the struct can be resolved.
           r <-
             inSubTM
-              (mkMutArgFeature i)
+              (mkMutArgFeature i False)
               ( do
                   attachBindings iterCtx.bindings
-                  createUnique
+                  forkStruct
               )
           -- Make the reduced struct of this iteration immutable because it would simplify later unification of
           -- iteration results, mostly because of removal of the embedded value.
@@ -1017,8 +1039,9 @@ comprehend i args iterCtx
           return $ iterCtx{res = Right (vs ++ [r2]), iterCnt = iterCtx.iterCnt + 1}
   | otherwise = reduceClause i args iterCtx
 
-createUnique :: RM Tree
-createUnique = do
+-- | Fork the struct template for the comprehension iteration.
+forkStruct :: RM Tree
+forkStruct = do
   t <- getTMTree
   case t of
     IsStruct struct
@@ -1030,12 +1053,12 @@ createUnique = do
     _
       | TGenOp mut <- t.valGenEnv
       , let args = getMutArgs mut
-      , a Seq.:<| _ <- args
+      , (_, a) Seq.:<| _ <- args
       , IsStruct tmplStruct <- a -> do
           newStruct <- mkUnique tmplStruct
-          inSubTM (mkMutArgFeature 0) $ modifyTMTN $ TNStruct newStruct
+          inSubTM (mkMutArgFeature 0 True) $ modifyTMTN $ TNStruct newStruct
           forM_ [1 .. length args - 1] $ \i ->
-            inSubTM (mkMutArgFeature i) $ modifyTMTree $ \x -> x{embType = ETEmbedded newStruct.stcID}
+            inSubTM (mkMutArgFeature i True) $ modifyTMTree $ \x -> x{embType = ETEmbedded newStruct.stcID}
           getTMTree
     _ -> throwFatal "attachBindings can only be used with a struct template"
  where
@@ -1158,12 +1181,13 @@ reduceClauseWithBindings i bindings = do
     TCFocus (IsTGenOp mut@(MutOp (Compreh cph))) -> do
       let newTC = modifyTCFocus (\t -> t{valGenEnv = TGenOp $ setMutOp (Compreh cph{iterBindings = bindings}) mut}) tc
       putTMCursor newTC
-      inSubTM (mkMutArgFeature i) (reduce >> getTMTree)
+      inSubTM (mkMutArgFeature i False) (reduce >> getTMTree)
     _ -> throwFatal "reduceClauseWithBindings can only be used with a mutable comprehension"
 
--- | Insert bindings into the template struct.
+-- | Make bindings immutable and insert into the template struct.
 attachBindings :: Map.Map TextIndex Tree -> RM ()
-attachBindings bindings = do
+attachBindings rawBindings = do
+  let bindings = Map.map makeTreeImmutable rawBindings
   t <- getTMTree
   case t of
     IsStruct struct
@@ -1175,13 +1199,14 @@ attachBindings bindings = do
               Map.union
                 cleanBindings
                 (Map.map (\x -> Binding x True) bindings)
-          debugInstantTM "attachBindings" (printf "new bindings: %s" (show newBindings))
+          bStr <- tshowBindings newBindings
+          debugInstantTM "attachBindings" (printf "new bindings: %s" bStr)
           modifyTMTN $ TNStruct $ struct{stcBindings = newBindings}
     -- The template struct can have embedded values.
     _
       | TGenOp mut <- t.valGenEnv
       , let args = getMutArgs mut
-      , a Seq.:<| _ <- args
+      , (f, a) Seq.:<| _ <- args
       , IsStruct tmplStruct <- a -> do
           -- The original let bindings in the struct should take the precedence over the iteration bindings.
           let
@@ -1190,8 +1215,9 @@ attachBindings bindings = do
               Map.union
                 cleanBindings
                 (Map.map (\x -> Binding x True) bindings)
-          debugInstantTM "attachBindings" (printf "new bindings: %s" (show newBindings))
-          inSubTM (mkMutArgFeature 0) $ modifyTMTN $ TNStruct $ tmplStruct{stcBindings = newBindings}
+          bStr <- tshowBindings newBindings
+          debugInstantTM "attachBindings" (printf "new bindings: %s" bStr)
+          inSubTM f $ modifyTMTN $ TNStruct $ tmplStruct{stcBindings = newBindings}
     _ -> throwFatal "attachBindings can only be used with a struct template"
 
 resolveInterpolation :: Interpolation -> [Tree] -> RM (Maybe Tree)

@@ -8,6 +8,7 @@ module Feature where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)
+import Data.Aeson (ToJSON, toJSON)
 import Data.Bits (Bits (..))
 import Data.Hashable (Hashable (..))
 import Data.List (intercalate)
@@ -83,15 +84,18 @@ instance Show Feature where
     ListStoreIdxLabelType -> "lsi" ++ show (fetchIndex f)
     ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
-    MutArgLabelType -> "fa" ++ show (fetchIndex f)
+    MutArgLabelType -> "fa" ++ showSub (getMutArgInfoFromFeature f) (\case True -> "u"; False -> "")
     TempLabelType -> "tmp"
     StringLabelType -> "str_" ++ show (fetchIndex f)
     LetLabelType -> "let_" ++ show (fetchIndex f)
-    PatternLabelType -> "cns_" ++ show (fetchIndex f)
-    DynFieldLabelType -> "dyn_" ++ show (fetchIndex f)
+    PatternLabelType -> "cns_" ++ showSub (getPatternIndexesFromFeature f) show
+    DynFieldLabelType -> "dyn_" ++ showSub (getDynFieldIndexesFromFeature f) show
     StubFieldLabelType -> "__" ++ show (fetchIndex f)
+   where
+    showSub :: (Int, a) -> (a -> String) -> String
+    showSub (x, y) g = show x ++ "_" ++ g y
 
-instance ShowWithTextIndexer Feature where
+instance ShowWTIndexer Feature where
   tshow f = case fetchLabelType f of
     StubFieldLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))
@@ -121,9 +125,6 @@ mkFeature i lType = Feature $ (fromEnum lType `shiftL` 24) .|. (i .&. 0x00FFFFFF
 mkStringFeature :: TextIndex -> Feature
 mkStringFeature (TextIndex i) = mkFeature i StringLabelType
 
-mkMutArgFeature :: Int -> Feature
-mkMutArgFeature i = mkFeature i MutArgLabelType
-
 mkListStoreIdxFeature :: Int -> Feature
 mkListStoreIdxFeature i = mkFeature i ListStoreIdxLabelType
 
@@ -132,6 +133,13 @@ mkListIdxFeature i = mkFeature i ListIdxLabelType
 
 mkDisjFeature :: Int -> Feature
 mkDisjFeature i = mkFeature i DisjLabelType
+
+-- | The second argument indicates whether it is a unify operator or not.
+mkMutArgFeature :: Int -> Bool -> Feature
+mkMutArgFeature index selector = mkFeature combined MutArgLabelType
+ where
+  shiftedSelector = (if selector then 1 else 0) `shiftL` 23
+  combined = index .|. shiftedSelector
 
 {- | The first is the ObjectID, the second indicates the i-th in the dynamic field.
 
@@ -185,6 +193,15 @@ getTextIndexFromFeature f = case fetchLabelType f of
   StubFieldLabelType -> TextIndex (fetchIndex f)
   _ -> error $ printf "Feature %s does not have a TextIndex" (show f)
 
+getMutArgInfoFromFeature :: Feature -> (Int, Bool)
+getMutArgInfoFromFeature f = case fetchLabelType f of
+  MutArgLabelType ->
+    let combined = fetchIndex f
+        index = combined .&. 0x007FFFFF -- lower 23 bits
+        selector = (combined `shiftR` 23) .&. 1 -- next bit
+     in (index, selector == 1)
+  _ -> error $ "Feature is not a MutArgLabelType: " ++ show f
+
 getPatternIndexesFromFeature :: Feature -> (Int, Int)
 getPatternIndexesFromFeature f = case fetchLabelType f of
   PatternLabelType ->
@@ -206,6 +223,7 @@ getDynFieldIndexesFromFeature f = case fetchLabelType f of
 isFeatureReducible :: Feature -> Bool
 isFeatureReducible f = case fetchLabelType f of
   MutArgLabelType -> True
+  -- TODO: document why DisjLabelType is considered reducible.
   DisjLabelType -> True
   _ -> False
 
@@ -226,16 +244,17 @@ textToStringFeature s = mkStringFeature <$> textToTextIndex s
 strToStringFeature :: (MonadState s m, HasTextIndexer s) => String -> m Feature
 strToStringFeature s = textToStringFeature (T.pack s)
 
+-- | Unary operation can not be a unify operation.
 unaryOpTASeg :: Feature
-unaryOpTASeg = mkMutArgFeature 0
+unaryOpTASeg = mkMutArgFeature 0 False
 
-binOpLeftTASeg :: Feature
+binOpLeftTASeg :: Bool -> Feature
 binOpLeftTASeg = mkMutArgFeature 0
 
-binOpRightTASeg :: Feature
+binOpRightTASeg :: Bool -> Feature
 binOpRightTASeg = mkMutArgFeature 1
 
-toBinOpTASeg :: BinOpDirect -> Feature
+toBinOpTASeg :: BinOpDirect -> Bool -> Feature
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
 
@@ -259,7 +278,7 @@ newtype TreeAddr = TreeAddr
   }
   deriving (Show, Eq, Ord, Generic, NFData)
 
-instance ShowWithTextIndexer TreeAddr where
+instance ShowWTIndexer TreeAddr where
   tshow (TreeAddr a)
     | V.null a = return "."
     | a V.! 0 == rootFeature = do
@@ -271,6 +290,14 @@ instance ShowWithTextIndexer TreeAddr where
 
 instance Hashable TreeAddr where
   hashWithSalt salt (TreeAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
+
+instance ToJSON TreeAddr where
+  toJSON a = toJSON (show a)
+
+instance ToJSONWTIndexer TreeAddr where
+  ttoJSON a = do
+    s <- tshow a
+    return $ toJSON s
 
 mkTreeAddr :: V.Vector Feature -> TreeAddr
 mkTreeAddr = TreeAddr
@@ -358,12 +385,26 @@ trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
 {- | SuffixIrredAddr is an addr that ends with an irreducible segment.
 
 Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
+
+For an address to be irreducible, there is no need to make sure all segments are irreducible.
+For example,
+  x: ({a:1,b:a}).b | 1.
+
+The addr of the b is /x/fa0/fa0/b, which is not all irreducible.
 -}
 newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector Feature}
   deriving (Show, Eq, Ord, Generic, NFData)
 
-instance ShowWithTextIndexer SuffixIrredAddr where
+instance ShowWTIndexer SuffixIrredAddr where
   tshow a = tshow $ sufIrredToAddr a
+
+instance ToJSON SuffixIrredAddr where
+  toJSON a = toJSON (show a)
+
+instance ToJSONWTIndexer SuffixIrredAddr where
+  ttoJSON a = do
+    s <- tshow a
+    return $ toJSON s
 
 addrIsSufIrred :: TreeAddr -> Maybe SuffixIrredAddr
 addrIsSufIrred (TreeAddr xs)
@@ -387,10 +428,10 @@ trimAddrToSufIrred (TreeAddr xs) =
 sufIrredToAddr :: SuffixIrredAddr -> TreeAddr
 sufIrredToAddr (SuffixIrredAddr xs) = mkTreeAddr xs
 
-sufIrredIsSufRef :: SuffixIrredAddr -> Maybe SuffixReferableAddr
-sufIrredIsSufRef (SuffixIrredAddr xs)
-  | V.null xs = Just $ SuffixReferableAddr V.empty
-  | isFeatureReferable (V.last xs) = Just $ SuffixReferableAddr xs
+sufIrredIsRfb :: SuffixIrredAddr -> Maybe ReferableAddr
+sufIrredIsRfb (SuffixIrredAddr xs)
+  | V.null xs = Just $ ReferableAddr V.empty
+  | isFeatureReferable (V.last xs) = Just $ ReferableAddr xs
   | otherwise = Nothing
 
 initSufIrred :: SuffixIrredAddr -> Maybe SuffixIrredAddr
@@ -398,15 +439,50 @@ initSufIrred (SuffixIrredAddr xs)
   | V.null xs = Nothing
   | otherwise = Just $ SuffixIrredAddr (V.init xs)
 
-{- | Trim the addr to the suffix referable addr.
-trimAddrToSufRef :: TreeAddr -> SuffixReferableAddr
-trimAddrToSufRef (TreeAddr xs) = SuffixReferableAddr (V.slice 0 trimmedLen xs)
- where
-  -- Use fusion to find the trim size.
-  trimmedLen = V.length (V.dropWhile (not . isFeatureReferable) (V.reverse xs))
+{- | ReferableAddr is a referrable address.
+
+A referable address must end with a referable segment. In its features, there should be no unify operator arguments
+because unification creates a block that replaces the original structure, making it unreferable.
+
+For an address to be referable, there is no need to make sure all segments are referable.
+For example,
+  x: ({a:1,b:a})[b] + 1, or
+  x: {a:1,b:a} | 1.
+
+For the second expression, the addr of the a is /x/dj0/a, which is referable even though dj0 is not referable.
 -}
-trimAddrToSufRef :: TreeAddr -> SuffixReferableAddr
-trimAddrToSufRef (TreeAddr xs) =
+newtype ReferableAddr = ReferableAddr {getReferableAddr :: V.Vector Feature}
+  deriving (Show, Eq, Ord, Generic, NFData)
+
+instance ShowWTIndexer ReferableAddr where
+  tshow a = tshow $ rfbAddrToAddr a
+
+instance ToJSON ReferableAddr where
+  toJSON a = toJSON (show a)
+
+instance ToJSONWTIndexer ReferableAddr where
+  ttoJSON a = do
+    s <- tshow a
+    return $ toJSON s
+
+rfbAddrToAddr :: ReferableAddr -> TreeAddr
+rfbAddrToAddr (ReferableAddr xs) = mkTreeAddr xs
+
+rfbAddrToSufIrred :: ReferableAddr -> SuffixIrredAddr
+rfbAddrToSufIrred (ReferableAddr xs) = SuffixIrredAddr xs
+
+addrIsRfbAddr :: TreeAddr -> Maybe ReferableAddr
+addrIsRfbAddr (TreeAddr xs)
+  | V.null xs = Just $ ReferableAddr V.empty
+  | isFeatureReferable (V.last xs) = Just $ ReferableAddr xs
+  | otherwise = Nothing
+
+{- | Trim the address to the referable addr.
+
+It first trims the suffix that is not referable, then removes unify operator mut args in all features.
+-}
+trimAddrToRfb :: TreeAddr -> ReferableAddr
+trimAddrToRfb (TreeAddr xs) =
   let len = V.length xs
       trimmedLen = go (len - 1)
        where
@@ -414,22 +490,11 @@ trimAddrToSufRef (TreeAddr xs) =
           | i < 0 = 0
           | isFeatureReferable (xs V.! i) = i + 1
           | otherwise = go (i - 1)
-   in SuffixReferableAddr (V.slice 0 trimmedLen xs)
-
-newtype SuffixReferableAddr = SuffixReferableAddr {getReferableAddr :: V.Vector Feature}
-  deriving (Show, Eq, Ord, Generic, NFData)
-
-instance ShowWithTextIndexer SuffixReferableAddr where
-  tshow a = tshow $ sufRefToAddr a
-
-sufRefToAddr :: SuffixReferableAddr -> TreeAddr
-sufRefToAddr (SuffixReferableAddr xs) = mkTreeAddr xs
-
-sufRefToSufIrred :: SuffixReferableAddr -> SuffixIrredAddr
-sufRefToSufIrred (SuffixReferableAddr xs) = SuffixIrredAddr xs
-
-addrIsSufRef :: TreeAddr -> Maybe SuffixReferableAddr
-addrIsSufRef (TreeAddr xs)
-  | V.null xs = Just $ SuffixReferableAddr V.empty
-  | isFeatureReferable (V.last xs) = Just $ SuffixReferableAddr xs
-  | otherwise = Nothing
+   in ReferableAddr
+        ( V.filter
+            ( \f -> case fetchLabelType f of
+                MutArgLabelType | (_, isUnifyOp) <- getMutArgInfoFromFeature f, isUnifyOp -> False
+                _ -> True
+            )
+            $ V.slice 0 trimmedLen xs
+        )

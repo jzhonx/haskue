@@ -41,15 +41,15 @@ ngTests =
 -- absC = buildAbsTA "c"
 -- absY = buildAbsTA "y"
 
--- -- irredToRef :: SuffixIrredAddr -> SuffixReferableAddr
--- -- irredToRef a = fromJust $ sufIrredIsSufRef a
+-- -- irredToRef :: SuffixIrredAddr -> ReferableAddr
+-- -- irredToRef a = fromJust $ sufIrredIsRfb a
 
 -- buildG :: [(SuffixIrredAddr, SuffixIrredAddr)] -> NotifGraph
 -- buildG =
 --   foldr
 --     ( \(dep, target) acc ->
 --         addDepToNGRaw
---           (sufIrredToAddr dep, fromJust $ sufIrredIsSufRef target)
+--           (sufIrredToAddr dep, fromJust $ sufIrredIsRfb target)
 --           acc
 --     )
 --     emptyNotifGraph
@@ -59,7 +59,7 @@ ngTests =
 --   foldr
 --     ( \(dep, target) acc ->
 --         addDepToNGRaw
---           (dep, fromJust $ sufIrredIsSufRef target)
+--           (dep, fromJust $ sufIrredIsRfb target)
 --           acc
 --     )
 --     emptyNotifGraph

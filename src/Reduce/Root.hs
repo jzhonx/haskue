@@ -8,10 +8,8 @@ module Reduce.Root where
 
 import Control.Monad (foldM, when)
 import Cursor
-import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust)
-import qualified Data.Set as Set
 import Feature
 import NotifGraph (lookupGrpAddr)
 import Reduce.Nodes (
@@ -31,7 +29,6 @@ import Reduce.RMonad (
   Context (..),
   RM,
   debugInstantTM,
-  emptySpanValue,
   getIsReducingRC,
   getRMContext,
   getTMAbsAddr,
@@ -45,7 +42,6 @@ import Reduce.RMonad (
   preVisitTree,
   pushRecalcRootQ,
   throwFatal,
-  traceSpanAdaptTM,
   traceSpanTM,
   treeDepthCheck,
  )
@@ -83,8 +79,8 @@ reduce = do
                   preVisitTree
                     (subNodes False)
                     ( \(x, a) -> case do
-                        raddr <- addrIsSufRef (tcAddr x)
-                        lookupGrpAddr (sufRefToSufIrred raddr) ng of
+                        raddr <- addrIsRfbAddr (tcAddr x)
+                        lookupGrpAddr (rfbAddrToSufIrred raddr) ng of
                         Just gAddr -> return (x, gAddr : a)
                         Nothing -> return (x, a)
                     )
@@ -96,7 +92,7 @@ reduce = do
     )
     xs
 
-  when (isJust $ addrIsSufRef origAddr) recalc
+  when (isJust $ addrIsRfbAddr origAddr) recalc
 
 withTreeDepthLimit :: RM a -> RM a
 withTreeDepthLimit f = do
@@ -110,7 +106,6 @@ withTreeDepthLimit f = do
   return r
  where
   push addr = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
-
   pop = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
 
 reducePureFocus :: RM ()
@@ -224,33 +219,21 @@ It writes the reduced arguments back to the mutable tree and returns the reduced
 It also returns the reduced arguments and whether the arguments are all reduced.
 -}
 reduceArgs :: RM () -> (Tree -> Maybe Tree) -> RM ([Maybe Tree], Bool)
-reduceArgs reduceFunc rtr = traceSpanAdaptTM "reduceArgs" emptySpanValue $ do
+reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
   tc <- getTMCursor
   case tcFocus tc of
-    IsTGenOp mut@(Mutable _ mf) -> do
-      (reducedArgs, updatedReducedSet) <-
+    IsTGenOp mut@(Mutable _ _) -> do
+      reducedArgs <-
         foldM
-          ( \(accArgs, argsReducedSet) (i, _) -> do
-              if not (i `Set.member` argsReducedSet)
-                then do
-                  r <- inSubTM (mkMutArgFeature i) $ reduceFunc >> rtr <$> getTMTree
-                  return (r : accArgs, Set.insert i argsReducedSet)
-                else do
-                  r <- inSubTM (mkMutArgFeature i) $ rtr <$> getTMTree
-                  return (r : accArgs, argsReducedSet)
+          ( \accArgs (f, _) -> do
+              r <- inSubTM f $ reduceFunc >> rtr <$> getTMTree
+              return (r : accArgs)
           )
-          ([], mfArgsReduced mf)
-          (zip [0 ..] (toList $ getMutArgs mut))
-
-      modifyTMTree $ \t -> case t of
-        IsTGenOp newMut -> t{valGenEnv = TGenOp $ updateArgsReduced updatedReducedSet newMut}
-        _ -> t
+          []
+          (toList $ getMutArgs mut)
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwFatal "reduceArgs: not a mutable tree"
- where
-  -- adapt (xs, b) = toJSON (map (fmap oneLinerStringOfTree) xs, b)
-  adapt (xs, b) = toJSON ()
 
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
