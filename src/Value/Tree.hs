@@ -12,7 +12,8 @@ module Value.Tree where
 
 import AST (exprToOneLinerStr)
 import qualified AST
-import Control.Monad.Except (runExceptT)
+import Control.Monad.Except (runExcept)
+import Control.Monad.State.Strict (gets, modify')
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
@@ -29,7 +30,7 @@ import Feature (
   getTextFromFeature,
  )
 import GHC.Generics (Generic)
-import StringIndex (TextIndexerMonad, textToTextIndex)
+import StringIndex (HasTextIndexer (..), TextIndexerMonad, getTextIndexer, textToTextIndex)
 import Value.Atom
 import Value.Block
 import Value.Bottom
@@ -413,11 +414,14 @@ builtinMutableTable =
 -- | Create a one-liner string representation of the snapshot of the tree.
 oneLinerStringOfTree :: (TextIndexerMonad s m) => Tree -> m T.Text
 oneLinerStringOfTree t = do
-  let m = buildASTExprDebug t
-  e <- runExceptT m
+  tier <- gets getTextIndexer
+  let m = buildASTExprDebug t tier
+      e = runExcept m
   case e of
     Left err -> return $ T.pack err
-    Right expr -> return $ T.pack $ exprToOneLinerStr expr
+    Right (expr, newTier) -> do
+      modify' $ setTextIndexer newTier
+      return $ T.pack $ exprToOneLinerStr expr
 
 invalidateMutable :: Tree -> Tree
 invalidateMutable t@(IsTGenOp _) = t{treeNode = TNNoVal}

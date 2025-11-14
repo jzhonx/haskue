@@ -43,6 +43,10 @@ data TextIndexer = TextIndexer
   }
   deriving (Eq, Show, Generic, NFData)
 
+instance HasTextIndexer TextIndexer where
+  getTextIndexer = id
+  setTextIndexer newIndexer _ = newIndexer
+
 emptyTextIndexer :: TextIndexer
 emptyTextIndexer = TextIndexer V.empty Map.empty
 

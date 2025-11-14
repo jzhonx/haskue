@@ -15,16 +15,16 @@ where
 
 import qualified AST
 import Control.Monad (foldM)
-import Control.Monad.Reader (MonadReader, ask, asks, runReaderT)
+import Control.Monad.Except (Except, MonadError (..))
+import Control.Monad.RWS.Strict (RWST, runRWST)
+import Control.Monad.Reader (MonadTrans (lift), asks)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Env (ErrorEnv, HasConfig (..))
 import Exception (throwErrSt)
-import Feature (Feature, mkStringFeature)
-import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexerMonad, textToTextIndex)
+import StringIndex (ShowWithTextIndexer (..), TextIndex, TextIndexer, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
 import Value.Block
@@ -40,32 +40,23 @@ import Value.Tree
 import Value.UnifyOp
 import Value.Util.TreeRep
 
-buildASTExpr :: (ErrorEnv m, MonadReader r m, TextIndexerMonad s m) => Tree -> m AST.Expression
-buildASTExpr t = do
-  conf <- ask
-  runReaderT (buildASTExprExt t) (BuildConfig False conf)
+type EM = RWST BuildConfig () TextIndexer (Except String)
 
-buildASTExprDebug :: (ErrorEnv m, TextIndexerMonad s m) => Tree -> m AST.Expression
-buildASTExprDebug t = runReaderT (buildASTExprExt t) (BuildConfig True ())
+buildASTExpr :: Tree -> TextIndexer -> Except String (AST.Expression, TextIndexer)
+buildASTExpr t tier = do
+  (a, s, _) <- runRWST (buildASTExprExt t) (BuildConfig False) tier
+  return (a, s)
 
-class HasBuildConfig r where
-  getIsDebug :: r -> Bool
+buildASTExprDebug :: Tree -> TextIndexer -> Except String (AST.Expression, TextIndexer)
+buildASTExprDebug t tier = do
+  (a, s, _) <- runRWST (buildASTExprExt t) (BuildConfig True) tier
+  return (a, s)
 
-type BEnv r s m = (ErrorEnv m, MonadReader r m, HasBuildConfig r, TextIndexerMonad s m)
-
-data BuildConfig a = BuildConfig
-  { bcIsDebug :: Bool
-  , bcOther :: a
+newtype BuildConfig = BuildConfig
+  { isDebug :: Bool
   }
 
-instance HasBuildConfig (BuildConfig a) where
-  getIsDebug = bcIsDebug
-
-instance (HasConfig a) => HasConfig (BuildConfig a) where
-  getConfig bc = getConfig (bcOther bc)
-  setConfig bc c = bc{bcOther = setConfig (bcOther bc) c}
-
-buildASTExprExt :: (BEnv r s m) => Tree -> m AST.Expression
+buildASTExprExt :: Tree -> EM AST.Expression
 buildASTExprExt t@Tree{isUnifiedWithRC = True} = buildUWCASTExpr t
 buildASTExprExt t@Tree{isSCyclic = True} = buildSCyclicASTExpr t
 buildASTExprExt t@(IsTGenOp mut) | IsNoVal <- t = buildMutableASTExpr mut t
@@ -89,33 +80,33 @@ buildASTExprExt t = case treeNode t of
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
   TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   TNRefCycle -> buildRCASTExpr t
-  TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
-  TNNoVal -> throwExprNotFound t
+  TNRefSubCycle _ -> maybe (lift $ throwExprNotFound t) return (treeExpr t)
+  TNNoVal -> lift $ throwExprNotFound t
 
-throwExprNotFound :: (ErrorEnv m) => Tree -> m a
+throwExprNotFound :: Tree -> Except String a
 throwExprNotFound t = do
   let rep = buildRepTree t defaultTreeRepBuildOption
-  throwErrSt $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
+  throwError $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) (repToString 0 rep)
 
-buildMutableASTExpr :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
+buildMutableASTExpr :: Mutable -> Tree -> EM AST.Expression
 buildMutableASTExpr mut t = do
   -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
   -- not ready.
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then buildMutableASTExprForce mut t
     -- TODO: handle parenthese in treeExpr. Currently treeExpr does not have parenthese.
     else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
 
-buildAtomCnstrASTExpr :: (BEnv r s m) => AtomCnstr -> Tree -> m AST.Expression
+buildAtomCnstrASTExpr :: AtomCnstr -> Tree -> EM AST.Expression
 buildAtomCnstrASTExpr ac t = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then buildArgsExpr "atomCnstr" [mkAtomTree ac.value, cnsValidator ac]
     -- TODO: for non-core type, we should not build AST in non-debug mode.
     else maybe (buildASTExprExt $ cnsValidator ac) return (treeExpr t)
 
-buildMutableASTExprForce :: (BEnv r s m) => Mutable -> Tree -> m AST.Expression
+buildMutableASTExprForce :: Mutable -> Tree -> EM AST.Expression
 buildMutableASTExprForce (Mutable mop _) t = case mop of
   RegOp op -> buildRegOpASTExpr op
   Ref ref -> buildRefASTExpr ref
@@ -126,30 +117,30 @@ buildMutableASTExprForce (Mutable mop _) t = case mop of
         AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
   DisjOp dop -> buildDisjoinOpASTExpr dop t
   UOp u -> buildUnifyOpASTExpr u
-  Itp _ -> throwExprNotFound t
+  Itp _ -> lift $ throwExprNotFound t
 
-buildRCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
+buildRCASTExpr :: Tree -> EM AST.Expression
 buildRCASTExpr _ = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then return (AST.idCons $ pure $ T.pack "RC")
     else throwErrSt "ref-cycle expression should not be built in non-debug mode"
 
-buildUWCASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
+buildUWCASTExpr :: Tree -> EM AST.Expression
 buildUWCASTExpr inner = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then buildUnifyOpASTExpr (UnifyOp (Seq.fromList [mkNewTree TNRefCycle, inner]))
     else throwErrSt "unified-with-rc expression should not be built in non-debug mode"
 
-buildSCyclicASTExpr :: (BEnv r s m) => Tree -> m AST.Expression
+buildSCyclicASTExpr :: Tree -> EM AST.Expression
 buildSCyclicASTExpr inner = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then buildArgsExpr "SC" [inner{isSCyclic = False}]
     else throwErrSt "structural cycle expression should not be built in non-debug mode"
 
-buildStaticFieldExpr :: (BEnv r s m) => (TextIndex, Field) -> m AST.Declaration
+buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
   sel <- tshow sIdx
   e <- buildASTExprExt (ssfValue sf)
@@ -166,7 +157,7 @@ buildStaticFieldExpr (sIdx, sf) = do
             )
   return decl
 
-buildDynFieldExpr :: (BEnv r s m) => DynamicField -> m AST.Declaration
+buildDynFieldExpr :: DynamicField -> EM AST.Declaration
 buildDynFieldExpr sf = do
   le <- buildASTExprExt (dsfLabel sf)
   ve <- buildASTExprExt (dsfValue sf)
@@ -185,7 +176,7 @@ buildDynFieldExpr sf = do
             )
   return decl
 
-buildPatternExpr :: (BEnv r s m) => StructCnstr -> m AST.Declaration
+buildPatternExpr :: StructCnstr -> EM AST.Declaration
 buildPatternExpr pat = do
   pte <- buildASTExprExt (scsPattern pat)
   ve <- buildASTExprExt (scsValue pat)
@@ -193,7 +184,7 @@ buildPatternExpr pat = do
     AST.FieldDecl
       AST.<^> pure (AST.Field [labelPatternCons pte] ve)
 
-buildLetExpr :: (BEnv r s m) => (TextIndex, Binding) -> m AST.Declaration
+buildLetExpr :: (TextIndex, Binding) -> EM AST.Declaration
 buildLetExpr (ident, binding) = do
   s <- tshow ident
   ve <- buildASTExprExt binding.value
@@ -202,7 +193,7 @@ buildLetExpr (ident, binding) = do
     letClause = pure (AST.LetClause (pure s) ve)
   return (pure $ AST.DeclLet letClause)
 
--- buildEmbedExpr :: (BEnv r s m) => Embedding -> m AST.Declaration
+-- buildEmbedExpr ::  Embedding -> m AST.Declaration
 -- buildEmbedExpr embed = case embValue embed of
 --   IsTGenOp (MutOp (Compreh c)) -> do
 --     ce <- buildComprehASTExpr c
@@ -226,14 +217,14 @@ labelCons a ln =
 labelPatternCons :: AST.Expression -> AST.Label
 labelPatternCons le = AST.Label AST.<^> pure (AST.LabelPattern le)
 
-buildStructASTExpr :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExpr :: Struct -> Tree -> EM AST.Expression
 buildStructASTExpr struct t = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then buildStructASTExprDebug struct t
     else buildStructASTExprNormal struct t
 
-buildStructASTExprDebug :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExprDebug :: Struct -> Tree -> EM AST.Expression
 buildStructASTExprDebug s _ = do
   statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
   dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
@@ -245,7 +236,7 @@ buildStructASTExprDebug s _ = do
     e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
   return e
 
-buildStructASTExprNormal :: (BEnv r s m) => Struct -> Tree -> m AST.Expression
+buildStructASTExprNormal :: Struct -> Tree -> EM AST.Expression
 buildStructASTExprNormal _ (IsEmbedVal v) = buildASTExprExt v
 buildStructASTExprNormal s t = do
   r <- buildStructOrdLabels rtrString s
@@ -274,7 +265,7 @@ buildStructASTExprNormal s t = do
         return
         (treeExpr t)
 
-buildComprehASTExpr :: (BEnv r s m) => Comprehension -> m AST.Comprehension
+buildComprehASTExpr :: Comprehension -> EM AST.Comprehension
 buildComprehASTExpr cph = do
   let argList = toList cph.args
       clauses = init argList
@@ -371,10 +362,10 @@ bdRep b = case b of
   BdType t -> show t
   BdIsAtom _ -> "="
 
-disjunctsToAST :: (BEnv r s m) => [Tree] -> m AST.Expression
+disjunctsToAST :: [Tree] -> EM AST.Expression
 disjunctsToAST ds = do
   xs <- mapM buildASTExprExt ds
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   -- We might print unresolved disjunctions in debug mode with only one disjunct.
   if isDebug && length xs < 2
     then case xs of
@@ -387,7 +378,7 @@ disjunctsToAST ds = do
           (\x acc -> pure $ AST.ExprBinaryOp (pure AST.Disjoin) x acc)
           xs
 
-buildUnifyOpASTExpr :: (BEnv r s m) => UnifyOp -> m AST.Expression
+buildUnifyOpASTExpr :: UnifyOp -> EM AST.Expression
 buildUnifyOpASTExpr op
   | fstConj Seq.:<| rest <- ufConjuncts op
   , -- The rest should be a non-empty sequence.
@@ -402,12 +393,12 @@ buildUnifyOpASTExpr op
         rest
   | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
-buildDisjoinOpASTExpr :: (BEnv r s m) => DisjoinOp -> Tree -> m AST.Expression
+buildDisjoinOpASTExpr :: DisjoinOp -> Tree -> EM AST.Expression
 buildDisjoinOpASTExpr op t = do
-  isDebug <- asks getIsDebug
+  isDebug <- asks isDebug
   if isDebug
     then go
-    else throwExprNotFound t
+    else lift $ throwExprNotFound t
  where
   go
     | fstDisj Seq.:<| rest <- djoTerms op
@@ -423,7 +414,7 @@ buildDisjoinOpASTExpr op t = do
           rest
     | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
-buildRefASTExpr :: (BEnv r s m) => Reference -> m AST.Expression
+buildRefASTExpr :: Reference -> EM AST.Expression
 buildRefASTExpr ref = case refArg ref of
   RefPath var xs -> do
     varS <- tshow var
@@ -460,7 +451,7 @@ buildRefASTExpr ref = case refArg ref of
         return $ AST.ExprUnaryExpr AST.<^> pure (AST.UnaryExprPrimaryExpr r)
       _ -> throwErrSt "RefIndex should have at least one element"
 
-buildRegOpASTExpr :: (BEnv r s m) => RegularOp -> m AST.Expression
+buildRegOpASTExpr :: RegularOp -> EM AST.Expression
 buildRegOpASTExpr op = case ropOpType op of
   UnaryOpType uop
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
@@ -469,7 +460,7 @@ buildRegOpASTExpr op = case ropOpType op of
   CloseFunc -> return $ AST.litCons (AST.strToLit (T.pack "close func"))
   _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
-buildUnaryExpr :: (BEnv r s m) => AST.UnaryOp -> Tree -> m AST.Expression
+buildUnaryExpr :: AST.UnaryOp -> Tree -> EM AST.Expression
 buildUnaryExpr op t = do
   te <- buildASTExprExt t
   case AST.anVal te of
@@ -483,13 +474,13 @@ buildUnaryExpr op t = do
           AST.<<^>> AST.OpExpression
           AST.<^> te
 
-buildBinaryExpr :: (BEnv r s m) => AST.BinaryOp -> Tree -> Tree -> m AST.Expression
+buildBinaryExpr :: AST.BinaryOp -> Tree -> Tree -> EM AST.Expression
 buildBinaryExpr op l r = do
   xe <- buildASTExprExt l
   ye <- buildASTExprExt r
   return $ pure $ AST.ExprBinaryOp op xe ye
 
-buildArgsExpr :: (BEnv r s m) => String -> [Tree] -> m AST.Expression
+buildArgsExpr :: String -> [Tree] -> EM AST.Expression
 buildArgsExpr func ts = do
   ets <- mapM buildASTExprExt ts
   return $

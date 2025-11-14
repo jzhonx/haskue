@@ -5,36 +5,15 @@
 module Env where
 
 import Control.Monad.Except (MonadError)
-import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Reader (MonadReader)
-import Control.Monad.State (MonadState)
 import qualified Data.Set as Set
 import GHC.Stack (HasCallStack)
 import StringIndex (HasTextIndexer (..), TextIndexer, emptyTextIndexer)
 import Util (HasTrace (..), Trace, emptyTrace)
 
-type EnvIO r s m =
-  ( ErrorEnv m
-  , MonadReader r m
-  , HasConfig r
-  , MonadState s m
-  , HasTrace s
-  , MonadIO m
-  )
-
 type ErrorEnv m =
   ( MonadError String m
   , HasCallStack
   )
-
-class HasConfig r where
-  getConfig :: r -> Config
-  setConfig :: r -> Config -> r
-  modifyConfig :: (Config -> Config) -> r -> r
-
-class IDStore s where
-  getID :: s -> Int
-  setID :: s -> Int -> s
 
 data Config = Config
   { stTraceEnable :: Bool
@@ -46,11 +25,6 @@ data Config = Config
   }
   deriving (Show)
 
-instance HasConfig Config where
-  getConfig = id
-  setConfig _ c = c
-  modifyConfig f = f
-
 emptyConfig :: Config
 emptyConfig =
   Config
@@ -61,25 +35,3 @@ emptyConfig =
     , stShowMutArgs = False
     , stMaxTreeDepth = 0
     }
-
-data CommonState = CommonState
-  { eesObjID :: Int
-  , eesTrace :: Trace
-  , tIndexer :: TextIndexer
-  }
-  deriving (Show)
-
-instance IDStore CommonState where
-  getID = eesObjID
-  setID s i = s{eesObjID = i}
-
-instance HasTrace CommonState where
-  getTrace = eesTrace
-  setTrace s tr = s{eesTrace = tr}
-
-instance HasTextIndexer CommonState where
-  getTextIndexer = tIndexer
-  setTextIndexer ti s = s{tIndexer = ti}
-
-emptyCommonState :: CommonState
-emptyCommonState = CommonState{eesObjID = 0, eesTrace = emptyTrace, tIndexer = emptyTextIndexer}

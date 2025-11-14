@@ -24,7 +24,6 @@ import Reduce.RMonad (
   RM,
   addRMDanglingLet,
   allocRMObjID,
-  baseConfig,
   createCnstr,
   debugInstantOpRM,
   debugInstantRM,

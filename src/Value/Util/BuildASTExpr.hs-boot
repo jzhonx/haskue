@@ -3,8 +3,8 @@
 module Value.Util.BuildASTExpr where
 
 import qualified AST
-import Env (ErrorEnv)
-import StringIndex (TextIndexerMonad)
+import Control.Monad.Except (Except)
+import StringIndex (TextIndexer)
 import {-# SOURCE #-} Value.Tree
 
-buildASTExprDebug :: (ErrorEnv m, TextIndexerMonad s m) => Tree -> m AST.Expression
+buildASTExprDebug :: Tree -> TextIndexer -> (Except String) (AST.Expression, TextIndexer)

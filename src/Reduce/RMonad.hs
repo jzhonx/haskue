@@ -12,7 +12,7 @@ module Reduce.RMonad where
 
 import Control.DeepSeq (NFData)
 import Control.Monad (foldM, unless, when)
-import Control.Monad.Except (ExceptT (..), MonadError, modifyError, throwError)
+import Control.Monad.Except (ExceptT (..), MonadError, throwError)
 import Control.Monad.RWS.Strict (RWST, lift)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify')
@@ -23,12 +23,8 @@ import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Env (
-  CommonState,
   Config (..),
-  eesObjID,
-  eesTrace,
   emptyConfig,
-  tIndexer,
  )
 import Feature
 import GHC.Generics (Generic)
@@ -64,26 +60,11 @@ emptyReduceParams =
 
 type RM = RWST ReduceConfig () RTCState (ExceptT Error IO)
 
--- class HasReduceParams s where
---   getReduceParams :: s -> ReduceParams
---   setReduceParams :: s -> ReduceParams -> s
---   modifyReduceParams :: (ReduceParams -> ReduceParams) -> s -> s
-
 data ReduceConfig = ReduceConfig
   { baseConfig :: Config
   , params :: ReduceParams
   }
   deriving (Show)
-
--- instance HasConfig ReduceConfig where
---   getConfig = baseConfig
---   setConfig r c = r{baseConfig = c}
---   modifyConfig f r = r{baseConfig = f (baseConfig r)}
-
--- instance HasReduceParams ReduceConfig where
---   getReduceParams = params
---   setReduceParams r p = r{params = p}
---   modifyReduceParams f r = r{params = f (params r)}
 
 mapParams :: (ReduceParams -> ReduceParams) -> ReduceConfig -> ReduceConfig
 mapParams f r = r{params = f (params r)}
@@ -94,11 +75,6 @@ emptyReduceConfig =
     { baseConfig = emptyConfig
     , params = emptyReduceParams
     }
-
--- class HasContext s where
---   getContext :: s -> Context
---   setContext :: s -> Context -> s
---   modifyContext :: s -> (Context -> Context) -> s
 
 data Context = Context
   { ctxObjID :: !Int
@@ -117,18 +93,9 @@ instance HasTrace Context where
   getTrace = ctxTrace
   setTrace ctx t = ctx{ctxTrace = t}
 
--- instance IDStore Context where
---   getID = ctxObjID
---   setID ctx i = ctx{ctxObjID = i}
-
 instance HasTextIndexer Context where
   getTextIndexer = Reduce.RMonad.tIndexer
   setTextIndexer ti ctx = ctx{Reduce.RMonad.tIndexer = ti}
-
--- instance HasContext Context where
---   getContext = id
---   setContext _ = id
---   modifyContext ctx f = f ctx
 
 emptyContext :: Context
 emptyContext =
@@ -163,57 +130,6 @@ throwFatal msg = throwError $ FatalErr $ msg ++ "\n" ++ prettyCallStack callStac
 throwDirty :: (MonadError Error m) => SuffixIrredAddr -> m a
 throwDirty siAddr = throwError $ DirtyDep siAddr
 
--- liftFatal :: (MonadError Error m) => ExceptT String m a -> m a
--- liftFatal = modifyError FatalErr
-
--- type ErrM m = (MonadError Error m)
-
--- type TrCurStM s m =
---   ( MonadState s m
---   , HasTreeCursor s
---   )
-
--- type TrCurStErrM s m =
---   ( MonadState s m
---   , HasTreeCursor s
---   , ErrM m
---   )
-
--- type CtxStM s m =
---   ( MonadState s m
---   , HasContext s
---   )
-
--- type IDStoreStM s m =
---   ( MonadState s m
---   , IDStore s
---   )
-
--- type ConfRM r m =
---   ( MonadReader r m
---   , HasConfig r
---   , HasReduceParams r
---   )
-
--- -- ResolveMonad is the environment for reducing the tree.
--- type ResolveMonad r s m =
---   ( ErrM m
---   , HasCallStack
---   , ConfRM r m
---   , MonadState s m
---   , HasTrace s
---   , HasContext s
---   , IDStore s
---   , TextIndexerMonad s m
---   , MonadIO m
---   )
-
--- -- | ReduceMonad is the environment for reducing the tree with tree cursor stored.
--- type ReduceMonad r s m =
---   ( ResolveMonad r s m
---   , HasTreeCursor s
---   )
-
 data RTCState = RTCState
   { rtsTC :: !TrCur
   , rtsCtx :: Context
@@ -226,38 +142,13 @@ mapTC f s = s{rtsTC = f (rtsTC s)}
 mapCtx :: (Context -> Context) -> RTCState -> RTCState
 mapCtx f s = s{rtsCtx = f (rtsCtx s)}
 
--- instance HasTreeCursor RTCState where
---   getTreeCursor = rtsTC
---   setTreeCursor s tc = s{rtsTC = tc}
-
--- instance HasContext RTCState where
---   getContext = rtsCtx
---   setContext s ctx = s{rtsCtx = ctx}
---   modifyContext s f = s{rtsCtx = f (rtsCtx s)}
-
 instance HasTrace RTCState where
   getTrace = ctxTrace . rtsCtx
   setTrace s trace = s{rtsCtx = setTrace (rtsCtx s) trace}
 
--- instance IDStore RTCState where
---   getID = getID . rtsCtx
---   setID s newID = s{rtsCtx = setID (rtsCtx s) newID}
-
 instance HasTextIndexer RTCState where
   getTextIndexer = getTextIndexer . rtsCtx
   setTextIndexer ti s = s{rtsCtx = setTextIndexer ti (rtsCtx s)}
-
-mkRTState :: TrCur -> CommonState -> RTCState
-mkRTState tc common =
-  RTCState
-    { rtsTC = tc
-    , rtsCtx =
-        emptyContext
-          { ctxObjID = common.eesObjID
-          , ctxTrace = common.eesTrace
-          , tIndexer = common.tIndexer
-          }
-    }
 
 -- Context
 
@@ -318,9 +209,6 @@ markRMLetReferred addr = modifyRMContext $ \ctx ->
   let newMap = Map.insert addr True (ctxLetMap ctx)
    in ctx{ctxLetMap = newMap}
 
--- evalExprRM :: (ResolveMonad r s m) => AST.Expression -> m Tree
--- evalExprRM e = modifyError FatalErr (evalExpr e)
-
 -- Cursor
 
 {-# INLINE getTMCursor #-}
@@ -343,7 +231,7 @@ getTMAbsAddr = tcAddr <$> getTMCursor
 getTMTASeg :: RM Feature
 getTMTASeg = do
   tc <- getTMCursor
-  modifyError FatalErr (tcFocusSegMust tc)
+  liftEitherRM (tcFocusSegMust tc)
 
 -- Crumbs
 
@@ -585,13 +473,6 @@ unlessFocusBottom a f = do
     TNBottom _ -> return a
     _ -> f
 
--- withResolveMonad :: (forall n. (Monad n) => TrCur -> n (TrCur, a)) -> m a
--- withResolveMonad f = do
---   tc <- getTMCursor
---   (r, a) <- f tc
---   putTMCursor r
---   return a
-
 whenTraceEnabled :: String -> RM a -> RM a -> RM a
 whenTraceEnabled name f traced = do
   Config{stTraceEnable = traceEnable, stTraceFilter = tFilter} <-
@@ -609,12 +490,6 @@ spanTreeMsgs isTreeRoot t = do
       else
         let rep = buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = isTreeRoot})
          in toJSON rep
-
--- type TraceConfM r s m =
---   ( TraceM s m
---   , TextIndexerMonad s m
---   , ConfRM r m
---   )
 
 traceSpanTM :: (ToJSON a) => String -> RM a -> RM a
 traceSpanTM name = traceActionTM name Nothing (return . toJSON)

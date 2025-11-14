@@ -18,11 +18,10 @@ where
 
 import AST
 import Control.Monad (when)
-import Control.Monad.Except (ExceptT, liftEither, mapExceptT)
+import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (RWST, runRWST)
-import Control.Monad.Reader (MonadReader (..), ReaderT (runReaderT))
-import Control.Monad.State.Strict (evalStateT)
+import Control.Monad.Reader (MonadReader (..))
 import Cursor
 import Data.ByteString.Builder (
   Builder,
@@ -31,11 +30,7 @@ import Data.ByteString.Builder (
 import Data.List.Split (splitOn)
 import qualified Data.Set as Set
 import Env (
-  CommonState (..),
   Config (..),
-  eesObjID,
-  eesTrace,
-  emptyConfig,
  )
 import EvalExpr (evalExpr, evalSourceFile)
 import Exception (throwErrSt)
@@ -43,6 +38,7 @@ import Feature (rootFeature)
 import Parser (parseExpr, parseSourceFile)
 import Reduce (postValidation, reduce)
 import Reduce.RMonad
+import StringIndex (TextIndexer)
 import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 import Value
@@ -106,14 +102,18 @@ runStr s conf = do
   case treeNode t of
     -- print the error message to the console.
     TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ -> Right <$> evalStateT (runReaderT (buildASTExpr t) emptyConfig) cs
+    _ ->
+      let e = runExcept $ buildASTExpr t cs
+       in case e of
+            Left err -> return $ Left err
+            Right (expr, _) -> return $ Right expr
 
-strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Tree, CommonState)
+strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
 strToCUEVal s conf = do
   e <- liftEither $ parseExpr s
   mapErrToString $ evalToTree (evalExpr e) conf
 
-runTreeStr :: String -> EvalConfig -> ExceptT String IO (Tree, CommonState)
+runTreeStr :: String -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
 runTreeStr s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
@@ -126,13 +126,13 @@ mapErrToString =
           Right v -> Right v
     )
 
-evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Tree, CommonState)
+evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
 evalFile sf conf = mapErrToString $ evalToTree (evalSourceFile sf) conf
 
 evalToTree ::
   RWST ReduceConfig () RTCState (ExceptT Error IO) Tree ->
   EvalConfig ->
-  ExceptT Error IO (Tree, CommonState)
+  ExceptT Error IO (Tree, TextIndexer)
 evalToTree f conf =
   do
     let config =
@@ -170,9 +170,5 @@ evalToTree f conf =
           "Final eval result: " ++ treeToFullRepString (tcFocus finalTC) ++ "\n"
     return
       ( tcFocus finalTC
-      , CommonState
-          { eesObjID = finalized.rtsCtx.ctxObjID
-          , eesTrace = finalized.rtsCtx.ctxTrace
-          , tIndexer = finalized.rtsCtx.tIndexer
-          }
+      , finalized.rtsCtx.tIndexer
       )

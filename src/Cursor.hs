@@ -23,8 +23,6 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
-import Env (ErrorEnv)
-import Exception (throwErrSt)
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
@@ -80,8 +78,8 @@ tcFocusSeg (TrCur _ []) = Nothing
 tcFocusSeg tc = return $ fst . head $ tcCrumbs tc
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSegMust :: (ErrorEnv m) => TrCur -> m Feature
-tcFocusSegMust tc = maybe (throwErrSt "already top") return (tcFocusSeg tc)
+tcFocusSegMust :: TrCur -> Either String Feature
+tcFocusSegMust tc = maybe (Left "already top") return (tcFocusSeg tc)
 
 isTCTop :: TrCur -> Bool
 isTCTop (TrCur _ []) = True
