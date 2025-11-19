@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Value.Block where
+module Value.Struct where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)

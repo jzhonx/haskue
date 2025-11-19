@@ -1,0 +1,10 @@
+-- embed_mut1 --
+// The embedded value is a mutable
+p: {a: int}
+("p"): {a: 2}
+p
+-- exp --
+p: {
+    a: 2
+}
+a: 2

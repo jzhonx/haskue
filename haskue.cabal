@@ -23,7 +23,7 @@ library
         Exception,
         Feature,
         Parser,
-        NotifGraph,
+        PropGraph,
         Reduce,
         Reduce.Nodes,
         Reduce.PostReduce,
@@ -43,12 +43,13 @@ library
         Value.Constraint,
         Value.Disj,
         Value.DisjoinOp,
+        Value.Fix,
         Value.Interpolation,
         Value.List,
-        Value.Mutable,
         Value.Reference,
-        Value.Block,
+        Value.Struct,
         Value.Tree,
+        Value.Op,
         Value.UnifyOp,
         Value.Util.BuildASTExpr,
         Value.Util.TreeRep,
@@ -121,7 +122,7 @@ Test-Suite haskue-unit-test
   main-is: Main.hs
   other-modules:
     SpecTest,
-    NotifGraphTest,
+    PropGraphTest,
     TreeTest,
   build-depends:
         base,

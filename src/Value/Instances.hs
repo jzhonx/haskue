@@ -8,15 +8,16 @@ import Control.DeepSeq (NFData (..))
 import Data.Aeson (ToJSON (..))
 import Data.Maybe (fromJust, isNothing)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
-import Value.Block
 import Value.Comprehension
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Fix
 import Value.Interpolation
 import Value.List
-import Value.Mutable
+import Value.Op
 import Value.Reference
+import Value.Struct
 import Value.Tree
 import Value.UnifyOp
 
@@ -37,23 +38,26 @@ deriving instance Eq DisjTerm
 
 deriving instance Eq UnifyOp
 
-deriving instance Eq Mutable
-deriving instance Eq MutOp
-deriving instance Eq MutFrame
+deriving instance Eq SOp
+deriving instance Eq Op
+deriving instance Eq OpFrame
 deriving instance Eq RegularOp
 
 instance Eq Struct where
   (==) s1 s2 = stcFields s1 == stcFields s2 && stcClosed s1 == stcClosed s2 && stcIsConcrete s1 == stcIsConcrete s2
 
-deriving instance Eq Field
+instance Eq Field where
+  (==) f1 f2 = f1.ssfValue == f2.ssfValue && f1.ssfAttr == f2.ssfAttr
+
 deriving instance Eq DynamicField
 deriving instance Eq StructCnstr
 
 deriving instance Eq List
-
 deriving instance Eq Disj
-
 deriving instance Eq AtomCnstr
+deriving instance Eq Binding
+deriving instance Eq Fix
+deriving instance Eq FixConj
 
 instance Eq TreeNode where
   (==) (TNStruct s1) (TNStruct s2) = s1 == s2
@@ -69,7 +73,9 @@ instance Eq TreeNode where
   (==) (TNBounds b1) (TNBounds b2) = b1 == b2
   (==) (TNBottom _) (TNBottom _) = True
   (==) TNTop TNTop = True
-  (==) TNRefCycle TNRefCycle = True
+  -- Only compare the TreeNode part of Fix.
+  (==) (TNFix r1) (TNFix r2) = r1.val == r2.val
+  (==) TNNoVal TNNoVal = True
   (==) _ _ = False
 
 instance Eq Tree where
@@ -94,9 +100,9 @@ deriving instance Show DisjTerm
 
 deriving instance Show UnifyOp
 
-deriving instance Show Mutable
-deriving instance Show MutOp
-deriving instance Show MutFrame
+deriving instance Show SOp
+deriving instance Show Op
+deriving instance Show OpFrame
 deriving instance Show RegularOp
 
 deriving instance Show Struct
@@ -105,15 +111,17 @@ deriving instance Show DynamicField
 deriving instance Show StructCnstr
 
 deriving instance Show Binding
-
 deriving instance Show List
-
 deriving instance Show Disj
-
 deriving instance Show AtomCnstr
+deriving instance Show Fix
+deriving instance Show FixConj
+
+instance ShowWTIndexer FixConj where
+  tshow (FixSelect addr) = tshow addr
+  tshow (FixCompreh t) = tshow t
 
 deriving instance Show TreeNode
-deriving instance Show TreeValGenEnv
 deriving instance Show Tree
 
 instance ShowWTIndexer Tree where
@@ -144,9 +152,9 @@ deriving instance NFData DisjTerm
 
 deriving instance NFData UnifyOp
 
-deriving instance NFData Mutable
-deriving instance NFData MutOp
-deriving instance NFData MutFrame
+deriving instance NFData SOp
+deriving instance NFData Op
+deriving instance NFData OpFrame
 deriving instance NFData RegularOp
 
 deriving instance NFData Struct
@@ -155,14 +163,12 @@ deriving instance NFData DynamicField
 deriving instance NFData StructCnstr
 
 deriving instance NFData Binding
-
 deriving instance NFData List
-
 deriving instance NFData Disj
-
 deriving instance NFData AtomCnstr
+deriving instance NFData Fix
+deriving instance NFData FixConj
 
 deriving instance NFData TreeNode
-deriving instance NFData TreeValGenEnv
 deriving instance NFData EmbedType
 deriving instance NFData Tree

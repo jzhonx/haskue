@@ -21,6 +21,7 @@ import Data.Aeson (KeyValue (..), ToJSON, Value, toJSON)
 import Data.Aeson.Types (object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Env (
@@ -30,23 +31,27 @@ import Env (
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (callStack, prettyCallStack)
-import NotifGraph
+import GHC.Stack.Types (HasCallStack)
+import PropGraph
 import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndexer, ToJSONWTIndexer (ttoJSON), emptyTextIndexer)
 import Text.Printf (printf)
 import Util (HasTrace (..), Trace, debugInstant, emptyTrace, getTraceID, traceSpanExec, traceSpanStart)
 import Value
 import Value.Util.TreeRep
 
-data FetchResult = FRDirty | FRCyclic | FRSCyclic | FRNormal
+data RecalcRCResult
+  = -- | During RC recalculation, RsDirty indicates that the value needs to be put into the stack.
+    RsDirty
+  | RsCyclic
+  | RsNormal
   deriving (Eq, Show)
 
-type Fetch = SuffixIrredAddr -> FetchResult
+type RecalcRCFetch = SuffixIrredAddr -> RecalcRCResult
 
 data ReduceParams = ReduceParams
   { createCnstr :: Bool
-  , fetch :: Fetch
+  , fetch :: RecalcRCFetch
   -- ^ Custom fetch function that fetches the tree at the suffix irreducible address.
-  -- If the custom value is not found, it should return 'Right Nothing'.
   }
 
 instance Show ReduceParams where
@@ -56,7 +61,7 @@ emptyReduceParams :: ReduceParams
 emptyReduceParams =
   ReduceParams
     { createCnstr = False
-    , fetch = const FRNormal
+    , fetch = const RsNormal
     }
 
 type RM = RWST ReduceConfig () RTCState (ExceptT Error IO)
@@ -81,10 +86,14 @@ data Context = Context
   { ctxObjID :: !Int
   , ctxReduceStack :: [TreeAddr]
   , isRecalcing :: !Bool
-  , recalcRootQ :: [GrpAddr]
-  , ctxNotifGraph :: NotifGraph
+  , recalcRootQ :: Seq.Seq (TreeAddr, GrpAddr)
+  -- ^ The recalculation root queue.
+  , ctxPropGraph :: PropGraph
+  , lastValueMap :: Map.Map SuffixIrredAddr Tree
   , ctxLetMap :: Map.Map TreeAddr Bool
   , rcdIsReducingRCs :: !Bool
+  , noRecalc :: !Bool
+  -- ^ If true, do not perform recalculation when reducing struct objects.
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
   }
@@ -104,10 +113,12 @@ emptyContext =
     { ctxObjID = 0
     , ctxReduceStack = []
     , isRecalcing = False
-    , recalcRootQ = []
-    , ctxNotifGraph = emptyNotifGraph
+    , recalcRootQ = Seq.empty
+    , ctxPropGraph = emptyPropGraph
+    , lastValueMap = Map.empty
     , ctxLetMap = Map.empty
     , rcdIsReducingRCs = False
+    , noRecalc = False
     , ctxTrace = emptyTrace
     , tIndexer = emptyTextIndexer
     }
@@ -125,7 +136,7 @@ liftEitherRM e = lift $ ExceptT $ return $ case e of
   Left msg -> Left $ FatalErr msg
   Right r -> Right r
 
-throwFatal :: String -> RM a
+throwFatal :: (HasCallStack) => String -> RM a
 throwFatal msg = throwError $ FatalErr $ msg ++ "\n" ++ prettyCallStack callStack
 
 throwDirty :: (MonadError Error m) => SuffixIrredAddr -> m a
@@ -186,7 +197,7 @@ deleted.
 -}
 delTMDepPrefix :: TreeAddr -> RM ()
 delTMDepPrefix addrPrefix =
-  modifyRMContext $ \ctx -> ctx{ctxNotifGraph = delNGVertexPrefix addrPrefix (ctxNotifGraph ctx)}
+  modifyRMContext $ \ctx -> ctx{ctxPropGraph = delNGVertexPrefix addrPrefix (ctxPropGraph ctx)}
 
 delMutValRecvs :: TreeAddr -> RM ()
 delMutValRecvs = undefined
@@ -250,6 +261,12 @@ modifyTMTree f = modifyTMCursor $ \tc -> f (tcFocus tc) `setTCFocus` tc
 
 putTMTree :: Tree -> RM ()
 putTMTree t = modifyTMTree $ const t
+
+supersedeTMTN :: TreeNode -> RM ()
+supersedeTMTN tn = modifyTMTree (supersedeTN tn)
+
+unwrapTMTN :: (Tree -> TreeNode) -> RM ()
+unwrapTMTN f = modifyTMTree (unwrapTN f)
 
 withTree :: (Tree -> RM a) -> RM a
 withTree f = getTMTree >>= f
@@ -388,7 +405,7 @@ goTMAbsAddr addr = do
   rM <- goDownTCAddr dstWoRoot <$> getTMCursor
   maybe (return False) (\r -> putTMCursor r >> return True) rM
 
-goTMAbsAddrMust :: TreeAddr -> RM ()
+goTMAbsAddrMust :: (HasCallStack) => TreeAddr -> RM ()
 goTMAbsAddrMust addr = do
   origAddr <- getTMAbsAddr
   ok <- goTMAbsAddr addr
@@ -406,17 +423,18 @@ inRemoteTM addr f = do
   goTMAbsAddrMust origAddr
   return r
 
-inTempTM :: Tree -> RM a -> RM a
-inTempTM tmpT f = do
+inTempTM :: String -> Tree -> RM a -> RM a
+inTempTM name tmpT f = do
   modifyTMTree (\t -> t{tmpSub = Just tmpT})
-  res <- inSubTM tempFeature f
+  tf <- strToTempFeature name
+  res <- inSubTM tf f
   modifyTMTree (\t -> t{tmpSub = Nothing})
   addr <- getTMAbsAddr
-  let tmpAddr = appendSeg addr tempFeature
+  let tmpAddr = appendSeg addr tf
   delTMDepPrefix tmpAddr
   return res
 
--- Mutable operations
+-- SOp operations
 
 -- Locate the immediate parent mutable of a reference.
 locateImMutableTM :: RM ()
@@ -439,24 +457,6 @@ getIsReducingRC = rcdIsReducingRCs <$> getRMContext
 setIsReducingRC :: Bool -> RM ()
 setIsReducingRC b = do
   modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
-
--- Q
-
-getRecalcRootQ :: RM [GrpAddr]
-getRecalcRootQ = recalcRootQ <$> getRMContext
-
-pushRecalcRootQ :: GrpAddr -> RM ()
-pushRecalcRootQ gAddr =
-  modifyRMContext $ \ctx -> ctx{recalcRootQ = gAddr : recalcRootQ ctx}
-
-popRecalcRootQ :: RM (Maybe GrpAddr)
-popRecalcRootQ = do
-  ctx <- getRMContext
-  case recalcRootQ ctx of
-    [] -> return Nothing
-    (x : xs) -> do
-      putRMContext ctx{recalcRootQ = xs}
-      return (Just x)
 
 -- Tree depth check
 

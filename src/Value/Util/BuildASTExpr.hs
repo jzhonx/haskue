@@ -27,15 +27,16 @@ import Exception (throwErrSt)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexer, textToTextIndex)
 import Text.Printf (printf)
 import Value.Atom
-import Value.Block
 import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Fix
 import Value.List
-import Value.Mutable
+import Value.Op
 import Value.Reference
+import Value.Struct
 import Value.Tree
 import Value.UnifyOp
 import Value.Util.TreeRep
@@ -57,9 +58,8 @@ newtype BuildConfig = BuildConfig
   }
 
 buildASTExprExt :: Tree -> EM AST.Expression
-buildASTExprExt t@Tree{isUnifiedWithRC = True} = buildUWCASTExpr t
 buildASTExprExt t@Tree{isSCyclic = True} = buildSCyclicASTExpr t
-buildASTExprExt t@(IsTGenOp mut) | IsNoVal <- t = buildMutableASTExpr mut t
+buildASTExprExt t@(IsTreeMutable mut) | IsNoVal <- t = buildMutableASTExpr mut t
 buildASTExprExt t = case treeNode t of
   TNTop -> return $ AST.litCons (pure AST.TopLit)
   TNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
@@ -79,16 +79,19 @@ buildASTExprExt t = case treeNode t of
     | null (rtrDisjDefVal dj) -> disjunctsToAST (dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
   TNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
-  TNRefCycle -> buildRCASTExpr t
-  TNRefSubCycle _ -> maybe (throwExprNotFound t) return (treeExpr t)
-  TNNoVal -> throwExprNotFound t
+  TNFix r -> buildFixASTExpr r t
+  TNNoVal -> do
+    isDebug <- asks isDebug
+    if isDebug
+      then return (AST.idCons $ pure $ T.pack "NoVal")
+      else throwExprNotFound t
 
 throwExprNotFound :: Tree -> EM a
 throwExprNotFound t = do
   rep <- treeToRepString t
   throwError $ printf "expression not found for %s, tree rep: %s" (showTreeSymbol t) rep
 
-buildMutableASTExpr :: Mutable -> Tree -> EM AST.Expression
+buildMutableASTExpr :: SOp -> Tree -> EM AST.Expression
 buildMutableASTExpr mut t = do
   -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
   -- not ready.
@@ -106,8 +109,8 @@ buildAtomCnstrASTExpr ac t = do
     -- TODO: for non-core type, we should not build AST in non-debug mode.
     else maybe (buildASTExprExt $ cnsValidator ac) return (treeExpr t)
 
-buildMutableASTExprForce :: Mutable -> Tree -> EM AST.Expression
-buildMutableASTExprForce (Mutable mop _) t = case mop of
+buildMutableASTExprForce :: SOp -> Tree -> EM AST.Expression
+buildMutableASTExprForce (SOp mop _) t = case mop of
   RegOp op -> buildRegOpASTExpr op
   Ref ref -> buildRefASTExpr ref
   Compreh cph -> do
@@ -119,19 +122,15 @@ buildMutableASTExprForce (Mutable mop _) t = case mop of
   UOp u -> buildUnifyOpASTExpr u
   Itp _ -> throwExprNotFound t
 
-buildRCASTExpr :: Tree -> EM AST.Expression
-buildRCASTExpr _ = do
+buildFixASTExpr :: Fix -> Tree -> EM AST.Expression
+buildFixASTExpr r t = do
   isDebug <- asks isDebug
   if isDebug
-    then return (AST.idCons $ pure $ T.pack "RC")
-    else throwErrSt "ref-cycle expression should not be built in non-debug mode"
-
-buildUWCASTExpr :: Tree -> EM AST.Expression
-buildUWCASTExpr inner = do
-  isDebug <- asks isDebug
-  if isDebug
-    then buildUnifyOpASTExpr (UnifyOp (Seq.fromList [mkNewTree TNRefCycle, inner]))
-    else throwErrSt "unified-with-rc expression should not be built in non-debug mode"
+    then return (AST.idCons $ pure $ T.pack "Fix")
+    else do
+      if r.unknownExists
+        then maybe (throwExprNotFound t) return (treeExpr t)
+        else buildASTExprExt (mkNewTree r.val)
 
 buildSCyclicASTExpr :: Tree -> EM AST.Expression
 buildSCyclicASTExpr inner = do
@@ -195,7 +194,7 @@ buildLetExpr (ident, binding) = do
 
 -- buildEmbedExpr ::  Embedding -> m AST.Declaration
 -- buildEmbedExpr embed = case embValue embed of
---   IsTGenOp (MutOp (Compreh c)) -> do
+--   IsTreeMutable (Op (Compreh c)) -> do
 --     ce <- buildComprehASTExpr c
 --     return $ AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce
 --   _ -> do
@@ -380,7 +379,7 @@ disjunctsToAST ds = do
 
 buildUnifyOpASTExpr :: UnifyOp -> EM AST.Expression
 buildUnifyOpASTExpr op
-  | fstConj Seq.:<| rest <- ufConjuncts op
+  | fstConj Seq.:<| rest <- op.conjs
   , -- The rest should be a non-empty sequence.
     _ Seq.:|> _ <- rest = do
       leftMost <- buildASTExprExt fstConj

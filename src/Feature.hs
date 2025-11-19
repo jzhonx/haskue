@@ -85,7 +85,7 @@ instance Show Feature where
     ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
     MutArgLabelType -> "fa" ++ showSub (getMutArgInfoFromFeature f) (\case True -> "u"; False -> "")
-    TempLabelType -> "tmp"
+    TempLabelType -> "tmp_" ++ show (fetchIndex f)
     StringLabelType -> "str_" ++ show (fetchIndex f)
     LetLabelType -> "let_" ++ show (fetchIndex f)
     PatternLabelType -> "cns_" ++ showSub (getPatternIndexesFromFeature f) show
@@ -104,6 +104,9 @@ instance ShowWTIndexer Feature where
     LetLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))
       return $ T.pack $ printf "let_%s" str
+    TempLabelType -> do
+      str <- tshow (TextIndex (fetchIndex f))
+      return $ T.pack $ printf "tmp_%s" str
     _ -> return $ T.pack $ show f
 
 pattern FeatureType :: LabelType -> Feature
@@ -261,8 +264,11 @@ toBinOpTASeg R = binOpRightTASeg
 rootFeature :: Feature
 rootFeature = mkFeature 0 RootLabelType
 
-tempFeature :: Feature
-tempFeature = mkFeature 0 TempLabelType
+mkTempFeature :: TextIndex -> Feature
+mkTempFeature (TextIndex i) = mkFeature i TempLabelType
+
+strToTempFeature :: (MonadState s m, HasTextIndexer s) => String -> m Feature
+strToTempFeature s = mkTempFeature <$> textToTextIndex (T.pack s)
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -377,8 +383,8 @@ isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
 first addr is returned.
 -}
-trimPrefixTreeAddr :: TreeAddr -> TreeAddr -> TreeAddr
-trimPrefixTreeAddr pre@(TreeAddr pa) x@(TreeAddr xa)
+trimPrefixAddr :: TreeAddr -> TreeAddr -> TreeAddr
+trimPrefixAddr pre@(TreeAddr pa) x@(TreeAddr xa)
   | not (isPrefix pre x) = x
   | otherwise = mkTreeAddr (V.drop (V.length pa) xa)
 
@@ -498,3 +504,11 @@ trimAddrToRfb (TreeAddr xs) =
             )
             $ V.slice 0 trimmedLen xs
         )
+
+-- | Get the parent referable addr by removing the last referable segment.
+initRfbAddr :: ReferableAddr -> Maybe ReferableAddr
+initRfbAddr x
+  | rootTreeAddr == rfbAddrToAddr x = Nothing
+  | otherwise = do
+      xAddr <- initTreeAddr (rfbAddrToAddr x)
+      return $ trimAddrToRfb xAddr

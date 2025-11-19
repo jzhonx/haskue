@@ -1,6 +1,6 @@
 module Main where
 
-import NotifGraphTest (ngTests)
+import PropGraphTest (ngTests)
 import SpecTest (specTests)
 import Test.Tasty
 import TreeTest (treeTests)

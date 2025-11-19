@@ -1,10 +1,10 @@
-module NotifGraphTest where
+module PropGraphTest where
 
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import Feature
-import NotifGraph
+import PropGraph
 import System.Directory (listDirectory)
 import System.IO (readFile)
 import Test.Tasty
@@ -44,7 +44,7 @@ ngTests =
 -- -- irredToRef :: SuffixIrredAddr -> ReferableAddr
 -- -- irredToRef a = fromJust $ sufIrredIsRfb a
 
--- buildG :: [(SuffixIrredAddr, SuffixIrredAddr)] -> NotifGraph
+-- buildG :: [(SuffixIrredAddr, SuffixIrredAddr)] -> PropGraph
 -- buildG =
 --   foldr
 --     ( \(dep, target) acc ->
@@ -52,9 +52,9 @@ ngTests =
 --           (sufIrredToAddr dep, fromJust $ sufIrredIsRfb target)
 --           acc
 --     )
---     emptyNotifGraph
+--     emptyPropGraph
 
--- buildGExt :: [(TreeAddr, SuffixIrredAddr)] -> NotifGraph
+-- buildGExt :: [(TreeAddr, SuffixIrredAddr)] -> PropGraph
 -- buildGExt =
 --   foldr
 --     ( \(dep, target) acc ->
@@ -62,14 +62,14 @@ ngTests =
 --           (dep, fromJust $ sufIrredIsRfb target)
 --           acc
 --     )
---     emptyNotifGraph
+--     emptyPropGraph
 
 -- testACyclic :: TestTree
 -- testACyclic =
 --   testCase "acyclic_scc" $ do
 --     -- {a: b, b: c, a: x: c}
 --     let graph = buildG [(absA, absB), (absB, absC), (absAX, absC)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sccs = sccMap newGraph
 --     assertEqual
 --       "sccs"
@@ -105,7 +105,7 @@ ngTests =
 --   testCase "cyclic_scc" $ do
 --     -- {a: b, b: c, c: a}
 --     let graph = buildG [(absA, absB), (absB, absC), (absC, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     assertEqual
@@ -134,7 +134,7 @@ ngTests =
 --   testCase "cyclic_scc2" $ do
 --     -- {a: b, b: a, c: a}
 --     let graph = buildG [(absA, absB), (absB, absA), (absC, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     assertEqual
@@ -164,7 +164,7 @@ ngTests =
 --   testCase "cyclic_scc3" $ do
 --     -- {a: b & {}, b: c & {}, c: a & {}}
 --     let graph = buildGExt [(absAL, absB), (absBL, absC), (absCL, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --     assertEqual
 --       "sccs"
@@ -201,7 +201,7 @@ ngTests =
 --   testCase "cyclic_scc_self" $ do
 --     -- {a: a}
 --     let graph = buildG [(absA, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --     assertEqual
 --       "sccs"
@@ -221,7 +221,7 @@ ngTests =
 --   testCase "cyclic_scc_self2" $ do
 --     -- {a: a & {}}
 --     let graph = buildGExt [(absAL, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --     assertEqual
 --       "sccs"
@@ -247,7 +247,7 @@ ngTests =
 --   testCase "cyclic_scc_self3" $ do
 --     -- {a: a & a}
 --     let graph = buildGExt [(absAL, absA), (absAR, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --     assertEqual
 --       "sccs"
@@ -274,7 +274,7 @@ ngTests =
 --   testCase "scyclic_scc" $ do
 --     -- {a: x: b, b: a}
 --     let graph = buildG [(absAX, absB), (absB, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     assertEqual
@@ -300,7 +300,7 @@ ngTests =
 --   testCase "scyclic_scc2" $ do
 --     -- {a: x: b & {}, b: a}
 --     let graph = buildGExt [(absAXL, absB), (sufIrredToAddr absB, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     assertEqual
@@ -328,7 +328,7 @@ ngTests =
 --   testCase "scyclic_scc3" $ do
 --     -- {a: x: a}
 --     let graph = buildG [(absAX, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     assertEqual
@@ -353,7 +353,7 @@ ngTests =
 --   testCase "scyclic_scc4" $ do
 --     -- {a: x: y, y: a}
 --     let graph = buildG [(absAXY, absY), (absY, absA)]
---         newGraph = updateNotifGraph graph
+--         newGraph = updatePropGraph graph
 --         sscAAddr = CyclicBaseAddr absA
 --         sccs = sccMap newGraph
 --     -- assertEqual

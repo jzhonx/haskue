@@ -11,11 +11,11 @@ import Control.Monad (unless)
 import Cursor
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
 import Feature
-import NotifGraph
+import PropGraph
 import Reduce.Nodes (normalizeDisj)
 import Reduce.RMonad (
   RM,
-  ctxNotifGraph,
+  ctxPropGraph,
   debugInstantRM,
   descendTMSeg,
   getRMContext,
@@ -34,6 +34,7 @@ import Reduce.RMonad (
   withTN,
  )
 import Reduce.Root (reduce)
+import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Value
 
@@ -41,7 +42,7 @@ postValidation :: RM ()
 postValidation = traceSpanTM "postValidation" $ do
   ctx <- getRMContext
   -- remove all notifiers.
-  putRMContext $ ctx{ctxNotifGraph = emptyNotifGraph}
+  putRMContext $ ctx{ctxPropGraph = emptyPropGraph}
 
   -- rewrite all functions to their results if the results exist.
   simplifyRM
@@ -55,7 +56,7 @@ postValidation = traceSpanTM "postValidation" $ do
 
 {- | Traverse the tree and does the following things with the node:
 
-1. Replace the Mutable node with the result of the mutator if it exists, otherwise the original mutator node is kept.
+1. Replace the SOp node with the result of the mutator if it exists, otherwise the original mutator node is kept.
 2. Extract the embedded value from the block.
 -}
 simplifyRM :: RM ()
@@ -71,9 +72,7 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
             let t = tcFocus x
             case t of
               -- Keep the genop if the value is no val.
-              IsNoVal | IsTGenOp _ <- t -> return x
-              -- Overwrite the mutable node with an immutable top.
-              IsRefCycle -> return $ mkNewTree TNTop `setTCFocus` x
+              IsNoVal | IsTreeMutable _ <- t -> return x
               IsDisj d -> do
                 r <-
                   normalizeDisj
@@ -102,11 +101,11 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
                   (printf "struct subErrM: %s, embErrM: %s" (show subErrM) (show embErrM))
                   x
                 maybe
-                  (return $ makeTreeImmutable t `setTCFocus` x)
+                  (return $ setTreeImmutable t `setTCFocus` x)
                   (\err -> return $ err `setTCFocus` x)
                   (listToMaybe $ catMaybes [subErrM, embErrM])
               -- Make the tree immutable.
-              _ -> return $ makeTreeImmutable t `setTCFocus` x
+              _ -> return $ setTreeImmutable t `setTCFocus` x
       )
       tc
 
@@ -121,18 +120,29 @@ validateCnstr c = traceSpanTM "validateCnstr" $ do
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
   -- get an incomplete value if the RC node did not yield a concrete value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  -- setForceReduceArgs True
   putTMTree (cnsValidator c)
   reduce
 
   res <- getTMTree
-  case rtrNonMut res of
-    Just (IsBottom _) -> putTMTree res
-    -- The result is valid.
-    Just (IsAtom _) -> putTMTree (mkAtomTree c.value)
-    -- Incomplete case.
-    Nothing -> return ()
-    _ -> putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" (show res)
+  if
+    | IsNoVal <- res -> return ()
+    | Just _ <- rtrBottom res -> putTMTree res
+    | Just a <- rtrAtom res -> putTMTree $ mkAtomTree a
+    | IsEmbedVal ev <- res, Just a <- rtrAtom ev -> putTMTree $ mkAtomTree a
+    | otherwise -> do
+        resStr <- tshow res
+        putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" resStr
+
+-- case rtrVal res of
+--   Just (IsBottom _) -> putTMTree res
+--   -- The result is valid.
+--   Just (IsAtom _) -> putTMTree (mkAtomTree c.value)
+--   Just (IsEmbedVal (IsAtom _)) -> putTMTree (mkAtomTree c.value)
+--   -- Incomplete case.
+--   Nothing -> return ()
+--   _ -> do
+--     resStr <- tshow res
+--     putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" resStr
 
 {- | Traverse the leaves of the tree cursor in the following order
 

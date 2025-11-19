@@ -41,6 +41,7 @@ instance (ShowWTIndexer k, ShowWTIndexer v) => ShowWTIndexer (Map.Map k v) where
 instance ShowWTIndexer Int
 instance ShowWTIndexer Bool
 instance (ShowWTIndexer a) => ShowWTIndexer (Maybe a)
+instance (ShowWTIndexer a, ShowWTIndexer b) => ShowWTIndexer (a, b)
 
 class (ToJSON a) => ToJSONWTIndexer a where
   ttoJSON :: (MonadState s m, HasTextIndexer s) => a -> m Value

@@ -1,0 +1,14 @@
+-- embed6 --
+// This tests whether the let binding can be correctly looked up in embedded.
+x: {
+	let z = {a: 1}
+	{
+		k: z
+	}
+}
+-- exp --
+x: {
+    k: {
+        a: 1
+    }
+}

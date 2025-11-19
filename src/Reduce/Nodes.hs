@@ -4,11 +4,13 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Reduce.Nodes where
 
 import Control.Monad (foldM, forM_, unless, when)
 import Control.Monad.Reader (asks)
+import Control.Monad.State.Strict (modify')
 import Cursor
 import Data.Aeson (KeyValue (..), ToJSON (..), object)
 import Data.Foldable (toList)
@@ -36,24 +38,29 @@ import Reduce.RMonad (
   getTMAbsAddr,
   getTMCursor,
   getTMTree,
+  inRemoteTM,
   inSubTM,
   inTempTM,
   liftEitherRM,
+  mapCtx,
   modifyTMTN,
   modifyTMTree,
+  noRecalc,
   params,
   propUpTM,
   putTMCursor,
+  supersedeTMTN,
   throwFatal,
   traceSpanAdaptRM,
   traceSpanArgsAdaptRM,
   traceSpanArgsRMTC,
   traceSpanRMTC,
   traceSpanTM,
+  unwrapTMTN,
  )
 import Reduce.RefSys (IdentType (..), searchTCIdent)
 import {-# SOURCE #-} Reduce.Root (reduce, reducePureTN, reduceToNonMut)
-import Reduce.UnifyOp (patMatchLabel)
+import Reduce.UnifyOp (mergeTCs, patMatchLabel, prepConj, unifyTCs)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..), textToTextIndex)
 import Text.Printf (printf)
 import Value
@@ -247,7 +254,7 @@ checkRedecl nameIsLetVar ident tc = do
       then return Nothing
       else do
         ptc <- liftEitherRM (propUpTC tc)
-        m <- searchTCIdent ident ptc
+        m <- searchTCIdent True ident ptc
         return $ maybe Nothing (\(x, y) -> Just (tcAddr x, y)) m
   case parResM of
     -- If the let binding with the same name is found in the scope. No matter what the name in the current block is a
@@ -285,7 +292,7 @@ reduceStructField i = whenStruct $ \_ -> do
       addr <- getTMAbsAddr
       r <- inSubTM (mkStringFeature i) (reduce >> getTMTree)
       case r of
-        IsBottom _ | IsTGenImmutable <- r -> do
+        IsBottom _ | IsTreeImmutable <- r -> do
           modifyTMTN (treeNode r)
           delTMDepPrefix addr
         _
@@ -302,10 +309,11 @@ handleSObjChange = do
   stc <- liftEitherRM $ propUpTC tc
   let r = tcFocus tc
   case tcFocus stc of
+    -- If the sub value is an error, propagate the error to the struct.
     IsStruct struct
       | FeatureType StringLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           let errM = case r of
-                IsBottom _ | IsTGenImmutable <- r -> Just r
+                IsBottom _ | IsTreeImmutable <- r -> Just r
                 _
                   | isSCyclic r -> Just $ mkBottomTree "structural cycle"
                   | otherwise -> Nothing
@@ -596,7 +604,7 @@ reduceList l = do
           case origElem of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
-            IsTGenOp (MutOp (Compreh cph))
+            IsTreeMutable (Op (Compreh cph))
               | cph.isListCompreh
               , Just rList <- rtrList r ->
                   return $ acc ++ toList rList.final
@@ -610,8 +618,6 @@ reduceList l = do
       let newList = lst{final = V.fromList r}
       modifyTMTN (TNList newList)
     _ -> return ()
-
--- putTMTree $ mkListTree r
 
 -- | Closes a struct when the tree has struct.
 resolveCloseFunc :: [Tree] -> TrCur -> RM (Maybe Tree)
@@ -631,7 +637,7 @@ closeTree a =
         ds = map closeTree (dsjDisjuncts dj)
        in
         setTN a $ TNDisj (dj{dsjDisjuncts = ds})
-    -- TODO: Mutable should be closed.
+    -- TODO: SOp should be closed.
     -- TNMutable _ -> throwFatal "TODO"
     _ -> mkBottomTree $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
@@ -641,94 +647,157 @@ It reduces every conjunct node it finds.
 
 It should not be directly called.
 -}
-discoverPConjs :: RM [Maybe TrCur]
-discoverPConjs = traceSpanTM "discoverPConjs" $ do
-  conjTC <- getTMCursor
-  case tcFocus conjTC of
-    IsTGenOp (MutOp (UOp _)) -> discoverPConjsFromUnifyOp
-    _ -> do
-      reduceToNonMut
-      vM <- rtrNonMut <$> getTMTree
-      return [maybe Nothing (Just . (`setTCFocus` conjTC)) vM]
-
-{- | Discover pending conjuncts from a unify operation.
-
-It recursively discovers conjuncts from the unify operation and its arguments.
-
-It reduces any mutable argument it finds.
--}
-discoverPConjsFromUnifyOp :: RM [Maybe TrCur]
-discoverPConjsFromUnifyOp = do
-  tc <- getTMCursor
-  case tc of
-    TCFocus (IsTGenOp mut@(MutOp (UOp _))) -> do
-      -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
+partialReduceUnifyOp :: RM ResolvedPConjuncts
+partialReduceUnifyOp = traceSpanTM "partialReduceUnifyOp" $ do
+  t <- getTMTree
+  case t of
+    IsStrictUnifyOp sop -> go sop False
+    IsEmbedUnifyOp sop -> go sop True
+    _ -> throwFatal "partialReduceUnifyOp: focus is not a unify operation"
+ where
+  go sop hasEmbeds = do
+    xs <-
       foldM
         ( \acc (f, _) -> do
-            subs <- inSubTM f discoverPConjs
+            subs <- inSubTM f discoverConjs
             return (acc ++ subs)
         )
         []
-        (toList $ getMutArgs mut)
-    _ -> throwFatal "discoverPConjsFromUnifyOp: not a mutable unify operation"
+        (toList $ getSOpArgs sop)
+    -- In the beginning, set the accumulating tree node to no value.
+    -- TODO: remove deps
+    modifyTMTN TNNoVal
+    -- Get the original constraint node.
+    cnstr <- getTMTree
+
+    -- Preprocess conjuncts to validate if identifiers can be resolved.
+    -- This prevents later preprocessing from incorrectly seeing resolved identifiers in other conjuncts.
+    mapM_
+      ( \(i, addr) -> inRemoteTM addr $ do
+          tc <- getTMCursor
+          case tcFocus tc of
+            -- No need to reduce comprehensions conjuncts.
+            IsCompreh _ _ -> return ()
+            _ -> do
+              -- If the conjunct is a struct, it might have conflicting let bindings which need to be rewritten.
+              -- The let bindings in the first encapsulating struct should not be rewritten.
+              let toRewriteLets = not hasEmbeds || i > 0
+              getTMCursor >>= prepConj toRewriteLets >>= putTMCursor
+      )
+      (zip [(0 :: Int) ..] xs)
+
+    (aconjM, foundNoVal) <-
+      foldM
+        ( \(aconjM, foundNoVal) (i, addr) -> do
+            rM <- inRemoteTM addr $ do
+              tc <- getTMCursor
+              case tcFocus tc of
+                -- No need to reduce comprehensions conjuncts.
+                IsCompreh _ _ -> return $ Just tc
+                _ -> do
+                  reduceToNonMut
+                  -- If the conjunct is reduced to a struct, it might have conflicting let bindings which need to be
+                  -- rewritten.
+                  -- The let bindings in the first encapsulating struct should not be rewritten.
+                  let toRewriteLets = not hasEmbeds || i > 0
+                  cur <- getTMCursor
+                  -- Modify the current tree to be immutable so that prepConj will not invalidate ref's values.
+                  res <- prepConj toRewriteLets (modifyTCFocus setTreeImmutable cur)
+                  let conjT = tcFocus res
+                  -- Update the argument tree.
+                  modifyTMTN (treeNode conjT)
+                  case rtrVal conjT of
+                    Nothing -> return Nothing
+                    Just v -> return $ Just (v `setTCFocus` tc)
+            case rM of
+              Nothing -> return (aconjM, True)
+              Just r -> do
+                let aM = case tcFocus r of
+                      IsAtom a -> Just a
+                      _ -> Nothing
+                acc <- getTMCursor
+                case tcFocus acc of
+                  -- The accumulating tree is NoVal, so we just set the tree node to the reduced conjunct.
+                  IsNoVal -> do
+                    debugInstantRM
+                      "partialReduceUnifyOp"
+                      ( printf
+                          "setting accumulating conjunct to reduced conjunct %s"
+                          (show $ treeNode $ tcFocus r)
+                      )
+                      acc
+                    modifyTMTN (treeNode $ tcFocus r)
+                  -- The accumulating tree is not NoVal, so we need to unify it with the reduced conjunct.
+                  _ -> do
+                    res <- unifyTCs [acc, r] acc
+                    modifyTMTN (treeNode res)
+                return (aM, foundNoVal)
+        )
+        (Nothing, False)
+        (zip [(0 :: Int) ..] xs)
+
+    createCnstr <- asks (createCnstr . params)
+    case (aconjM, foundNoVal) of
+      -- If there is at least one atom conjunct and there are incomplete conjuncts, we create an atom constraint
+      -- conjunction.
+      (Just a, True) | createCnstr -> return $ AtomCnstrConj $ AtomCnstr a cnstr
+      (_, True) -> do
+        modifyTMTN TNNoVal
+        return IncompleteConjuncts
+      _ -> CompletelyResolved <$> getTMTree
+
+  -- Discover conjuncts and preprocess them.
+  discoverConjs = do
+    conjTC <- getTMCursor
+    case tcFocus conjTC of
+      IsStrictUnifyOp sop ->
+        -- A conjunct can be incomplete. For example, 1 & (x + 1) resulting an atom constraint.
+        foldM
+          ( \acc (f, _) -> do
+              subs <- inSubTM f discoverConjs
+              return (acc ++ subs)
+          )
+          []
+          (toList $ getSOpArgs sop)
+      -- We do not discover conjuncts that are part of an embed unify op because they should be treated as a whole.
+      _ -> do
+        addr <- getTMAbsAddr
+        return [addr]
 
 data ResolvedPConjuncts
   = -- | AtomCnstrConj is created if one of the pending conjuncts is an atom and the runtime parameter
     -- 'createCnstr' is True.
     AtomCnstrConj AtomCnstr
-  | ResolvedConjuncts [TrCur]
+  | CompletelyResolved Tree
   | IncompleteConjuncts
   deriving (Show)
 
-{- | Resolve pending conjuncts.
+instance ToJSON ResolvedPConjuncts where
+  toJSON (AtomCnstrConj _) = toJSON ("AtomCnstrConj" :: String)
+  toJSON (CompletelyResolved _) = toJSON ("CompletelyResolved" :: String)
+  toJSON IncompleteConjuncts = toJSON ("IncompleteConjuncts" :: String)
 
-The tree cursor must be the unify operation node.
--}
-resolvePendingConjuncts :: [Maybe TrCur] -> TrCur -> RM ResolvedPConjuncts
-resolvePendingConjuncts pconjs tc = do
-  cc <- asks (createCnstr . params)
-
-  let cnstr = tcFocus tc
-      (readies, foundIncmpl, atomCnstrM) =
-        foldr
-          ( \pconj (acc, accFoundIncmpl, accACM) -> case tcFocus <$> pconj of
-              Nothing -> (acc, True, accACM)
-              Just (IsAtom a)
-                | cc ->
-                    ( fromJust pconj : acc
-                    , accFoundIncmpl
-                    , if isJust accACM then accACM else Just $ AtomCnstr a cnstr
-                    )
-              Just _ -> (fromJust pconj : acc, accFoundIncmpl, accACM)
-          )
-          ([], False, Nothing)
-          pconjs
-      r =
-        if not foundIncmpl
-          then ResolvedConjuncts readies
-          else maybe IncompleteConjuncts AtomCnstrConj atomCnstrM
-  debugInstantRM "resolvePendingConjuncts" (printf "resolved: %s" (show r)) tc
-  return r
+instance ToJSONWTIndexer ResolvedPConjuncts where
+  ttoJSON = return . toJSON
 
 resolveDisjOp :: TrCur -> RM (Maybe Tree)
-resolveDisjOp disjOpTC@(TCFocus (IsTGenOp (MutOp (DisjOp disjOp)))) =
-  traceSpanRMTC "resolveDisjOp" disjOpTC $ do
-    let terms = toList $ djoTerms disjOp
-    when (length terms < 2) $
-      throwFatal $
-        printf "disjunction operation requires at least 2 terms, got %d" (length terms)
+resolveDisjOp disjOpTC@(TCFocus (IsTreeMutable (Op (DisjOp disjOp)))) = traceSpanRMTC "resolveDisjOp" disjOpTC $ do
+  let terms = toList $ djoTerms disjOp
+  when (length terms < 2) $
+    throwFatal $
+      printf "disjunction operation requires at least 2 terms, got %d" (length terms)
 
-    debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
-    disjuncts <- procMarkedTerms terms
+  debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
+  disjuncts <- procMarkedTerms terms
 
-    debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
-    if null disjuncts
-      -- If none of the disjuncts are ready, return Nothing.
-      then return Nothing
-      else do
-        let d = emptyDisj{dsjDisjuncts = disjuncts}
-        r <- normalizeDisj (isJust . rtrBottom) d disjOpTC
-        return $ Just r
+  debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
+  if null disjuncts
+    -- If none of the disjuncts are ready, return Nothing.
+    then return Nothing
+    else do
+      let d = emptyDisj{dsjDisjuncts = disjuncts}
+      r <- normalizeDisj (isJust . rtrBottom) d disjOpTC
+      return $ Just r
 resolveDisjOp _ = throwFatal "resolveDisjOp: focus is not a disjunction operation"
 
 {- | Normalize a disjunction which is generated by reducing a disjunction operation.
@@ -740,33 +809,34 @@ resolveDisjOp _ = throwFatal "resolveDisjOp: focus is not a disjunction operatio
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
 normalizeDisj :: (Tree -> Bool) -> Disj -> TrCur -> RM Tree
-normalizeDisj discardDisjunct d tc = traceSpanRMTC "normalizeDisj" tc $ do
-  debugInstantRM "normalizeDisj" (printf "before: %s" (show $ mkDisjTree d)) tc
-  flattened <- flattenDisjunction discardDisjunct d
-  final <- modifyDisjuncts discardDisjunct flattened tc
-  debugInstantRM
-    "normalizeDisj"
-    ( printf
-        "flattened: %s, flattened disjuncts: %s, final: %s"
-        (show $ mkDisjTree flattened)
-        (show $ dsjDisjuncts flattened)
-        (show final.dsjDisjuncts)
-    )
-    tc
-  if
-    | null final.dsjDisjuncts ->
-        let
-          noVals = filter (\case IsNoVal -> True; _ -> False) flattened.dsjDisjuncts
-          bottoms = filter (isJust . rtrBottom) flattened.dsjDisjuncts
-         in
-          if
-            | length noVals == length flattened.dsjDisjuncts -> return $ mkNewTree TNNoVal
-            | not (null bottoms) -> return $ head bottoms
-            | otherwise ->
-                throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
-    -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
-    | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head final.dsjDisjuncts
-    | otherwise -> return $ mkDisjTree final
+normalizeDisj discardDisjunct d tc = do
+  dStr <- tshow (mkDisjTree d)
+  traceSpanArgsRMTC "normalizeDisj" (show dStr) tc $ do
+    flattened <- flattenDisjunction discardDisjunct d
+    final <- modifyDisjuncts discardDisjunct flattened tc
+    debugInstantRM
+      "normalizeDisj"
+      ( printf
+          "flattened: %s, flattened disjuncts: %s, final: %s"
+          (show $ mkDisjTree flattened)
+          (show $ dsjDisjuncts flattened)
+          (show final.dsjDisjuncts)
+      )
+      tc
+    if
+      | null final.dsjDisjuncts ->
+          let
+            noVals = filter (\case IsNoVal -> True; _ -> False) flattened.dsjDisjuncts
+            bottoms = filter (isJust . rtrBottom) flattened.dsjDisjuncts
+           in
+            if
+              | length noVals == length flattened.dsjDisjuncts -> return $ mkNewTree TNNoVal
+              | not (null bottoms) -> return $ head bottoms
+              | otherwise ->
+                  throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
+      -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
+      | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head final.dsjDisjuncts
+      | otherwise -> return $ mkDisjTree final
 
 {- | Flatten the disjunction.
 
@@ -848,11 +918,11 @@ Rewrite includes:
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
 modifyDisjuncts :: (Tree -> Bool) -> Disj -> TrCur -> RM Disj
-modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) tc =
+modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) tc = do
+  disjStr <- tshow (mkDisjTree idisj)
   traceSpanArgsAdaptRM
     "modifyDisjuncts"
-    (show $ mkDisjTree idisj)
-    -- (\x -> toJSON $ oneLinerStringOfTree $ mkDisjTree x)
+    (show disjStr)
     emptySpanValue
     tc
     $ do
@@ -862,13 +932,28 @@ modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjunct
   defValues = map (disjuncts !!) dfIdxes
   origDefIdxesSet = Set.fromList dfIdxes
 
-  go (accIs, accXs) (idx, v) = do
-    let canCancelRC = isJust $ addrIsRfbAddr (tcAddr tc)
+  go (accIs, accDisjs) (idx, v) = do
+    let partialCancelled conjs = do
+          rfbAddr <- rfbAddrToAddr <$> addrIsRfbAddr (tcAddr tc)
+          return $
+            filter
+              ( \x -> case x of
+                  FixSelect rcAddr -> rcAddr /= rfbAddr
+                  _ -> True
+              )
+              conjs
     case v of
-      IsRefCycle | canCancelRC -> return (accIs, accXs)
-      IsUnifiedWithRC True | canCancelRC -> return $ updateDisjuncts (accIs, accXs) (idx, v{isUnifiedWithRC = False})
-      IsEmbedVal ev -> return $ updateDisjuncts (accIs, accXs) (idx, ev)
-      _ -> return $ updateDisjuncts (accIs, accXs) (idx, v)
+      -- Try if the RCs are cancellable.
+      IsFix f
+        | Just conjs <- partialCancelled f.conjs
+        , -- If all conjuncts are cancelled, then we just use the inner value.
+          null conjs ->
+            -- If the inner value is NoVal, we just discard it.
+            if f.val == TNNoVal
+              then return (accIs, accDisjs)
+              else return $ updateDisjuncts (accIs, accDisjs) (idx, mkNewTree f.val)
+      IsEmbedVal ev -> return $ updateDisjuncts (accIs, accDisjs) (idx, ev)
+      _ -> return $ updateDisjuncts (accIs, accDisjs) (idx, v)
 
   updateDisjuncts (accIs, accXs) (idx, x) =
     let
@@ -955,7 +1040,7 @@ reduceCompreh cph = traceSpanTM "reduceCompreh" $ do
           [x] -> return x
           _ -> do
             let mutT = mkMutableTree $ mkUnifyOp vs
-            inTempTM mutT $ reduce >> getTMTree
+            inTempTM "reduceCompreh" mutT $ reduce >> getTMTree
 
   debugInstantTM "reduceCompreh" (printf "comprehension result: %s" (show res))
   -- The result could be a struct, list or noval. But we should get rid of the mutable if there is any.
@@ -1019,13 +1104,13 @@ comprehend :: Int -> Seq.Seq ComprehArg -> IterCtx -> RM IterCtx
 comprehend i args iterCtx
   -- The case for the template struct.
   | i >= length args - 1 = traceSpanTM
-      (printf "comprehend itercnt:%s, arg: %d" (show iterCtx.iterCnt) i)
+      (printf "comprehend_last_iter_cl itercnt:%s, arg: %d" (show iterCtx.iterCnt) i)
       $ case iterCtx.res of
         Left err -> do
           rep <- treeToRepString err
           throwFatal $ printf "should not reach the leaf node if the result is already an error: %s" rep
         Right vs -> do
-          -- Reduce the template struct so that references in the struct can be resolved.
+          -- Fork the template struct so that references in the struct can be resolved.
           r <-
             inSubTM
               (mkMutArgFeature i False)
@@ -1033,9 +1118,9 @@ comprehend i args iterCtx
                   attachBindings iterCtx.bindings
                   forkStruct
               )
-          -- Make the reduced struct of this iteration immutable because it would simplify later unification of
+          -- Make the forked struct of this iteration immutable because it would simplify later unification of
           -- iteration results, mostly because of removal of the embedded value.
-          r2 <- inTempTM r $ reduceToNonMut >> makeTreeImmutable <$> getTMTree
+          r2 <- inTempTM "iter_struct" r $ reduceToNonMut >> setTreeImmutable <$> getTMTree
           return $ iterCtx{res = Right (vs ++ [r2]), iterCnt = iterCtx.iterCnt + 1}
   | otherwise = reduceClause i args iterCtx
 
@@ -1045,14 +1130,14 @@ forkStruct = do
   t <- getTMTree
   case t of
     IsStruct struct
-      | TGenImmutable <- t.valGenEnv -> do
+      | IsTreeImmutable <- t -> do
           -- The original let bindings in the struct should take the precedence over the iteration bindings.
           newStruct <- mkUnique struct
           return $ setTN t (TNStruct newStruct)
     -- The template struct can have embedded values.
     _
-      | TGenOp mut <- t.valGenEnv
-      , let args = getMutArgs mut
+      | IsTreeMutable mut <- t
+      , let args = getSOpArgs mut
       , (_, a) Seq.:<| _ <- args
       , IsStruct tmplStruct <- a -> do
           newStruct <- mkUnique tmplStruct
@@ -1178,8 +1263,8 @@ reduceClauseWithBindings :: Int -> Map.Map TextIndex Tree -> RM Tree
 reduceClauseWithBindings i bindings = do
   tc <- getTMCursor
   case tc of
-    TCFocus (IsTGenOp mut@(MutOp (Compreh cph))) -> do
-      let newTC = modifyTCFocus (\t -> t{valGenEnv = TGenOp $ setMutOp (Compreh cph{iterBindings = bindings}) mut}) tc
+    TCFocus (IsTreeMutable mut@(Op (Compreh cph))) -> do
+      let newTC = modifyTCFocus (\t -> t{op = Just $ setOpInSOp (Compreh cph{iterBindings = bindings}) mut}) tc
       putTMCursor newTC
       inSubTM (mkMutArgFeature i False) (reduce >> getTMTree)
     _ -> throwFatal "reduceClauseWithBindings can only be used with a mutable comprehension"
@@ -1187,11 +1272,11 @@ reduceClauseWithBindings i bindings = do
 -- | Make bindings immutable and insert into the template struct.
 attachBindings :: Map.Map TextIndex Tree -> RM ()
 attachBindings rawBindings = do
-  let bindings = Map.map makeTreeImmutable rawBindings
+  let bindings = Map.map setTreeImmutable rawBindings
   t <- getTMTree
   case t of
     IsStruct struct
-      | TGenImmutable <- t.valGenEnv -> do
+      | IsTreeImmutable <- t -> do
           -- The original let bindings in the struct should take the precedence over the iteration bindings.
           let
             cleanBindings = Map.filter (not . isIterVar) struct.stcBindings
@@ -1200,12 +1285,12 @@ attachBindings rawBindings = do
                 cleanBindings
                 (Map.map (\x -> Binding x True) bindings)
           bStr <- tshowBindings newBindings
-          debugInstantTM "attachBindings" (printf "new bindings: %s" bStr)
+          debugInstantTM "attachBindings" (printf "imm struct's new bindings: %s" bStr)
           modifyTMTN $ TNStruct $ struct{stcBindings = newBindings}
     -- The template struct can have embedded values.
     _
-      | TGenOp mut <- t.valGenEnv
-      , let args = getMutArgs mut
+      | IsTreeMutable mut <- t
+      , let args = getSOpArgs mut
       , (f, a) Seq.:<| _ <- args
       , IsStruct tmplStruct <- a -> do
           -- The original let bindings in the struct should take the precedence over the iteration bindings.
@@ -1250,3 +1335,123 @@ resolveInterpolation l args = do
   case r of
     Left err -> return $ Just err
     Right res -> return $ Just $ mkAtomTree (String res)
+
+reduceFix :: Fix -> RM ()
+reduceFix f = traceSpanTM "reduceFix" $ do
+  -- First we need to make the current tree immutable so that later reduce will not re-run functions.
+  origTreeOp <- op <$> getTMTree
+  modifyTMTree setTreeImmutable
+  -- Because withRCs only has one inner structure, which will have the dependency addresses as its wrapper, we
+  -- can just put the inner structure first.
+  supersedeTMTN f.val
+
+  -- Calculate a temporary result first.
+  reducePureTN
+  -- In the intermediate steps of resolving RCs, we do not want to trigger recalculation of functions.
+  modify' $ mapCtx (\c -> c{noRecalc = True})
+  unknownExists <- runFix 0 f.conjs
+  modify' $ mapCtx (\c -> c{noRecalc = False})
+
+  -- Restore the original valGenEnv.
+  modifyTMTree $ \t -> t{op = origTreeOp}
+
+  if not unknownExists
+    -- reduce the sub fields again so that dependents of the sub fields of the inner value can be notified.
+    -- The value of the top of the tree will not be used to notify dependents here. Because this function should be called
+    -- inside a reduce. At the end of the outer reduce, the dependents of the top of the tree will be notified.
+    -- TODO: optimize this step to avoid redundant reduce by recursively notifying the dependents of the fields.
+    -- If there is no RCs left, no need to keep the wrapper. Make the inner value the top of the tree.
+    then reducePureTN
+    else unwrapTMTN (\x -> TNFix (Fix (treeNode x) f.conjs unknownExists))
+
+{- | Find the fixed point of unifying normal conjuncts and reference cycles.
+
+During the function call, the top of the tree will be updated to the temporary result of unifying normal
+conjuncts. After the function call, the tree will be updated to the reduced result.
+
+Unify operators are normal conjuncts, reference cycles and references to sub-fields in reference cycles.
+The algorithm is as follows:
+1. Calculate a temporary result for normal_conjs, which is r
+2. Loop to resolve the RC_subs
+   - Fetch the sub value from the result
+   - If the sub value is new, meaning it is not an instance of the result, unify it with the result. r' = r & r.f.
+   - Terminate when no new sub values can be fetched.
+
+Proof of why fetching sub-fields from r is correct:
+
+let fval = r.f,
+
+1. If r.f is a struct with {f: dsub}, the fetched sub can modify the field f in the final result by having fval' =
+fval & dsub. Then we do fetch again and get fval & dsub. The value will be unified with f field again, but it is
+(fval & dsub) & (fval & dsub), which is the same as fval & dsub.
+2. If sub is a struct but without sub field f, then r.f is unknown.
+3. If sub is not a struct, then r.f is unknown.
+-}
+runFix :: Int -> [FixConj] -> RM Bool
+runFix count conjs = do
+  (more, unknownExists) <- traceSpanTM (printf "runFix %d" count) $ do
+    prevT <- getTMTree
+    unifyTC <- getTMCursor
+    -- find known RCs from the v
+    let unifyAddr = tcAddr unifyTC
+    (newConjTCs, unknownExists) <-
+      foldM
+        ( \(accNewConjs, accUE) conj -> case conj of
+            FixSelect rcAddr ->
+              if rcAddr == unifyAddr
+                -- If the address is the same as the unifyTC, which means the RC refers to itself, we can skip it.
+                then return (accNewConjs, accUE)
+                else
+                  let rest = trimPrefixAddr unifyAddr rcAddr
+                      subTCM = goDownTCAddr rest unifyTC
+                   in case subTCM of
+                        Just subTC -> return (subTC : accNewConjs, accUE)
+                        -- The sub value is not found, we treat it as unknown.
+                        Nothing -> return (accNewConjs, True)
+            FixCompreh ct -> inTempTM "runFix_reduce_compreh_conj" ct $ do
+              tc <- getTMCursor >>= prepConj True
+              putTMCursor tc
+              reduce
+              rtc <- getTMCursor
+              case tcFocus rtc of
+                IsNoVal -> return (accNewConjs, True)
+                _ -> return (rtc : accNewConjs, accUE)
+        )
+        ([], False)
+        conjs
+
+    tStr <- tshow prevT
+    newConjsStr <- mapM tshow newConjTCs
+    debugInstantRM
+      "runFix"
+      ( printf
+          "resolving Fix, prev result: %s, newConjsStr: %s, unknownExists: %s"
+          tStr
+          (show newConjsStr)
+          (show unknownExists)
+      )
+      unifyTC
+
+    r <-
+      if null newConjTCs
+        then return $ Just $ tcFocus unifyTC
+        else Just <$> mergeTCs (unifyTC : newConjTCs) unifyTC
+    modifyTMTN (treeNode $ fromJust r)
+    reducePureTN
+    t <- getTMTree
+    if t == prevT
+      -- We have reached a fixed point.
+      then return (False, unknownExists)
+      -- Only update the tree node. Other parts should remain the same.
+      else do
+        prevTRep <- treeToRepString prevT
+        newTRep <- treeToRepString t
+        debugInstantRM
+          "runFix"
+          (printf "Fix iteration updated tree from: %s\nto:\n%s" prevTRep newTRep)
+          unifyTC
+        return (True, unknownExists)
+
+  if more
+    then runFix (count + 1) conjs
+    else return unknownExists

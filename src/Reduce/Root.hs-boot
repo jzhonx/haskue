@@ -8,5 +8,4 @@ import Value
 reduce :: RM ()
 reducePureFocus :: RM ()
 reduceToNonMut :: RM ()
-handleRefRes :: Bool -> Maybe Tree -> RM ()
 reducePureTN :: RM ()

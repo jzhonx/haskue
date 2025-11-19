@@ -32,14 +32,17 @@ import Feature (
 import GHC.Generics (Generic)
 import StringIndex (HasTextIndexer (..), TextIndexerMonad, getTextIndexer, textToTextIndex)
 import Value.Atom
-import Value.Block
 import Value.Bottom
 import Value.Bounds
+import Value.Comprehension
 import Value.Constraint
 import Value.Disj
+import Value.Fix
 import Value.List
-import Value.Mutable
+import Value.Op
 import Value.Reference
+import Value.Struct
+import Value.UnifyOp (UnifyOp (..))
 import {-# SOURCE #-} Value.Util.BuildASTExpr (buildASTExprDebug)
 
 -- | TreeNode represents a tree structure that contains values.
@@ -53,18 +56,10 @@ data TreeNode
   | TNList List
   | TNDisj Disj
   | TNAtomCnstr AtomCnstr
-  | -- | TNRefCycle is used to represent a reference cycle, which should be resolved in a field value node.
-    TNRefCycle
-  | -- | TNRefSubCycle represents the result of a field referencing its sub field.
-    TNRefSubCycle TreeAddr
+  | TNFix Fix
   | -- | TNNoVal is used to represent a reference that is copied from another expression but has no value
     -- yet.
     TNNoVal
-  deriving (Generic)
-
-data TreeValGenEnv
-  = TGenOp Mutable
-  | TGenImmutable
   deriving (Generic)
 
 data EmbedType
@@ -73,21 +68,19 @@ data EmbedType
   | ETEmbedded !Int
   deriving (Eq, Show, Generic)
 
--- Some rules:
--- 1. If a node is a Mutable that contains references, then the node should not be supplanted to other places without
--- changing the dependencies.
--- 2. Evaluation is top-down. Evaluation do not go deeper unless necessary.
 data Tree = Tree
   { treeNode :: TreeNode
+  , wrappedBy :: TreeNode
+  -- ^ wrappedBy is used to indicate which tree node wraps this tree node.
+  -- This is used by preserving wrapping information when going into a wrapped node.
+  -- By default, it is noval.
   , treeExpr :: Maybe AST.Expression
   -- ^ treeExpr is the parsed expression.
-  , valGenEnv :: TreeValGenEnv
+  , op :: Maybe SOp
   , isRecurClosed :: !Bool
   -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
   , isRootOfSubTree :: !Bool
   -- ^ isRootOfSubTree is used to indicate whether the tree is the root of a sub-tree formed by parentheses.
-  , isUnifiedWithRC :: !Bool
-  -- ^ isUnifiedWithRC is used to indicate whether the tree has been unified with a reference cycle.
   , isSCyclic :: !Bool
   -- ^ isSCyclic is used to indicate whether the tree is cyclic.
   -- According to the spec,
@@ -102,6 +95,9 @@ data Tree = Tree
 
 pattern TN :: TreeNode -> Tree
 pattern TN tn <- Tree{treeNode = tn}
+
+pattern WrappedBy :: TreeNode -> Tree
+pattern WrappedBy w <- Tree{wrappedBy = w}
 
 pattern IsAtom :: Atom -> Tree
 pattern IsAtom a <- TN (TNAtom a)
@@ -133,26 +129,32 @@ pattern IsDisj d <- TN (TNDisj d)
 pattern IsAtomCnstr :: AtomCnstr -> Tree
 pattern IsAtomCnstr c <- TN (TNAtomCnstr c)
 
-pattern IsRefCycle :: Tree
-pattern IsRefCycle <- TN TNRefCycle
+pattern IsFix :: Fix -> Tree
+pattern IsFix r <- TN (TNFix r)
 
 pattern IsNoVal :: Tree
 pattern IsNoVal <- TN TNNoVal
 
-pattern IsUnifiedWithRC :: Bool -> Tree
-pattern IsUnifiedWithRC b <- Tree{isUnifiedWithRC = b}
+pattern IsTreeMutable :: SOp -> Tree
+pattern IsTreeMutable op <- Tree{op = Just op}
 
-pattern IsTGenOp :: Mutable -> Tree
-pattern IsTGenOp mut <- Tree{valGenEnv = TGenOp mut}
+pattern IsTreeImmutable :: Tree
+pattern IsTreeImmutable <- Tree{op = Nothing}
 
-pattern IsTGenImmutable :: Tree
-pattern IsTGenImmutable <- Tree{valGenEnv = TGenImmutable}
+pattern IsRef :: SOp -> Reference -> Tree
+pattern IsRef mut ref <- IsTreeMutable mut@(Op (Ref ref))
 
-pattern IsRef :: Mutable -> Reference -> Tree
-pattern IsRef mut ref <- IsTGenOp mut@(MutOp (Ref ref))
+pattern IsRegOp :: SOp -> RegularOp -> Tree
+pattern IsRegOp mut rop <- IsTreeMutable mut@(Op (RegOp rop))
 
-pattern IsRegOp :: Mutable -> RegularOp -> Tree
-pattern IsRegOp mut rop <- IsTGenOp mut@(MutOp (RegOp rop))
+pattern IsCompreh :: SOp -> Comprehension -> Tree
+pattern IsCompreh mut comp <- IsTreeMutable mut@(Op (Compreh comp))
+
+pattern IsEmbedUnifyOp :: SOp -> Tree
+pattern IsEmbedUnifyOp sop <- IsTreeMutable sop@(Op (UOp UnifyOp{hasEmbeds = True}))
+
+pattern IsStrictUnifyOp :: SOp -> Tree
+pattern IsStrictUnifyOp sop <- IsTreeMutable sop@(Op (UOp UnifyOp{hasEmbeds = False}))
 
 pattern IsSCycle :: Tree
 pattern IsSCycle <- Tree{isSCyclic = True}
@@ -165,8 +167,14 @@ setTN t n = t{treeNode = n}
 setExpr :: Tree -> Maybe AST.Expression -> Tree
 setExpr t eM = t{treeExpr = eM}
 
-setTValGenEnv :: TreeValGenEnv -> Tree -> Tree
-setTValGenEnv f t = t{valGenEnv = f}
+setTOp :: SOp -> Tree -> Tree
+setTOp f t = t{op = Just f}
+
+supersedeTN :: TreeNode -> Tree -> Tree
+supersedeTN tn t = t{treeNode = tn, wrappedBy = treeNode t}
+
+unwrapTN :: (Tree -> TreeNode) -> Tree -> Tree
+unwrapTN f t = t{treeNode = f t, wrappedBy = TNNoVal}
 
 {- | Retrieve the deterministic value from the tree.
 
@@ -183,8 +191,7 @@ rtrDeterministic t = case treeNode t of
   TNBounds _ -> Just t
   TNList _ -> Just t
   TNDisj _ -> Just t
-  TNRefCycle -> Just t
-  TNRefSubCycle _ -> Just t
+  TNFix{} -> Just t
   TNNoVal -> Just t
   TNStruct _ -> Just t
   TNAtomCnstr c -> Just $ mkAtomTree c.value
@@ -202,7 +209,7 @@ rtrNonUnion t = do
     TNTop -> Just v
     TNList _ -> Just v
     TNStruct _ -> Just v
-    TNRefCycle -> Just v
+    TNFix{} -> Just v
     TNDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
     _ -> Nothing
 
@@ -216,9 +223,9 @@ rtrConcrete t = do
     IsStruct s -> if stcIsConcrete s then Just v else Nothing
     _ -> Nothing
 
-rtrNonMut :: Tree -> Maybe Tree
-rtrNonMut IsNoVal = Nothing
-rtrNonMut t = return t
+rtrVal :: Tree -> Maybe Tree
+rtrVal IsNoVal = Nothing
+rtrVal t = return t
 
 rtrAtom :: Tree -> Maybe Atom
 rtrAtom t = do
@@ -305,24 +312,24 @@ emptyTree :: Tree
 emptyTree =
   Tree
     { treeNode = TNTop
-    , valGenEnv = TGenImmutable
+    , wrappedBy = TNNoVal
+    , op = Nothing
     , treeExpr = Nothing
     , isRecurClosed = False
     , isRootOfSubTree = False
-    , isUnifiedWithRC = False
     , isSCyclic = False
     , embType = ETNone
     , tmpSub = Nothing
     }
 
-makeTreeImmutable :: Tree -> Tree
-makeTreeImmutable t = t{valGenEnv = TGenImmutable}
+setTreeImmutable :: Tree -> Tree
+setTreeImmutable t = t{op = Nothing}
 
 mkNewTree :: TreeNode -> Tree
 mkNewTree n = emptyTree{treeNode = n}
 
-mkNewTreeWithTGen :: TreeNode -> TreeValGenEnv -> Tree
-mkNewTreeWithTGen n g = (mkNewTree n){valGenEnv = g}
+mkNewTreeWithOp :: TreeNode -> SOp -> Tree
+mkNewTreeWithOp n g = (mkNewTree n){op = Just g}
 
 mkAtomTree :: Atom -> Tree
 mkAtomTree a = mkNewTree (TNAtom a)
@@ -345,8 +352,8 @@ mkCnstrTree a e = mkNewTree . TNAtomCnstr $ AtomCnstr a e
 mkDisjTree :: Disj -> Tree
 mkDisjTree d = mkNewTree (TNDisj d)
 
-mkMutableTree :: Mutable -> Tree
-mkMutableTree fn = (mkNewTree TNNoVal){valGenEnv = TGenOp fn}
+mkMutableTree :: SOp -> Tree
+mkMutableTree fn = (mkNewTree TNNoVal){op = Just fn}
 
 mkListTree :: [Tree] -> [Tree] -> Tree
 mkListTree x y = mkNewTree (TNList $ mkList x y)
@@ -360,9 +367,9 @@ singletonNoVal = mkNewTree TNNoVal
 -- | Create an index function node.
 appendSelToRefTree :: Tree -> Tree -> Tree
 appendSelToRefTree oprnd selArg = case oprnd of
-  IsTGenOp mut@(MutOp (Ref ref)) ->
-    mkMutableTree $ setMutOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
-  _ -> mkMutableTree $ withEmptyMutFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
+  IsTreeMutable mut@(Op (Ref ref)) ->
+    mkMutableTree $ setOpInSOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
+  _ -> mkMutableTree $ withEmptyOpFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
 
 treesToFieldPath :: (TextIndexerMonad s m) => [Tree] -> m (Maybe FieldPath)
 treesToFieldPath ts = do
@@ -400,7 +407,7 @@ builtinMutableTable =
   [
     ( "close"
     , mkMutableTree $
-        withEmptyMutFrame $
+        withEmptyOpFrame $
           RegOp $
             -- built-in close does not recursively close the struct.
             emptyRegularOp
@@ -424,19 +431,18 @@ oneLinerStringOfTree t = do
       return $ T.pack $ exprToOneLinerStr expr
 
 invalidateMutable :: Tree -> Tree
-invalidateMutable t@(IsTGenOp _) = t{treeNode = TNNoVal}
+invalidateMutable t@(IsTreeMutable _) = t{treeNode = TNNoVal}
 invalidateMutable t = t
 
 showTreeSymbol :: Tree -> String
 showTreeSymbol t = case treeNode t of
-  TNAtom _ -> "a"
+  TNAtom _ -> "atom"
   TNBounds _ -> "bds"
   TNStruct{} -> "{}"
   TNList{} -> "[]"
   TNDisj{} -> "dj"
   TNAtomCnstr{} -> "Cnstr"
-  TNRefCycle -> "RC"
-  TNRefSubCycle _ -> "RSC"
+  TNFix{} -> "Fix"
   TNBottom _ -> "_|_"
   TNTop -> "_"
   TNNoVal -> "noval"
@@ -455,3 +461,13 @@ showValueType t = case treeNode t of
   TNList _ -> return "list"
   TNTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ showTreeSymbol t
+
+{- | Check whether tree t1 subsumes tree t2.
+
+According to spec,
+A value a is an instance of a value b, denoted a ⊑ b, if b == a or b is more general than a, that is if a orders before
+b in the partial order (⊑ is not a CUE operator). We also say that b subsumes a in this case. In graphical terms, b is
+“above” a in the lattice.
+-}
+subsume :: Tree -> Tree -> Tree
+subsume t1 t2 = undefined

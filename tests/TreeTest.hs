@@ -60,7 +60,7 @@ treeTests =
 -- -- testSnapshotTree =
 -- --   testCase "snapshot_tree" $ do
 -- --     let
--- --       refAWithRC = mkNewTreeWithTGen TNRefCycle (TGenOp $ withEmptyMutFrame $ Ref $ emptyIdentRef $ T.pack "x")
+-- --       refAWithRC = mkNewTreeWithOp TNRefCycle (TGenOp $ withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "x")
 
 -- --       -- a1 = mkAtomTree (Int 1)
 -- --       -- a2 = mkAtomTree (Int 2)
@@ -68,7 +68,7 @@ treeTests =
 -- --       -- a4 = mkAtomTree (Int 4)
 -- --       -- unify1 = mkUnifyOp [refAWithRC, a2]
 -- --       -- disj1 = mkDisjoinOpFromList [DisjTerm False a1, DisjTerm False (mkMutableTree unify1)]
--- --       -- refB = withEmptyMutFrame $ Ref $ emptyIdentRef $ T.pack "b"
+-- --       -- refB = withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "b"
 -- --       -- refBV = setMutVal (Just (mkMutableTree disj1)) refB
 -- --       -- disj2 = mkDisjoinOpFromList [DisjTerm False (mkMutableTree refBV), DisjTerm False a4]
 -- --       -- t = mkNewTree (TNMutable disj2)
@@ -99,7 +99,7 @@ treeTests =
 -- -- testSnapshotTree2 =
 -- --   testCase "snapshot_tree2" $ do
 -- --     let
--- --       refAWithRC = setMutVal (Just (mkNewTree TNRefCycle)) (withEmptyMutFrame $ Ref $ emptyIdentRef $ T.pack "a")
+-- --       refAWithRC = setMutVal (Just (mkNewTree TNRefCycle)) (withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "a")
 
 -- --       b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomTree (Int 2))))
 -- --       b2 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "y") (mkdefaultField (mkAtomTree (Int 2))))

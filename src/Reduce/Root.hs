@@ -10,28 +10,24 @@ import Control.Monad (foldM, when)
 import Cursor
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust)
-import Feature
-import NotifGraph (lookupGrpAddr)
 import Reduce.Nodes (
   ResolvedPConjuncts (..),
-  discoverPConjsFromUnifyOp,
   handleSObjChange,
+  partialReduceUnifyOp,
   reduceCompreh,
   reduceDisj,
+  reduceFix,
   reduceList,
   reduceStruct,
   resolveCloseFunc,
   resolveDisjOp,
   resolveInterpolation,
-  resolvePendingConjuncts,
  )
 import Reduce.RMonad (
   Context (..),
   RM,
   debugInstantTM,
   getIsReducingRC,
-  getRMContext,
-  getTMAbsAddr,
   getTMCursor,
   getTMTree,
   inRemoteTM,
@@ -39,8 +35,6 @@ import Reduce.RMonad (
   modifyRMContext,
   modifyTMTN,
   modifyTMTree,
-  preVisitTree,
-  pushRecalcRootQ,
   throwFatal,
   traceSpanTM,
   treeDepthCheck,
@@ -52,47 +46,18 @@ import Reduce.RefSys (
   index,
  )
 import qualified Reduce.RegOps as RegOps
-import Reduce.UnifyOp (unifyNormalizedTCs)
 import Text.Printf (printf)
 import Value
 
 -- | Reduce the tree to the lowest form.
 reduce :: RM ()
 reduce = do
-  origAddr <- getTMAbsAddr
   traceSpanTM "reduce" reducePureFocus
+  recalc
 
-  -- Add affected labels as new source of change.
-  ng <- ctxNotifGraph <$> getRMContext
-  xs <- handleSObjChange
-  -- For each affected field, if it is not part of the notification graph (meaning no nodes depend on it or its
-  -- sub-nodes), we need to reduce it first.
-  mapM_
-    ( \afAddr ->
-        let siAddr = fromJust $ addrIsSufIrred afAddr
-         in case lookupGrpAddr siAddr ng of
-              Just gAddr -> pushRecalcRootQ gAddr
-              Nothing -> inRemoteTM afAddr do
-                reduce
-                tc <- getTMCursor
-                (_, gAddrs) <-
-                  preVisitTree
-                    (subNodes False)
-                    ( \(x, a) -> case do
-                        raddr <- addrIsRfbAddr (tcAddr x)
-                        lookupGrpAddr (rfbAddrToSufIrred raddr) ng of
-                        Just gAddr -> return (x, gAddr : a)
-                        Nothing -> return (x, a)
-                    )
-                    (tc, [])
-                debugInstantTM
-                  "recalcNode"
-                  (printf "preVisitTree done for affected addr %s, gAddrs: %s" (show afAddr) (show gAddrs))
-                mapM_ pushRecalcRootQ gAddrs
-    )
-    xs
-
-  when (isJust $ addrIsRfbAddr origAddr) recalc
+  -- If the reduced node is a struct object, we need to handle the side effects.
+  affectedAddrs <- handleSObjChange
+  mapM_ (\afAddr -> inRemoteTM afAddr reduce) affectedAddrs
 
 withTreeDepthLimit :: RM a -> RM a
 withTreeDepthLimit f = do
@@ -114,7 +79,7 @@ reducePureFocus = withTreeDepthLimit $ do
 
   case orig of
     -- When the node has TGen, we reduce it anyway, ignoring the tree node.
-    IsTGenOp mut -> reduceMutable mut
+    IsTreeMutable mut -> reduceMutable mut
     _ -> reducePureTN
 
   modifyTMTree $ \t ->
@@ -122,10 +87,10 @@ reducePureFocus = withTreeDepthLimit $ do
       { isSCyclic = isSCyclic orig || isSCyclic t
       }
 
-reduceMutable :: Mutable -> RM ()
-reduceMutable (Mutable mop _) = case mop of
+reduceMutable :: SOp -> RM ()
+reduceMutable (SOp mop _) = case mop of
   Ref _ -> do
-    (_, isReady) <- reduceArgs reduce rtrNonMut
+    (_, isReady) <- reduceArgs reduce rtrVal
     isReducingRCs <- getIsReducingRC
     if
       | not isReady -> return ()
@@ -134,38 +99,38 @@ reduceMutable (Mutable mop _) = case mop of
           -- mutval populated.
           -- TODO: set NoValRef
           tc <- getTMCursor
-          (DerefResult rM _ _ isIterBinding) <- index tc
-          handleRefRes isIterBinding rM
+          (DerefResult rM _ _ _) <- index tc
+          handleRefRes rM
       | otherwise -> do
           tc <- getTMCursor
-          (DerefResult rM _ cd isIterBinding) <- index tc
+          (DerefResult rM _ cd _) <- index tc
           case cd of
-            NoCycleDetected -> handleRefRes isIterBinding rM
-            RCDetected rcs -> do
-              debugInstantTM "reduceMutable" (printf "detected ref cycle: %s" (show rcs))
+            NoCycleDetected -> handleRefRes rM
+            RCDetected -> do
+              debugInstantTM "reduceMutable" (printf "detected ref cycle")
               -- If we are not in the reducing reference cycles, this contains two cases:
               -- 1. No oldDesp
               -- 2. OldDesp has been added but in the unfinished expression evaluation, we find a new reference cycle.
               --    But this new reference cycle should not contain new info about the SCC as they are the same SCC.
               -- we should treat the reference cycle as an incomplete result.
-              handleRefRes isIterBinding Nothing
+              handleRefRes Nothing
   RegOp rop -> do
     r <-
       case ropOpType rop of
         InvalidOpType -> throwFatal "invalid op type"
         UnaryOpType op -> do
-          (as, _) <- reduceArgs reduce rtrNonMut
+          (as, _) <- reduceArgs reduce rtrVal
           RegOps.resolveUnaryOp op (head as)
         -- Operands of the binary operation can be incomplete.
         BinOpType op -> do
-          (as, _) <- reduceArgs reduce rtrNonMut
+          (as, _) <- reduceArgs reduce rtrVal
           getTMCursor >>= RegOps.resolveRegBinOp op (head as) (as !! 1)
         CloseFunc -> do
-          (as, _) <- reduceArgs reduceToNonMut rtrNonMut
+          (as, _) <- reduceArgs reduceToNonMut rtrVal
           getTMCursor >>= resolveCloseFunc (catMaybes as)
     handleMutRes r False
   Itp itp -> do
-    (xs, isReady) <- reduceArgs reduce rtrNonMut
+    (xs, isReady) <- reduceArgs reduce rtrVal
     r <-
       if isReady
         then resolveInterpolation itp (fromJust $ sequence xs)
@@ -174,21 +139,23 @@ reduceMutable (Mutable mop _) = case mop of
   Compreh compreh -> reduceCompreh compreh
   DisjOp _ -> do
     -- Disjunction operation can have incomplete arguments.
-    (_, _) <- reduceArgs reduce rtrNonMut
+    (_, _) <- reduceArgs reduce rtrVal
     r <- getTMCursor >>= resolveDisjOp
     handleMutRes r True
-  UOp _ -> do
-    pconjs <- discoverPConjsFromUnifyOp
-    tc <- getTMCursor
-    resolvePendingConjuncts pconjs tc >>= handleResolvedPConjsForUnifyMut
+  UOp _ -> partialReduceUnifyOp >>= handleResolvedPConjsForUnifyMut
 
-handleRefRes :: Bool -> Maybe Tree -> RM ()
-handleRefRes _ Nothing = return ()
-handleRefRes _ (Just result) = do
+handleRefRes :: Maybe Tree -> RM ()
+handleRefRes Nothing = return ()
+handleRefRes (Just result) = do
   tc <- getTMCursor
   case tc of
     TCFocus (IsRef _ _) -> do
       modifyTMTN (treeNode result)
+      -- If the result is Fix, we need to reduce it further since the target of the reference cycles might point to
+      -- self.
+      case result of
+        IsFix f -> reduceFix f
+        _ -> return ()
       when result.isSCyclic $ modifyTMTree $ \t -> t{isSCyclic = True}
     _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show tc)
 
@@ -199,7 +166,7 @@ handleMutRes (Just result) furtherReduce = do
   tc <- getTMCursor
   case tc of
     (TCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
-    (TCFocus (IsTGenOp _)) -> do
+    (TCFocus (IsTreeMutable _)) -> do
       modifyTMTN (treeNode result)
       when furtherReduce reducePureTN
     _ -> throwFatal "handleMutRes: not a mutable tree"
@@ -211,6 +178,7 @@ reducePureTN = do
     IsStruct _ -> reduceStruct
     IsList l -> reduceList l
     IsDisj d -> reduceDisj d
+    IsFix f -> reduceFix f
     _ -> return ()
 
 {- | Reduce the arguments of a mutable tree.
@@ -222,7 +190,7 @@ reduceArgs :: RM () -> (Tree -> Maybe Tree) -> RM ([Maybe Tree], Bool)
 reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
   tc <- getTMCursor
   case tcFocus tc of
-    IsTGenOp mut@(Mutable _ _) -> do
+    IsTreeMutable mut@(SOp _ _) -> do
       reducedArgs <-
         foldM
           ( \accArgs (f, _) -> do
@@ -230,19 +198,16 @@ reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
               return (r : accArgs)
           )
           []
-          (toList $ getMutArgs mut)
+          (toList $ getSOpArgs mut)
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwFatal "reduceArgs: not a mutable tree"
 
 -- | Handle the resolved pending conjuncts for mutable trees.
 handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
-handleResolvedPConjsForUnifyMut IncompleteConjuncts = return ()
+handleResolvedPConjsForUnifyMut IncompleteConjuncts = modifyTMTN TNNoVal
 handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = modifyTMTN (TNAtomCnstr ac)
-handleResolvedPConjsForUnifyMut (ResolvedConjuncts conjs) = do
-  tc <- getTMCursor
-  rM <- unifyNormalizedTCs conjs tc
-  handleMutRes rM True
+handleResolvedPConjsForUnifyMut (CompletelyResolved t) = handleMutRes (Just t) True
 
 reduceToNonMut :: RM ()
 reduceToNonMut = do

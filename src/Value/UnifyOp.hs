@@ -13,8 +13,8 @@ The op tree can be flattened to a list of conjuncts.
 It is used to handle reference unifications, so that when values of references change, the new unification can be
 created correctly.
 -}
-newtype UnifyOp = UnifyOp {ufConjuncts :: Seq.Seq Tree}
+data UnifyOp = UnifyOp
+  { hasEmbeds :: Bool
+  , conjs :: Seq.Seq Tree
+  }
   deriving (Generic)
-
-emptyUnifyOp :: UnifyOp
-emptyUnifyOp = UnifyOp Seq.empty

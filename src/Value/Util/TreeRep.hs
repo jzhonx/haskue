@@ -13,7 +13,7 @@ import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Feature (
@@ -26,15 +26,16 @@ import Feature (
  )
 import StringIndex (ShowWTIndexer (..), TextIndexerMonad)
 import Text.Printf (printf)
-import Value.Atom
-import Value.Block
+import Value.Comprehension
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Fix
 import Value.Instances
 import Value.List
-import Value.Mutable
+import Value.Op
 import Value.Reference
+import Value.Struct
 import Value.Tree
 
 {- | A representation of a Tree for debugging and visualization purposes.
@@ -146,23 +147,7 @@ defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True, trboRepSu
 
 buildRepTree :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
 buildRepTree t opt = do
-  let
-    commonInfo =
-      [ showSimpleTree t
-      , if isRecurClosed t then "%#" else ""
-      , if isJust (treeExpr t) then "" else "N"
-      , if isRootOfSubTree t then "R" else ""
-      , if isUnifiedWithRC t then "UWC" else ""
-      , if isSCyclic t then "SC" else ""
-      , case t.embType of
-          ETNone -> ""
-          ETEnclosing -> "EC"
-          ETEmbedded i -> "EM_" ++ show i
-      , case valGenEnv t of
-          TGenOp _ -> "TO"
-          TGenImmutable -> ""
-      ]
-
+  commonInfo <- buildCommonInfo t
   trf <- buildRepTreeTN t opt
   mutRF <- buildRepTreeMutable t opt
   return $
@@ -171,6 +156,32 @@ buildRepTree t opt = do
       , trExtraMetas = trExtraMetas trf ++ trExtraMetas mutRF -- ++ trExtraMetas blkRF
       , trFields = trFields trf ++ trFields mutRF -- ++ trFields blkRF
       }
+
+buildCommonInfo :: (TextIndexerMonad s m) => Tree -> m [String]
+buildCommonInfo t = do
+  tStr <- case t of
+    IsFix r -> do
+      addrsStr <- mapM tshow r.conjs
+      valRep <- showSimpleTree (mkNewTree r.val)
+      return $ printf "inner:%s,addrs:%s" valRep (show addrsStr)
+    _ -> showSimpleTree t
+  return
+    [ tStr
+    , case t.wrappedBy of
+        TNNoVal -> ""
+        _ -> "wrappedby:" ++ showTreeSymbol (mkNewTree t.wrappedBy)
+    , if isRecurClosed t then "%#" else ""
+    , if isJust (treeExpr t) then "" else "N"
+    , if isRootOfSubTree t then "R" else ""
+    , if isSCyclic t then "SC" else ""
+    , case t.embType of
+        ETNone -> ""
+        ETEnclosing -> "EC"
+        ETEmbedded i -> "EM_" ++ show i
+    , case t.op of
+        Just _ -> "TO"
+        _ -> ""
+    ]
 
 buildRepTreeTN :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
 buildRepTreeTN Tree{treeNode = tn} opt = case tn of
@@ -194,7 +205,7 @@ buildRepTreeTN Tree{treeNode = tn} opt = case tn of
     fields <-
       consFields
         [ ("atom", mempty, mkAtomTree c.value)
-        , ("validator", mempty, mkAtomTree $ String (T.pack $ show $ cnsValidator c))
+        , ("validator", mempty, c.cnsValidator)
         ]
         opt
     return $ consRep ([], [], fields)
@@ -202,16 +213,13 @@ buildRepTreeTN Tree{treeNode = tn} opt = case tn of
   _ -> return $ consRep ([], [], [])
 
 buildRepTreeMutable :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
-buildRepTreeMutable (IsTGenOp mut@(Mutable op mf)) opt =
+buildRepTreeMutable (IsTreeMutable mut@(SOp op _)) opt =
   let
     args =
       if trboShowMutArgs opt
-        then map (\(j, v) -> (show j, mempty, v)) (toList $ getMutArgs mut)
+        then map (\(j, v) -> (show j, mempty, v)) (toList $ getSOpArgs mut)
         else []
-    metas =
-      [ ("tgen", showOpType op)
-      -- , ("ridxes", show $ Set.toList $ mfArgsReduced mf)
-      ]
+    metas = [("tgen", showOpType op)]
    in
     case op of
       RegOp rop -> do
@@ -219,16 +227,23 @@ buildRepTreeMutable (IsTGenOp mut@(Mutable op mf)) opt =
         return $ consTGenRep (("op", ropName rop) : metas, fields)
       Ref ref -> do
         fields <- consFields args opt
-
         ra <- case ref.refArg of
           RefPath s _ -> do
             sStr <- tshow s
             return $ T.unpack sStr
           RefIndex _ -> return "<index>"
         return $ consTGenRep (("ref", ra) : metas, fields)
-      Compreh _ -> do
+      Compreh c -> do
         fields <- consFields args opt
-        return $ consTGenRep (metas, fields)
+        bindings <-
+          mapM
+            ( \(k, v) -> do
+                kstr <- tshow k
+                vstr <- tshow v
+                return $ T.unpack kstr ++ ":" ++ T.unpack vstr
+            )
+            (Map.toList c.iterBindings)
+        return $ consTGenRep (metas ++ [("bindings", show bindings)], fields)
       DisjOp d ->
         let
           terms =
@@ -259,10 +274,11 @@ buildRepTreeStruct struct opt =
         foldM
           ( \acc (j, dsf) -> do
               tfv <- buildFieldRepValue (dsfLabel dsf) opt
+              dsfValRep <- showSimpleTree (dsfValue dsf)
               return $
                 TreeRepField
                   (show (mkDynFieldFeature j 0))
-                  (dlabelAttr dsf <> ",dynf_val:" ++ showSimpleTree (dsfValue dsf))
+                  (dlabelAttr dsf <> ",dynf_val:" ++ dsfValRep)
                   tfv
                   : acc
           )
@@ -272,10 +288,11 @@ buildRepTreeStruct struct opt =
         mapM
           ( \(j, k) -> do
               tfv <- buildFieldRepValue (scsPattern k) opt
+              scsValRep <- showSimpleTree (scsValue k)
               return $
                 TreeRepField
                   (show (mkPatternFeature j 0))
-                  (",cns_val:" ++ showSimpleTree (scsValue k))
+                  (",cns_val:" ++ scsValRep)
                   tfv
           )
           (IntMap.toList $ stcCnstrs struct)
@@ -348,7 +365,7 @@ buildRepTreeStruct struct opt =
         , ("orig_fs", tshow $ Map.keys $ stcStaticFieldBases s)
         , ("lets", tshow $ Map.keys $ stcBindings s)
         , ("perms", tshow $ stcPerms s)
-        , ("ev", tshow $ stcEmbedVal s)
+        , ("ev", fromMaybe "" <$> mapM tshow (stcEmbedVal s))
         , ("perm", tshow $ stcPermErr s)
         ]
    in
@@ -400,9 +417,22 @@ buildFieldRepValue :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m 
 buildFieldRepValue fv opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} =
   if recurOnSub
     then TreeRepFieldValueRegular <$> buildRepTree fv opt
-    else return $ TreeRepFieldValueSimple (printf "orig:%s, v: %s" (showSimpleTree fv) (showSimpleTree fv))
+    else do
+      origVal <- showOrigTree fv
+      curVal <- showSimpleTree fv
+      return $ TreeRepFieldValueSimple (printf "orig:%s, v: %s" origVal curVal)
 
-showSimpleTree :: Tree -> String
+showSimpleTree :: (TextIndexerMonad s m) => Tree -> m String
 showSimpleTree t = case t of
-  IsAtom a -> show a
-  _ -> showTreeSymbol t
+  IsAtom a -> return $ show a
+  _ -> return $ showTreeSymbol t
+
+showOrigTree :: (TextIndexerMonad s m) => Tree -> m String
+showOrigTree t = case t of
+  IsRef _ ref -> case ref.refArg of
+    RefPath s _ -> do
+      sStr <- tshow s
+      return $ T.unpack sStr
+    RefIndex _ -> return "<index>"
+  IsTreeMutable (SOp mutop _) -> return $ showOpType mutop
+  _ -> return $ showTreeSymbol t

@@ -87,8 +87,8 @@ resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
           -- Tops are incomplete.
           | IsTop <- t1 -> return Nothing
           | IsTop <- t2 -> return Nothing
-          | IsRefCycle <- t1 -> return Nothing
-          | IsRefCycle <- t2 -> return Nothing
+          | IsFix{} <- t1 -> return Nothing
+          | IsFix{} <- t2 -> return Nothing
           -- When both trees are atoms.
           | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ Just $ calc op (d1, a1) (d2, a2)
           -- When both trees are non-union values.

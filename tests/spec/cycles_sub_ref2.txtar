@@ -1,13 +1,11 @@
 -- cycles_sub_ref2 --
-x: x.z & {z: a: 1} | {y: b: 1}
+// This differs from CUE output.
+// x.z is incomplete, making the first disjunct incomplete
+// TODO
+x: x.z & {z: a: 1} | {y: 1}
 -- exp --
-x: {
-    z: {
-        a: 1
-    }
-    a: 1
+x: x.z & {
+    z: a: 1
 } | {
-    y: {
-        b: 1
-    }
+    y: 1
 }

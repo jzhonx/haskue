@@ -7,40 +7,45 @@
 
 module Reduce.Recalc where
 
-import Control.Monad (foldM, when)
-import Control.Monad.Except (catchError, throwError)
+import Control.Monad (foldM, unless, when)
+import Control.Monad.Except
 import Control.Monad.Reader (local)
 import Data.Aeson (toJSON)
-import Data.Foldable (toList)
 import qualified Data.IntMap as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isJust, isNothing, maybeToList)
+import Data.Maybe (fromJust, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Feature
-import NotifGraph
+import PropGraph
 import Reduce.Nodes (validateStructPerm)
 import Reduce.RMonad (
   Error (..),
-  Fetch,
-  FetchResult (..),
   RM,
-  ctxNotifGraph,
+  RecalcRCFetch,
+  RecalcRCResult (..),
+  ctxPropGraph,
   debugInstantTM,
   fetch,
   getRMContext,
   getTMAbsAddr,
   getTMTree,
+  goTMAbsAddr,
   goTMAbsAddrMust,
   inRemoteTM,
   isRecalcing,
+  lastValueMap,
   mapParams,
   modifyRMContext,
-  popRecalcRootQ,
-  pushRecalcRootQ,
+  modifyTMTN,
+  noRecalc,
+  putRMContext,
   putTMTree,
+  recalcRootQ,
   setIsReducingRC,
+  throwFatal,
   traceSpanArgsAdaptTM,
+  traceSpanArgsTM,
   traceSpanTM,
  )
 import {-# SOURCE #-} Reduce.Root (reduce)
@@ -48,239 +53,231 @@ import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
 import Value
 
--- | Start re-calculation from the current focus.
+-- | Start re-calculation.
 recalc :: RM ()
 recalc = do
-  ctx <- getRMContext
   origAddr <- getTMAbsAddr
-  -- We only proceed if we did not start notification yet and the current address is part of the notification graph.
-  -- The address should be able to be translated to SuffixIrredAddr.
-  let ng = ctxNotifGraph ctx
-  startGrpAddrM <- case lookupGrpAddr (trimAddrToSufIrred origAddr) ng of
-    Just gAddr | not (isRecalcing ctx) -> return $ Just gAddr
-    _ -> return Nothing
+  ctx <- getRMContext
+  when (not (isRecalcing ctx) && not ctx.noRecalc) $ traceSpanTM "recalc" $ do
+    pushRecalcRootQ
 
-  debugInstantTM "recalc" (printf "startGrpAddrM %s" (show startGrpAddrM))
-
-  when (isJust startGrpAddrM) $ traceSpanTM "recalc" $ do
     modifyRMContext $ \c -> c{isRecalcing = True}
-    let startGrpAddr = fromJust startGrpAddrM
-    pushRecalcRootQ startGrpAddr
-    recalcRoot (origAddr, startGrpAddr)
-
-    goTMAbsAddrMust origAddr
-    -- For the starting point, there is no need to reduce it since it must have been reduced before calling
-    -- recalc. Also, we should not add its ancestors since its parent is still reducing.
+    drainQ
     -- Reset the context to not notifying.
     modifyRMContext $ \c -> c{isRecalcing = False}
+    goTMAbsAddrMust origAddr
 
-recalcRoot :: (TreeAddr, GrpAddr) -> RM ()
-recalcRoot start = do
+getRecalcGAddr :: SuffixIrredAddr -> RM (Maybe GrpAddr)
+getRecalcGAddr siAddr = do
+  ng <- ctxPropGraph <$> getRMContext
+  case lookupGrpAddr siAddr ng of
+    Just gAddr -> return $ Just gAddr
+    _ -> return Nothing
+
+-- | Push the top of the tree to the recalculation root queue.
+pushRecalcRootQ :: RM ()
+pushRecalcRootQ = do
+  addr <- getTMAbsAddr
+  case addrIsRfbAddr addr of
+    Nothing -> return ()
+    Just rfbAddr -> do
+      gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
+      case gAddrM of
+        Nothing -> return ()
+        Just gAddr -> modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> (addr, gAddr)}
+
+popRecalcRootQ :: RM (Maybe (TreeAddr, GrpAddr))
+popRecalcRootQ = do
+  ctx <- getRMContext
+  case recalcRootQ ctx of
+    Seq.Empty -> return Nothing
+    (x Seq.:<| xs) -> do
+      putRMContext ctx{recalcRootQ = xs}
+      return (Just x)
+
+drainQ :: RM ()
+drainQ = do
   gAddrM <- popRecalcRootQ
   case gAddrM of
     Nothing -> return ()
-    Just gAddr -> do
-      res <-
-        findDirtyNodes
-          start
-          (DNDiscRes (Seq.singleton gAddr) (Set.singleton gAddr) Seq.empty Map.empty)
-      orderStr <- tshow $ toList res.order
-      debugInstantTM
-        "recalcRoot"
-        (printf "order: %s, allAffected: %s" (show orderStr) (show res.allDirtyNodes))
-      ng <- ctxNotifGraph <$> getRMContext
-      runOrder
-        res.allDirtyNodes
-        res.order
-        ( foldr
-            (\x acc -> foldr Set.insert acc (getElemAddrInGrp x ng))
-            Set.empty
-            res.order
+    Just start@(_, gAddr) -> do
+      g <- ctxPropGraph <$> getRMContext
+      let qSetList = getNodeAddrsInGrp gAddr g
+      gAddrStr <- tshow gAddr
+      qSetListStr <- mapM tshow qSetList
+      debugInstantTM "drainQ" (printf "new popped root gAddr: %s, qSet: %s" gAddrStr (show qSetListStr))
+      run
+        ( RunState
+            { startGAddr = gAddr
+            , startAddr = fst start
+            , q = Seq.singleton gAddr
+            , qSet = Set.fromList qSetList
+            , visited = Set.singleton gAddr
+            }
         )
-      recalcRoot start
+      drainQ
 
 type ReCalcOrderState = (Set.Set SuffixIrredAddr, [GrpAddr])
 
-runOrder ::
-  Map.Map GrpAddr DirtyNodes ->
-  Seq.Seq GrpAddr ->
-  Set.Set SuffixIrredAddr ->
-  RM ()
-runOrder _ Seq.Empty _ = return ()
-runOrder allAffected (sccAddr Seq.:<| xs) orderSet = do
-  rE <- recalcGroup sccAddr orderSet allAffected
-  ng <- ctxNotifGraph <$> getRMContext
-  case rE of
-    Just dep -> do
-      let depSCC = fromJust $ lookupGrpAddr dep ng
-      debugInstantTM
-        "runOrder"
-        (printf "dep %s is dirty, put %s next, %s is put to the end" (show dep) (show depSCC) (show sccAddr))
-      runOrder allAffected ((depSCC Seq.<| xs) Seq.|> sccAddr) orderSet
-    Nothing ->
-      runOrder
-        allAffected
-        xs
-        (foldr Set.delete orderSet (getElemAddrInGrp sccAddr ng))
-
-recalcGroup ::
-  GrpAddr -> Set.Set SuffixIrredAddr -> Map.Map GrpAddr DirtyNodes -> RM (Maybe SuffixIrredAddr)
-recalcGroup (IsAcyclicGrpAddr addr) dirtySet allAffected =
-  recalcNode
-    addr
-    (createAffectedSet allAffected)
-    (\k -> if Set.member k dirtySet then FRDirty else FRNormal)
-recalcGroup sccAddr dirtySet allAffected = do
-  setIsReducingRC True
-
-  ng <- ctxNotifGraph <$> getRMContext
-  let addrs = getElemAddrInGrp sccAddr ng
-  r <- traceSpanArgsAdaptTM "recalcCyclic" (printf "addrs: %s" (show addrs)) (const $ return $ toJSON ()) $ do
-    (r, store) <-
-      foldM
-        ( \(acc, accStore) siAddr -> case acc of
-            Just _ -> return (acc, accStore)
-            Nothing ->
-              do
-                goTMAbsAddrMust (sufIrredToAddr siAddr)
-                r <-
-                  traceSpanTM (printf "recalcCyclic %s" (show siAddr)) $
-                    recalcRC
-                      (RCCalHelper allAffected addrs [siAddr] [])
-                      (\k -> if Set.member k dirtySet then FRDirty else FRNormal)
-                -- We have to save the recalculated value to the store since it will be overwritten when we go to the
-                -- next RC node.
-                v <- inRemoteTM (sufIrredToAddr siAddr) getTMTree
-                debugInstantTM "recalcCyclic" (printf "recalcCyclic %s done, fetch done, v: %s" (show siAddr) (show v))
-                return (r, Map.insert siAddr v accStore)
-        )
-        (Nothing, Map.empty)
-        (removeParentSIAddrs addrs)
-
-    -- We have to put back all the recalculated values because some of them could be overwritten during the process.
-    mapM_ (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMTree t)) (Map.toList store)
-    return r
-
-  setIsReducingRC False
-
-  return r
-
--- | Create a sub dirty set for the given SuffixIrredAddr in the given GrpAddr.
-createAffectedSet :: Map.Map GrpAddr DirtyNodes -> Set.Set TreeAddr
-createAffectedSet allAffected =
-  foldr
-    ( \dn acc -> foldr Set.insert acc (concat $ Map.elems (getDirtyNodes dn))
-    )
-    Set.empty
-    (Map.elems allAffected)
-
-data RCCalHelper = RCCalHelper
-  { allAffected :: Map.Map GrpAddr DirtyNodes
-  , rcAddrs :: [SuffixIrredAddr]
-  , onStack :: [SuffixIrredAddr]
-  , doneRCAddrs :: [SuffixIrredAddr]
+{- | DNDiscRes stores ready strongly-connected components that are either reduced or ready to be reduced to notify
+their dependents.
+-}
+data RunState = RunState
+  { startGAddr :: GrpAddr
+  , startAddr :: TreeAddr
+  , q :: Seq.Seq GrpAddr
+  -- ^ The queue of GrpAddr for BFS traversal.
+  , qSet :: Set.Set TreeAddr
+  -- ^ The set of TreeAddr in the queue for quick lookup.
+  , visited :: Set.Set GrpAddr
+  -- ^ The set of visited GrpAddr, used to avoid re-visiting.
   }
 
--- | Calculate the reference cycle node given by the top of the onStack.
-recalcRC :: RCCalHelper -> Fetch -> RM (Maybe SuffixIrredAddr)
-recalcRC RCCalHelper{onStack = []} _ = return Nothing
-recalcRC h@RCCalHelper{onStack = node : xs} fetch = do
-  goTMAbsAddrMust (sufIrredToAddr node)
-  let nodeHasChildOnStack = filter (isSufIrredParent node) xs
-  r <-
-    if null nodeHasChildOnStack
-      then
-        recalcNode
-          node
-          (createAffectedSet h.allAffected)
-          ( \k ->
-              let kOnStack = k `elem` h.onStack
-               in if
-                    -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
-                    -- incorrectly raise error.
-                    | kOnStack -> if kToTopHasParChildRel k h.onStack then FRSCyclic else FRCyclic
-                    -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return FRNormal to let
-                    -- locateRef fetch the latest value.
-                    | k `elem` h.doneRCAddrs ->
-                        if pathHasParChildRel (k : h.onStack) then FRSCyclic else FRNormal
-                    | otherwise -> fetch k
-          )
-      else return Nothing
-  debugInstantTM
-    (printf "recalcRC %s" (show node))
-    ( printf
-        "stack: %s, nodeHasChildOnStack: %s, done: %s, r: %s"
-        (show h.onStack)
-        (show nodeHasChildOnStack)
-        (show h.doneRCAddrs)
-        (show r)
-    )
-  case r of
-    Just dep
-      -- If the dependency is not part of the current SCC, then we return it to the upper level to handle.
-      | dep `notElem` h.rcAddrs -> return $ Just dep
-      -- If the dependency is part of the current SCC, we push it to the stack and continue to recalculate it.
-      | otherwise -> recalcRC h{onStack = dep : h.onStack} fetch
-    Nothing ->
-      recalcRC
-        h{onStack = xs, doneRCAddrs = node : h.doneRCAddrs}
-        fetch
+-- | Run the recalculation list in breadth-first manner.
+run :: RunState -> RM ()
+run state = do
+  case state.q of
+    Seq.Empty -> return ()
+    (cur Seq.:<| rest) -> do
+      g <- ctxPropGraph <$> getRMContext
+      noFieldInQ <- hasNoFieldInQ cur state.qSet
+      if not noFieldInQ
+        -- If there is a field of the current node in queue, we put it back to the end of the queue.
+        -- The qSet remains the same since cur is still in the queue.
+        then run state{q = rest Seq.|> cur}
+        else do
+          let curNodeIsAcyclicStart =
+                cur == state.startGAddr
+                  && case cur of
+                    IsAcyclicGrpAddr _ -> True
+                    _ -> False
+          -- We do not need to recalc the starting acyclic node since it must have been reduced before recalc.
+          unless curNodeIsAcyclicStart $ recalcGroup cur
+          -- After recalculation, we check whether the value has changed. If not, we do not need to continue traversing
+          -- its dependents. This makes sure early-cutoff.
+          hasSeen <- updateLastValues cur
+          if hasSeen
+            then run state{q = rest}
+            else do
+              nextState <- do
+                ng <- ctxPropGraph <$> getRMContext
+                parentGrpAddrs <- getAncestorGrpAddrs state.startAddr cur
+                let
+                  useGrpAddrs = getUseGroups cur ng
+                  (newQ, newVisited) =
+                    foldr
+                      ( \x (qAcc, vAcc) ->
+                          if Set.member x vAcc
+                            then (qAcc, vAcc)
+                            else (qAcc Seq.|> x, Set.insert x vAcc)
+                      )
+                      (rest, state.visited)
+                      (useGrpAddrs ++ parentGrpAddrs)
+                  restSet = foldr Set.delete state.qSet (getNodeAddrsInGrp cur g)
+                  newQSet =
+                    foldr
+                      ( \gAddrAcc acc ->
+                          let nodes = getNodeAddrsInGrp gAddrAcc ng
+                           in foldr Set.insert acc nodes
+                      )
+                      restSet
+                      useGrpAddrs
+                return $
+                  state
+                    { q = newQ
+                    , qSet = newQSet
+                    , visited = newVisited
+                    }
 
-pathHasParChildRel :: [SuffixIrredAddr] -> Bool
-pathHasParChildRel path = any isParentOfAny path
+              run nextState
+
+{- | Update the last seen values for all nodes in the group address. Return whether all nodes have the same value
+as before.
+-}
+updateLastValues :: GrpAddr -> RM Bool
+updateLastValues gaddr = do
+  m <- lastValueMap <$> getRMContext
+  case gaddr of
+    IsAcyclicGrpAddr a -> go a m
+    _ -> do
+      addrs <- getCyclicGrpNodeAddrs gaddr
+      foldM
+        ( \acc a -> do
+            r <- go a m
+            return (acc && r)
+        )
+        True
+        addrs
  where
-  isParentOfAny a = any (\x -> isSufIrredParent a x) path
+  go siAddr m = do
+    ok <- goTMAbsAddr (sufIrredToAddr siAddr)
+    if ok
+      then do
+        t <- getTMTree
+        r <- case Map.lookup siAddr m of
+          Nothing -> return False
+          Just lastT -> do
+            return (t == lastT)
+        modifyRMContext $ \ctx -> ctx{lastValueMap = Map.insert siAddr t ctx.lastValueMap}
+        return r
+      -- If the address does not exist, we consider it same as before.
+      else return True
 
-kToTopHasParChildRel :: SuffixIrredAddr -> [SuffixIrredAddr] -> Bool
-kToTopHasParChildRel k onStack =
-  -- Find the path from k to the top of the stack.
-  -- Reverse the stack to make bottom element first to make dropping easier.
-  let path = dropWhile (/= k) (reverse onStack)
-   in -- For any given node x in the path, check if any other node in the path is its parent.
-      pathHasParChildRel path
+-- | Check whether there is no fields of structs specified by the GrpAddr in the given set.
+hasNoFieldInQ :: GrpAddr -> Set.Set TreeAddr -> RM Bool
+hasNoFieldInQ gaddr qSet = case gaddr of
+  IsAcyclicGrpAddr addr -> check (sufIrredToAddr addr)
+  _ -> do
+    epAddrs <- getCyclicGrpNodeAddrs gaddr
+    foldM
+      ( \acc siAddr -> do
+          r <- check (sufIrredToAddr siAddr)
+          return (acc && r)
+      )
+      True
+      epAddrs
+ where
+  check addr = do
+    let
+      baseSIAddr = trimAddrToSufIrred addr
+      baseAddr = sufIrredToAddr baseSIAddr
+    -- First we need to go to the base irreducible address.
+    -- The base address could not exist if the node is a sub RC.
+    ok <- goTMAbsAddr baseAddr
+    if ok
+      then do
+        t <- getTMTree
+        case t of
+          -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
+          -- only need to check whether the struct is ready to be used for validating its permissions.
+          IsStruct struct
+            | IsTreeMutable mut <- t
+            , let
+                -- If the node is an argument node, including a very deep argument in the comprehension.
+                isArgChanged = addr /= baseAddr
+            , Op (UOp _) <- mut
+            , not isArgChanged -> do
+                -- No argument affected, we can just check whether the struct is ready.
+                checkSClean baseAddr qSet struct
+            -- Same as above but for immutable tgen.
+            | IsTreeImmutable <- t -> do
+                checkSClean baseAddr qSet struct
+          _ -> return True
+      else return True
 
-recalcNode :: SuffixIrredAddr -> Set.Set TreeAddr -> Fetch -> RM (Maybe SuffixIrredAddr)
-recalcNode addr affectedAddrsSet fetch = do
-  let baseAddr = sufIrredToAddr addr
-  goTMAbsAddrMust baseAddr
-  traceSpanArgsAdaptTM
-    "recalcNode"
-    (printf "affectedAddrsSet: %s" (show affectedAddrsSet))
-    (const $ return $ toJSON ())
-    $ do
-      let withDirtyCheck = local (mapParams (\p -> p{fetch}))
-      t <- getTMTree
-      case t of
-        -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
-        -- can incrementally update it.
-        IsStruct struct
-          | IsTGenOp mut <- t
-          , let
-              allArgAddrs = map (\(f, _) -> appendSeg baseAddr f) (toList $ getMutArgs mut)
-              anyArgAffected = any (`Set.member` affectedAddrsSet) allArgAddrs
-          , MutOp (UOp _) <- mut
-          , not anyArgAffected -> do
-              rM <- checkSReady baseAddr affectedAddrsSet fetch struct
-              when (isNothing rM) validateStructPerm
-              return rM
-          -- If the current node is a struct, its tgen is immutable, then we can apply the incremental update.
-          | IsTGenImmutable <- t -> do
-              rM <- checkSReady baseAddr affectedAddrsSet fetch struct
-              when (isNothing rM) validateStructPerm
-              return rM
-        -- For mutable, list, disjunction, just re-calculate it.
-        _ -> do
-          withDirtyCheck (reduce >> return Nothing)
-            `catchError` ( \case
-                            DirtyDep dep -> return $ Just dep
-                            e -> throwError e
-                         )
-
--- | Incrementally update the struct at the given address.
-checkSReady :: TreeAddr -> Set.Set TreeAddr -> Fetch -> Struct -> RM (Maybe SuffixIrredAddr)
-checkSReady baseAddr affectedAddrsSet fetch struct = do
+getCyclicGrpNodeAddrs :: GrpAddr -> RM [SuffixIrredAddr]
+getCyclicGrpNodeAddrs gaddr = do
+  ng <- ctxPropGraph <$> getRMContext
   let
-    affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred affectedAddrsSet
+    compAddrs = getElemAddrInGrp gaddr ng
+    epAddrs = removeChildSIAddrs compAddrs
+  return epAddrs
+
+-- | Check whether the struct is clean if all its affected leaves are clean.
+checkSClean :: TreeAddr -> Set.Set TreeAddr -> Struct -> RM Bool
+checkSClean baseAddr qSet struct = do
+  let
+    affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred qSet
     affectedFieldSegs =
       [ mkStringFeature name
       | name <- Map.keys (stcFields struct)
@@ -306,97 +303,154 @@ checkSReady baseAddr affectedAddrsSet fetch struct = do
           Set.member a affectedSufIrredAddrsSet
       ]
     allAffected = affectedFieldSegs ++ affectedDynSegs ++ affectedCnstrSegs
-    deps =
-      map
-        (\seg -> let a = appendSeg baseAddr seg in (trimAddrToSufIrred a, fetch (trimAddrToSufIrred a)))
-        allAffected
-    allClean = all (\x -> snd x == FRNormal) deps
-  if allClean
-    then do
-      debugInstantTM "checkSReady" (printf "allAffected: %s" (show allAffected))
-      return Nothing
-    else do
-      let dirtyAddrs = map fst $ filter (\(_, v) -> v /= FRNormal) deps
-      return $ Just $ head dirtyAddrs
+  return $ null allAffected
 
-newtype DirtyNodes = DirtyNodes
-  { getDirtyNodes :: Map.Map SuffixIrredAddr [TreeAddr]
+recalcGroup :: GrpAddr -> RM ()
+recalcGroup (IsAcyclicGrpAddr node) = recalcNode node (const RsNormal)
+recalcGroup sccAddr = do
+  setIsReducingRC True
+
+  ng <- ctxPropGraph <$> getRMContext
+  -- If any node in the SCC is a child of another node in the SCC, then it should be removed as it is a sub-field
+  -- reference cycle, which should be handled specially.
+  let
+    compAddrs = getElemAddrInGrp sccAddr ng
+    epAddrs = removeChildSIAddrs compAddrs
+  compAddrStrs <- mapM tshow compAddrs
+  epAddrStrs <- mapM tshow epAddrs
+  traceSpanArgsAdaptTM
+    "recalcCyclic"
+    ( printf
+        "compAddrs: %s, epAddrs: %s"
+        (show compAddrStrs)
+        (show epAddrStrs)
+    )
+    (const $ return $ toJSON ())
+    $ do
+      store <-
+        foldM
+          ( \accStore siAddr -> do
+              goTMAbsAddrMust (sufIrredToAddr siAddr)
+              siAddrStr <- tshow siAddr
+              recalcRC (RCCalHelper epAddrs [siAddr] [])
+              -- We have to save the recalculated value to the store since it will be overwritten when we go to the
+              -- next RC node.
+              v <- inRemoteTM (sufIrredToAddr siAddr) getTMTree
+              vStr <- tshow v
+              debugInstantTM "recalcCyclic" (printf "recalcCyclic %s done, fetch done, v: %s" (show siAddrStr) vStr)
+              return (Map.insert siAddr v accStore)
+          )
+          Map.empty
+          epAddrs
+
+      -- We have to put back all the recalculated values because some of them could be overwritten during the process.
+      mapM_
+        (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMTree t))
+        (Map.toList store)
+
+  setIsReducingRC False
+
+data RCCalHelper = RCCalHelper
+  { rcAddrs :: [SuffixIrredAddr]
+  -- ^ List of addresses in the current reference cycle.
+  , stack :: [SuffixIrredAddr]
+  -- ^ The current stack of RC addresses being recalculated.
+  , doneRCAddrs :: [SuffixIrredAddr]
   }
-  deriving (Eq, Ord)
 
-instance Show DirtyNodes where
-  show (DirtyNodes m) = show $ Map.toList m
+-- | Calculate the reference cycle node given by the top of the stack.
+recalcRC :: RCCalHelper -> RM ()
+recalcRC RCCalHelper{stack = []} = return ()
+recalcRC h@RCCalHelper{stack = node : xs} = do
+  goTMAbsAddrMust (sufIrredToAddr node)
+  nodeStr <- tshow node
+  traceSpanTM (printf "recalcRC %s" nodeStr) $ do
+    r <-
+      recalcNode
+        node
+        ( \dep ->
+            let
+              -- If the dep is a sub-field of any node in the current stack, then it forms a cycle.
+              depOnStack = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.stack
+              depIsDone = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.doneRCAddrs
+             in
+              if
+                -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
+                -- incorrectly raise error.
+                | depOnStack -> RsCyclic
+                -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
+                -- locateRef fetch the latest value.
+                | depIsDone -> RsNormal
+                | otherwise -> RsDirty
+        )
+        `catchError` ( \case
+                        DirtyDep dep -> recalcRC h{stack = dep : h.stack}
+                        e -> throwError e
+                     )
 
-addrsToDirtyNodes :: [TreeAddr] -> DirtyNodes
-addrsToDirtyNodes xs =
-  DirtyNodes $
-    foldr
-      ( \addr acc ->
-          let iraddr = trimAddrToSufIrred addr
-           in Map.insertWith (++) iraddr [addr] acc
-      )
-      Map.empty
-      xs
+    debugInstantTM
+      (printf "recalcRC %s" nodeStr)
+      (printf "stack: %s, done: %s, r: %s" (show h.stack) (show h.doneRCAddrs) (show r))
+    recalcRC
+      h{stack = xs, doneRCAddrs = node : h.doneRCAddrs}
 
-{- | DNDiscRes stores ready strongly-connected components that are either reduced or ready to be reduced to notify
-their dependents.
+{- | Re-calculate a single node given the dirty leaves and fetch function.
+
+If a node is a struct and under certain conditions, we do not need to fully re-calculate it. We just need to check its
+permissions.
 -}
-data DNDiscRes = DNDiscRes
-  { q :: Seq.Seq GrpAddr
-  -- ^ The queue of GrpAddr for BFS traversal.
-  , visited :: Set.Set GrpAddr
-  -- ^ The set of visited GrpAddr, used to avoid re-visiting.
-  , order :: Seq.Seq GrpAddr
-  -- ^ The order of recalculation.
-  , allDirtyNodes :: Map.Map GrpAddr DirtyNodes
-  }
+recalcNode :: SuffixIrredAddr -> RecalcRCFetch -> RM ()
+recalcNode nodeSIAddr fetch = do
+  addrStr <- tshow nodeSIAddr
+  -- First we need to go to the base irreducible address.
+  ok <- goTMAbsAddr (sufIrredToAddr nodeSIAddr)
+  when ok $ traceSpanArgsTM "recalcNode" (printf "addr: %s" addrStr) $ do
+    g <- ctxPropGraph <$> getRMContext
+    let
+      nodes = getNodeAddrsByFunc nodeSIAddr g
+      anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
+    debugInstantTM
+      "recalcNode"
+      (printf "nodes: %s, anyArgChanged: %s" (show nodes) (show anyArgChanged))
+    t <- getTMTree
+    case t of
+      -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
+      -- only need to check whether the struct is ready to be used for validating its permissions.
+      IsStruct _
+        | IsTreeMutable mut <- t
+        , Op (UOp _) <- mut
+        , -- No argument affected, we can just check whether the struct is ready.
+          not anyArgChanged ->
+            validateStructPerm
+        -- Same as above but for immutable tgen.
+        | IsTreeImmutable <- t -> validateStructPerm
+      -- For mutable, list, disjunction, just re-calculate it.
+      _ -> do
+        local (mapParams (\p -> p{fetch})) do
+          -- invalidateUpToRootMut baseAddr dirtyLeaves
+          reduce
 
-{- | Find all dirty nodes starting from the given GrpAddr by traversing the SCC dependency graph in breadth-first
-manner.
+{- | Because reduce is a top-down process, we need to invalidate all mutable ancestors up to the root mutable.
 
-There are two types of dependencies:
-
-1. Parent-child dependencies: if a node is dirty, its parent nodes are also dirty.
-2. Reference dependencies: if a node is dirty, its dependent nodes are also dirty.
+TODO: seems like all segments should be mutables, because we are like lazy evaluating the tree.
 -}
-findDirtyNodes :: (TreeAddr, GrpAddr) -> DNDiscRes -> RM DNDiscRes
-findDirtyNodes (startAddr, startGrpAddr) state = do
-  ng <- ctxNotifGraph <$> getRMContext
-  case state.q of
-    Seq.Empty -> return state
-    (nodeGrpAddr Seq.:<| xs) -> do
-      parentGrpAddrs <- getAncestorGrpAddrs startAddr nodeGrpAddr
-      let
-        depGrpAddrs = getDependentGroups nodeGrpAddr ng
-        (newQ, newVisited) =
-          foldr
-            ( \sccAddr (qAcc, vAcc) ->
-                if Set.member sccAddr vAcc
-                  then (qAcc, vAcc)
-                  else (qAcc Seq.|> sccAddr, Set.insert sccAddr vAcc)
-            )
-            (xs, state.visited)
-            (depGrpAddrs ++ parentGrpAddrs)
-        allDepts = getDependentsFromGroup nodeGrpAddr ng
-
-      findDirtyNodes
-        (startAddr, startGrpAddr)
-        state
-          { q = newQ
-          , visited = newVisited
-          , -- Only add to the order if it is not the starting GrpAddr and it is acyclic.
-            -- If it is cyclic, then we need to re-calculate all its members together, which was not done in regular
-            -- reduce.
-            order =
-              case nodeGrpAddr of
-                GrpAddr (_, False) | nodeGrpAddr == startGrpAddr -> state.order
-                _ -> state.order Seq.|> nodeGrpAddr
-          , allDirtyNodes =
-              Map.insert
-                nodeGrpAddr
-                (addrsToDirtyNodes allDepts)
-                state.allDirtyNodes
-          }
+invalidateUpToRootMut :: TreeAddr -> Set.Set TreeAddr -> RM ()
+invalidateUpToRootMut base addrSet = go (filter (isPrefix base) (Set.toList addrSet)) Set.empty
+ where
+  go [] _ = return ()
+  go (addr : rest) done
+    | addr `elem` done = go rest done
+    -- Stop when we reach above the base address. The base address itself can be a reference.
+    | isPrefix addr base && addr /= base = return ()
+    | otherwise = do
+        goTMAbsAddrMust addr
+        t <- getTMTree
+        case t of
+          IsTreeMutable (Op _) -> modifyTMTN TNNoVal
+          -- TODO: what if the intermediate value is not mutable? How to invalidate then?
+          _ -> throwFatal $ printf "expected mutable node at address %s during invalidation" (show addr)
+        let parentAddr = fromJust $ initTreeAddr addr
+        go (parentAddr : rest) (Set.insert addr done)
 
 {- | Get the ancestor GrpAddrs of the given GrpAddr.
 
@@ -404,14 +458,14 @@ It handles the case that the cyclic group may contain structural cycles.
 -}
 getAncestorGrpAddrs :: TreeAddr -> GrpAddr -> RM [GrpAddr]
 getAncestorGrpAddrs startAddr (IsAcyclicGrpAddr addr) = do
-  let rM = getAncSCCFromAddr startAddr addr
+  let rM = getAncGrpFromAddr startAddr addr
   return $ maybeToList rM
 getAncestorGrpAddrs startAddr sccAddr = do
-  ng <- ctxNotifGraph <$> getRMContext
+  ng <- ctxPropGraph <$> getRMContext
   r <-
     foldM
       ( \acc addr -> do
-          let rM = getAncSCCFromAddr startAddr addr
+          let rM = getAncGrpFromAddr startAddr addr
           return $ maybe acc (: acc) rM
       )
       []
@@ -423,8 +477,8 @@ getAncestorGrpAddrs startAddr sccAddr = do
 Since it is a tree address, there is only one ancestor for each address, meaning that the ancestor must be acyclic.
 And because it is either a struct or a list.
 -}
-getAncSCCFromAddr :: TreeAddr -> SuffixIrredAddr -> Maybe GrpAddr
-getAncSCCFromAddr startAddr raddr
+getAncGrpFromAddr :: TreeAddr -> SuffixIrredAddr -> Maybe GrpAddr
+getAncGrpFromAddr startAddr raddr
   | rootTreeAddr == sufIrredToAddr raddr = Nothing
   | otherwise = do
       let parentAddr = fromJust $ initSufIrred raddr

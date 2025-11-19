@@ -72,7 +72,7 @@ evalStructLit (anVal -> StructLit decls) = do
     IsStruct _
       | let embeds = [v{embType = ETEmbedded sid} | EmbedSAdder v <- elems]
       , not (null embeds) -> do
-          return $ mkMutableTree (mkUnifyOp $ res{embType = ETEnclosing} : embeds)
+          return $ mkMutableTree (mkEmbedUnifyOp $ res{embType = ETEnclosing} : embeds)
     _ -> return res
 
 simpleStringLitToStr :: SimpleStringLit -> RM (Either Tree T.Text)
@@ -103,7 +103,7 @@ simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
   if
     | null rSegs -> return $ Right T.empty
     | not (null aExprs) ->
-        return $ Left $ mkMutableTree $ mkItpMutable rSegs aExprs
+        return $ Left $ mkMutableTree $ mkItpSOp rSegs aExprs
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
     | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
@@ -136,7 +136,7 @@ evalEmbedding
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    return $ mkMutableTree $ withEmptyMutFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
+    return $ mkMutableTree $ withEmptyOpFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
 evalEmbedding
   isListCompreh
   ( anVal ->
@@ -151,7 +151,7 @@ evalEmbedding
       Nothing -> return Nothing
     return $
       mkMutableTree $
-        withEmptyMutFrame $
+        withEmptyOpFrame $
           Compreh $
             mkComprehension isListCompreh (ComprehArgFor iidx jidxM fev : clsv) sv
 evalEmbedding _ _ = throwFatal "invalid embedding"
@@ -333,7 +333,7 @@ evalPrimExpr e = case anVal e of
       Just v -> return v
       Nothing -> do
         idIdx <- textToTextIndex ident
-        return $ mkMutableTree $ withEmptyMutFrame $ Ref $ emptyIdentRef idIdx
+        return $ mkMutableTree $ withEmptyOpFrame $ Ref $ emptyIdentRef idIdx
     OpExpression expr -> do
       x <- evalExpr expr
       return $ x{isRootOfSubTree = True}
@@ -353,14 +353,13 @@ replaceFuncArgs :: Tree -> [Tree] -> RM Tree
 replaceFuncArgs t args = case t of
   IsRegOp mut fn ->
     return $
-      setTValGenEnv
-        ( TGenOp $
-            setMutOp
-              (RegOp $ fn{ropArgs = Seq.fromList args})
-              mut
+      setTOp
+        ( setOpInSOp
+            (RegOp $ fn{ropArgs = Seq.fromList args})
+            mut
         )
         t
-  _ -> throwFatal $ printf "%s is not a Mutable" (show t)
+  _ -> throwFatal $ printf "%s is not a SOp" (show t)
 
 {- | Evaluates the selector.
 Parameters:
@@ -419,7 +418,7 @@ flattenUnify l r = case getLeftAcc of
  where
   getLeftAcc = case l of
     -- The left tree is an accumulator only if it is a unify op.
-    IsTGenOp (MutOp (UOp u)) -> Just (ufConjuncts u)
+    IsTreeMutable (Op (UOp u)) -> Just u.conjs
     _ -> Nothing
 
 evalDisj :: Expression -> Expression -> RM Tree
@@ -468,7 +467,7 @@ flattenDisj l r = case getLeftAcc of
   Nothing -> mkMutableTree $ mkDisjoinOp (Seq.fromList [l, r])
  where
   getLeftAcc = case dstValue l of
-    IsTGenOp (MutOp (DisjOp dj))
+    IsTreeMutable (Op (DisjOp dj))
       -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
       -- If the left term is a marked term, it implies that it is a root.
       | not (dstMarked l) && not (isRootOfSubTree (dstValue l)) -> Just (djoTerms dj)

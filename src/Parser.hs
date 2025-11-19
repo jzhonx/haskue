@@ -7,10 +7,8 @@ module Parser where
 
 import AST
 import Control.Monad (void, when)
-import Control.Monad.Except (MonadError)
 import Data.Maybe (fromJust, isNothing)
 import qualified Data.Text as T
-import Exception (throwErrSt)
 import Text.Parsec (
   Parsec,
   chainl1,
@@ -442,8 +440,9 @@ ellipsisDecl = do
     eNodeM
 
 embedding :: Parser (WithTokenInfo Embedding)
-embedding =
-  (fmapSingleNode EmbedComprehension <$> comprehension)
+embedding = do
+  -- Use try to avoid consuming expr when comprehension is not matched. For example, an identifier "fo".
+  try (fmapSingleNode EmbedComprehension <$> comprehension)
     <|> (fmapSingleNode AliasExpr <$> expr)
 
 comprehension :: Parser (WithTokenInfo Comprehension)

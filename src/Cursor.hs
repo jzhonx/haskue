@@ -78,6 +78,9 @@ addrFromCrumbs crumbs = addrFromList $ go crumbs []
 setTCFocus :: Tree -> TrCur -> TrCur
 setTCFocus t (TrCur _ cs) = TrCur t cs
 
+mapTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
+mapTCFocus f (TrCur t cs) = TrCur (f t) cs
+
 -- | Generate tree address from the tree cursor.
 tcAddr :: TrCur -> TreeAddr
 tcAddr c = addrFromCrumbs (tcCrumbs c)
@@ -130,8 +133,8 @@ modifyTCFocus f (TrCur t cs) = TrCur (f t) cs
 setTCFocusTN :: TreeNode -> TrCur -> TrCur
 setTCFocusTN tn = modifyTCFocus (`setTN` tn)
 
-setTCFocusMut :: Mutable -> TrCur -> TrCur
-setTCFocusMut mut = modifyTCFocus (setTValGenEnv (TGenOp mut))
+setTCFocusMut :: SOp -> TrCur -> TrCur
+setTCFocusMut f = modifyTCFocus (setTOp f)
 
 goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
 goDownTCAddr a = go (addrToList a)
@@ -225,8 +228,11 @@ subTree seg parentT = do
   return (sub, updatedParT)
  where
   go f t = case (fetchLabelType f, t) of
+    -- Root segment always returns the same tree.
     (RootLabelType, _) -> Just t
-    (MutArgLabelType, IsTGenOp mut) -> snd <$> (getMutArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
+    -- go into withRCs will immediately go into its inner tree.
+    (_, IsFix r) -> go f (supersedeTN r.val t)
+    (MutArgLabelType, IsTreeMutable mut) -> snd <$> (getSOpArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
     (TempLabelType, _) -> tmpSub t
     (StringLabelType, IsStruct struct)
       | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
@@ -252,40 +258,43 @@ subTree seg parentT = do
 The sub tree should already exist in the parent tree.
 -}
 setSubTree :: (HasCallStack) => Feature -> Tree -> Tree -> Maybe Tree
-setSubTree f@(fetchLabelType -> MutArgLabelType) subT parT@(IsTGenOp mut) =
-  return $ setTValGenEnv (TGenOp $ updateMutArg (fst (getMutArgInfoFromFeature f)) subT mut) parT
+setSubTree f@(fetchLabelType -> MutArgLabelType) subT parT@(IsTreeMutable mut) =
+  return $ setTOp (updateSOpArg (fst (getMutArgInfoFromFeature f)) subT mut) parT
 setSubTree (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
-setSubTree f subT parT = do
-  n <- case (fetchLabelType f, parT) of
-    (StringLabelType, IsStruct parStruct)
-      -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
-      -- found.
-      | Just field <- lookupStructField (getTextIndexFromFeature f) parStruct ->
-          let
-            newField = subT `updateFieldValue` field
-            newStruct = updateStructField (getTextIndexFromFeature f) newField parStruct
-           in
-            return $ TNStruct newStruct
-    (PatternLabelType, IsStruct parStruct) ->
-      let (i, j) = getPatternIndexesFromFeature f
-       in return $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
-    (DynFieldLabelType, IsStruct parStruct) ->
-      let (i, j) = getDynFieldIndexesFromFeature f
-       in return $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
-    (StubFieldLabelType, IsStruct parStruct) ->
-      return $ TNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
-    (LetLabelType, IsStruct parStruct) ->
-      return $ TNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
-    (ListStoreIdxLabelType, IsList l) ->
-      let i = fetchIndex f in return $ TNList $ updateListStoreAt i subT l
-    (ListIdxLabelType, IsList l) ->
-      let i = fetchIndex f in return $ TNList $ updateListFinalAt i subT l
-    (DisjLabelType, IsDisj d) ->
-      let i = fetchIndex f
-       in return (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
-    (RootLabelType, _) -> Nothing
-    _ -> Nothing
-  return parT{treeNode = n}
+setSubTree f subT parT = case (fetchLabelType f, parT) of
+  (StringLabelType, IsStruct parStruct)
+    -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
+    -- found.
+    | Just field <- lookupStructField (getTextIndexFromFeature f) parStruct ->
+        let
+          newField = subT `updateFieldValue` field
+          newStruct = updateStructField (getTextIndexFromFeature f) newField parStruct
+         in
+          ret $ TNStruct newStruct
+  (PatternLabelType, IsStruct parStruct) ->
+    let (i, j) = getPatternIndexesFromFeature f
+     in ret $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
+  (DynFieldLabelType, IsStruct parStruct) ->
+    let (i, j) = getDynFieldIndexesFromFeature f
+     in ret $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
+  (StubFieldLabelType, IsStruct parStruct) ->
+    ret $ TNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
+  (LetLabelType, IsStruct parStruct) ->
+    ret $ TNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
+  (ListStoreIdxLabelType, IsList l) ->
+    let i = fetchIndex f in ret $ TNList $ updateListStoreAt i subT l
+  (ListIdxLabelType, IsList l) ->
+    let i = fetchIndex f in ret $ TNList $ updateListFinalAt i subT l
+  (DisjLabelType, IsDisj d) ->
+    let i = fetchIndex f
+     in ret (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+  (RootLabelType, _) -> Nothing
+  -- parT is wrapped by withRCs, so we need to reconstruct the withRCs node.
+  (_, WrappedBy (TNFix r)) ->
+    setSubTree f subT (unwrapTN (\x -> TNFix (r{val = treeNode x})) parT)
+  _ -> Nothing
+ where
+  ret tn = Just $ parT{treeNode = tn}
 
 indexList :: [a] -> Int -> Maybe a
 indexList xs i = if i < length xs then Just (xs !! i) else Nothing
@@ -311,8 +320,8 @@ data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (E
 
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
 subNodes :: Bool -> TrCur -> [SubNodeSeg]
-subNodes withStub (TCFocus t@(IsTGenOp mut)) =
-  let xs = [SubNodeSegNormal f | (f, _) <- toList $ getMutArgs mut]
+subNodes withStub (TCFocus t@(IsTreeMutable mut)) =
+  let xs = [SubNodeSegNormal f | (f, _) <- toList $ getSOpArgs mut]
       ys = subTNSegsOpt withStub t
    in xs ++ ys
 subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)

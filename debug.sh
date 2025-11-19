@@ -39,6 +39,8 @@ fi
 
 # If the first argument is "show", run the file server and exit
 if [[ "$1" == "show" ]]; then
+  go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
+
   tools/open_trace_in_ui -n --trace _debug/trace.json
   exit 0
 fi
@@ -58,8 +60,6 @@ if [[ "$1" == "run" ]]; then
   fi
 
   echo ""
-
-  go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
 
   # show the size of the log file
   ls -lh _debug/t.log
