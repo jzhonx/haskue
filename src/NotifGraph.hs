@@ -23,15 +23,8 @@ import Text.Printf (printf)
 
 data NotifGraph = NotifGraph
   { vgraph :: VGraph
-  , -- == Below are the SCC graph representation.
-    -- ==
-    cDAG :: HashMap.HashMap ExprVertex [ExprVertex]
-  -- ^ Maps from an SCC rep address to a list of SCC rep addresses that represents the dependencies.
-  , repToComps :: HashMap.HashMap ExprVertex (Set.Set ExprVertex, Bool)
-  -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
-  , compToRep :: HashMap.HashMap ExprVertex (ExprVertex, Bool)
-  -- ^ Maps from an expression address to its SCC representative address.
-  -- The Bool indicates whether the SCC is cyclic.
+  , cgraph :: CGraph
+  -- ^ The component graph representing the strongly connected components (SCCs) of the notification graph.
   , vidMapping :: VIDMapping
   }
   deriving (Eq, Generic, NFData)
@@ -55,6 +48,9 @@ instance ShowWTIndexer NotifGraph where
 
 mapVGraph :: (VGraph -> VGraph) -> NotifGraph -> NotifGraph
 mapVGraph f ng = ng{vgraph = f (vgraph ng)}
+
+mapCGraph :: (CGraph -> CGraph) -> NotifGraph -> NotifGraph
+mapCGraph f ng = ng{cgraph = f (cgraph ng)}
 
 data VGraph = VGraph
   { deptsMap :: HashMap.HashMap RefVertex [Int]
@@ -103,6 +99,41 @@ delVGVertexes keep g =
           (vVertexes g)
     }
 
+data CGraph = CGraph
+  { cDAG :: HashMap.HashMap ExprVertex [ExprVertex]
+  -- ^ Maps from an SCC rep address to a list of SCC rep addresses that represents the dependencies.
+  , repToComps :: HashMap.HashMap ExprVertex (Set.Set ExprVertex, Bool)
+  -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
+  , compToRep :: HashMap.HashMap ExprVertex (ExprVertex, Bool)
+  -- ^ Maps from an expression address to its SCC representative address.
+  -- The Bool indicates whether the SCC is cyclic.
+  }
+  deriving (Eq, Generic, NFData)
+
+emptyCGraph :: CGraph
+emptyCGraph =
+  CGraph
+    { cDAG = HashMap.empty
+    , repToComps = HashMap.empty
+    , compToRep = HashMap.empty
+    }
+
+{- | Get the representative vertex of a given vertex in the component graph.
+
+If the vertex is not found in the compToRep map, it means it is not yet added to the graph, so we create a new entry for
+it.
+-}
+getOrCreateRepVtx :: ExprVertex -> CGraph -> (ExprVertex, CGraph)
+getOrCreateRepVtx v g = case HashMap.lookup v (compToRep g) of
+  Just (rep, _) -> (rep, g)
+  Nothing ->
+    ( v
+    , g
+        { compToRep = HashMap.insert v (v, False) (compToRep g)
+        , repToComps = HashMap.insert v (Set.singleton v, False) (repToComps g)
+        }
+    )
+
 newtype GrpAddr = GrpAddr {getGrpAddr :: (SuffixIrredAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
 
 instance Show GrpAddr where
@@ -126,10 +157,8 @@ pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
 emptyNotifGraph :: NotifGraph
 emptyNotifGraph =
   NotifGraph
-    { repToComps = HashMap.empty
-    , compToRep = HashMap.empty
-    , vgraph = emptyVGraph
-    , cDAG = HashMap.empty
+    { vgraph = emptyVGraph
+    , cgraph = emptyCGraph
     , vidMapping = defaultVIDMapping
     }
 
@@ -229,8 +258,8 @@ getDependents rfbAddr ng = case HashMap.lookup (RefVertex rfbAddrID) (deptsMap n
 -- | Get the component addresses of a given SCC address in the notification graph.
 getElemAddrInGrp :: GrpAddr -> NotifGraph -> [SuffixIrredAddr]
 getElemAddrInGrp gaddr ng = case ( do
-                                    (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng)
-                                    HashMap.lookup baseID (repToComps ng)
+                                    (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
+                                    HashMap.lookup baseID (repToComps ng.cgraph)
                                  ) of
   Nothing -> []
   Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
@@ -239,12 +268,15 @@ getElemAddrInGrp gaddr ng = case ( do
   (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 getDependentGroups :: GrpAddr -> NotifGraph -> [GrpAddr]
-getDependentGroups gaddr ng = case HashMap.lookup (ExprVertex srcAddrID) (cDAG ng) of
+getDependentGroups gaddr ng = case HashMap.lookup (ExprVertex srcAddrID) (cDAG ng.cgraph) of
   Nothing -> []
   Just deps ->
     map
       ( \dep ->
-          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ HashMap.lookup dep ng.compToRep)
+          GrpAddr
+            ( getIrredAddrFromIVMust dep ng.vidMapping
+            , snd $ fromJust $ HashMap.lookup dep ng.cgraph.compToRep
+            )
       )
       deps
  where
@@ -270,7 +302,7 @@ getDependentsFromGroup sccAddr ng =
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the notification graph.
 lookupGrpAddr :: SuffixIrredAddr -> NotifGraph -> Maybe GrpAddr
-lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep ng) of
+lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep ng.cgraph) of
   Nothing -> Nothing
   Just (baseID, isCyclic) ->
     Just $
@@ -301,8 +333,8 @@ addNewDepToNG (ref, def) =
             insertVGraphEdge
               (RefVertex irDefID)
               (refVtx, refID)
-        defRep <- state (getOrCreateRepVtx defVtx)
-        refRep <- state (getOrCreateRepVtx refVtx)
+        defRep <- state (liftGetRepVtx defVtx)
+        refRep <- state (liftGetRepVtx refVtx)
 
         ng <- get
         if
@@ -313,11 +345,13 @@ addNewDepToNG (ref, def) =
           | not (hasPathInCG refRep defRep ng) -> do
               -- If there is no edge from refRep to defRep in the component graph, meaning there is no cycle formed,
               -- we can simply add the defRep -> refRep edge to the component graph.
-              let newCDAG = insertUnique defRep refRep (cDAG ng)
-              put $ ng{cDAG = newCDAG}
+              let newCDAG = insertUnique defRep refRep (cDAG ng.cgraph)
+              modify' $ mapCGraph (\cg -> cg{cDAG = newCDAG})
           -- The new edge forms a cycle in the component graph, we need to recompute the component graph.
           | otherwise -> modify' updateCGraph
     )
+ where
+  liftGetRepVtx v g = let (rep, newCG) = getOrCreateRepVtx v g.cgraph in (rep, g{cgraph = newCG})
 
 -- | Check if there is a path from one vertex to another in the component graph.
 hasPathInCG :: ExprVertex -> ExprVertex -> NotifGraph -> Bool
@@ -328,25 +362,9 @@ hasPathInCG from to ng = dfs from Set.empty
     | current == to = True
     | Set.member current visited = False
     | otherwise =
-        let neighbors = HashMap.findWithDefault [] current (cDAG ng)
+        let neighbors = HashMap.findWithDefault [] current (cDAG ng.cgraph)
             newVisited = Set.insert current visited
          in any (\neighbor -> dfs neighbor newVisited) neighbors
-
-{- | Get the representative vertex of a given vertex in the notification graph.
-
-If the vertex is not found in the compToRep map, it means it is not yet added to the graph, so we create a new entry for
-it.
--}
-getOrCreateRepVtx :: ExprVertex -> NotifGraph -> (ExprVertex, NotifGraph)
-getOrCreateRepVtx v ng = case HashMap.lookup v (compToRep ng) of
-  Just (rep, _) -> (rep, ng)
-  Nothing ->
-    ( v
-    , ng
-        { compToRep = HashMap.insert v (v, False) (compToRep ng)
-        , repToComps = HashMap.insert v (Set.singleton v, False) (repToComps ng)
-        }
-    )
 
 liftGetVIDForG :: TreeAddr -> State NotifGraph Int
 liftGetVIDForG addr = state $ \g ->
@@ -378,9 +396,12 @@ updateCGraph graph =
       x
    in
     y
-      { cDAG = newSCCDAG
-      , repToComps = newBaseToComps
-      , compToRep = newVToSCCBase
+      { cgraph =
+          CGraph
+            { cDAG = newSCCDAG
+            , repToComps = newBaseToComps
+            , compToRep = newVToSCCBase
+            }
       , vidMapping = newMapping
       }
  where
