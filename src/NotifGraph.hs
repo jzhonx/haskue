@@ -31,12 +31,12 @@ data NotifGraph = NotifGraph
   , notifGVertexes :: Set.Set IrredVertex
   -- ^ Above all three fields are used to represent the notification graph before computing the SCCs.
   -- == Below are the SCC graph representation.
-  , dagEdges :: HashMap.HashMap IrredVertex [IrredVertex]
-  -- ^ Maps from an SCC address of a strongly connected component to a list of SCC addresses that represents
-  -- the dependencies.
-  , baseToComps :: HashMap.HashMap IrredVertex (Set.Set IrredVertex, Bool)
+  -- ==
+  , cDAG :: HashMap.HashMap IrredVertex [IrredVertex]
+  -- ^ Maps from an SCC rep address to a list of SCC rep addresses that represents the dependencies.
+  , repToComps :: HashMap.HashMap IrredVertex (Set.Set IrredVertex, Bool)
   -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
-  , vToSCCBase :: HashMap.HashMap IrredVertex (IrredVertex, Bool)
+  , compToRep :: HashMap.HashMap IrredVertex (IrredVertex, Bool)
   -- ^ Maps from an irreducible address to its SCC representative address.
   -- The Bool indicates whether the SCC is cyclic.
   , vidMapping :: VIDMapping
@@ -84,11 +84,11 @@ emptyNotifGraph :: NotifGraph
 emptyNotifGraph =
   NotifGraph
     { deptsMap = HashMap.empty
-    , baseToComps = HashMap.empty
-    , vToSCCBase = HashMap.empty
+    , repToComps = HashMap.empty
+    , compToRep = HashMap.empty
     , notifGEdges = HashMap.empty
     , notifGVertexes = Set.empty
-    , dagEdges = HashMap.empty
+    , cDAG = HashMap.empty
     , vidMapping = defaultVIDMapping
     }
 
@@ -187,8 +187,8 @@ getDependents rfbAddr ng = case HashMap.lookup (RefVertex rfbAddrID) (deptsMap n
 -- | Get the component addresses of a given SCC address in the notification graph.
 getElemAddrInGrp :: GrpAddr -> NotifGraph -> [SuffixIrredAddr]
 getElemAddrInGrp gaddr ng = case ( do
-                                    (baseID, _) <- HashMap.lookup (IrredVertex gaddrID) (vToSCCBase ng)
-                                    HashMap.lookup baseID (baseToComps ng)
+                                    (baseID, _) <- HashMap.lookup (IrredVertex gaddrID) (compToRep ng)
+                                    HashMap.lookup baseID (repToComps ng)
                                  ) of
   Nothing -> []
   Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
@@ -197,12 +197,12 @@ getElemAddrInGrp gaddr ng = case ( do
   (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 getDependentGroups :: GrpAddr -> NotifGraph -> [GrpAddr]
-getDependentGroups gaddr ng = case HashMap.lookup (IrredVertex srcAddrID) (dagEdges ng) of
+getDependentGroups gaddr ng = case HashMap.lookup (IrredVertex srcAddrID) (cDAG ng) of
   Nothing -> []
   Just deps ->
     map
       ( \dep ->
-          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ HashMap.lookup dep ng.vToSCCBase)
+          GrpAddr (getIrredAddrFromIVMust dep ng.vidMapping, snd $ fromJust $ HashMap.lookup dep ng.compToRep)
       )
       deps
  where
@@ -228,7 +228,7 @@ getDependentsFromGroup sccAddr ng =
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the notification graph.
 lookupGrpAddr :: SuffixIrredAddr -> NotifGraph -> Maybe GrpAddr
-lookupGrpAddr rfbAddr ng = case HashMap.lookup (IrredVertex rfbAddrID) (vToSCCBase ng) of
+lookupGrpAddr rfbAddr ng = case HashMap.lookup (IrredVertex rfbAddrID) (compToRep ng) of
   Nothing -> Nothing
   Just (baseID, isCyclic) ->
     Just $
@@ -237,45 +237,89 @@ lookupGrpAddr rfbAddr ng = case HashMap.lookup (IrredVertex rfbAddrID) (vToSCCBa
  where
   (rfbAddrID, _) = getVID (sufIrredToAddr rfbAddr) ng.vidMapping
 
-{- | Add a new dependency to the notification graph and Update the SCC graph.
+{- | Add a new dependency to the notification graph and Update the component graph.
+
+The dependency is represented as an edge from the dependency address (def) to the dependent address (ref).
 
 - The dependent (ref) address does not need to be referable.
 - The dependency (def) address will later notify the dependent address if it changes.
 - The dependency (def) address should be a referable address.
 -}
 addNewDepToNG :: (HasCallStack) => (TreeAddr, ReferableAddr) -> NotifGraph -> NotifGraph
-addNewDepToNG (ref, def) ng = updateNotifGraph $ addDepToNGRaw (ref, def) ng
+addNewDepToNG (ref, def) =
+  execState
+    ( do
+        irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (rfbAddrToAddr def))
+        refID <- liftGetVIDForG ref
+        irRefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
+        let refVtx = IrredVertex irRefID
+            defVtx = IrredVertex irDefID
+        modify' $
+          \g ->
+            addDepEdgeToNG
+              (RefVertex irDefID)
+              (refVtx, refID)
+              g
+        defRep <- state (getOrCreateRepVtx defVtx)
+        refRep <- state (getOrCreateRepVtx refVtx)
 
-{- | Add a new dependency to the notification graph without updating the SCC graph.
+        ng <- get
+        if
+          -- If both addresses are in the same SCC and they are not the same, do nothing.
+          | defRep == refRep
+          , defVtx /= refVtx ->
+              return ()
+          | not (hasPathInCG refRep defRep ng) -> do
+              -- If there is no edge from refRep to defRep in the component graph, meaning there is no cycle formed,
+              -- we can simply add the defRep -> refRep edge to the component graph.
+              let newCDAG = insertUnique defRep refRep (cDAG ng)
+              put $ ng{cDAG = newCDAG}
+          -- The new edge forms a cycle in the component graph, we need to recompute the component graph.
+          | otherwise -> modify' updateCGraph
+    )
+
+-- | Check if there is a path from one vertex to another in the component graph.
+hasPathInCG :: IrredVertex -> IrredVertex -> NotifGraph -> Bool
+hasPathInCG from to ng = dfs from Set.empty
+ where
+  dfs :: IrredVertex -> Set.Set IrredVertex -> Bool
+  dfs current visited
+    | current == to = True
+    | Set.member current visited = False
+    | otherwise =
+        let neighbors = HashMap.findWithDefault [] current (cDAG ng)
+            newVisited = Set.insert current visited
+         in any (\neighbor -> dfs neighbor newVisited) neighbors
+
+{- | Get the representative vertex of a given irreducible vertex in the notification graph.
+
+If the vertex is not found in the compToRep map, it means it is not yet added to the graph, so we create a new entry for
+it.
+-}
+getOrCreateRepVtx :: IrredVertex -> NotifGraph -> (IrredVertex, NotifGraph)
+getOrCreateRepVtx v ng = case HashMap.lookup v (compToRep ng) of
+  Just (rep, _) -> (rep, ng)
+  Nothing ->
+    ( v
+    , ng
+        { compToRep = HashMap.insert v (v, False) (compToRep ng)
+        , repToComps = HashMap.insert v (Set.singleton v, False) (repToComps ng)
+        }
+    )
+
+{- | Add a new dependency to the notification graph without updating the component graph.
 
 - The dependent (ref) address does not need to be referable.
 - The def address will later notify the dependent address if it changes.
 - The def address should be a referable address.
 -}
-addDepToNGRaw :: (TreeAddr, ReferableAddr) -> NotifGraph -> NotifGraph
-addDepToNGRaw (ref, def) =
-  execState
-    ( do
-        refID <- liftGetVIDForG ref
-        irRefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred ref)
-        irDefID <- liftGetVIDForG (sufIrredToAddr $ trimAddrToSufIrred (rfbAddrToAddr def))
-        modify' $ \g ->
-          g
-            { deptsMap =
-                HashMap.insertWith
-                  (\old _ -> if refID `elem` old then old else refID : old)
-                  (RefVertex irDefID)
-                  [refID]
-                  (deptsMap g)
-            , notifGEdges =
-                HashMap.insertWith
-                  (\old _ -> if IrredVertex irRefID `elem` old then old else IrredVertex irRefID : old)
-                  (RefVertex irDefID)
-                  [IrredVertex irRefID]
-                  (notifGEdges g)
-            , notifGVertexes = Set.union (Set.fromList [IrredVertex irRefID, IrredVertex irDefID]) g.notifGVertexes
-            }
-    )
+addDepEdgeToNG :: RefVertex -> (IrredVertex, Int) -> NotifGraph -> NotifGraph
+addDepEdgeToNG defVtx (refVtx, refID) g =
+  g
+    { deptsMap = insertUnique defVtx refID (deptsMap g)
+    , notifGEdges = insertUnique defVtx refVtx (notifGEdges g)
+    , notifGVertexes = Set.union (Set.fromList [refVtx, IrredVertex (getRefVertex defVtx)]) g.notifGVertexes
+    }
 
 liftGetVIDForG :: TreeAddr -> State NotifGraph Int
 liftGetVIDForG addr = state $ \g ->
@@ -291,7 +335,7 @@ delNGVertexPrefix prefix =
     ( do
         m <- gets vidMapping
         modify' $ \g ->
-          updateNotifGraph
+          updateCGraph
             ( g
                 { deptsMap =
                     HashMap.map
@@ -315,20 +359,20 @@ delNGVertexPrefix prefix =
   keep :: VIDMapping -> Int -> Bool
   keep m x = not (isPrefix prefix (getAddrFromVIDMust x m))
 
--- | Update the SCC graph based on the current notification graph.
-updateNotifGraph :: (HasCallStack) => NotifGraph -> NotifGraph
-updateNotifGraph graph =
+-- | Update the component graph based on the current notification graph.
+updateCGraph :: (HasCallStack) => NotifGraph -> NotifGraph
+updateCGraph graph =
   let
     x = graph
     y =
       -- trace
-      --   (printf "updateNotifGraph, g: %s" (show x))
+      --   (printf "updateCGraph, g: %s" (show x))
       x
    in
     y
-      { dagEdges = newSCCDAG
-      , baseToComps = newBaseToComps
-      , vToSCCBase = newVToSCCBase
+      { cDAG = newSCCDAG
+      , repToComps = newBaseToComps
+      , compToRep = newVToSCCBase
       , vidMapping = newMapping
       }
  where
@@ -627,3 +671,10 @@ removeParentSIAddrs :: [SuffixIrredAddr] -> [SuffixIrredAddr]
 removeParentSIAddrs addrs =
   -- If there is an address that is a parent of another address, remove it.
   filter (\a -> not $ or [isSufIrredParent a x | x <- addrs]) addrs
+
+insertUnique :: (Eq k, Hashable k, Eq a) => k -> a -> HashMap.HashMap k [a] -> HashMap.HashMap k [a]
+insertUnique key val =
+  HashMap.insertWith
+    (\_ old -> if val `elem` old then old else val : old)
+    key
+    [val]
