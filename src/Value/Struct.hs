@@ -14,7 +14,7 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad)
 import Text.Printf (printf)
-import {-# SOURCE #-} Value.Tree
+import {-# SOURCE #-} Value.Val
 
 -- | A struct has concrete field labels and constraints that have no mutable patterns.
 data Struct = Struct
@@ -31,8 +31,8 @@ data Struct = Struct
   -- ^ The un-evaluated fields that defined in this block. They shold be copied to the struct when building the struct.
   , stcOrdLabels :: [StructFieldLabel]
   , stcIsConcrete :: !Bool
-  , stcEmbedVal :: Maybe Tree
-  , stcPermErr :: Maybe Tree
+  , stcEmbedVal :: Maybe Val
+  , stcPermErr :: Maybe Val
   , stcPerms :: [PermItem]
   }
   deriving (Generic)
@@ -67,17 +67,17 @@ data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
 
 data StructStubVal
   = StructStubField Field
-  | StructStubLet Tree
+  | StructStubLet Val
 
 data Field = Field
-  { ssfValue :: Tree
+  { ssfValue :: Val
   , ssfAttr :: LabelAttr
   , ssfObjects :: Set.Set Int
   -- ^ A set of object IDs that have been unified with base raw value.
   }
   deriving (Generic)
 
-mkdefaultField :: Tree -> Field
+mkdefaultField :: Val -> Field
 mkdefaultField t =
   Field
     { ssfValue = t
@@ -91,10 +91,10 @@ possible.
 data DynamicField = DynamicField
   { dsfID :: !Int
   , dsfAttr :: LabelAttr
-  , dsfLabel :: Tree
+  , dsfLabel :: Val
   , dsfLabelIsInterp :: !Bool
   -- ^ Whether the label is an interpolated label.
-  , dsfValue :: Tree
+  , dsfValue :: Val
   -- ^ The value is only for the storage purpose. It will not be reduced during reducing dynamic fields.
   }
   deriving (Generic)
@@ -107,8 +107,8 @@ According to sepc,
 -}
 data StructCnstr = StructCnstr
   { scsID :: !Int
-  , scsPattern :: Tree
-  , scsValue :: Tree
+  , scsPattern :: Val
+  , scsValue :: Val
   }
   deriving (Generic)
 
@@ -174,10 +174,10 @@ emptyStruct =
     , stcPerms = []
     }
 
-updateFieldValue :: Tree -> Field -> Field
+updateFieldValue :: Val -> Field -> Field
 updateFieldValue t field = field{ssfValue = t}
 
-staticFieldMker :: Tree -> LabelAttr -> Field
+staticFieldMker :: Val -> LabelAttr -> Field
 staticFieldMker t a =
   Field
     { ssfValue = t
@@ -185,7 +185,7 @@ staticFieldMker t a =
     , ssfObjects = Set.empty
     }
 
-dynToField :: DynamicField -> Maybe Field -> (Tree -> Tree -> Tree) -> Field
+dynToField :: DynamicField -> Maybe Field -> (Val -> Val -> Val) -> Field
 dynToField df sfM unifier = case sfM of
   -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
   -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
@@ -208,14 +208,14 @@ dynToField df sfM unifier = case sfM of
       , ssfObjects = Set.fromList [dsfID df]
       }
 
-lookupStructLet :: TextIndex -> Struct -> Maybe Tree
+lookupStructLet :: TextIndex -> Struct -> Maybe Val
 lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
 
 {- | Insert a new let binding into the block.
 
 Caller should ensure that the name is not already in the block.
 -}
-insertStructLet :: TextIndex -> Tree -> Struct -> Struct
+insertStructLet :: TextIndex -> Val -> Struct -> Struct
 insertStructLet s t struct =
   struct
     { stcBindings = Map.insert s (Binding t False) (stcBindings struct)
@@ -272,7 +272,7 @@ updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructFie
 removeStructFieldsByNames :: [TextIndex] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
 
-updateStructCnstrByID :: Int -> Bool -> Tree -> Struct -> Struct
+updateStructCnstrByID :: Int -> Bool -> Val -> Struct -> Struct
 updateStructCnstrByID cid isPattern sub struct =
   struct
     { stcCnstrs =
@@ -288,7 +288,7 @@ updateStructCnstrByID cid isPattern sub struct =
           (stcCnstrs struct)
     }
 
-updateStructDynFieldByID :: Int -> Bool -> Tree -> Struct -> Struct
+updateStructDynFieldByID :: Int -> Bool -> Val -> Struct -> Struct
 updateStructDynFieldByID oid isLabel sub struct =
   struct
     { stcDynFields =
@@ -304,11 +304,11 @@ updateStructDynFieldByID oid isLabel sub struct =
           (stcDynFields struct)
     }
 
-updateStructStaticFieldBase :: TextIndex -> Tree -> Struct -> Struct
+updateStructStaticFieldBase :: TextIndex -> Val -> Struct -> Struct
 updateStructStaticFieldBase name sub struct =
   struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
 
-updateStructLetBinding :: TextIndex -> Tree -> Struct -> Struct
+updateStructLetBinding :: TextIndex -> Val -> Struct -> Struct
 updateStructLetBinding name sub struct =
   struct
     { stcBindings = Map.update (\b -> Just (b{value = sub})) name (stcBindings struct)
@@ -318,7 +318,7 @@ updateStructLetBinding name sub struct =
 
 If not all dynamic field labels can be resolved to strings, return Nothing.
 -}
-buildStructOrdLabels :: (TextIndexerMonad s m) => (Tree -> Maybe T.Text) -> Struct -> m (Maybe [T.Text])
+buildStructOrdLabels :: (TextIndexerMonad s m) => (Val -> Maybe T.Text) -> Struct -> m (Maybe [T.Text])
 buildStructOrdLabels rtrString struct = do
   r <-
     foldM
@@ -374,7 +374,7 @@ insertStructNewDynField oid df struct =
     }
 
 -- | Insert a new constraint into the block stub struct.
-insertStructNewCnstr :: Int -> Tree -> Tree -> Struct -> Struct
+insertStructNewCnstr :: Int -> Val -> Val -> Struct -> Struct
 insertStructNewCnstr cid pat val struct =
   struct{stcCnstrs = IntMap.insert cid (StructCnstr cid pat val) (stcCnstrs struct)}
 
@@ -382,7 +382,7 @@ insertStructNewCnstr cid pat val struct =
 the same label.
 -}
 dedupStructFieldLabels ::
-  (Tree -> Maybe TextIndex) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
+  (Val -> Maybe TextIndex) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
 dedupStructFieldLabels rtrString dynFields labels =
   reverse . fst $ foldl go ([], Set.empty) labels
  where
@@ -400,7 +400,7 @@ dedupStructFieldLabels rtrString dynFields labels =
       Nothing -> (StructDynFieldOID i : acc, seen)
 
 data Binding = Binding
-  { value :: Tree
+  { value :: Val
   , isIterVar :: !Bool
   }
   deriving (Generic)

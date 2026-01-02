@@ -23,7 +23,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
 data PropGraph = PropGraph
-  { nodesByUseFunc :: Map.Map SuffixIrredAddr [TreeAddr]
+  { nodesByUseFunc :: Map.Map SuffixIrredAddr [ValAddr]
   -- ^ Groups lists of dependent vertex IDs by their function addresses.
   -- If the function does not have an argument, it maps to itself.
   -- For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
@@ -186,13 +186,13 @@ instance Show RefVertex where
 instance ShowWTIndexer RefVertex
 
 data VIDMapping = VIDMapping
-  { vidToAddr :: HashMap.HashMap Int TreeAddr
-  , addrToVid :: HashMap.HashMap TreeAddr Int
+  { vidToAddr :: HashMap.HashMap Int ValAddr
+  , addrToVid :: HashMap.HashMap ValAddr Int
   , nextVid :: Int
   }
   deriving (Eq, Generic, NFData)
 
-getVID :: TreeAddr -> VIDMapping -> (Int, Maybe VIDMapping)
+getVID :: ValAddr -> VIDMapping -> (Int, Maybe VIDMapping)
 getVID addr m =
   case HashMap.lookup addr (addrToVid m) of
     Just vid -> (vid, Nothing)
@@ -209,10 +209,10 @@ getVID addr m =
                 }
           )
 
-getAddrFromVID :: Int -> VIDMapping -> Maybe TreeAddr
+getAddrFromVID :: Int -> VIDMapping -> Maybe ValAddr
 getAddrFromVID vid m = HashMap.lookup vid (vidToAddr m)
 
-getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> TreeAddr
+getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> ValAddr
 getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
@@ -228,8 +228,8 @@ getIrredAddrFromIVMust iv = getIrredAddrFromVIDMust (getExprVertex iv)
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
   VIDMapping
-    { vidToAddr = HashMap.fromList [(rootVID, rootTreeAddr)]
-    , addrToVid = HashMap.fromList [(rootTreeAddr, rootVID)]
+    { vidToAddr = HashMap.fromList [(rootVID, rootValAddr)]
+    , addrToVid = HashMap.fromList [(rootValAddr, rootVID)]
     , nextVid = rootVID + 1
     }
 
@@ -268,7 +268,7 @@ getElemAddrInGrp gaddr ng = case ( do
   (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
 
 -- | Get all node addresses of a given group address in the propagation graph.
-getNodeAddrsInGrp :: GrpAddr -> PropGraph -> [TreeAddr]
+getNodeAddrsInGrp :: GrpAddr -> PropGraph -> [ValAddr]
 getNodeAddrsInGrp gaddr ng =
   let irredAddrs = getElemAddrInGrp gaddr ng
    in Set.toList $
@@ -280,7 +280,7 @@ getNodeAddrsInGrp gaddr ng =
           Set.empty
           irredAddrs
 
-getNodeAddrsByFunc :: SuffixIrredAddr -> PropGraph -> [TreeAddr]
+getNodeAddrsByFunc :: SuffixIrredAddr -> PropGraph -> [ValAddr]
 getNodeAddrsByFunc funcAddr ng = Map.findWithDefault [] funcAddr ng.nodesByUseFunc
 
 -- | Get all use components of a given component address in the propagation graph.
@@ -323,7 +323,7 @@ Some cases:
 1. sub-field RC: x: x.f. Resolving "x.f.g" gets dependency relationships: /x/f/g -> /x/f, /x/f -> /x.
     From the x -> x.f.g we get /x -> /x/f/g. So we have a cycle, which contains /x, /x/f, /x/f/g.
 -}
-addNewDepToNG :: (HasCallStack) => TreeAddr -> (ReferableAddr, ReferableAddr) -> PropGraph -> PropGraph
+addNewDepToNG :: (HasCallStack) => ValAddr -> (ReferableAddr, ReferableAddr) -> PropGraph -> PropGraph
 addNewDepToNG use (depIdent, dep) =
   execState
     ( do
@@ -397,7 +397,7 @@ hasPathInCG from to ng = dfs from Set.empty
             newVisited = Set.insert current visited
          in any (\neighbor -> dfs neighbor newVisited) neighbors
 
-liftGetVIDForG :: TreeAddr -> State PropGraph Int
+liftGetVIDForG :: ValAddr -> State PropGraph Int
 liftGetVIDForG addr = state $ \g ->
   let (i, newM) = getVID addr g.vidMapping
    in case newM of
@@ -405,7 +405,7 @@ liftGetVIDForG addr = state $ \g ->
         Nothing -> (i, g)
 
 -- | Remove all vertexes from the propagation graph that start with the given prefix.
-delNGVertexPrefix :: (HasCallStack) => TreeAddr -> PropGraph -> PropGraph
+delNGVertexPrefix :: (HasCallStack) => ValAddr -> PropGraph -> PropGraph
 delNGVertexPrefix prefix =
   execState
     ( do
@@ -644,7 +644,7 @@ isSufIrredParent parent child =
             in not (V.null rest)
          )
 
-liftGetVIDForTS :: TreeAddr -> State TarjanState Int
+liftGetVIDForTS :: ValAddr -> State TarjanState Int
 liftGetVIDForTS addr = state $ \ts ->
   let (i, newM) = getVID addr ts.tsVIDMapping
    in case newM of

@@ -20,18 +20,18 @@ import Reduce.RMonad (
   descendTMSeg,
   getRMContext,
   getTMCursor,
-  getTMTree,
+  getTMVal,
   inSubTM,
-  modifyTMNodeWithTree,
-  postVisitTreeSimple,
+  modifyTMNodeWithVal,
+  postVisitValSimple,
   propUpTM,
   putRMContext,
   putTMCursor,
-  putTMTree,
+  putTMVal,
   throwFatal,
   traceSpanArgsTM,
   traceSpanTM,
-  withTN,
+  withVN,
  )
 import Reduce.Root (reduce)
 import StringIndex (ShowWTIndexer (..))
@@ -47,11 +47,11 @@ postValidation = traceSpanTM "postValidation" $ do
   -- rewrite all functions to their results if the results exist.
   simplifyRM
 
-  t <- getTMTree
+  t <- getTMVal
   traceSpanArgsTM "validate" (show t) $ do
     -- then validate all constraints.
-    traverseTM $ withTN $ \case
-      TNAtomCnstr c -> validateCnstr c
+    traverseTM $ withVN $ \case
+      VNAtomCnstr c -> validateCnstr c
       _ -> return ()
 
 {- | Traverse the tree and does the following things with the node:
@@ -61,18 +61,18 @@ postValidation = traceSpanTM "postValidation" $ do
 -}
 simplifyRM :: RM ()
 simplifyRM = traceSpanTM "simplifyRM" $ do
-  tc <- getTMCursor
+  vc <- getTMCursor
   putTMCursor
-    =<< postVisitTreeSimple
+    =<< postVisitValSimple
       (subNodes False)
-      ( \x -> case addrIsRfbAddr (tcAddr x) of
+      ( \x -> case addrIsRfbAddr (vcAddr x) of
           -- We only need to care about the referable node.
           Nothing -> return x
           Just _ -> do
-            let t = tcFocus x
+            let t = focus x
             case t of
               -- Keep the genop if the value is no val.
-              IsNoVal | IsTreeMutable _ <- t -> return x
+              IsNoVal | IsValMutable _ <- t -> return x
               IsDisj d -> do
                 r <-
                   normalizeDisj
@@ -83,7 +83,7 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
                     )
                     d
                     x
-                return $ setTCFocusTN (treeNode r) x
+                return $ setVCFocusVN (valNode r) x
               IsStruct struct -> do
                 let subErrM =
                       foldl
@@ -95,19 +95,19 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
                         )
                         Nothing
                         (stcFields struct)
-                    embErrM = mkNewTree . TNBottom <$> rtrBottom t
+                    embErrM = mkNewVal . VNBottom <$> rtrBottom t
                 debugInstantRM
                   "simplifyRM"
                   (printf "struct subErrM: %s, embErrM: %s" (show subErrM) (show embErrM))
                   x
                 maybe
-                  (return $ setTreeImmutable t `setTCFocus` x)
-                  (\err -> return $ err `setTCFocus` x)
+                  (return $ setValImmutable t `setVCFocus` x)
+                  (\err -> return $ err `setVCFocus` x)
                   (listToMaybe $ catMaybes [subErrM, embErrM])
               -- Make the tree immutable.
-              _ -> return $ setTreeImmutable t `setTCFocus` x
+              _ -> return $ setValImmutable t `setVCFocus` x
       )
-      tc
+      vc
 
 {- | Validate the constraint.
 
@@ -120,29 +120,29 @@ validateCnstr c = traceSpanTM "validateCnstr" $ do
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
   -- get an incomplete value if the RC node did not yield a concrete value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  putTMTree (cnsValidator c)
+  putTMVal (cnsValidator c)
   reduce
 
-  res <- getTMTree
+  res <- getTMVal
   if
     | IsNoVal <- res -> return ()
-    | Just _ <- rtrBottom res -> putTMTree res
-    | Just a <- rtrAtom res -> putTMTree $ mkAtomTree a
-    | IsEmbedVal ev <- res, Just a <- rtrAtom ev -> putTMTree $ mkAtomTree a
+    | Just _ <- rtrBottom res -> putTMVal res
+    | Just a <- rtrAtom res -> putTMVal $ mkAtomVal a
+    | IsEmbedVal ev <- res, Just a <- rtrAtom ev -> putTMVal $ mkAtomVal a
     | otherwise -> do
         resStr <- tshow res
-        putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" resStr
+        putTMVal $ mkBottomVal $ printf "constraint not satisfied, %s" resStr
 
 -- case rtrVal res of
---   Just (IsBottom _) -> putTMTree res
+--   Just (IsBottom _) -> putTMVal res
 --   -- The result is valid.
---   Just (IsAtom _) -> putTMTree (mkAtomTree c.value)
---   Just (IsEmbedVal (IsAtom _)) -> putTMTree (mkAtomTree c.value)
+--   Just (IsAtom _) -> putTMVal (mkAtomVal c.value)
+--   Just (IsEmbedVal (IsAtom _)) -> putTMVal (mkAtomVal c.value)
 --   -- Incomplete case.
 --   Nothing -> return ()
 --   _ -> do
 --     resStr <- tshow res
---     putTMTree $ mkBottomTree $ printf "constraint not satisfied, %s" resStr
+--     putTMVal $ mkBottomVal $ printf "constraint not satisfied, %s" resStr
 
 {- | Traverse the leaves of the tree cursor in the following order
 
@@ -161,25 +161,25 @@ For the bottom handling:
 traverseSub :: RM () -> RM ()
 traverseSub f = do
   do
-    tc <- getTMCursor
+    vc <- getTMCursor
     mapM_
       ( \case
           SubNodeSegNormal seg -> inSubTM seg f
           SubNodeSegEmbed seg -> do
             x <- getTMCursor
-            let origSeg = fromJust $ tcFocusSeg x
+            let origSeg = fromJust $ vcFocusSeg x
             propUpTM
             inSubTM seg f
             ok <- descendTMSeg origSeg
             unless ok $ throwFatal "original segment not found after embedding traversal"
       )
-      (subNodes False tc)
+      (subNodes False vc)
 
-  tc <- getTMCursor
-  let t = tcFocus tc
-  case treeNode t of
+  vc <- getTMCursor
+  let t = focus vc
+  case valNode t of
     -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
-    TNStruct struct -> do
+    VNStruct struct -> do
       let errM =
             foldl
               ( \acc field ->
@@ -190,8 +190,8 @@ traverseSub f = do
               )
               Nothing
               (stcFields struct)
-      maybe (return ()) putTMTree errM
-    TNDisj dj -> do
+      maybe (return ()) putTMVal errM
+    VNDisj dj -> do
       newDjT <-
         normalizeDisj
           ( \x -> case x of
@@ -200,6 +200,6 @@ traverseSub f = do
               _ -> isJust (rtrBottom x)
           )
           dj
-          tc
-      modifyTMNodeWithTree newDjT
+          vc
+      modifyTMNodeWithVal newDjT
     _ -> return ()

@@ -42,7 +42,7 @@ import StringIndex (TextIndexer)
 import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 import Value
-import Value.Util.TreeRep (treeToFullRepString)
+import Value.Util.ValRep (treeToFullRepString)
 
 data EvalConfig = EvalConfig
   { ecDebugMode :: Bool
@@ -93,27 +93,27 @@ runIO eStr conf = do
         return (declsToBuilder decls)
     _ -> throwErrSt "Expected a struct literal"
 
-runTreeIO :: String -> ExceptT String IO Tree
+runTreeIO :: String -> ExceptT String IO Val
 runTreeIO s = fst <$> runTreeStr s emptyEvalConfig
 
 runStr :: String -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
 runStr s conf = do
   (t, cs) <- runTreeStr s conf
-  case treeNode t of
+  case valNode t of
     -- print the error message to the console.
-    TNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+    VNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ ->
       let e = runExcept $ buildASTExpr t cs
        in case e of
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
+strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 strToCUEVal s conf = do
   e <- liftEither $ parseExpr s
   mapErrToString $ evalToTree (evalExpr e) conf
 
-runTreeStr :: String -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
+runTreeStr :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 runTreeStr s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
@@ -126,13 +126,13 @@ mapErrToString =
           Right v -> Right v
     )
 
-evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Tree, TextIndexer)
+evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 evalFile sf conf = mapErrToString $ evalToTree (evalSourceFile sf) conf
 
 evalToTree ::
-  RWST ReduceConfig () RTCState (ExceptT Error IO) Tree ->
+  RWST ReduceConfig () RTCState (ExceptT Error IO) Val ->
   EvalConfig ->
-  ExceptT Error IO (Tree, TextIndexer)
+  ExceptT Error IO (Val, TextIndexer)
 evalToTree f conf =
   do
     let config =
@@ -156,23 +156,23 @@ evalToTree f conf =
                 hPutStr stderr $
                   "Initial eval result: " ++ rep ++ "\n"
             let
-              rootTC = TrCur root [(rootFeature, mkNewTree TNTop)]
-            putTMCursor rootTC
+              rootVC = VCur root [(rootFeature, mkNewVal VNTop)]
+            putTMCursor rootVC
             local (mapParams (\p -> p{createCnstr = True})) reduce
             local (mapParams (\p -> p{createCnstr = False})) postValidation
 
             finalized <- get
             let finalTC = finalized.rtsTC
             when (ecDebugMode conf) $ do
-              rep <- treeToFullRepString (tcFocus finalTC)
+              rep <- treeToFullRepString (focus finalTC)
               liftIO $
                 hPutStr stderr $
                   "Final eval result: " ++ rep ++ "\n"
         )
         (ReduceConfig config (emptyReduceParams{createCnstr = True}))
-        (RTCState (TrCur (mkNewTree TNTop) []) emptyContext)
+        (RTCState (VCur (mkNewVal VNTop) []) emptyContext)
 
     return
-      ( finalized.rtsTC.tcFocus
+      ( finalized.rtsTC.focus
       , finalized.rtsCtx.tIndexer
       )

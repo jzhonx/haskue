@@ -7,7 +7,7 @@ import Control.DeepSeq (NFData (..))
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import GHC.Generics (Generic)
-import {-# SOURCE #-} Value.Tree
+import {-# SOURCE #-} Value.Val
 
 {- | An Interpolation is made up of string segments and expressions.
 
@@ -15,7 +15,7 @@ For example, "hello, \(name)" is make up of the string segment "hello, " and the
 -}
 data Interpolation = Interpolation
   { itpSegs :: [IplSeg]
-  , itpExprs :: Seq.Seq Tree
+  , itpExprs :: Seq.Seq Val
   }
   deriving (Generic)
 

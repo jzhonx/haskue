@@ -4,7 +4,7 @@ module Value.UnifyOp where
 
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
-import {-# SOURCE #-} Value.Tree
+import {-# SOURCE #-} Value.Val
 
 {- | UnifyOp is commutative, associative, and idempotent.
 
@@ -15,6 +15,6 @@ created correctly.
 -}
 data UnifyOp = UnifyOp
   { hasEmbeds :: Bool
-  , conjs :: Seq.Seq Tree
+  , conjs :: Seq.Seq Val
   }
   deriving (Generic)

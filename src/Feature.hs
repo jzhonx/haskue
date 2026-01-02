@@ -52,7 +52,7 @@ isFieldPathEmpty :: FieldPath -> Bool
 isFieldPathEmpty (FieldPath []) = True
 isFieldPathEmpty _ = False
 
-fieldPathToAddr :: FieldPath -> TreeAddr
+fieldPathToAddr :: FieldPath -> ValAddr
 fieldPathToAddr (FieldPath sels) =
   let xs = map selToTASeg sels
    in addrFromList xs
@@ -276,16 +276,16 @@ instance Show BinOpDirect where
   show L = "L"
   show R = "R"
 
-{- | TreeAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
+{- | ValAddr is full addr to a value. The segments are stored in reverse order, meaning the last segment is the first in
 the list.
 -}
-newtype TreeAddr = TreeAddr
+newtype ValAddr = ValAddr
   { vFeatures :: V.Vector Feature
   }
   deriving (Show, Eq, Ord, Generic, NFData)
 
-instance ShowWTIndexer TreeAddr where
-  tshow (TreeAddr a)
+instance ShowWTIndexer ValAddr where
+  tshow (ValAddr a)
     | V.null a = return "."
     | a V.! 0 == rootFeature = do
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList $ V.drop 1 a)
@@ -294,77 +294,77 @@ instance ShowWTIndexer TreeAddr where
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList a)
         return $ T.pack $ intercalate "/" x
 
-instance Hashable TreeAddr where
-  hashWithSalt salt (TreeAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
+instance Hashable ValAddr where
+  hashWithSalt salt (ValAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
 
-instance ToJSON TreeAddr where
+instance ToJSON ValAddr where
   toJSON a = toJSON (show a)
 
-instance ToJSONWTIndexer TreeAddr where
+instance ToJSONWTIndexer ValAddr where
   ttoJSON a = do
     s <- tshow a
     return $ toJSON s
 
-mkTreeAddr :: V.Vector Feature -> TreeAddr
-mkTreeAddr = TreeAddr
+mkValAddr :: V.Vector Feature -> ValAddr
+mkValAddr = ValAddr
 
-emptyTreeAddr :: TreeAddr
-emptyTreeAddr = mkTreeAddr V.empty
+emptyValAddr :: ValAddr
+emptyValAddr = mkValAddr V.empty
 
-rootTreeAddr :: TreeAddr
-rootTreeAddr = mkTreeAddr (V.singleton rootFeature)
+rootValAddr :: ValAddr
+rootValAddr = mkValAddr (V.singleton rootFeature)
 
-isTreeAddrEmpty :: TreeAddr -> Bool
-isTreeAddrEmpty a = V.null (vFeatures a)
+isValAddrEmpty :: ValAddr -> Bool
+isValAddrEmpty a = V.null (vFeatures a)
 
-addrFromList :: [Feature] -> TreeAddr
-addrFromList segs = mkTreeAddr (V.fromList segs)
+addrFromList :: [Feature] -> ValAddr
+addrFromList segs = mkValAddr (V.fromList segs)
 
 -- | This is mostly used for testing purpose.
-addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m TreeAddr
+addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m ValAddr
 addrFromStringList segs = do
   xs <- mapM strToStringFeature segs
-  return $ mkTreeAddr (V.fromList xs)
+  return $ mkValAddr (V.fromList xs)
 
-addrToList :: TreeAddr -> [Feature]
-addrToList (TreeAddr a) = V.toList a
+addrToList :: ValAddr -> [Feature]
+addrToList (ValAddr a) = V.toList a
 
-appendSeg :: TreeAddr -> Feature -> TreeAddr
-appendSeg (TreeAddr a) seg = mkTreeAddr (V.snoc a seg)
+appendSeg :: ValAddr -> Feature -> ValAddr
+appendSeg (ValAddr a) seg = mkValAddr (V.snoc a seg)
 
 {- | Append the new addr to old addr.
 new and old are reversed, such as [z, y, x] and [b, a]. The appended addr should be [z, y, x, b, a], which is
 a.b.x.y.z.
 -}
-appendTreeAddr ::
+appendValAddr ::
   -- | old addr
-  TreeAddr ->
+  ValAddr ->
   -- | new addr to be appended to the old addr
-  TreeAddr ->
-  TreeAddr
-appendTreeAddr (TreeAddr old) (TreeAddr new) = mkTreeAddr (old V.++ new)
+  ValAddr ->
+  ValAddr
+appendValAddr (ValAddr old) (ValAddr new) = mkValAddr (old V.++ new)
 
 -- | Get the parent addr of a addr by removing the last segment.
-initTreeAddr :: TreeAddr -> Maybe TreeAddr
-initTreeAddr (TreeAddr a)
+initValAddr :: ValAddr -> Maybe ValAddr
+initValAddr (ValAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ mkTreeAddr (V.init a)
+  | otherwise = Just $ mkValAddr (V.init a)
 
 -- | Get the tail addr of a addr, excluding the head segment.
-tailTreeAddr :: TreeAddr -> Maybe TreeAddr
-tailTreeAddr (TreeAddr a)
+tailValAddr :: ValAddr -> Maybe ValAddr
+tailValAddr (ValAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ mkTreeAddr (V.tail a)
+  | otherwise = Just $ mkValAddr (V.tail a)
 
 -- | Get the last segment of a addr.
-lastSeg :: TreeAddr -> Maybe Feature
-lastSeg (TreeAddr a)
+lastSeg :: ValAddr -> Maybe Feature
+lastSeg (ValAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.last a
 
 -- | Get the head segment of a addr.
-headSeg :: TreeAddr -> Maybe Feature
-headSeg (TreeAddr a)
+headSeg :: ValAddr -> Maybe Feature
+headSeg (ValAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.head a
 
@@ -372,8 +372,8 @@ headSeg (TreeAddr a)
 
 For example, isPrefix (a.b) (a.b.c.d) = True, isPrefix (a.b.c) (a.b) = False.
 -}
-isPrefix :: TreeAddr -> TreeAddr -> Bool
-isPrefix (TreeAddr x) (TreeAddr y) = isSegVPrefix x y
+isPrefix :: ValAddr -> ValAddr -> Bool
+isPrefix (ValAddr x) (ValAddr y) = isSegVPrefix x y
 
 isSegVPrefix :: V.Vector Feature -> V.Vector Feature -> Bool
 isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
@@ -383,10 +383,10 @@ isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
 first addr is returned.
 -}
-trimPrefixAddr :: TreeAddr -> TreeAddr -> TreeAddr
-trimPrefixAddr pre@(TreeAddr pa) x@(TreeAddr xa)
+trimPrefixAddr :: ValAddr -> ValAddr -> ValAddr
+trimPrefixAddr pre@(ValAddr pa) x@(ValAddr xa)
   | not (isPrefix pre x) = x
-  | otherwise = mkTreeAddr (V.drop (V.length pa) xa)
+  | otherwise = mkValAddr (V.drop (V.length pa) xa)
 
 {- | SuffixIrredAddr is an addr that ends with an irreducible segment.
 
@@ -412,27 +412,27 @@ instance ToJSONWTIndexer SuffixIrredAddr where
     s <- tshow a
     return $ toJSON s
 
-addrIsSufIrred :: TreeAddr -> Maybe SuffixIrredAddr
-addrIsSufIrred (TreeAddr xs)
+addrIsSufIrred :: ValAddr -> Maybe SuffixIrredAddr
+addrIsSufIrred (ValAddr xs)
   | V.null xs = Just $ SuffixIrredAddr V.empty
   | isFeatureIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
   | otherwise = Nothing
 
-addMustBeSufIrred :: (HasCallStack) => TreeAddr -> SuffixIrredAddr
+addMustBeSufIrred :: (HasCallStack) => ValAddr -> SuffixIrredAddr
 addMustBeSufIrred addr = case addrIsSufIrred addr of
   Just sufIrred -> sufIrred
   Nothing -> error $ printf "Addr %s is not suffix irreducible" (show addr)
 
-trimAddrToSufIrred :: TreeAddr -> SuffixIrredAddr
-trimAddrToSufIrred (TreeAddr xs) =
+trimAddrToSufIrred :: ValAddr -> SuffixIrredAddr
+trimAddrToSufIrred (ValAddr xs) =
   let
     revXs = V.reverse xs
     revNonMutArgs = V.dropWhile isFeatureReducible revXs
    in
     SuffixIrredAddr $ V.reverse revNonMutArgs
 
-sufIrredToAddr :: SuffixIrredAddr -> TreeAddr
-sufIrredToAddr (SuffixIrredAddr xs) = mkTreeAddr xs
+sufIrredToAddr :: SuffixIrredAddr -> ValAddr
+sufIrredToAddr (SuffixIrredAddr xs) = mkValAddr xs
 
 sufIrredIsRfb :: SuffixIrredAddr -> Maybe ReferableAddr
 sufIrredIsRfb (SuffixIrredAddr xs)
@@ -471,14 +471,14 @@ instance ToJSONWTIndexer ReferableAddr where
     s <- tshow a
     return $ toJSON s
 
-rfbAddrToAddr :: ReferableAddr -> TreeAddr
-rfbAddrToAddr (ReferableAddr xs) = mkTreeAddr xs
+rfbAddrToAddr :: ReferableAddr -> ValAddr
+rfbAddrToAddr (ReferableAddr xs) = mkValAddr xs
 
 rfbAddrToSufIrred :: ReferableAddr -> SuffixIrredAddr
 rfbAddrToSufIrred (ReferableAddr xs) = SuffixIrredAddr xs
 
-addrIsRfbAddr :: TreeAddr -> Maybe ReferableAddr
-addrIsRfbAddr (TreeAddr xs)
+addrIsRfbAddr :: ValAddr -> Maybe ReferableAddr
+addrIsRfbAddr (ValAddr xs)
   | V.null xs = Just $ ReferableAddr V.empty
   | isFeatureReferable (V.last xs) = Just $ ReferableAddr xs
   | otherwise = Nothing
@@ -487,8 +487,8 @@ addrIsRfbAddr (TreeAddr xs)
 
 It first trims the suffix that is not referable, then removes unify operator mut args in all features.
 -}
-trimAddrToRfb :: TreeAddr -> ReferableAddr
-trimAddrToRfb (TreeAddr xs) =
+trimAddrToRfb :: ValAddr -> ReferableAddr
+trimAddrToRfb (ValAddr xs) =
   let len = V.length xs
       trimmedLen = go (len - 1)
        where
@@ -508,7 +508,7 @@ trimAddrToRfb (TreeAddr xs) =
 -- | Get the parent referable addr by removing the last referable segment.
 initRfbAddr :: ReferableAddr -> Maybe ReferableAddr
 initRfbAddr x
-  | rootTreeAddr == rfbAddrToAddr x = Nothing
+  | rootValAddr == rfbAddrToAddr x = Nothing
   | otherwise = do
-      xAddr <- initTreeAddr (rfbAddrToAddr x)
+      xAddr <- initValAddr (rfbAddrToAddr x)
       return $ trimAddrToRfb xAddr

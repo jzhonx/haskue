@@ -4,7 +4,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Value.Util.TreeRep where
+module Value.Util.ValRep where
 
 import Control.Monad (foldM)
 import Data.Aeson (ToJSON, object, toJSON, (.=))
@@ -36,31 +36,31 @@ import Value.List
 import Value.Op
 import Value.Reference
 import Value.Struct
-import Value.Tree
+import Value.Val
 
-{- | A representation of a Tree for debugging and visualization purposes.
+{- | A representation of a Val for debugging and visualization purposes.
 
 TextIndexes have been resolved to their string labels.
 -}
-data TreeRep = TreeRep
+data ValRep = ValRep
   { trInfo :: [String]
   -- ^ General info about the tree node.
   , trExtraMetas :: [(String, String)]
   -- ^ Extra metadata about the tree node.
-  , trFields :: [TreeRepField]
+  , trFields :: [ValRepField]
   -- ^ Fields of the tree node.
   }
 
-instance ToJSON TreeRep where
-  toJSON (TreeRep info [] []) = toJSON $ mergeInfo info
-  toJSON (TreeRep info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
-  toJSON (TreeRep info em fields) =
+instance ToJSON ValRep where
+  toJSON (ValRep info [] []) = toJSON $ mergeInfo info
+  toJSON (ValRep info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
+  toJSON (ValRep info em fields) =
     object
       ( ["__t" .= mergeInfo info]
           ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
           ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfValue f of
-              TreeRepFieldValueSimple s -> toJSON s
-              TreeRepFieldValueRegular r -> toJSON r
+              ValRepFieldValueSimple s -> toJSON s
+              ValRepFieldValueRegular r -> toJSON r
              | f <- fields
              ]
       )
@@ -71,18 +71,18 @@ mergeInfo info = intercalate "," (filter (not . null) info)
 mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas = intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
-treeToRepString :: (TextIndexerMonad s m) => Tree -> m String
+treeToRepString :: (TextIndexerMonad s m) => Val -> m String
 treeToRepString t = do
-  v <- buildRepTree t defaultTreeRepBuildOption
+  v <- buildRepVal t defaultValRepBuildOption
   return $ repToString 0 v
 
-treeToFullRepString :: (TextIndexerMonad s m) => Tree -> m String
+treeToFullRepString :: (TextIndexerMonad s m) => Val -> m String
 treeToFullRepString t = do
-  v <- buildRepTree t (defaultTreeRepBuildOption{trboRepSubFields = True})
+  v <- buildRepVal t (defaultValRepBuildOption{trboRepSubFields = True})
   return $ repToString 0 v
 
-repToString :: Int -> TreeRep -> String
-repToString toff (TreeRep info extraMetas fields) =
+repToString :: Int -> ValRep -> String
+repToString toff (ValRep info extraMetas fields) =
   "("
     <> mergeInfo info
     <> ( if null fields
@@ -91,13 +91,13 @@ repToString toff (TreeRep info extraMetas fields) =
             -- we need to add a newline for the fields block.
             "\n"
               <> foldl
-                ( \acc (TreeRepField label a sub) ->
+                ( \acc (ValRepField label a sub) ->
                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
                      in acc
                           <> pre
                           <> ( case sub of
-                                TreeRepFieldValueSimple s -> s
-                                TreeRepFieldValueRegular r ->
+                                ValRepFieldValueSimple s -> s
+                                ValRepFieldValueRegular r ->
                                   repToString
                                     (length pre)
                                     r
@@ -129,27 +129,27 @@ repToString toff (TreeRep info extraMetas fields) =
        )
     <> ")"
 
-data TreeRepField = TreeRepField
+data ValRepField = ValRepField
   { trfLabel :: String
   , trfAttr :: String
-  , trfValue :: TreeRepFieldValue
+  , trfValue :: ValRepFieldValue
   }
 
-data TreeRepFieldValue = TreeRepFieldValueRegular TreeRep | TreeRepFieldValueSimple String
+data ValRepFieldValue = ValRepFieldValueRegular ValRep | ValRepFieldValueSimple String
 
-data TreeRepBuildOption = TreeRepBuildOption
+data ValRepBuildOption = ValRepBuildOption
   { trboShowMutArgs :: Bool
   , trboRepSubFields :: Bool
   }
 
-defaultTreeRepBuildOption :: TreeRepBuildOption
-defaultTreeRepBuildOption = TreeRepBuildOption{trboShowMutArgs = True, trboRepSubFields = False}
+defaultValRepBuildOption :: ValRepBuildOption
+defaultValRepBuildOption = ValRepBuildOption{trboShowMutArgs = True, trboRepSubFields = False}
 
-buildRepTree :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
-buildRepTree t opt = do
+buildRepVal :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
+buildRepVal t opt = do
   commonInfo <- buildCommonInfo t
-  trf <- buildRepTreeTN t opt
-  mutRF <- buildRepTreeMutable t opt
+  trf <- buildRepValVN t opt
+  mutRF <- buildRepValMutable t opt
   return $
     trf
       { trInfo = commonInfo ++ trInfo trf
@@ -157,22 +157,22 @@ buildRepTree t opt = do
       , trFields = trFields trf ++ trFields mutRF -- ++ trFields blkRF
       }
 
-buildCommonInfo :: (TextIndexerMonad s m) => Tree -> m [String]
+buildCommonInfo :: (TextIndexerMonad s m) => Val -> m [String]
 buildCommonInfo t = do
   tStr <- case t of
     IsFix r -> do
       addrsStr <- mapM tshow r.conjs
-      valRep <- showSimpleTree (mkNewTree r.val)
+      valRep <- showSimpleVal (mkNewVal r.val)
       return $ printf "inner:%s,addrs:%s" valRep (show addrsStr)
-    _ -> showSimpleTree t
+    _ -> showSimpleVal t
   return
     [ tStr
     , case t.wrappedBy of
-        TNNoVal -> ""
-        _ -> "wrappedby:" ++ showTreeSymbol (mkNewTree t.wrappedBy)
+        VNNoVal -> ""
+        _ -> "wrappedby:" ++ showValSymbol (mkNewVal t.wrappedBy)
     , if isRecurClosed t then "%#" else ""
     , if isJust (treeExpr t) then "" else "N"
-    , if isRootOfSubTree t then "R" else ""
+    , if isRootOfSubVal t then "R" else ""
     , if isSCyclic t then "SC" else ""
     , case t.embType of
         ETNone -> ""
@@ -183,12 +183,12 @@ buildCommonInfo t = do
         _ -> ""
     ]
 
-buildRepTreeTN :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
-buildRepTreeTN Tree{treeNode = tn} opt = case tn of
-  TNAtom _ -> return $ consRep ([], [], [])
-  TNBounds b -> return $ consRep ([show b], [], [])
-  TNStruct struct -> buildRepTreeStruct struct opt
-  TNList vs ->
+buildRepValVN :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
+buildRepValVN Val{valNode = tn} opt = case tn of
+  VNAtom _ -> return $ consRep ([], [], [])
+  VNBounds b -> return $ consRep ([show b], [], [])
+  VNStruct struct -> buildRepValStruct struct opt
+  VNList vs ->
     let
       sfields = zipWith (\j v -> (show (mkListStoreIdxFeature j), mempty, v)) [0 ..] (toList vs.store)
       ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, v)) [0 ..] (toList vs.final)
@@ -196,24 +196,24 @@ buildRepTreeTN Tree{treeNode = tn} opt = case tn of
       do
         fields <- consFields (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
-  TNDisj d ->
+  VNDisj d ->
     let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (dsjDisjuncts d)
      in do
           fields <- consFields djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
-  TNAtomCnstr c -> do
+  VNAtomCnstr c -> do
     fields <-
       consFields
-        [ ("atom", mempty, mkAtomTree c.value)
+        [ ("atom", mempty, mkAtomVal c.value)
         , ("validator", mempty, c.cnsValidator)
         ]
         opt
     return $ consRep ([], [], fields)
-  TNBottom b -> return $ consRep ([show b], [], [])
+  VNBottom b -> return $ consRep ([show b], [], [])
   _ -> return $ consRep ([], [], [])
 
-buildRepTreeMutable :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRep
-buildRepTreeMutable (IsTreeMutable mut@(SOp op _)) opt =
+buildRepValMutable :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
+buildRepValMutable (IsValMutable mut@(SOp op _)) opt =
   let
     args =
       if trboShowMutArgs opt
@@ -263,20 +263,20 @@ buildRepTreeMutable (IsTreeMutable mut@(SOp op _)) opt =
       _ -> do
         fields <- consFields args opt
         return $ consTGenRep (metas, fields)
-buildRepTreeMutable _ _ = return $ consTGenRep ([], [])
+buildRepValMutable _ _ = return $ consTGenRep ([], [])
 
-buildRepTreeStruct :: (TextIndexerMonad s m) => Struct -> TreeRepBuildOption -> m TreeRep
-buildRepTreeStruct struct opt =
+buildRepValStruct :: (TextIndexerMonad s m) => Struct -> ValRepBuildOption -> m ValRep
+buildRepValStruct struct opt =
   let
-    buildPHFields :: (TextIndexerMonad s m) => m [TreeRepField]
+    buildPHFields :: (TextIndexerMonad s m) => m [ValRepField]
     buildPHFields = do
       as <-
         foldM
           ( \acc (j, dsf) -> do
               tfv <- buildFieldRepValue (dsfLabel dsf) opt
-              dsfValRep <- showSimpleTree (dsfValue dsf)
+              dsfValRep <- showSimpleVal (dsfValue dsf)
               return $
-                TreeRepField
+                ValRepField
                   (show (mkDynFieldFeature j 0))
                   (dlabelAttr dsf <> ",dynf_val:" ++ dsfValRep)
                   tfv
@@ -288,9 +288,9 @@ buildRepTreeStruct struct opt =
         mapM
           ( \(j, k) -> do
               tfv <- buildFieldRepValue (scsPattern k) opt
-              scsValRep <- showSimpleTree (scsValue k)
+              scsValRep <- showSimpleVal (scsValue k)
               return $
-                TreeRepField
+                ValRepField
                   (show (mkPatternFeature j 0))
                   (",cns_val:" ++ scsValRep)
                   tfv
@@ -302,7 +302,7 @@ buildRepTreeStruct struct opt =
               lstr <- tshow l
               tfv <- buildFieldRepValue (ssfValue ssf) opt
               return $
-                TreeRepField
+                ValRepField
                   (T.unpack lstr)
                   (staticlFieldAttr ssf)
                   tfv
@@ -316,7 +316,7 @@ buildRepTreeStruct struct opt =
               lstr <- tshow l
               tfv <- buildFieldRepValue (ssfValue ssf) opt
               return $
-                TreeRepField
+                ValRepField
                   (T.unpack lstr)
                   (staticlFieldAttr ssf)
                   tfv
@@ -330,7 +330,7 @@ buildRepTreeStruct struct opt =
               lstr <- tshow l
               tfv <- buildFieldRepValue bind.value opt
               return $
-                TreeRepField
+                ValRepField
                   (T.unpack lstr)
                   (if bind.isIterVar then ",itervar" else ",regvar")
                   tfv
@@ -374,18 +374,18 @@ buildRepTreeStruct struct opt =
       phFields <- buildPHFields
       return $ consRep ([], metas, phFields)
 
-consRep :: ([String], [(String, String)], [TreeRepField]) -> TreeRep
-consRep (m, em, f) = TreeRep m em f
+consRep :: ([String], [(String, String)], [ValRepField]) -> ValRep
+consRep (m, em, f) = ValRep m em f
 
-consTGenRep :: ([(String, String)], [TreeRepField]) -> TreeRep
-consTGenRep (em, f) = TreeRep [] em f
+consTGenRep :: ([(String, String)], [ValRepField]) -> ValRep
+consTGenRep (em, f) = ValRep [] em f
 
-consFields :: (TextIndexerMonad s m) => [(String, String, Tree)] -> TreeRepBuildOption -> m [TreeRepField]
+consFields :: (TextIndexerMonad s m) => [(String, String, Val)] -> ValRepBuildOption -> m [ValRepField]
 consFields xs opt =
   mapM
     ( \(l, a, v) -> do
         tfv <- buildFieldRepValue v opt
-        return $ TreeRepField l a tfv
+        return $ ValRepField l a tfv
     )
     xs
 
@@ -413,26 +413,26 @@ staticFieldMeta sf =
 dlabelAttr :: DynamicField -> String
 dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 
-buildFieldRepValue :: (TextIndexerMonad s m) => Tree -> TreeRepBuildOption -> m TreeRepFieldValue
-buildFieldRepValue fv opt@TreeRepBuildOption{trboRepSubFields = recurOnSub} =
+buildFieldRepValue :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRepFieldValue
+buildFieldRepValue fv opt@ValRepBuildOption{trboRepSubFields = recurOnSub} =
   if recurOnSub
-    then TreeRepFieldValueRegular <$> buildRepTree fv opt
+    then ValRepFieldValueRegular <$> buildRepVal fv opt
     else do
-      origVal <- showOrigTree fv
-      curVal <- showSimpleTree fv
-      return $ TreeRepFieldValueSimple (printf "orig:%s, v: %s" origVal curVal)
+      origVal <- showOrigVal fv
+      curVal <- showSimpleVal fv
+      return $ ValRepFieldValueSimple (printf "orig:%s, v: %s" origVal curVal)
 
-showSimpleTree :: (TextIndexerMonad s m) => Tree -> m String
-showSimpleTree t = case t of
+showSimpleVal :: (TextIndexerMonad s m) => Val -> m String
+showSimpleVal t = case t of
   IsAtom a -> return $ show a
-  _ -> return $ showTreeSymbol t
+  _ -> return $ showValSymbol t
 
-showOrigTree :: (TextIndexerMonad s m) => Tree -> m String
-showOrigTree t = case t of
+showOrigVal :: (TextIndexerMonad s m) => Val -> m String
+showOrigVal t = case t of
   IsRef _ ref -> case ref.refArg of
     RefPath s _ -> do
       sStr <- tshow s
       return $ T.unpack sStr
     RefIndex _ -> return "<index>"
-  IsTreeMutable (SOp mutop _) -> return $ showOpType mutop
-  _ -> return $ showTreeSymbol t
+  IsValMutable (SOp mutop _) -> return $ showOpType mutop
+  _ -> return $ showValSymbol t

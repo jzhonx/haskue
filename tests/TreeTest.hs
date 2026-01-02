@@ -19,15 +19,15 @@ treeTests =
 --         e <- parseExpr "{a: x: a}"
 --         t <- runEvalEnv (evalExpr e)
 --         evalReduceMonad
---           (TrCur t [(RootTASeg, mkNewTree TNTop)])
---           (reduce >> getTMTree)
+--           (VCur t [(RootTASeg, mkNewVal VNTop)])
+--           (reduce >> getTMVal)
 --   rE <- runExceptT work
 --   case rE of
 --     Left err -> assertFailure err
 --     Right r -> do
 --       putStrLn $ treeToRepString r
 --       putStrLn $ treeToFullRepString r
---       putStrLn $ oneLinerStringOfTree r
+--       putStrLn $ oneLinerStringOfVal r
 
 --   return ()
 
@@ -35,9 +35,9 @@ treeTests =
 -- evalResolveMonad action = runReaderT (evalStateT action emptyContext) emptyConfig
 
 -- evalReduceMonad ::
---   (MonadIO m, MonadError String m) => TrCur -> StateT RTCState (ReaderT ReduceConfig (ExceptT Error m)) a -> m a
--- evalReduceMonad tc action = do
---   r <- runExceptT $ runReaderT (evalStateT action (RTCState tc emptyContext)) emptyReduceConfig
+--   (MonadIO m, MonadError String m) => VCur -> StateT RTCState (ReaderT ReduceConfig (ExceptT Error m)) a -> m a
+-- evalReduceMonad vc action = do
+--   r <- runExceptT $ runReaderT (evalStateT action (RTCState vc emptyContext)) emptyReduceConfig
 --   case r of
 --     Left err -> throwError (show err)
 --     Right v -> return v
@@ -50,7 +50,7 @@ treeTests =
 -- --     Left err -> assertFailure err
 -- --     Right r -> do
 -- --       putStrLn $ treeToFullRepString r
--- --       putStrLn $ oneLinerStringOfTree r
+-- --       putStrLn $ oneLinerStringOfVal r
 
 -- --  testSnapshotTree
 -- -- , testSnapshotTree2
@@ -60,18 +60,18 @@ treeTests =
 -- -- testSnapshotTree =
 -- --   testCase "snapshot_tree" $ do
 -- --     let
--- --       refAWithRC = mkNewTreeWithOp TNRefCycle (TGenOp $ withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "x")
+-- --       refAWithRC = mkNewValWithOp TNRefCycle (TGenOp $ withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "x")
 
--- --       -- a1 = mkAtomTree (Int 1)
--- --       -- a2 = mkAtomTree (Int 2)
--- --       -- a3 = mkAtomTree (Int 3)
--- --       -- a4 = mkAtomTree (Int 4)
+-- --       -- a1 = mkAtomVal (Int 1)
+-- --       -- a2 = mkAtomVal (Int 2)
+-- --       -- a3 = mkAtomVal (Int 3)
+-- --       -- a4 = mkAtomVal (Int 4)
 -- --       -- unify1 = mkUnifyOp [refAWithRC, a2]
--- --       -- disj1 = mkDisjoinOpFromList [DisjTerm False a1, DisjTerm False (mkMutableTree unify1)]
+-- --       -- disj1 = mkDisjoinOpFromList [DisjTerm False a1, DisjTerm False (mkMutableVal unify1)]
 -- --       -- refB = withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "b"
--- --       -- refBV = setMutVal (Just (mkMutableTree disj1)) refB
--- --       -- disj2 = mkDisjoinOpFromList [DisjTerm False (mkMutableTree refBV), DisjTerm False a4]
--- --       -- t = mkNewTree (TNMutable disj2)
+-- --       -- refBV = setMutVal (Just (mkMutableVal disj1)) refB
+-- --       -- disj2 = mkDisjoinOpFromList [DisjTerm False (mkMutableVal refBV), DisjTerm False a4]
+-- --       -- t = mkNewVal (TNMutable disj2)
 -- --       t = refAWithRC
 
 -- --     t <- case runExcept (snapshotTree t) of
@@ -99,16 +99,16 @@ treeTests =
 -- -- testSnapshotTree2 =
 -- --   testCase "snapshot_tree2" $ do
 -- --     let
--- --       refAWithRC = setMutVal (Just (mkNewTree TNRefCycle)) (withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "a")
+-- --       refAWithRC = setMutVal (Just (mkNewVal TNRefCycle)) (withEmptyOpFrame $ Ref $ emptyIdentRef $ T.pack "a")
 
--- --       b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomTree (Int 2))))
--- --       b2 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "y") (mkdefaultField (mkAtomTree (Int 2))))
--- --       unify1 = mkUnifyOp [mkNewTree (TNMutable refAWithRC), b2]
--- --       disj1 = mkDisjoinOpFromList [DisjTerm False b1, DisjTerm False (mkNewTree (TNMutable unify1))]
--- --       tester = mkNewTree (TNMutable disj1)
+-- --       b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomVal (Int 2))))
+-- --       b2 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "y") (mkdefaultField (mkAtomVal (Int 2))))
+-- --       unify1 = mkUnifyOp [mkNewVal (TNMutable refAWithRC), b2]
+-- --       disj1 = mkDisjoinOpFromList [DisjTerm False b1, DisjTerm False (mkNewVal (TNMutable unify1))]
+-- --       tester = mkNewVal (TNMutable disj1)
 
 -- --     putStrLn "-----"
--- --     putStrLn (oneLinerStringOfTree tester)
+-- --     putStrLn (oneLinerStringOfVal tester)
 
 -- --     putStrLn "-----"
 -- --     let rep = buildRepTree tester (defaultTreeRepBuildOption{trboRepSubFields = True})
@@ -131,10 +131,10 @@ treeTests =
 -- --       Left err -> assertFailure err
 -- --       Right expr -> putStrLn $ exprToOneLinerStr expr
 
--- buildAbsTA :: String -> TreeAddr
--- buildAbsTA path = appendTreeAddr rootTreeAddr (addrFromString path)
+-- buildAbsTA :: String -> ValAddr
+-- buildAbsTA path = appendValAddr rootValAddr (addrFromString path)
 
--- absA, absAX, absB, absC :: TreeAddr
+-- absA, absAX, absB, absC :: ValAddr
 -- absA = buildAbsTA "a"
 -- absAX = buildAbsTA "a.x"
 -- absB = buildAbsTA "b"
@@ -148,16 +148,16 @@ treeTests =
 -- --         r <-
 -- --           evalResolveMonad
 -- --             ( do
--- --                 let rootTC = TrCur t [(RootTASeg, mkNewTree TNTop)]
--- --                 aTC <- goDownTCSegMust (strToStringFeature "a") rootTC
+-- --                 let rootVC = VCur t [(RootTASeg, mkNewVal VNTop)]
+-- --                 aTC <- goDownVCSegMust (strToStringFeature "a") rootVC
 -- --                 eliminateRCAndOtherRefs [absA, absB] [absA] aTC
 -- --             )
--- --         return $ tcFocus r
+-- --         return $ focus r
 -- --   rE <- runExceptT work
 -- --   case rE of
 -- --     Left err -> assertFailure err
 -- --     Right r -> do
 -- --       putStrLn $ treeToFullRepString r
--- --       putStrLn $ oneLinerStringOfTree r
+-- --       putStrLn $ oneLinerStringOfVal r
 -- --  where
--- --   b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomTree (Int 2))))
+-- --   b1 = mkBlockTree $ mkBlockFromAdder 1 (StaticSAdder (T.pack "x") (mkdefaultField (mkAtomVal (Int 2))))

@@ -29,7 +29,7 @@ import Reduce.RMonad (
   fetch,
   getRMContext,
   getTMAbsAddr,
-  getTMTree,
+  getTMVal,
   goTMAbsAddr,
   goTMAbsAddrMust,
   inRemoteTM,
@@ -37,10 +37,10 @@ import Reduce.RMonad (
   lastValueMap,
   mapParams,
   modifyRMContext,
-  modifyTMTN,
+  modifyTMVN,
   noRecalc,
   putRMContext,
-  putTMTree,
+  putTMVal,
   recalcRootQ,
   setIsReducingRC,
   throwFatal,
@@ -86,7 +86,7 @@ pushRecalcRootQ = do
         Nothing -> return ()
         Just gAddr -> modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> (addr, gAddr)}
 
-popRecalcRootQ :: RM (Maybe (TreeAddr, GrpAddr))
+popRecalcRootQ :: RM (Maybe (ValAddr, GrpAddr))
 popRecalcRootQ = do
   ctx <- getRMContext
   case recalcRootQ ctx of
@@ -124,11 +124,11 @@ their dependents.
 -}
 data RunState = RunState
   { startGAddr :: GrpAddr
-  , startAddr :: TreeAddr
+  , startAddr :: ValAddr
   , q :: Seq.Seq GrpAddr
   -- ^ The queue of GrpAddr for BFS traversal.
-  , qSet :: Set.Set TreeAddr
-  -- ^ The set of TreeAddr in the queue for quick lookup.
+  , qSet :: Set.Set ValAddr
+  -- ^ The set of ValAddr in the queue for quick lookup.
   , visited :: Set.Set GrpAddr
   -- ^ The set of visited GrpAddr, used to avoid re-visiting.
   }
@@ -213,7 +213,7 @@ updateLastValues gaddr = do
     ok <- goTMAbsAddr (sufIrredToAddr siAddr)
     if ok
       then do
-        t <- getTMTree
+        t <- getTMVal
         r <- case Map.lookup siAddr m of
           Nothing -> return False
           Just lastT -> do
@@ -224,7 +224,7 @@ updateLastValues gaddr = do
       else return True
 
 -- | Check whether there is no fields of structs specified by the GrpAddr in the given set.
-hasNoFieldInQ :: GrpAddr -> Set.Set TreeAddr -> RM Bool
+hasNoFieldInQ :: GrpAddr -> Set.Set ValAddr -> RM Bool
 hasNoFieldInQ gaddr qSet = case gaddr of
   IsAcyclicGrpAddr addr -> check (sufIrredToAddr addr)
   _ -> do
@@ -246,12 +246,12 @@ hasNoFieldInQ gaddr qSet = case gaddr of
     ok <- goTMAbsAddr baseAddr
     if ok
       then do
-        t <- getTMTree
+        t <- getTMVal
         case t of
           -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
           -- only need to check whether the struct is ready to be used for validating its permissions.
           IsStruct struct
-            | IsTreeMutable mut <- t
+            | IsValMutable mut <- t
             , let
                 -- If the node is an argument node, including a very deep argument in the comprehension.
                 isArgChanged = addr /= baseAddr
@@ -260,7 +260,7 @@ hasNoFieldInQ gaddr qSet = case gaddr of
                 -- No argument affected, we can just check whether the struct is ready.
                 checkSClean baseAddr qSet struct
             -- Same as above but for immutable tgen.
-            | IsTreeImmutable <- t -> do
+            | IsValImmutable <- t -> do
                 checkSClean baseAddr qSet struct
           _ -> return True
       else return True
@@ -274,7 +274,7 @@ getCyclicGrpNodeAddrs gaddr = do
   return epAddrs
 
 -- | Check whether the struct is clean if all its affected leaves are clean.
-checkSClean :: TreeAddr -> Set.Set TreeAddr -> Struct -> RM Bool
+checkSClean :: ValAddr -> Set.Set ValAddr -> Struct -> RM Bool
 checkSClean baseAddr qSet struct = do
   let
     affectedSufIrredAddrsSet = Set.map trimAddrToSufIrred qSet
@@ -335,7 +335,7 @@ recalcGroup sccAddr = do
               recalcRC (RCCalHelper epAddrs [siAddr] [])
               -- We have to save the recalculated value to the store since it will be overwritten when we go to the
               -- next RC node.
-              v <- inRemoteTM (sufIrredToAddr siAddr) getTMTree
+              v <- inRemoteTM (sufIrredToAddr siAddr) getTMVal
               vStr <- tshow v
               debugInstantTM "recalcCyclic" (printf "recalcCyclic %s done, fetch done, v: %s" (show siAddrStr) vStr)
               return (Map.insert siAddr v accStore)
@@ -345,7 +345,7 @@ recalcGroup sccAddr = do
 
       -- We have to put back all the recalculated values because some of them could be overwritten during the process.
       mapM_
-        (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMTree t))
+        (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMVal t))
         (Map.toList store)
 
   setIsReducingRC False
@@ -412,18 +412,18 @@ recalcNode nodeSIAddr fetch = do
     debugInstantTM
       "recalcNode"
       (printf "nodes: %s, anyArgChanged: %s" (show nodes) (show anyArgChanged))
-    t <- getTMTree
+    t <- getTMVal
     case t of
       -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
       -- only need to check whether the struct is ready to be used for validating its permissions.
       IsStruct _
-        | IsTreeMutable mut <- t
+        | IsValMutable mut <- t
         , Op (UOp _) <- mut
         , -- No argument affected, we can just check whether the struct is ready.
           not anyArgChanged ->
             validateStructPerm
         -- Same as above but for immutable tgen.
-        | IsTreeImmutable <- t -> validateStructPerm
+        | IsValImmutable <- t -> validateStructPerm
       -- For mutable, list, disjunction, just re-calculate it.
       _ -> do
         local (mapParams (\p -> p{fetch})) do
@@ -434,7 +434,7 @@ recalcNode nodeSIAddr fetch = do
 
 TODO: seems like all segments should be mutables, because we are like lazy evaluating the tree.
 -}
-invalidateUpToRootMut :: TreeAddr -> Set.Set TreeAddr -> RM ()
+invalidateUpToRootMut :: ValAddr -> Set.Set ValAddr -> RM ()
 invalidateUpToRootMut base addrSet = go (filter (isPrefix base) (Set.toList addrSet)) Set.empty
  where
   go [] _ = return ()
@@ -444,19 +444,19 @@ invalidateUpToRootMut base addrSet = go (filter (isPrefix base) (Set.toList addr
     | isPrefix addr base && addr /= base = return ()
     | otherwise = do
         goTMAbsAddrMust addr
-        t <- getTMTree
+        t <- getTMVal
         case t of
-          IsTreeMutable (Op _) -> modifyTMTN TNNoVal
+          IsValMutable (Op _) -> modifyTMVN VNNoVal
           -- TODO: what if the intermediate value is not mutable? How to invalidate then?
           _ -> throwFatal $ printf "expected mutable node at address %s during invalidation" (show addr)
-        let parentAddr = fromJust $ initTreeAddr addr
+        let parentAddr = fromJust $ initValAddr addr
         go (parentAddr : rest) (Set.insert addr done)
 
 {- | Get the ancestor GrpAddrs of the given GrpAddr.
 
 It handles the case that the cyclic group may contain structural cycles.
 -}
-getAncestorGrpAddrs :: TreeAddr -> GrpAddr -> RM [GrpAddr]
+getAncestorGrpAddrs :: ValAddr -> GrpAddr -> RM [GrpAddr]
 getAncestorGrpAddrs startAddr (IsAcyclicGrpAddr addr) = do
   let rM = getAncGrpFromAddr startAddr addr
   return $ maybeToList rM
@@ -477,9 +477,9 @@ getAncestorGrpAddrs startAddr sccAddr = do
 Since it is a tree address, there is only one ancestor for each address, meaning that the ancestor must be acyclic.
 And because it is either a struct or a list.
 -}
-getAncGrpFromAddr :: TreeAddr -> SuffixIrredAddr -> Maybe GrpAddr
+getAncGrpFromAddr :: ValAddr -> SuffixIrredAddr -> Maybe GrpAddr
 getAncGrpFromAddr startAddr raddr
-  | rootTreeAddr == sufIrredToAddr raddr = Nothing
+  | rootValAddr == sufIrredToAddr raddr = Nothing
   | otherwise = do
       let parentAddr = fromJust $ initSufIrred raddr
       -- We should not add the ancestors that are above the starting address of the notification.

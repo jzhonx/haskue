@@ -4,7 +4,7 @@ module Value.DisjoinOp where
 
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
-import {-# SOURCE #-} Value.Tree
+import {-# SOURCE #-} Value.Val
 
 {- | DisjoinOp is used to handle reference disjuncts, so that when values of references change, the new disjunction can
 be created correctly.
@@ -18,6 +18,6 @@ newtype DisjoinOp = DisjoinOp
 
 data DisjTerm = DisjTerm
   { dstMarked :: Bool
-  , dstValue :: Tree
+  , dstValue :: Val
   }
   deriving (Generic)

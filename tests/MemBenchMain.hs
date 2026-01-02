@@ -6,19 +6,19 @@ import Feature
 import Reduce.Mutate
 import Weigh
 
-testPrefix :: TreeAddr -> Bool
+testPrefix :: ValAddr -> Bool
 testPrefix addr = isPrefix pathLong2 addr
 
-pathLong :: TreeAddr
+pathLong :: ValAddr
 pathLong = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
 
-pathLong2 :: TreeAddr
+pathLong2 :: ValAddr
 pathLong2 = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y"
 
-testPrefix2 :: TreeAddr -> Bool
+testPrefix2 :: ValAddr -> Bool
 testPrefix2 _ = False
 
-tData :: Map.Map TreeAddr [TreeAddr]
+tData :: Map.Map ValAddr [ValAddr]
 tData =
   Map.fromList
     [ (g "a.b.c.d", [g "a.b.c.e", g "a.b.c.f", g "a.e.c.f", g "a.d.c.f", g "a.b.c.h"])
@@ -33,14 +33,14 @@ tData =
  where
   g = addrFromString
 
-pathABC :: TreeAddr
+pathABC :: ValAddr
 pathABC = addrFromString "a.b.c"
 
-pathBC :: TreeAddr
+pathBC :: ValAddr
 pathBC = addrFromString "b.c"
 
 -- | Delete the receivers that have the mutable address as the prefix.
-delRecvsInMap :: TreeAddr -> Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+delRecvsInMap :: ValAddr -> Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 delRecvsInMap mutAddr =
   Map.mapMaybe
     ( \l ->
@@ -58,14 +58,14 @@ delRecvsInMap mutAddr =
               else Just r
     )
 
-delRecvsInMap2 :: TreeAddr -> Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+delRecvsInMap2 :: ValAddr -> Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 delRecvsInMap2 mutAddr m = delEmptyElem $ delRecvs m
  where
-  delEmptyElem :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  delEmptyElem :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
   delEmptyElem = Map.filter (not . null)
 
   -- Delete the receivers that have the mutable address as the prefix.
-  delRecvs :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+  delRecvs :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
   delRecvs =
     Map.map
       ( filter

@@ -44,16 +44,16 @@ library
         Value.Disj,
         Value.DisjoinOp,
         Value.Fix,
+        Value.Instances,
         Value.Interpolation,
         Value.List,
         Value.Reference,
         Value.Struct,
-        Value.Tree,
         Value.Op,
         Value.UnifyOp,
         Value.Util.BuildASTExpr,
-        Value.Util.TreeRep,
-        Value.Instances,
+        Value.Util.ValRep,
+        Value.Val,
 
     other-modules:
       Paths_haskue

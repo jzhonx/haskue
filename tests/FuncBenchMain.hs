@@ -23,9 +23,9 @@ import Reduce.RMonad
 import Reduce.RefSys
 import StringIndex (TextIndexer (..))
 import qualified Value as VT
-import Value.Tree
+import Value.Val
 
--- tData :: Map.Map TreeAddr [TreeAddr]
+-- tData :: Map.Map ValAddr [ValAddr]
 -- tData =
 --   Map.fromList
 --     [ (g "a.b.c.d", [g "a.b.c.e", g "a.b.c.f"])
@@ -40,23 +40,23 @@ import Value.Tree
 --  where
 --   g = addrFromString
 
--- pathABC :: TreeAddr
+-- pathABC :: ValAddr
 -- pathABC = addrFromString "a.b.c"
 
--- pathBC :: TreeAddr
+-- pathBC :: ValAddr
 -- pathBC = addrFromString "b.c"
 
--- work :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+-- work :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 -- work x = delRecvsInMap pathABC x
 
--- delRecvsInMap2 :: TreeAddr -> Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+-- delRecvsInMap2 :: ValAddr -> Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 -- delRecvsInMap2 mutAddr m = delEmptyElem $ delRecvs m
 --  where
---   delEmptyElem :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+--   delEmptyElem :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 --   delEmptyElem = Map.filter (not . null)
 
 --   -- Delete the receivers that have the mutable address as the prefix.
---   delRecvs :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+--   delRecvs :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 --   delRecvs =
 --     Map.map
 --       ( filter
@@ -68,20 +68,20 @@ import Value.Tree
 --           )
 --       )
 
--- work2 :: Map.Map TreeAddr [TreeAddr] -> Map.Map TreeAddr [TreeAddr]
+-- work2 :: Map.Map ValAddr [ValAddr] -> Map.Map ValAddr [ValAddr]
 -- work2 x = delRecvsInMap2 pathABC x
 
--- testPrefix :: TreeAddr -> Bool
+-- testPrefix :: ValAddr -> Bool
 -- testPrefix addr = isPrefix pathLong2 addr
 
--- pathLong :: TreeAddr
+-- pathLong :: ValAddr
 -- pathLong = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
 
--- pathLong2 :: TreeAddr
+-- pathLong2 :: ValAddr
 -- pathLong2 = addrFromString "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y"
 
--- testPrefix2 :: TreeAddr -> TreeAddr -> Bool
--- testPrefix2 (TreeAddr x) (TreeAddr y) = V.length x <= V.length y && V.and (V.zipWith (==) x y)
+-- testPrefix2 :: ValAddr -> ValAddr -> Bool
+-- testPrefix2 (ValAddr x) (ValAddr y) = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 
 runRM :: ReduceConfig -> RTCState -> StateT RTCState (ReaderT ReduceConfig (ExceptT Error IO)) a -> IO a
 runRM conf initState f = do
@@ -112,20 +112,20 @@ testCustom =
   env
     ( do
         let
-          root = mkAtomTree $ VT.String $ T.pack "yyyyyyyyyyyyyyyy"
-          rootTC =
-            TrCur
+          root = mkAtomVal $ VT.String $ T.pack "yyyyyyyyyyyyyyyy"
+          rootVC =
+            VCur
               root
-              [ (rootFeature, mkNewTree TNTop)
-              , (rootFeature, mkNewTree TNTop)
-              , (rootFeature, mkNewTree TNTop)
-              , (rootFeature, mkNewTree TNTop)
-              , (rootFeature, mkNewTree TNTop)
-              , (rootFeature, mkNewTree TNTop)
+              [ (rootFeature, mkNewVal VNTop)
+              , (rootFeature, mkNewVal VNTop)
+              , (rootFeature, mkNewVal VNTop)
+              , (rootFeature, mkNewVal VNTop)
+              , (rootFeature, mkNewVal VNTop)
+              , (rootFeature, mkNewVal VNTop)
               ]
           state =
             RTCState
-              { rtsTC = rootTC
+              { rtsTC = rootVC
               , rtsCtx =
                   emptyContext
                     { Reduce.RMonad.tIndexer =
@@ -140,8 +140,8 @@ testCustom =
     ( \state -> bench "base" $ nfIO $ do
         runRM emptyReduceConfig state $ do
           forM_ [1 .. 1000] $ \_ -> do
-            tc <- getTMCursor
-            let rtc = setTCFocusTN TNTop tc
+            vc <- getTMCursor
+            let rtc = setVCFocusVN VNTop vc
             putTMCursor rtc
     )
 
@@ -156,9 +156,9 @@ testCustom =
 --           root <- case rE of
 --             Left err -> throwError err
 --             Right v -> return v
---           let rootTC = TrCur root [(RootTASeg, mkNewTree TNTop)]
+--           let rootVC = VCur root [(RootTASeg, mkNewVal VNTop)]
 --           let addr = addrFromString "b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z"
---           !startTC <- Cursor.goDownTCAddrMust addr rootTC
+--           !startTC <- Cursor.goDownVCAddrMust addr rootVC
 --           return (vp, startTC)
 --     )
 --     ( \ ~(vp, startTC) -> bench "base" $ nfIO $ do

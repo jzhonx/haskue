@@ -19,7 +19,7 @@ import StringIndex (ShowWTIndexer (..), TextIndex, textToTextIndex)
 import Text.Printf (printf)
 import Value
 
-evalSourceFile :: SourceFile -> RM Tree
+evalSourceFile :: SourceFile -> RM Val
 evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
@@ -29,33 +29,33 @@ Every eval* function should return a tree cursor that is at the same level as th
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-evalExpr :: Expression -> RM Tree
+evalExpr :: Expression -> RM Val
 evalExpr e = do
   t <- case anVal e of
     (ExprUnaryExpr ue) -> evalUnaryExpr ue
     (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
-  return $ setExpr t (Just e)
+  return $ setExpr (Just e) t
 
-evalLiteral :: Literal -> RM Tree
+evalLiteral :: Literal -> RM Val
 evalLiteral (anVal -> LitStructLit s) = evalStructLit s
 evalLiteral (anVal -> ListLit l) = evalListLit l
 evalLiteral (anVal -> StringLit (anVal -> SimpleStringL s)) = do
   rE <- simpleStringLitToStr s
   return $ case rE of
     Left t -> t
-    Right str -> mkAtomTree $ String str
+    Right str -> mkAtomVal $ String str
 evalLiteral lit = return v
  where
   v = case anVal lit of
-    IntLit i -> mkAtomTree $ Int i
-    FloatLit a -> mkAtomTree $ Float a
-    BoolLit b -> mkAtomTree $ Bool b
-    NullLit -> mkAtomTree Null
-    TopLit -> mkNewTree TNTop
-    BottomLit -> mkBottomTree ""
+    IntLit i -> mkAtomVal $ Int i
+    FloatLit a -> mkAtomVal $ Float a
+    BoolLit b -> mkAtomVal $ Bool b
+    NullLit -> mkAtomVal Null
+    TopLit -> mkNewVal VNTop
+    BottomLit -> mkBottomVal ""
     _ -> error "evalLiteral: invalid literal"
 
-evalStructLit :: StructLit -> RM Tree
+evalStructLit :: StructLit -> RM Val
 evalStructLit (anVal -> StructLit decls) = do
   sid <- allocRMObjID
   elems <- mapM evalDecl decls
@@ -65,17 +65,17 @@ evalStructLit (anVal -> StructLit decls) = do
           IsStruct struct -> insertElemToStruct elm struct
           _ -> return acc
       )
-      (mkStructTree $ emptyStruct{stcID = sid})
+      (mkStructVal $ emptyStruct{stcID = sid})
       elems
   case res of
     -- If the result is a struct and it has embedded fields, then mark the embedded fields as embedded.
     IsStruct _
       | let embeds = [v{embType = ETEmbedded sid} | EmbedSAdder v <- elems]
       , not (null embeds) -> do
-          return $ mkMutableTree (mkEmbedUnifyOp $ res{embType = ETEnclosing} : embeds)
+          return $ mkMutableVal (mkEmbedUnifyOp $ res{embType = ETEnclosing} : embeds)
     _ -> return res
 
-simpleStringLitToStr :: SimpleStringLit -> RM (Either Tree T.Text)
+simpleStringLitToStr :: SimpleStringLit -> RM (Either Val T.Text)
 simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
   (asM, aSegs, aExprs) <-
     foldM
@@ -103,7 +103,7 @@ simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
   if
     | null rSegs -> return $ Right T.empty
     | not (null aExprs) ->
-        return $ Left $ mkMutableTree $ mkItpSOp rSegs aExprs
+        return $ Left $ mkMutableVal $ mkItpSOp rSegs aExprs
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
     | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
@@ -125,7 +125,7 @@ evalDecl decl = case anVal decl of
     val <- evalExpr binde
     return $ LetSAdder idIdx val
 
-evalEmbedding :: Bool -> AST.Embedding -> RM Tree
+evalEmbedding :: Bool -> AST.Embedding -> RM Val
 evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
 evalEmbedding
   isListCompreh
@@ -136,7 +136,7 @@ evalEmbedding
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    return $ mkMutableTree $ withEmptyOpFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
+    return $ mkMutableVal $ withEmptyOpFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
 evalEmbedding
   isListCompreh
   ( anVal ->
@@ -150,7 +150,7 @@ evalEmbedding
       Just j -> Just <$> textToTextIndex (anVal j)
       Nothing -> return Nothing
     return $
-      mkMutableTree $
+      mkMutableVal $
         withEmptyOpFrame $
           Compreh $
             mkComprehension isListCompreh (ComprehArgFor iidx jidxM fev : clsv) sv
@@ -189,7 +189,7 @@ evalFDeclLabels lbls e =
         val <- insertElemToStruct sf2 (emptyStruct{stcID = sid})
         mkAdder l1 val
  where
-  mkAdder :: Label -> Tree -> RM StructElemAdder
+  mkAdder :: Label -> Val -> RM StructElemAdder
   mkAdder (anVal -> Label le) val = case anVal le of
     AST.LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
@@ -243,16 +243,16 @@ evalFDeclLabels lbls e =
 data StructElemAdder
   = StaticSAdder TextIndex Field
   | DynamicSAdder !Int DynamicField
-  | CnstrSAdder !Int Tree Tree
-  | LetSAdder TextIndex Tree
-  | EmbedSAdder Tree
+  | CnstrSAdder !Int Val Val
+  | LetSAdder TextIndex Val
+  | EmbedSAdder Val
   | EmptyAdder
 
 {- | Insert a new element into the struct.
 
 If the field is already in the struct, then unify the field with the new field.
 -}
-insertElemToStruct :: StructElemAdder -> Struct -> RM Tree
+insertElemToStruct :: StructElemAdder -> Struct -> RM Val
 insertElemToStruct adder struct = case adder of
   (StaticSAdder name sf) -> do
     nameStr <- tshow name
@@ -263,39 +263,39 @@ insertElemToStruct adder struct = case adder of
             let
               unifySFOp =
                 Value.Field
-                  { ssfValue = mkMutableTree (mkUnifyOp [ssfValue extSF, ssfValue sf])
+                  { ssfValue = mkMutableVal (mkUnifyOp [ssfValue extSF, ssfValue sf])
                   , ssfAttr = mergeAttrs (ssfAttr extSF) (ssfAttr sf)
                   , ssfObjects = Set.empty
                   }
               newStruct = updateStubAndField name unifySFOp struct
              in
-              return $ mkStructTree newStruct
+              return $ mkStructVal newStruct
           [StructStubLet _] -> do
             return $ aliasErr nameStr
           -- The label is not seen before in the struct.
-          [] -> return $ mkStructTree $ insertNewStubAndField name sf struct
+          [] -> return $ mkStructVal $ insertNewStubAndField name sf struct
           _ -> return $ aliasErr nameStr
       )
       return
       (existCheck name nameStr False)
-  (DynamicSAdder i dsf) -> return . mkStructTree $ insertStructNewDynField i dsf struct
-  (CnstrSAdder i pattern val) -> return . mkStructTree $ insertStructNewCnstr i pattern val struct
+  (DynamicSAdder i dsf) -> return . mkStructVal $ insertStructNewDynField i dsf struct
+  (CnstrSAdder i pattern val) -> return . mkStructVal $ insertStructNewCnstr i pattern val struct
   (LetSAdder name val) -> do
     -- Use the pure identifier for error messages.
     nameStr <- tshow name
     return $
       fromMaybe
         -- The name is not seen before in the block.
-        (mkStructTree $ insertStructLet name val struct)
+        (mkStructVal $ insertStructLet name val struct)
         (existCheck name nameStr True)
-  _ -> return $ mkStructTree struct
+  _ -> return $ mkStructVal struct
  where
   -- In both errors, we show the name so that the name is quoted.
-  aliasErr name = mkBottomTree $ printf "can not have both alias and field with name %s in the same scope" (show name)
-  lbRedeclErr name = mkBottomTree $ printf "%s redeclared in same scope" (show name)
+  aliasErr name = mkBottomVal $ printf "can not have both alias and field with name %s in the same scope" (show name)
+  lbRedeclErr name = mkBottomVal $ printf "%s redeclared in same scope" (show name)
 
   -- Checks if name is already in the block. If it is, then return an error message.
-  existCheck :: TextIndex -> T.Text -> Bool -> Maybe Tree
+  existCheck :: TextIndex -> T.Text -> Bool -> Maybe Val
   existCheck nameIdx name isNameLet =
     case (lookupStructStubVal nameIdx struct, isNameLet) of
       ([StructStubField f], True)
@@ -305,27 +305,27 @@ insertElemToStruct adder struct = case adder of
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: AST.ElementList -> RM Tree
+evalListLit :: AST.ElementList -> RM Val
 evalListLit (anVal -> AST.EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
-  return $ mkListTree xs []
+  return $ mkListVal xs []
 
-evalUnaryExpr :: UnaryExpr -> RM Tree
+evalUnaryExpr :: UnaryExpr -> RM Val
 evalUnaryExpr ue = do
   t <- case anVal ue of
     UnaryExprPrimaryExpr primExpr -> evalPrimExpr primExpr
     UnaryExprUnaryOp op e -> evalUnaryOp op e
-  return $ setExpr t (Just (AST.ExprUnaryExpr ue <$ ue))
+  return $ setExpr (Just (AST.ExprUnaryExpr ue <$ ue)) t
 
-builtinOpNameTable :: [(String, Tree)]
+builtinOpNameTable :: [(String, Val)]
 builtinOpNameTable =
   -- bounds
-  map (\b -> (show b, mkBoundsTreeFromList [BdType b])) [minBound :: BdType .. maxBound :: BdType]
+  map (\b -> (show b, mkBoundsValFromList [BdType b])) [minBound :: BdType .. maxBound :: BdType]
     -- built-in function names
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinMutableTable
 
-evalPrimExpr :: PrimaryExpr -> RM Tree
+evalPrimExpr :: PrimaryExpr -> RM Val
 evalPrimExpr e = case anVal e of
   (PrimExprOperand op) -> case anVal op of
     OpLiteral lit -> evalLiteral lit
@@ -333,10 +333,10 @@ evalPrimExpr e = case anVal e of
       Just v -> return v
       Nothing -> do
         idIdx <- textToTextIndex ident
-        return $ mkMutableTree $ withEmptyOpFrame $ Ref $ emptyIdentRef idIdx
+        return $ mkMutableVal $ withEmptyOpFrame $ Ref $ emptyIdentRef idIdx
     OpExpression expr -> do
       x <- evalExpr expr
-      return $ x{isRootOfSubTree = True}
+      return $ x{isRootOfSubVal = True}
   (PrimExprSelector primExpr sel) -> do
     p <- evalPrimExpr primExpr
     evalSelector e sel p
@@ -349,7 +349,7 @@ evalPrimExpr e = case anVal e of
     replaceFuncArgs p args
 
 -- | Creates a new function tree for the original function with the arguments applied.
-replaceFuncArgs :: Tree -> [Tree] -> RM Tree
+replaceFuncArgs :: Val -> [Val] -> RM Val
 replaceFuncArgs t args = case t of
   IsRegOp mut fn ->
     return $
@@ -367,41 +367,41 @@ Parameters:
 - sel is the segment.
 - addr is the addr to the current expression that contains the segment.
 For example, { a: b: x.y }
-If the field is "y", and the addr is "a.b", expr is "x.y", the structTreeAddr is "x".
+If the field is "y", and the addr is "a.b", expr is "x.y", the structValAddr is "x".
 -}
 evalSelector ::
-  PrimaryExpr -> AST.Selector -> Tree -> RM Tree
+  PrimaryExpr -> AST.Selector -> Val -> RM Val
 evalSelector _ astSel oprnd = do
-  let f sel = appendSelToRefTree oprnd (mkAtomTree (String sel))
+  let f sel = appendSelToRefVal oprnd (mkAtomVal (String sel))
   case anVal astSel of
     IDSelector ident -> return $ f (anVal ident)
     AST.StringSelector s -> do
       rE <- simpleStringLitToStr s
       case rE of
-        Left _ -> return $ mkBottomTree $ printf "selector should not have interpolation"
+        Left _ -> return $ mkBottomVal $ printf "selector should not have interpolation"
         Right str -> return $ f str
 
 evalIndex ::
-  PrimaryExpr -> AST.Index -> Tree -> RM Tree
+  PrimaryExpr -> AST.Index -> Val -> RM Val
 evalIndex _ (anVal -> AST.Index e) oprnd = do
   sel <- evalExpr e
-  return $ appendSelToRefTree oprnd sel
+  return $ appendSelToRefVal oprnd sel
 
 {- | Evaluates the unary operator.
 
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: UnaryOp -> UnaryExpr -> RM Tree
+evalUnaryOp :: UnaryOp -> UnaryExpr -> RM Val
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  let tWithE = setExpr t (Just (AST.ExprUnaryExpr e <$ e))
-  return $ mkMutableTree (mkUnaryOp op tWithE)
+  let tWithE = setExpr (Just (AST.ExprUnaryExpr e <$ e)) t
+  return $ mkMutableVal (mkUnaryOp op tWithE)
 
 {- | order of arguments is important for disjunctions.
 
 left is always before right.
 -}
-evalBinary :: BinaryOp -> Expression -> Expression -> RM Tree
+evalBinary :: BinaryOp -> Expression -> Expression -> RM Val
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 evalBinary (anVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
@@ -409,19 +409,19 @@ evalBinary op e1 e2 = do
   rt <- evalExpr e2
   case op of
     (anVal -> AST.Unify) -> return $ flattenUnify lt rt
-    _ -> return $ mkMutableTree (mkBinaryOp op lt rt)
+    _ -> return $ mkMutableVal (mkBinaryOp op lt rt)
 
-flattenUnify :: Tree -> Tree -> Tree
+flattenUnify :: Val -> Val -> Val
 flattenUnify l r = case getLeftAcc of
-  Just acc -> mkMutableTree $ mkUnifyOp (toList acc ++ [r])
-  Nothing -> mkMutableTree $ mkUnifyOp [l, r]
+  Just acc -> mkMutableVal $ mkUnifyOp (toList acc ++ [r])
+  Nothing -> mkMutableVal $ mkUnifyOp [l, r]
  where
   getLeftAcc = case l of
     -- The left tree is an accumulator only if it is a unify op.
-    IsTreeMutable (Op (UOp u)) -> Just u.conjs
+    IsValMutable (Op (UOp u)) -> Just u.conjs
     _ -> Nothing
 
-evalDisj :: Expression -> Expression -> RM Tree
+evalDisj :: Expression -> Expression -> RM Val
 evalDisj e1 e2 = do
   ((isLStar, lt), (isRStar, rt)) <- case (anVal e1, anVal e2) of
     ( ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1)
@@ -461,14 +461,14 @@ We start with the a, where a is one of a root disj, a marked term or a regular n
 it, and then append c to the accumulator.
 We never need to go deeper into the right nodes.
 -}
-flattenDisj :: DisjTerm -> DisjTerm -> Tree
+flattenDisj :: DisjTerm -> DisjTerm -> Val
 flattenDisj l r = case getLeftAcc of
-  Just acc -> mkMutableTree $ mkDisjoinOp (acc Seq.|> r)
-  Nothing -> mkMutableTree $ mkDisjoinOp (Seq.fromList [l, r])
+  Just acc -> mkMutableVal $ mkDisjoinOp (acc Seq.|> r)
+  Nothing -> mkMutableVal $ mkDisjoinOp (Seq.fromList [l, r])
  where
   getLeftAcc = case dstValue l of
-    IsTreeMutable (Op (DisjOp dj))
+    IsValMutable (Op (DisjOp dj))
       -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
       -- If the left term is a marked term, it implies that it is a root.
-      | not (dstMarked l) && not (isRootOfSubTree (dstValue l)) -> Just (djoTerms dj)
+      | not (dstMarked l) && not (isRootOfSubVal (dstValue l)) -> Just (djoTerms dj)
     _ -> Nothing

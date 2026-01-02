@@ -31,7 +31,7 @@ ngTests =
 --   , testSCyclic4
 
 -- buildAbsTA :: String -> SuffixIrredAddr
--- buildAbsTA path = fromJust $ addrIsSufIrred $ appendTreeAddr rootTreeAddr (addrFromString path)
+-- buildAbsTA path = fromJust $ addrIsSufIrred $ appendValAddr rootValAddr (addrFromString path)
 
 -- absA, absAX, absAXY, absB, absC, absY :: SuffixIrredAddr
 -- absA = buildAbsTA "a"
@@ -54,7 +54,7 @@ ngTests =
 --     )
 --     emptyPropGraph
 
--- buildGExt :: [(TreeAddr, SuffixIrredAddr)] -> PropGraph
+-- buildGExt :: [(ValAddr, SuffixIrredAddr)] -> PropGraph
 -- buildGExt =
 --   foldr
 --     ( \(dep, target) acc ->

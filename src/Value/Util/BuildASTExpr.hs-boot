@@ -5,6 +5,6 @@ module Value.Util.BuildASTExpr where
 import qualified AST
 import Control.Monad.Except (Except)
 import StringIndex (TextIndexer)
-import {-# SOURCE #-} Value.Tree
+import {-# SOURCE #-} Value.Val
 
-buildASTExprDebug :: Tree -> TextIndexer -> (Except String) (AST.Expression, TextIndexer)
+buildASTExprDebug :: Val -> TextIndexer -> (Except String) (AST.Expression, TextIndexer)

@@ -17,6 +17,6 @@ import Value.List as Export
 import Value.Op as Export
 import Value.Reference as Export
 import Value.Struct as Export
-import Value.Tree as Export
 import Value.UnifyOp as Export
 import Value.Util.BuildASTExpr as Export
+import Value.Val as Export

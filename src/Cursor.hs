@@ -31,11 +31,7 @@ import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), getTextIndex)
 import Text.Printf (printf)
 import Value
 
-class HasTreeCursor s where
-  getTreeCursor :: s -> TrCur
-  setTreeCursor :: s -> TrCur -> s
-
-{- | TreeCursor is a pair of a value and a list of crumbs.
+{- | VCur is a pair of a value and a list of crumbs.
 For example,
 {
 a: {
@@ -47,66 +43,66 @@ a: {
 Suppose the cursor is at the struct that contains the value 42. The cursor is
 (struct_c, [("b", struct_b), ("a", struct_a)]).
 -}
-data TrCur = TrCur
-  { tcFocus :: !Tree
-  , tcCrumbs :: [(Feature, Tree)]
+data VCur = VCur
+  { focus :: !Val
+  , crumbs :: [(Feature, Val)]
   }
   deriving (Eq, Generic, NFData)
 
 -- | By default, only show the focus of the cursor.
-instance Show TrCur where
-  show = show . tcFocus
+instance Show VCur where
+  show = show . focus
 
-instance ToJSON TrCur where
-  toJSON = toJSON . tcFocus
+instance ToJSON VCur where
+  toJSON = toJSON . focus
 
-instance ShowWTIndexer TrCur where
-  tshow tc = tshow (tcFocus tc)
+instance ShowWTIndexer VCur where
+  tshow vc = tshow (focus vc)
 
-instance ToJSONWTIndexer TrCur where
-  ttoJSON tc = ttoJSON (tcFocus tc)
+instance ToJSONWTIndexer VCur where
+  ttoJSON vc = ttoJSON (focus vc)
 
-pattern TCFocus :: Tree -> TrCur
-pattern TCFocus t <- TrCur{tcFocus = t}
+pattern VCFocus :: Val -> VCur
+pattern VCFocus t <- VCur{focus = t}
 
-addrFromCrumbs :: [(Feature, Tree)] -> TreeAddr
+addrFromCrumbs :: [(Feature, Val)] -> ValAddr
 addrFromCrumbs crumbs = addrFromList $ go crumbs []
  where
   go [] acc = acc
   go ((n, _) : cs) acc = go cs (n : acc)
 
-setTCFocus :: Tree -> TrCur -> TrCur
-setTCFocus t (TrCur _ cs) = TrCur t cs
+setVCFocus :: Val -> VCur -> VCur
+setVCFocus t (VCur _ cs) = VCur t cs
 
-mapTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
-mapTCFocus f (TrCur t cs) = TrCur (f t) cs
+mapVCFocus :: (Val -> Val) -> VCur -> VCur
+mapVCFocus f (VCur t cs) = VCur (f t) cs
 
 -- | Generate tree address from the tree cursor.
-tcAddr :: TrCur -> TreeAddr
-tcAddr c = addrFromCrumbs (tcCrumbs c)
+vcAddr :: VCur -> ValAddr
+vcAddr c = addrFromCrumbs (crumbs c)
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSeg :: TrCur -> Maybe Feature
-tcFocusSeg (TrCur _ []) = Nothing
-tcFocusSeg tc = return $ fst . head $ tcCrumbs tc
+vcFocusSeg :: VCur -> Maybe Feature
+vcFocusSeg (VCur _ []) = Nothing
+vcFocusSeg vc = return $ fst . head $ crumbs vc
 
 -- | Get the segment paired with the focus of the cursor.
-tcFocusSegMust :: TrCur -> Either String Feature
-tcFocusSegMust tc = maybe (Left "already top") return (tcFocusSeg tc)
+vcFocusSegMust :: VCur -> Either String Feature
+vcFocusSegMust vc = maybe (Left "already top") return (vcFocusSeg vc)
 
-isTCTop :: TrCur -> Bool
-isTCTop (TrCur _ []) = True
-isTCTop _ = False
+isVCTop :: VCur -> Bool
+isVCTop (VCur _ []) = True
+isVCTop _ = False
 
-isTCRoot :: TrCur -> Bool
-isTCRoot (TrCur _ [(IsRootFeature, _)]) = True
-isTCRoot _ = False
+isVCRoot :: VCur -> Bool
+isVCRoot (VCur _ [(IsRootFeature, _)]) = True
+isVCRoot _ = False
 
-showCursor :: TrCur -> String
-showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
+showCursor :: VCur -> String
+showCursor vc = LBS.unpack $ toLazyByteString $ prettyBldr vc
  where
-  prettyBldr :: TrCur -> Builder
-  prettyBldr (TrCur t cs) =
+  prettyBldr :: VCur -> Builder
+  prettyBldr (VCur t cs) =
     string7 "-- ():\n"
       <> string7 (show t)
       <> char7 '\n'
@@ -124,96 +120,95 @@ showCursor tc = LBS.unpack $ toLazyByteString $ prettyBldr tc
         cs
 
 -- | Create a sub cursor with the given segment and tree, and the updated parent tree from the current cursor.
-mkSubTC :: Tree -> Feature -> Tree -> [(Feature, Tree)] -> TrCur
-mkSubTC t seg parT crumbs = TrCur t ((seg, parT) : crumbs)
+mkSubVC :: Val -> Feature -> Val -> [(Feature, Val)] -> VCur
+mkSubVC t seg parT crumbs = VCur t ((seg, parT) : crumbs)
 
-modifyTCFocus :: (Tree -> Tree) -> TrCur -> TrCur
-modifyTCFocus f (TrCur t cs) = TrCur (f t) cs
+modifyVCFocus :: (Val -> Val) -> VCur -> VCur
+modifyVCFocus f (VCur t cs) = VCur (f t) cs
 
-setTCFocusTN :: TreeNode -> TrCur -> TrCur
-setTCFocusTN tn = modifyTCFocus (`setTN` tn)
+setVCFocusVN :: ValNode -> VCur -> VCur
+setVCFocusVN tn = modifyVCFocus (setVN tn)
 
-setTCFocusMut :: SOp -> TrCur -> TrCur
-setTCFocusMut f = modifyTCFocus (setTOp f)
+setVCFocusMut :: SOp -> VCur -> VCur
+setVCFocusMut f = modifyVCFocus (setTOp f)
 
-goDownTCAddr :: TreeAddr -> TrCur -> Maybe TrCur
-goDownTCAddr a = go (addrToList a)
+goDownVCAddr :: ValAddr -> VCur -> Maybe VCur
+goDownVCAddr a = go (addrToList a)
  where
-  go :: [Feature] -> TrCur -> Maybe TrCur
+  go :: [Feature] -> VCur -> Maybe VCur
   go [] cursor = Just cursor
   go (x : xs) cursor = do
-    nextCur <- goDownTCSeg x cursor
+    nextCur <- goDownVCSeg x cursor
     go xs nextCur
 
-goDownTAddr :: TreeAddr -> Tree -> Maybe TrCur
-goDownTAddr addr starT = goDownTCAddr addr (TrCur starT [])
+goDownTAddr :: ValAddr -> Val -> Maybe VCur
+goDownTAddr addr starT = goDownVCAddr addr (VCur starT [])
 
-goDownTCAddrMust :: TreeAddr -> TrCur -> Either String TrCur
-goDownTCAddrMust addr tc =
+goDownVCAddrMust :: ValAddr -> VCur -> Either String VCur
+goDownVCAddrMust addr vc =
   maybe
-    (Left $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ tcAddr tc))
+    (Left $ printf "cannot go to addr (%s) tree from %s" (show addr) (show $ vcAddr vc))
     return
-    (goDownTCAddr addr tc)
+    (goDownVCAddr addr vc)
 
 {- | Go down the TreeCursor with the given segment and return the new cursor.
 
 It handles the cases when a node can be accessed without segments, such as the default value of a disjunction.
 -}
-goDownTCSeg :: Feature -> TrCur -> Maybe TrCur
-goDownTCSeg seg tc = do
-  let focus = tcFocus tc
-  case subTree seg focus of
-    Just (nextTree, updatedParT) -> return $ mkSubTC nextTree seg updatedParT (tcCrumbs tc)
+goDownVCSeg :: Feature -> VCur -> Maybe VCur
+goDownVCSeg seg vc@VCur{focus} = do
+  case subVal seg focus of
+    Just (nextTree, updatedParT) -> return $ mkSubVC nextTree seg updatedParT (crumbs vc)
     Nothing -> do
-      nextTC <- case treeNode focus of
-        TNDisj d
+      nextVC <- case valNode focus of
+        VNDisj d
           -- If the disjunction has one default disjunct, we can go to the default value without a segment.
           | [i] <- dsjDefIndexes d -> do
               dft <- rtrDisjDefVal d
               let updatedParT =
                     focus
-                      { treeNode =
-                          TNDisj $
+                      { valNode =
+                          VNDisj $
                             d
                               { dsjDisjuncts =
                                   take i (dsjDisjuncts d) ++ [singletonNoVal] ++ drop (i + 1) (dsjDisjuncts d)
                               }
                       }
-              return $ mkSubTC dft (mkDisjFeature i) updatedParT (tcCrumbs tc)
+              return $ mkSubVC dft (mkDisjFeature i) updatedParT (crumbs vc)
         _ -> Nothing
-      goDownTCSeg seg nextTC
+      goDownVCSeg seg nextVC
 
-goDownTCSegMust :: Feature -> TrCur -> Either String TrCur
-goDownTCSegMust seg tc =
+goDownVCSegMust :: Feature -> VCur -> Either String VCur
+goDownVCSegMust seg vc =
   maybe
     ( Left $
-        printf "cannot go to sub (%s) tree from path: %s, parent: %s" (show seg) (show $ tcAddr tc) (show $ tcFocus tc)
+        printf "cannot go to sub (%s) tree from path: %s, parent: %s" (show seg) (show $ vcAddr vc) (show $ focus vc)
     )
     return
-    $ goDownTCSeg seg tc
+    $ goDownVCSeg seg vc
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
 It stops at the root.
 -}
-propUpTC :: TrCur -> Either String TrCur
-propUpTC (TrCur _ []) = Left "already at the top"
-propUpTC tc@(TrCur _ [(IsRootFeature, _)]) = return tc
-propUpTC (TrCur subT ((seg, parT) : cs)) = do
-  let tM = setSubTree seg subT parT
+propUpVC :: VCur -> Either String VCur
+propUpVC (VCur _ []) = Left "already at the top"
+propUpVC vc@(VCur _ [(IsRootFeature, _)]) = return vc
+propUpVC (VCur subT ((seg, parT) : cs)) = do
+  let tM = setSubVal seg subT parT
   case tM of
     Nothing -> Left $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT)
-    Just t -> return $ TrCur t cs
+    Just t -> return $ VCur t cs
 
 {- | Propagates the changes made to the focus to the parent nodes.
 
-If the cursor is at Root, it returns Nothing too through setSubTree.
+If the cursor is at Root, it returns Nothing too through setSubVal.
 -}
-propUpTCMaybe :: TrCur -> Maybe TrCur
-propUpTCMaybe (TrCur _ []) = Nothing
-propUpTCMaybe (TrCur subT ((seg, parT) : cs)) = do
-  t <- setSubTree seg subT parT
-  return $ TrCur t cs
+propUpVCMaybe :: VCur -> Maybe VCur
+propUpVCMaybe (VCur _ []) = Nothing
+propUpVCMaybe (VCur subT ((seg, parT) : cs)) = do
+  t <- setSubVal seg subT parT
+  return $ VCur t cs
 
 {- | Descend into the tree with the given segment.
 
@@ -221,18 +216,18 @@ It returns the sub tree and the updated parent tree with
 
 This should only be used by TreeCursor.
 -}
-subTree :: (HasCallStack) => Feature -> Tree -> Maybe (Tree, Tree)
-subTree seg parentT = do
+subVal :: (HasCallStack) => Feature -> Val -> Maybe (Val, Val)
+subVal seg parentT = do
   sub <- go seg parentT
-  updatedParT <- setSubTree seg singletonNoVal parentT
+  updatedParT <- setSubVal seg singletonNoVal parentT
   return (sub, updatedParT)
  where
   go f t = case (fetchLabelType f, t) of
     -- Root segment always returns the same tree.
     (RootLabelType, _) -> Just t
     -- go into withRCs will immediately go into its inner tree.
-    (_, IsFix r) -> go f (supersedeTN r.val t)
-    (MutArgLabelType, IsTreeMutable mut) -> snd <$> (getSOpArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
+    (_, IsFix r) -> go f (supersedeVN r.val t)
+    (MutArgLabelType, IsValMutable mut) -> snd <$> (getSOpArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
     (TempLabelType, _) -> tmpSub t
     (StringLabelType, IsStruct struct)
       | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
@@ -257,11 +252,11 @@ subTree seg parentT = do
 
 The sub tree should already exist in the parent tree.
 -}
-setSubTree :: (HasCallStack) => Feature -> Tree -> Tree -> Maybe Tree
-setSubTree f@(fetchLabelType -> MutArgLabelType) subT parT@(IsTreeMutable mut) =
+setSubVal :: (HasCallStack) => Feature -> Val -> Val -> Maybe Val
+setSubVal f@(fetchLabelType -> MutArgLabelType) subT parT@(IsValMutable mut) =
   return $ setTOp (updateSOpArg (fst (getMutArgInfoFromFeature f)) subT mut) parT
-setSubTree (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
-setSubTree f subT parT = case (fetchLabelType f, parT) of
+setSubVal (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
+setSubVal f subT parT = case (fetchLabelType f, parT) of
   (StringLabelType, IsStruct parStruct)
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
@@ -270,74 +265,74 @@ setSubTree f subT parT = case (fetchLabelType f, parT) of
           newField = subT `updateFieldValue` field
           newStruct = updateStructField (getTextIndexFromFeature f) newField parStruct
          in
-          ret $ TNStruct newStruct
+          ret $ VNStruct newStruct
   (PatternLabelType, IsStruct parStruct) ->
     let (i, j) = getPatternIndexesFromFeature f
-     in ret $ TNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
+     in ret $ VNStruct (updateStructCnstrByID i (j == 0) subT parStruct)
   (DynFieldLabelType, IsStruct parStruct) ->
     let (i, j) = getDynFieldIndexesFromFeature f
-     in ret $ TNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
+     in ret $ VNStruct (updateStructDynFieldByID i (j == 0) subT parStruct)
   (StubFieldLabelType, IsStruct parStruct) ->
-    ret $ TNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
+    ret $ VNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
   (LetLabelType, IsStruct parStruct) ->
-    ret $ TNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
+    ret $ VNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
   (ListStoreIdxLabelType, IsList l) ->
-    let i = fetchIndex f in ret $ TNList $ updateListStoreAt i subT l
+    let i = fetchIndex f in ret $ VNList $ updateListStoreAt i subT l
   (ListIdxLabelType, IsList l) ->
-    let i = fetchIndex f in ret $ TNList $ updateListFinalAt i subT l
+    let i = fetchIndex f in ret $ VNList $ updateListFinalAt i subT l
   (DisjLabelType, IsDisj d) ->
     let i = fetchIndex f
-     in ret (TNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+     in ret (VNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
   (RootLabelType, _) -> Nothing
   -- parT is wrapped by withRCs, so we need to reconstruct the withRCs node.
-  (_, WrappedBy (TNFix r)) ->
-    setSubTree f subT (unwrapTN (\x -> TNFix (r{val = treeNode x})) parT)
+  (_, WrappedBy (VNFix r)) ->
+    setSubVal f subT (unwrapVN (\x -> VNFix (r{val = valNode x})) parT)
   _ -> Nothing
  where
-  ret tn = Just $ parT{treeNode = tn}
+  ret tn = Just $ parT{valNode = tn}
 
 indexList :: [a] -> Int -> Maybe a
 indexList xs i = if i < length xs then Just (xs !! i) else Nothing
 
-setSubTreeMust :: Feature -> Tree -> Tree -> Either String Tree
-setSubTreeMust seg subT parT =
+setSubValMust :: Feature -> Val -> Val -> Either String Val
+setSubValMust seg subT parT =
   maybe
     (Left $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT))
     return
-    (setSubTree seg subT parT)
+    (setSubVal seg subT parT)
 
 -- | Go to the top of the tree cursor.
-topTC :: TrCur -> Either String TrCur
-topTC (TrCur _ []) = Left "already at the top"
-topTC tc@(TrCur _ ((IsRootFeature, _) : _)) = return tc
-topTC tc = do
-  parTC <- propUpTC tc
-  topTC parTC
+topVC :: VCur -> Either String VCur
+topVC (VCur _ []) = Left "already at the top"
+topVC vc@(VCur _ ((IsRootFeature, _) : _)) = return vc
+topVC vc = do
+  parVC <- propUpVC vc
+  topVC parVC
 
 -- = Traversal =
 
 data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (Eq)
 
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
-subNodes :: Bool -> TrCur -> [SubNodeSeg]
-subNodes withStub (TCFocus t@(IsTreeMutable mut)) =
+subNodes :: Bool -> VCur -> [SubNodeSeg]
+subNodes withStub (VCFocus t@(IsValMutable mut)) =
   let xs = [SubNodeSegNormal f | (f, _) <- toList $ getSOpArgs mut]
-      ys = subTNSegsOpt withStub t
+      ys = subVNSegsOpt withStub t
    in xs ++ ys
-subNodes withStub tc = subTNSegsOpt withStub (tcFocus tc)
+subNodes withStub vc = subVNSegsOpt withStub (focus vc)
 
-subTNSegsOpt :: Bool -> Tree -> [SubNodeSeg]
-subTNSegsOpt withStub t = map SubNodeSegNormal $ subTNSegs t ++ if withStub then subStubSegs t else []
+subVNSegsOpt :: Bool -> Val -> [SubNodeSeg]
+subVNSegsOpt withStub t = map SubNodeSegNormal $ subVNSegs t ++ if withStub then subStubSegs t else []
 
-subTNSegs :: Tree -> [Feature]
-subTNSegs t = case treeNode t of
-  TNStruct s ->
+subVNSegs :: Val -> [Feature]
+subVNSegs t = case valNode t of
+  VNStruct s ->
     [mkStringFeature i | i <- Map.keys (stcFields s)]
       ++ [mkFeature (getTextIndex i) LetLabelType | i <- Map.keys (stcBindings s)]
       ++ [mkPatternFeature i 0 | i <- IntMap.keys $ stcCnstrs s]
       ++ [mkDynFieldFeature i 0 | i <- IntMap.keys $ stcDynFields s]
-  TNList l -> [mkListStoreIdxFeature i | (i, _) <- zip [0 ..] (toList l.store)]
-  TNDisj d ->
+  VNList l -> [mkListStoreIdxFeature i | (i, _) <- zip [0 ..] (toList l.store)]
+  VNDisj d ->
     [mkDisjFeature i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
   _ -> []
 
@@ -345,7 +340,7 @@ subTNSegs t = case treeNode t of
 
 TODO: comprehension struct
 -}
-subStubSegs :: Tree -> [Feature]
+subStubSegs :: Val -> [Feature]
 subStubSegs (IsStruct s) =
   [mkPatternFeature i 1 | i <- IntMap.keys $ stcCnstrs s]
     ++ [mkDynFieldFeature i 1 | i <- IntMap.keys $ stcDynFields s]
@@ -356,15 +351,15 @@ subStubSegs _ = []
 
 The tree must have all the latest changes.
 -}
-goTCAbsAddr :: TreeAddr -> TrCur -> Either String (Maybe TrCur)
-goTCAbsAddr dst tc = do
+goVCAbsAddr :: ValAddr -> VCur -> Either String (Maybe VCur)
+goVCAbsAddr dst vc = do
   when (headSeg dst /= Just rootFeature) $
     Left (printf "the addr %s should start with the root segment" (show dst))
-  top <- topTC tc
-  let dstNoRoot = fromJust $ tailTreeAddr dst
-  return $ goDownTCAddr dstNoRoot top
+  top <- topVC vc
+  let dstNoRoot = fromJust $ tailValAddr dst
+  return $ goDownVCAddr dstNoRoot top
 
-goTCAbsAddrMust :: TreeAddr -> TrCur -> Either String TrCur
-goTCAbsAddrMust dst tc = do
-  tarM <- goTCAbsAddr dst tc
+goVCAbsAddrMust :: ValAddr -> VCur -> Either String VCur
+goVCAbsAddrMust dst vc = do
+  tarM <- goVCAbsAddr dst vc
   maybe (Left $ printf "failed to go to the addr %s" (show dst)) return tarM

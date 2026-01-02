@@ -19,10 +19,10 @@ import Value
 
 -- * Regular Unary Ops
 
-retVal :: (Monad m) => Tree -> m (Maybe Tree)
+retVal :: (Monad m) => Val -> m (Maybe Val)
 retVal = return . Just
 
-resolveUnaryOp :: (Monad m) => AST.UnaryOp -> Maybe Tree -> m (Maybe Tree)
+resolveUnaryOp :: (Monad m) => AST.UnaryOp -> Maybe Val -> m (Maybe Val)
 resolveUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
@@ -31,7 +31,7 @@ resolveUnaryOp op tM = do
       (AST.Plus, Float i) -> fa i id
       (AST.Minus, Int i) -> ia i negate
       (AST.Minus, Float i) -> fa i negate
-      (AST.Not, Bool b) -> retVal (mkAtomTree (Bool (not b)))
+      (AST.Not, Bool b) -> retVal (mkAtomVal (Bool (not b)))
       (AST.UnaRelOp uop, _) -> case (uop, a) of
         (AST.NE, x) -> mkb (BdNE x)
         (AST.LT, Int i) -> mkib BdLT i
@@ -42,40 +42,40 @@ resolveUnaryOp op tM = do
         (AST.GT, Float f) -> mkfb BdGT f
         (AST.GE, Int i) -> mkib BdGE i
         (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> retVal (mkBoundsTreeFromList [BdStrMatch $ BdReMatch p])
-        (AST.ReNotMatch, String p) -> retVal (mkBoundsTreeFromList [BdStrMatch $ BdReNotMatch p])
+        (AST.ReMatch, String p) -> retVal (mkBoundsValFromList [BdStrMatch $ BdReMatch p])
+        (AST.ReNotMatch, String p) -> retVal (mkBoundsValFromList [BdStrMatch $ BdReNotMatch p])
         _ -> returnErr t
       _ -> returnErr t
     _ -> return Nothing
  where
-  returnErr v = retVal $ mkBottomTree $ printf "%s cannot be used for %s" (show v) (show op)
+  returnErr v = retVal $ mkBottomVal $ printf "%s cannot be used for %s" (show v) (show op)
 
-  ia a f = retVal (mkAtomTree (Int $ f a))
+  ia a f = retVal (mkAtomVal (Int $ f a))
 
-  fa a f = retVal (mkAtomTree (Float $ f a))
+  fa a f = retVal (mkAtomVal (Float $ f a))
 
-  mkb b = retVal (mkBoundsTreeFromList [b])
+  mkb b = retVal (mkBoundsValFromList [b])
 
-  mkib uop i = retVal (mkBoundsTreeFromList [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
+  mkib uop i = retVal (mkBoundsValFromList [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
 
-  mkfb uop f = retVal (mkBoundsTreeFromList [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
+  mkfb uop f = retVal (mkBoundsValFromList [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
 
 -- * Regular Binary Ops
 
 resolveRegBinOp ::
-  AST.BinaryOp -> Maybe Tree -> Maybe Tree -> TrCur -> RM (Maybe Tree)
+  AST.BinaryOp -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
 resolveRegBinOp op t1M t2M opTC = do
   -- debugInstantOpRM
   --   "resolveRegBinOp"
   --   (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
-  --   (tcAddr opTC)
+  --   (vcAddr opTC)
   resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
   AST.BinaryOp ->
-  (BinOpDirect, Maybe Tree) ->
-  (BinOpDirect, Maybe Tree) ->
-  RM (Maybe Tree)
+  (BinOpDirect, Maybe Val) ->
+  (BinOpDirect, Maybe Val) ->
+  RM (Maybe Val)
 resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
   if
     | opv `elem` cmpOps -> return $ cmp (opv == AST.Equ) (d1, t1M) (d2, t2M)
@@ -101,15 +101,15 @@ resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
   cmpOps = [AST.Equ, AST.BinRelOp AST.NE]
   arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
 
-cmp :: Bool -> (BinOpDirect, Maybe Tree) -> (BinOpDirect, Maybe Tree) -> Maybe Tree
+cmp :: Bool -> (BinOpDirect, Maybe Val) -> (BinOpDirect, Maybe Val) -> Maybe Val
 cmp cmpEqu (d1, t1M) (d2, t2M) =
   case (t1M, t2M) of
     -- First consider when either of the trees is bottom.
     (Just (IsBottom _), _)
       -- Incomplete is treated as bottom.
-      | Nothing <- t2M -> Just $ mkAtomTree (Bool cmpEqu)
-      | Just (IsBottom _) <- t2M -> Just $ mkAtomTree (Bool cmpEqu)
-      | Just _ <- t2M -> Just $ mkAtomTree (Bool $ not cmpEqu)
+      | Nothing <- t2M -> Just $ mkAtomVal (Bool cmpEqu)
+      | Just (IsBottom _) <- t2M -> Just $ mkAtomVal (Bool cmpEqu)
+      | Just _ <- t2M -> Just $ mkAtomVal (Bool $ not cmpEqu)
     (_, Just (IsBottom _)) -> cmp cmpEqu (d2, t2M) (d1, t1M)
     -- When both trees are not bottom.
     (Just t1, Just t2)
@@ -118,21 +118,21 @@ cmp cmpEqu (d1, t1M) (d2, t2M) =
       -- When both trees are non-null atoms.
       | Just a1 <- rtrAtom t1
       , Just a2 <- rtrAtom t2 ->
-          Just $ mkAtomTree (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
+          Just $ mkAtomVal (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
       -- When both trees are Singular values.
       | Just _ <- rtrNonUnion t1
       , Just _ <- rtrNonUnion t2 ->
-          Just $ mkBottomTree $ printf "%s and %s are not comparable" (show t1) (show t2)
+          Just $ mkBottomVal $ printf "%s and %s are not comparable" (show t1) (show t2)
     _ -> Nothing
 
-cmpNull :: Bool -> Tree -> Tree
+cmpNull :: Bool -> Val -> Val
 cmpNull cmpEqu t =
   if
-    | Just a <- rtrAtom t -> mkAtomTree (Bool $ if cmpEqu then a == Null else a /= Null)
+    | Just a <- rtrAtom t -> mkAtomVal (Bool $ if cmpEqu then a == Null else a /= Null)
     -- There is no way for a non-atom to be compared with a non-null atom.
-    | otherwise -> mkAtomTree (Bool $ not cmpEqu)
+    | otherwise -> mkAtomVal (Bool $ not cmpEqu)
 
-calc :: AST.BinaryOp -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Tree
+calc :: AST.BinaryOp -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Val
 calc op@(AST.anVal -> opv) (L, a1) (_, a2) =
   case a1 of
     Int i1
@@ -143,15 +143,15 @@ calc op@(AST.anVal -> opv) (L, a1) (_, a2) =
       | Float f2 <- a2, Just f <- lookup opv floatOps -> rf (f f1 f2)
       | Int i2 <- a2, Just f <- lookup opv floatOps -> rf (f f1 (fromIntegral i2))
     String s1
-      | String s2 <- a2, opv == AST.Add -> mkAtomTree (String $ s1 <> s2)
+      | String s2 <- a2, opv == AST.Add -> mkAtomVal (String $ s1 <> s2)
     _ -> mismatch op a1 a2
  where
-  ri = mkAtomTree . Int
-  rf = mkAtomTree . Float
+  ri = mkAtomVal . Int
+  rf = mkAtomVal . Float
 
   regIntOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*))]
   floatOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*)), (AST.Div, (/))]
 calc op x@(R, _) y = calc op y x
 
-mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> Tree
-mismatch op x y = mkBottomTree $ printf "%s can not be used for %s and %s" (show $ AST.anVal op) (show x) (show y)
+mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> Val
+mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show $ AST.anVal op) (show x) (show y)

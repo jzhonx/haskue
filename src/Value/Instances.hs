@@ -18,8 +18,8 @@ import Value.List
 import Value.Op
 import Value.Reference
 import Value.Struct
-import Value.Tree
 import Value.UnifyOp
+import Value.Val
 
 -----
 -- Eq
@@ -59,27 +59,27 @@ deriving instance Eq Binding
 deriving instance Eq Fix
 deriving instance Eq FixConj
 
-instance Eq TreeNode where
-  (==) (TNStruct s1) (TNStruct s2) = s1 == s2
-  (==) (TNList ts1) (TNList ts2) = ts1 == ts2
-  (==) (TNDisj d1) (TNDisj d2) = d1 == d2
-  (==) (TNAtom l1) (TNAtom l2) = l1 == l2
-  (==) (TNAtomCnstr c1) (TNAtomCnstr c2) = c1 == c2
-  (==) (TNDisj dj1) n2@(TNAtom _) =
+instance Eq ValNode where
+  (==) (VNStruct s1) (VNStruct s2) = s1 == s2
+  (==) (VNList ts1) (VNList ts2) = ts1 == ts2
+  (==) (VNDisj d1) (VNDisj d2) = d1 == d2
+  (==) (VNAtom l1) (VNAtom l2) = l1 == l2
+  (==) (VNAtomCnstr c1) (VNAtomCnstr c2) = c1 == c2
+  (==) (VNDisj dj1) n2@(VNAtom _) =
     if isNothing (rtrDisjDefVal dj1)
       then False
-      else treeNode (fromJust $ rtrDisjDefVal dj1) == n2
-  (==) (TNAtom a1) (TNDisj dj2) = (==) (TNDisj dj2) (TNAtom a1)
-  (==) (TNBounds b1) (TNBounds b2) = b1 == b2
-  (==) (TNBottom _) (TNBottom _) = True
-  (==) TNTop TNTop = True
-  -- Only compare the TreeNode part of Fix.
-  (==) (TNFix r1) (TNFix r2) = r1.val == r2.val
-  (==) TNNoVal TNNoVal = True
+      else valNode (fromJust $ rtrDisjDefVal dj1) == n2
+  (==) (VNAtom a1) (VNDisj dj2) = (==) (VNDisj dj2) (VNAtom a1)
+  (==) (VNBounds b1) (VNBounds b2) = b1 == b2
+  (==) (VNBottom _) (VNBottom _) = True
+  (==) VNTop VNTop = True
+  -- Only compare the ValNode part of Fix.
+  (==) (VNFix r1) (VNFix r2) = r1.val == r2.val
+  (==) VNNoVal VNNoVal = True
   (==) _ _ = False
 
-instance Eq Tree where
-  (==) t1 t2 = treeNode t1 == treeNode t2
+instance Eq Val where
+  (==) t1 t2 = valNode t1 == valNode t2
 
 -----
 -- Show
@@ -121,18 +121,18 @@ instance ShowWTIndexer FixConj where
   tshow (FixSelect addr) = tshow addr
   tshow (FixCompreh t) = tshow t
 
-deriving instance Show TreeNode
-deriving instance Show Tree
+deriving instance Show ValNode
+deriving instance Show Val
 
-instance ShowWTIndexer Tree where
-  tshow = oneLinerStringOfTree
+instance ShowWTIndexer Val where
+  tshow = oneLinerStringOfVal
 
-instance ToJSON Tree where
+instance ToJSON Val where
   toJSON t = toJSON (show t)
 
-instance ToJSONWTIndexer Tree where
+instance ToJSONWTIndexer Val where
   ttoJSON t = do
-    s <- oneLinerStringOfTree t
+    s <- oneLinerStringOfVal t
     return $ toJSON s
 
 -----
@@ -169,6 +169,6 @@ deriving instance NFData AtomCnstr
 deriving instance NFData Fix
 deriving instance NFData FixConj
 
-deriving instance NFData TreeNode
+deriving instance NFData ValNode
 deriving instance NFData EmbedType
-deriving instance NFData Tree
+deriving instance NFData Val

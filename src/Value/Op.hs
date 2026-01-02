@@ -18,8 +18,8 @@ import Value.Comprehension
 import Value.DisjoinOp
 import Value.Interpolation
 import Value.Reference
-import {-# SOURCE #-} Value.Tree
 import Value.UnifyOp
+import {-# SOURCE #-} Value.Val
 
 -- | SOp is an operation with stateful information.
 data SOp = SOp Op OpFrame
@@ -49,12 +49,12 @@ emptyOpFrame = OpFrame{}
 withEmptyOpFrame :: Op -> SOp
 withEmptyOpFrame op = SOp op emptyOpFrame
 
-getSOpArgs :: SOp -> Seq.Seq (Feature, Tree)
+getSOpArgs :: SOp -> Seq.Seq (Feature, Val)
 getSOpArgs (SOp op _) =
   let (xs, isUnify) = getOpArgs op
    in Seq.fromList $ zip (map (`mkMutArgFeature` isUnify) [0 ..]) (toList xs)
 
-getOpArgs :: Op -> (Seq.Seq Tree, Bool)
+getOpArgs :: Op -> (Seq.Seq Val, Bool)
 getOpArgs (RegOp rop) = (ropArgs rop, False)
 getOpArgs (Ref ref) = (subRefArgs $ refArg ref, False)
 getOpArgs (Compreh c) = (fmap getValFromIterClause c.args, False)
@@ -62,10 +62,10 @@ getOpArgs (DisjOp d) = (fmap dstValue (djoTerms d), False)
 getOpArgs (UOp u) = (conjs u, True)
 getOpArgs (Itp itp) = (itpExprs itp, False)
 
-updateSOpArg :: Int -> Tree -> SOp -> SOp
+updateSOpArg :: Int -> Val -> SOp -> SOp
 updateSOpArg i t (SOp op frame) = SOp (updateOpArg i t op) frame
 
-updateOpArg :: Int -> Tree -> Op -> Op
+updateOpArg :: Int -> Val -> Op -> Op
 updateOpArg i t (RegOp r) = RegOp $ r{ropArgs = Seq.update i t (ropArgs r)}
 updateOpArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
 updateOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
@@ -81,7 +81,7 @@ modifyRegSOp _ r = r
 data RegularOp = RegularOp
   { ropName :: String
   , ropOpType :: RegOpType
-  , ropArgs :: Seq.Seq Tree
+  , ropArgs :: Seq.Seq Val
   -- ^ Args stores the arguments that may or may not need to be evaluated.
   }
   deriving (Generic)
@@ -101,7 +101,7 @@ emptyRegularOp =
     , ropArgs = Seq.empty
     }
 
-mkUnaryOp :: AST.UnaryOp -> Tree -> SOp
+mkUnaryOp :: AST.UnaryOp -> Val -> SOp
 mkUnaryOp op n =
   withEmptyOpFrame $
     RegOp $
@@ -111,7 +111,7 @@ mkUnaryOp op n =
         , ropArgs = Seq.fromList [n]
         }
 
-mkBinaryOp :: AST.BinaryOp -> Tree -> Tree -> SOp
+mkBinaryOp :: AST.BinaryOp -> Val -> Val -> SOp
 mkBinaryOp op l r =
   withEmptyOpFrame $
     RegOp $
@@ -127,13 +127,13 @@ mkDisjoinOp ts = withEmptyOpFrame $ DisjOp $ DisjoinOp{djoTerms = ts}
 mkDisjoinOpFromList :: [DisjTerm] -> SOp
 mkDisjoinOpFromList ts = mkDisjoinOp (Seq.fromList ts)
 
-mkUnifyOp :: [Tree] -> SOp
+mkUnifyOp :: [Val] -> SOp
 mkUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, hasEmbeds = False}
 
-mkEmbedUnifyOp :: [Tree] -> SOp
+mkEmbedUnifyOp :: [Val] -> SOp
 mkEmbedUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, hasEmbeds = True}
 
-mkItpSOp :: [IplSeg] -> [Tree] -> SOp
+mkItpSOp :: [IplSeg] -> [Val] -> SOp
 mkItpSOp segs exprs = withEmptyOpFrame $ Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
 
 showOpType :: Op -> String
