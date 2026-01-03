@@ -37,7 +37,7 @@ import Reduce.RMonad (
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..))
 import Text.Printf (printf)
 import Value
-import Value.Util.ValRep (treeToFullRepString)
+import Value.Export.Debug (treeToFullRepString)
 
 data DerefResult = DerefResult
   { drValue :: Maybe Val
@@ -387,7 +387,7 @@ locateRef fieldPath vc = do
   ident <- selToIdent fstSel
   searchTCIdent False ident vc >>= \case
     Nothing -> do
-      errMsg <- notFoundMsg ident (treeExpr (focus vc) >>= AST.anPos)
+      errMsg <- notFoundMsg ident (origExpr (focus vc) >>= AST.anPos)
       return . LRIdentNotFound $ mkBottomVal errMsg
     Just (identTC, _) -> do
       -- The ref is non-empty, so the rest must be a valid addr.

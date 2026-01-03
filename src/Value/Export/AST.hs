@@ -5,11 +5,11 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Value.Util.BuildASTExpr (
-  buildASTExpr,
+module Value.Export.AST (
+  buildExpr,
   buildBoundASTExpr,
   bdRep,
-  buildASTExprDebug,
+  buildExprDebug,
 )
 where
 
@@ -32,35 +32,33 @@ import Value.Comprehension
 import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
+import Value.Export.Debug
 import Value.Fix
 import Value.List
 import Value.Op
 import Value.Reference
 import Value.Struct
 import Value.UnifyOp
-import Value.Util.ValRep
 import Value.Val
 
 type EM = RWST BuildConfig () TextIndexer (Except String)
 
-buildASTExpr :: Val -> TextIndexer -> Except String (AST.Expression, TextIndexer)
-buildASTExpr t tier = do
-  (a, s, _) <- runRWST (buildASTExprExt t) (BuildConfig False) tier
+buildExpr :: Val -> TextIndexer -> Except String (AST.Expression, TextIndexer)
+buildExpr t tier = do
+  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig False) tier
   return (a, s)
 
-buildASTExprDebug :: Val -> TextIndexer -> Except String (AST.Expression, TextIndexer)
-buildASTExprDebug t tier = do
-  (a, s, _) <- runRWST (buildASTExprExt t) (BuildConfig True) tier
+buildExprDebug :: Val -> TextIndexer -> Except String (AST.Expression, TextIndexer)
+buildExprDebug t tier = do
+  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig True) tier
   return (a, s)
 
-newtype BuildConfig = BuildConfig
-  { isDebug :: Bool
-  }
+newtype BuildConfig = BuildConfig {isDebug :: Bool}
 
-buildASTExprExt :: Val -> EM AST.Expression
-buildASTExprExt t@Val{isSCyclic = True} = buildSCyclicASTExpr t
-buildASTExprExt t@(IsValMutable mut) | IsNoVal <- t = buildMutableASTExpr mut t
-buildASTExprExt t = case valNode t of
+buildExprExt :: Val -> EM AST.Expression
+buildExprExt t@Val{isSCyclic = True} = buildSCyclicASTExpr t
+buildExprExt t@(IsValMutable mut) | IsNoVal <- t = buildMutableASTExpr mut t
+buildExprExt t = case valNode t of
   VNTop -> return $ AST.litCons (pure AST.TopLit)
   VNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
   VNAtom a -> return $ (AST.litCons . aToLiteral) a
@@ -70,7 +68,7 @@ buildASTExprExt t = case valNode t of
     ls <-
       mapM
         ( \x -> do
-            e <- buildASTExprExt x
+            e <- buildExprExt x
             return $ pure $ AST.AliasExpr e
         )
         (toList l.final)
@@ -98,8 +96,8 @@ buildMutableASTExpr mut t = do
   isDebug <- asks isDebug
   if isDebug
     then buildMutableASTExprForce mut t
-    -- TODO: handle parenthese in treeExpr. Currently treeExpr does not have parenthese.
-    else maybe (buildMutableASTExprForce mut t) return (treeExpr t)
+    -- TODO: handle parenthese in origExpr. Currently origExpr does not have parenthese.
+    else maybe (buildMutableASTExprForce mut t) return (origExpr t)
 
 buildAtomCnstrASTExpr :: AtomCnstr -> Val -> EM AST.Expression
 buildAtomCnstrASTExpr ac t = do
@@ -107,7 +105,7 @@ buildAtomCnstrASTExpr ac t = do
   if isDebug
     then buildArgsExpr "atomCnstr" [mkAtomVal ac.value, cnsValidator ac]
     -- TODO: for non-core type, we should not build AST in non-debug mode.
-    else maybe (buildASTExprExt $ cnsValidator ac) return (treeExpr t)
+    else maybe (buildExprExt $ cnsValidator ac) return (origExpr t)
 
 buildMutableASTExprForce :: SOp -> Val -> EM AST.Expression
 buildMutableASTExprForce (SOp mop _) t = case mop of
@@ -129,8 +127,8 @@ buildFixASTExpr r t = do
     then return (AST.idCons $ pure $ T.pack "Fix")
     else do
       if r.unknownExists
-        then maybe (throwExprNotFound t) return (treeExpr t)
-        else buildASTExprExt (mkNewVal r.val)
+        then maybe (throwExprNotFound t) return (origExpr t)
+        else buildExprExt (mkNewVal r.val)
 
 buildSCyclicASTExpr :: Val -> EM AST.Expression
 buildSCyclicASTExpr inner = do
@@ -142,7 +140,7 @@ buildSCyclicASTExpr inner = do
 buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
   sel <- tshow sIdx
-  e <- buildASTExprExt (ssfValue sf)
+  e <- buildExprExt (ssfValue sf)
   let decl =
         AST.FieldDecl
           AST.<^> pure
@@ -158,8 +156,8 @@ buildStaticFieldExpr (sIdx, sf) = do
 
 buildDynFieldExpr :: DynamicField -> EM AST.Declaration
 buildDynFieldExpr sf = do
-  le <- buildASTExprExt (dsfLabel sf)
-  ve <- buildASTExprExt (dsfValue sf)
+  le <- buildExprExt (dsfLabel sf)
+  ve <- buildExprExt (dsfValue sf)
   let decl =
         AST.FieldDecl
           AST.<^> pure
@@ -177,8 +175,8 @@ buildDynFieldExpr sf = do
 
 buildPatternExpr :: StructCnstr -> EM AST.Declaration
 buildPatternExpr pat = do
-  pte <- buildASTExprExt (scsPattern pat)
-  ve <- buildASTExprExt (scsValue pat)
+  pte <- buildExprExt (scsPattern pat)
+  ve <- buildExprExt (scsValue pat)
   return $
     AST.FieldDecl
       AST.<^> pure (AST.Field [labelPatternCons pte] ve)
@@ -186,20 +184,11 @@ buildPatternExpr pat = do
 buildLetExpr :: (TextIndex, Binding) -> EM AST.Declaration
 buildLetExpr (ident, binding) = do
   s <- tshow ident
-  ve <- buildASTExprExt binding.value
+  ve <- buildExprExt binding.value
   let
     letClause :: AST.LetClause
     letClause = pure (AST.LetClause (pure s) ve)
   return (pure $ AST.DeclLet letClause)
-
--- buildEmbedExpr ::  Embedding -> m AST.Declaration
--- buildEmbedExpr embed = case embValue embed of
---   IsValMutable (Op (Compreh c)) -> do
---     ce <- buildComprehASTExpr c
---     return $ AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce
---   _ -> do
---     e <- buildASTExprExt (embValue embed)
---     return $ AST.Embedding AST.<<^>> AST.AliasExpr AST.<^> e
 
 labelCons :: LabelAttr -> AST.LabelName -> AST.Label
 labelCons a ln =
@@ -229,14 +218,13 @@ buildStructASTExprDebug s _ = do
   dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
   patterns <- mapM buildPatternExpr (IntMap.elems $ stcCnstrs s)
   lets <- mapM buildLetExpr (Map.toList $ stcBindings s)
-  -- embedValM <- maybe (return Nothing) buildASTExprExt s.stcEmbedVal
   let
     decls = statics ++ dynamics ++ patterns ++ lets
     e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
   return e
 
 buildStructASTExprNormal :: Struct -> Val -> EM AST.Expression
-buildStructASTExprNormal _ (IsEmbedVal v) = buildASTExprExt v
+buildStructASTExprNormal _ (IsEmbedVal v) = buildExprExt v
 buildStructASTExprNormal s t = do
   r <- buildStructOrdLabels rtrString s
   case r of
@@ -262,7 +250,7 @@ buildStructASTExprNormal s t = do
       maybe
         (throwErrSt "struct expression not found")
         return
-        (treeExpr t)
+        (origExpr t)
 
 buildComprehASTExpr :: Comprehension -> EM AST.Comprehension
 buildComprehASTExpr cph = do
@@ -272,7 +260,7 @@ buildComprehASTExpr cph = do
   start <- buildStartClause (head clauses)
   rest <- mapM buildIterClause (tail clauses)
 
-  e <- buildASTExprExt (getValFromIterClause structTmpl)
+  e <- buildExprExt (getValFromIterClause structTmpl)
   sl <- case AST.anVal e of
     AST.ExprUnaryExpr
       ( AST.anVal ->
@@ -292,21 +280,21 @@ buildComprehASTExpr cph = do
  where
   buildStartClause clause = case clause of
     ComprehArgIf val -> do
-      ve <- buildASTExprExt val
+      ve <- buildExprExt val
       return (AST.GuardClause ve)
     ComprehArgFor varNameIdx secVarIdxM val -> do
       varName <- tshow varNameIdx
       secVarM <- case secVarIdxM of
         Just sIdx -> Just <$> tshow sIdx
         Nothing -> return Nothing
-      ve <- buildASTExprExt val
+      ve <- buildExprExt val
       return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
     _ -> throwErrSt "start clause should not be let clause"
 
   buildIterClause clause = case clause of
     ComprehArgLet varNameIdx val -> do
       varName <- tshow varNameIdx
-      ve <- buildASTExprExt val
+      ve <- buildExprExt val
       return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
     _ -> do
       start <- buildStartClause clause
@@ -363,7 +351,7 @@ bdRep b = case b of
 
 disjunctsToAST :: [Val] -> EM AST.Expression
 disjunctsToAST ds = do
-  xs <- mapM buildASTExprExt ds
+  xs <- mapM buildExprExt ds
   isDebug <- asks isDebug
   -- We might print unresolved disjunctions in debug mode with only one disjunct.
   if isDebug && length xs < 2
@@ -382,10 +370,10 @@ buildUnifyOpASTExpr op
   | fstConj Seq.:<| rest <- op.conjs
   , -- The rest should be a non-empty sequence.
     _ Seq.:|> _ <- rest = do
-      leftMost <- buildASTExprExt fstConj
+      leftMost <- buildExprExt fstConj
       foldM
         ( \acc x -> do
-            right <- buildASTExprExt x
+            right <- buildExprExt x
             return $ pure $ AST.ExprBinaryOp (pure AST.Unify) acc right
         )
         leftMost
@@ -403,10 +391,10 @@ buildDisjoinOpASTExpr op t = do
     | fstDisj Seq.:<| rest <- djoTerms op
     , -- The rest should be a non-empty sequence.
       _ Seq.:|> _ <- rest = do
-        leftMost <- buildASTExprExt (dstValue fstDisj)
+        leftMost <- buildExprExt (dstValue fstDisj)
         foldM
           ( \acc x -> do
-              right <- buildASTExprExt (dstValue x)
+              right <- buildExprExt (dstValue x)
               return $ pure $ AST.ExprBinaryOp (pure AST.DisjoinDebugOp) acc right
           )
           leftMost
@@ -425,7 +413,7 @@ buildRefASTExpr ref = case refArg ref of
     r <-
       foldM
         ( \acc x -> do
-            xe <- buildASTExprExt x
+            xe <- buildExprExt x
             return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index xe)
         )
         varE
@@ -434,7 +422,7 @@ buildRefASTExpr ref = case refArg ref of
   RefIndex xs -> do
     case xs of
       (x Seq.:<| rest) -> do
-        xe <- buildASTExprExt x
+        xe <- buildExprExt x
         v <- case AST.anVal xe of
           AST.ExprUnaryExpr
             (AST.anVal -> AST.UnaryExprPrimaryExpr v) -> return v
@@ -442,7 +430,7 @@ buildRefASTExpr ref = case refArg ref of
         r <-
           foldM
             ( \acc y -> do
-                ye <- buildASTExprExt y
+                ye <- buildExprExt y
                 return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index ye)
             )
             v
@@ -461,7 +449,7 @@ buildRegOpASTExpr op = case ropOpType op of
 
 buildUnaryExpr :: AST.UnaryOp -> Val -> EM AST.Expression
 buildUnaryExpr op t = do
-  te <- buildASTExprExt t
+  te <- buildExprExt t
   case AST.anVal te of
     (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr AST.<<^>> AST.UnaryExprUnaryOp op AST.<^> ue
     _ ->
@@ -475,13 +463,13 @@ buildUnaryExpr op t = do
 
 buildBinaryExpr :: AST.BinaryOp -> Val -> Val -> EM AST.Expression
 buildBinaryExpr op l r = do
-  xe <- buildASTExprExt l
-  ye <- buildASTExprExt r
+  xe <- buildExprExt l
+  ye <- buildExprExt r
   return $ pure $ AST.ExprBinaryOp op xe ye
 
 buildArgsExpr :: String -> [Val] -> EM AST.Expression
 buildArgsExpr func ts = do
-  ets <- mapM buildASTExprExt ts
+  ets <- mapM buildExprExt ts
   return $
     AST.ExprUnaryExpr
       AST.<<^>> AST.UnaryExprPrimaryExpr

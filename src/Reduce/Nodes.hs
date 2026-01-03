@@ -62,8 +62,9 @@ import {-# SOURCE #-} Reduce.Root (reduce, reducePureVN, reduceToNonMut)
 import Reduce.UnifyOp (mergeTCs, patMatchLabel, prepConj, unifyTCs)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..), textToTextIndex)
 import Text.Printf (printf)
+import Util.Format (msprintf, packFmtA)
 import Value
-import Value.Util.ValRep (treeToRepString)
+import Value.Export.Debug (treeToRepString)
 
 reduceStruct :: RM ()
 reduceStruct = traceSpanTM "reduceStruct" $ do
@@ -158,7 +159,7 @@ validateStructPerm = traceSpanTM "validateStructPerm" $ whenStruct $ \s -> do
   case r of
     Just err -> do
       rep <- treeToRepString err
-      debugInstantTM "validateStructPerm" (printf "permission error: %s" rep)
+      debugInstantTM "validateStructPerm" (msprintf "permission error: %s" [packFmtA rep])
       modifyTMVN (VNStruct $ s{stcPermErr = Just err})
     Nothing -> modifyTMVN (VNStruct $ s{stcPermErr = Nothing})
 
@@ -328,7 +329,9 @@ handleSObjChange = do
           let dsf = stcDynFields struct IntMap.! i
               allCnstrs = IntMap.elems $ stcCnstrs oldLRmd
           rE <- dynFieldToStatic (stcFields oldLRmd) dsf
-          debugInstantTM "handleSObjChange" (printf "dsf: %s, rE: %s, dsf: %s" (show dsf) (show rE) (show dsf))
+          debugInstantTM
+            "handleSObjChange"
+            (msprintf "dsf: %s, rE: %s, dsf: %s" [packFmtA $ show dsf, packFmtA $ show rE, packFmtA $ show dsf])
           case rE of
             Left err -> modifyTMVN (valNode err) >> return []
             -- If the dynamic field label is incomplete, no change is made. But we still need to return the removed
@@ -350,7 +353,10 @@ handleSObjChange = do
                 newS = updateStructWithFields addAffFields oldLRmd
               debugInstantTM
                 "handleSObjChange"
-                (printf "-: %s, +: %s, all: %s" (show remAffLabels) (show addAffLabels) (show affectedLabels))
+                ( msprintf
+                    "-: %s, +: %s, all: %s"
+                    [packFmtA remAffLabels, packFmtA addAffLabels, packFmtA affectedLabels]
+                )
 
               propUpTM >> modifyTMVN (VNStruct newS) >> descendTMSegMust seg
               return $ genAddrs (vcAddr stc) affectedLabels
@@ -378,11 +384,9 @@ handleSObjChange = do
           unless (null affectedLabels) $
             debugInstantTM
               "handleSObjChange"
-              ( printf
+              ( msprintf
                   "-: %s, +: %s, new struct: %s"
-                  (show remAffLabels)
-                  (show addAffLabels)
-                  (show $ mkStructVal newStruct)
+                  [packFmtA $ remAffLabels, packFmtA $ addAffLabels, packFmtA $ mkStructVal newStruct]
               )
           return $ genAddrs (vcAddr stc) affectedLabels
     _ -> return []
@@ -405,11 +409,9 @@ dynFieldToStatic fields df
 
       debugInstantTM
         "dynFieldToStatic"
-        ( printf
+        ( msprintf
             "converted dynamic field to static field, name: %s, old field: %s, new field: %s"
-            name
-            (show res)
-            (show newSF)
+            [packFmtA name, packFmtA (show res), packFmtA (show newSF)]
         )
       return $ Right (Just (nidx, newSF))
   | Just _ <- rtrBottom label = return $ Left label
@@ -1041,7 +1043,7 @@ reduceCompreh cph = traceSpanTM "reduceCompreh" $ do
             let mutT = mkMutableVal $ mkUnifyOp vs
             inTempTM "reduceCompreh" mutT $ reduce >> getTMVal
 
-  debugInstantTM "reduceCompreh" (printf "comprehension result: %s" (show res))
+  debugInstantTM "reduceCompreh" (msprintf "comprehension result: %s" [packFmtA res])
   -- The result could be a struct, list or noval. But we should get rid of the mutable if there is any.
   modifyTMVN (valNode res)
   reducePureVN
@@ -1284,7 +1286,7 @@ attachBindings rawBindings = do
                 cleanBindings
                 (Map.map (\x -> Binding x True) bindings)
           bStr <- tshowBindings newBindings
-          debugInstantTM "attachBindings" (printf "imm struct's new bindings: %s" bStr)
+          debugInstantTM "attachBindings" (msprintf "imm struct's new bindings: %s" [packFmtA bStr])
           modifyTMVN $ VNStruct $ struct{stcBindings = newBindings}
     -- The template struct can have embedded values.
     _
@@ -1300,7 +1302,7 @@ attachBindings rawBindings = do
                 cleanBindings
                 (Map.map (\x -> Binding x True) bindings)
           bStr <- tshowBindings newBindings
-          debugInstantTM "attachBindings" (printf "new bindings: %s" bStr)
+          debugInstantTM "attachBindings" (msprintf "new bindings: %s" [packFmtA bStr])
           inSubTM f $ modifyTMVN $ VNStruct $ tmplStruct{stcBindings = newBindings}
     _ -> throwFatal "attachBindings can only be used with a struct template"
 

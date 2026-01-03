@@ -6,6 +6,8 @@ module Value.Atom where
 
 import qualified AST
 import Control.DeepSeq (NFData (..))
+import Data.Aeson (ToJSON (..))
+import qualified Data.Aeson
 import qualified Data.Text as T
 import GHC.Generics (Generic)
 
@@ -34,6 +36,13 @@ instance Eq Atom where
   (==) (Bool b1) (Bool b2) = b1 == b2
   (==) Null Null = True
   (==) _ _ = False
+
+instance ToJSON Atom where
+  toJSON (String s) = toJSON s
+  toJSON (Int i) = toJSON i
+  toJSON (Float f) = toJSON f
+  toJSON (Bool b) = toJSON b
+  toJSON Null = Data.Aeson.Null
 
 aToLiteral :: Atom -> AST.Literal
 aToLiteral a = pure $ case a of

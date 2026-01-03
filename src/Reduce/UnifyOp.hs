@@ -38,7 +38,7 @@ import Reduce.RefSys (IdentType (..), searchTCIdent)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad)
 import Text.Printf (printf)
 import Value
-import Value.Util.ValRep (treeToRepString)
+import Value.Export.Debug (treeToRepString)
 
 -- | UTree is a tree with a direction.
 data UTree = UTree

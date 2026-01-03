@@ -35,9 +35,9 @@ import GHC.Stack.Types (HasCallStack)
 import PropGraph
 import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndexer, ToJSONWTIndexer (ttoJSON), emptyTextIndexer)
 import Text.Printf (printf)
-import Util (HasTrace (..), Trace, debugInstant, emptyTrace, getTraceID, traceSpanExec, traceSpanStart)
+import Util.Trace (HasTrace (..), Trace, debugInstant, emptyTrace, getTraceID, traceSpanExec, traceSpanStart)
 import Value
-import Value.Util.ValRep
+import Value.Export.Debug
 
 data RecalcRCResult
   = -- | During RC recalculation, RsDirty indicates that the value needs to be put into the stack.
@@ -668,8 +668,10 @@ traceAction name addr argsM jsonfy ignoreFocus f = whenTraceEnabled name f do
 optVal :: Bool -> Value -> Value
 optVal extraInfo v = if extraInfo then v else object []
 
-debugInstantTM :: String -> String -> RM ()
-debugInstantTM name args = withAddrAndFocus $ \addr _ -> debugInst name args addr
+debugInstantTM :: String -> RM T.Text -> RM ()
+debugInstantTM name margs = withAddrAndFocus $ \addr _ -> do
+  args <- margs
+  debugInst name (T.unpack args) addr
 
 debugInst :: String -> String -> ValAddr -> RM ()
 debugInst name args addr = whenTraceEnabled name (return ()) $ do

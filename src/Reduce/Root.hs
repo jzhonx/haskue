@@ -47,6 +47,7 @@ import Reduce.RefSys (
  )
 import qualified Reduce.RegOps as RegOps
 import Text.Printf (printf)
+import Util.Format (msprintf)
 import Value
 
 -- | Reduce the tree to the lowest form.
@@ -107,7 +108,7 @@ reduceMutable (SOp mop _) = case mop of
           case cd of
             NoCycleDetected -> handleRefRes rM
             RCDetected -> do
-              debugInstantTM "reduceMutable" (printf "detected ref cycle")
+              debugInstantTM "reduceMutable" (msprintf "detected ref cycle" [])
               -- If we are not in the reducing reference cycles, this contains two cases:
               -- 1. No oldDesp
               -- 2. OldDesp has been added but in the unfinished expression evaluation, we find a new reference cycle.
@@ -159,7 +160,6 @@ handleRefRes (Just result) = do
       when result.isSCyclic $ modifyTMVal $ \t -> t{isSCyclic = True}
     _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show vc)
 
-{-# INLINE handleMutRes #-}
 handleMutRes :: Maybe Val -> Bool -> RM ()
 handleMutRes Nothing _ = return ()
 handleMutRes (Just result) furtherReduce = do

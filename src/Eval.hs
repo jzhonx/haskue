@@ -23,8 +23,10 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (MonadState (get), RWST, runRWST)
 import Control.Monad.Reader (MonadReader (..))
 import Cursor
+import Data.Aeson (Value, encode)
 import Data.ByteString.Builder (
   Builder,
+  lazyByteString,
   string7,
  )
 import Data.List.Split (splitOn)
@@ -33,7 +35,6 @@ import Env (
   Config (..),
  )
 import EvalExpr (evalExpr, evalSourceFile)
-import Exception (throwErrSt)
 import Feature (rootFeature)
 import Parser (parseExpr, parseSourceFile)
 import Reduce (postValidation, reduce)
@@ -42,10 +43,12 @@ import StringIndex (TextIndexer)
 import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 import Value
-import Value.Util.ValRep (treeToFullRepString)
+import Value.Export.Debug (treeToFullRepString)
+import Value.Export.JSON (buildJSON)
 
 data EvalConfig = EvalConfig
-  { ecDebugMode :: Bool
+  { outputFormat :: String
+  , ecDebugMode :: Bool
   , ecTraceExec :: Bool
   , ecTracePrintTree :: Bool
   , ecTraceExtraInfo :: Bool
@@ -58,7 +61,8 @@ data EvalConfig = EvalConfig
 emptyEvalConfig :: EvalConfig
 emptyEvalConfig =
   EvalConfig
-    { ecDebugMode = False
+    { outputFormat = ""
+    , ecDebugMode = False
     , ecTraceExec = False
     , ecTracePrintTree = False
     , ecTraceExtraInfo = False
@@ -69,41 +73,62 @@ emptyEvalConfig =
     }
 
 runIO :: String -> EvalConfig -> ExceptT String IO Builder
-runIO eStr conf = do
-  r <- runStr eStr conf
-  case r of
-    Left err -> return $ string7 err
-    Right
-      ( anVal ->
-          AST.ExprUnaryExpr
-            ( anVal ->
-                AST.UnaryExprPrimaryExpr
-                  ( anVal ->
-                      AST.PrimExprOperand
-                        ( anVal ->
-                            AST.OpLiteral
-                              ( anVal ->
-                                  AST.LitStructLit
-                                    (anVal -> AST.StructLit decls)
-                                )
-                          )
-                    )
-              )
-        ) ->
-        return (declsToBuilder decls)
-    _ -> throwErrSt "Expected a struct literal"
+runIO eStr conf
+  | conf.outputFormat == "json" = do
+      r <- evalStrToJSON eStr conf
+      case r of
+        Left err -> return $ string7 err
+        Right val -> do
+          let bs = encode val
+          return $ lazyByteString bs
+  | otherwise = do
+      r <- evalStrToAST eStr conf
+      case r of
+        Left err -> return $ string7 err
+        -- For the declaration result, we don't want to print the curly braces.
+        Right
+          ( anVal ->
+              AST.ExprUnaryExpr
+                ( anVal ->
+                    AST.UnaryExprPrimaryExpr
+                      ( anVal ->
+                          AST.PrimExprOperand
+                            ( anVal ->
+                                AST.OpLiteral
+                                  ( anVal ->
+                                      AST.LitStructLit
+                                        (anVal -> AST.StructLit decls)
+                                    )
+                              )
+                        )
+                  )
+            ) ->
+            return (declsToBuilder decls)
+        Right e -> return $ exprToBuilder False e
 
 runTreeIO :: String -> ExceptT String IO Val
-runTreeIO s = fst <$> runTreeStr s emptyEvalConfig
+runTreeIO s = fst <$> evalStrToVal s emptyEvalConfig
 
-runStr :: String -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
-runStr s conf = do
-  (t, cs) <- runTreeStr s conf
+evalStrToAST :: String -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
+evalStrToAST s conf = do
+  (t, cs) <- evalStrToVal s conf
   case valNode t of
     -- print the error message to the console.
     VNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ ->
-      let e = runExcept $ buildASTExpr t cs
+      let e = runExcept $ buildExpr t cs
+       in case e of
+            Left err -> return $ Left err
+            Right (expr, _) -> return $ Right expr
+
+evalStrToJSON :: String -> EvalConfig -> ExceptT String IO (Either String Value)
+evalStrToJSON s conf = do
+  (t, cs) <- evalStrToVal s conf
+  case valNode t of
+    -- print the error message to the console.
+    VNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+    _ ->
+      let e = runExcept $ buildJSON t cs
        in case e of
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
@@ -111,10 +136,10 @@ runStr s conf = do
 strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 strToCUEVal s conf = do
   e <- liftEither $ parseExpr s
-  mapErrToString $ evalToTree (evalExpr e) conf
+  mapErrToString $ evalVal (evalExpr e) conf
 
-runTreeStr :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
-runTreeStr s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
+evalStrToVal :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+evalStrToVal s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
 mapErrToString =
@@ -127,13 +152,13 @@ mapErrToString =
     )
 
 evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
-evalFile sf conf = mapErrToString $ evalToTree (evalSourceFile sf) conf
+evalFile sf conf = mapErrToString $ evalVal (evalSourceFile sf) conf
 
-evalToTree ::
+evalVal ::
   RWST ReduceConfig () RTCState (ExceptT Error IO) Val ->
   EvalConfig ->
   ExceptT Error IO (Val, TextIndexer)
-evalToTree f conf =
+evalVal f conf =
   do
     let config =
           Config

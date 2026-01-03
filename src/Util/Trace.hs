@@ -3,16 +3,13 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Util where
+module Util.Trace where
 
 import Control.DeepSeq (NFData)
-import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.State (MonadState, gets, modify')
 import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import Data.Aeson.Text (encodeToLazyText)
-import Data.Maybe (fromJust, isNothing)
-import Data.Text (pack)
 import qualified Data.Text as T
 import Data.Text.Lazy (toStrict)
 import Data.Time.Calendar (fromGregorian)
@@ -101,19 +98,6 @@ instance ToJSON ChromeInstantTrace where
       , "args" .= ctiArgs c
       ]
 
--- traceSpan ::
---   (TraceM s m) =>
---   Bool ->
---   T.Text ->
---   Value ->
---   m Value ->
---   (a -> m Value) ->
---   m a ->
---   m a
--- traceSpan flags name args bTraced g action = do
---   _ <- traceSpanStart flags name addr args bTraced
---   traceSpanExec flags name addr g action
-
 traceSpanStart :: (TraceM s m) => T.Text -> Value -> m ()
 traceSpanStart name args = do
   -- let msg = pack $ printf "%s, at:%s" name addr
@@ -175,11 +159,6 @@ newTrace = do
   let ntr = Trace{traceTime = currentTime, traceID = traceID tr + 1}
   modify' $ \s -> setTrace s ntr
   return ntr
-
--- lastTraceID :: (MonadState s m, HasTrace s) => m Int
--- lastTraceID = do
---   tr <- gets getTrace
---   return $ traceID tr
 
 emptyTrace :: Trace
 emptyTrace =

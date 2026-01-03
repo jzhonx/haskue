@@ -51,6 +51,7 @@ import Reduce.RMonad (
 import {-# SOURCE #-} Reduce.Root (reduce)
 import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
+import Util.Format (msprintf, packFmtA)
 import Value
 
 -- | Start re-calculation.
@@ -103,9 +104,7 @@ drainQ = do
     Just start@(_, gAddr) -> do
       g <- ctxPropGraph <$> getRMContext
       let qSetList = getNodeAddrsInGrp gAddr g
-      gAddrStr <- tshow gAddr
-      qSetListStr <- mapM tshow qSetList
-      debugInstantTM "drainQ" (printf "new popped root gAddr: %s, qSet: %s" gAddrStr (show qSetListStr))
+      debugInstantTM "drainQ" (msprintf "new popped root gAddr: %s, qSet: %s" [packFmtA gAddr, packFmtA qSetList])
       run
         ( RunState
             { startGAddr = gAddr
@@ -331,13 +330,13 @@ recalcGroup sccAddr = do
         foldM
           ( \accStore siAddr -> do
               goTMAbsAddrMust (sufIrredToAddr siAddr)
-              siAddrStr <- tshow siAddr
               recalcRC (RCCalHelper epAddrs [siAddr] [])
               -- We have to save the recalculated value to the store since it will be overwritten when we go to the
               -- next RC node.
               v <- inRemoteTM (sufIrredToAddr siAddr) getTMVal
-              vStr <- tshow v
-              debugInstantTM "recalcCyclic" (printf "recalcCyclic %s done, fetch done, v: %s" (show siAddrStr) vStr)
+              debugInstantTM
+                "recalcCyclic"
+                (msprintf "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
               return (Map.insert siAddr v accStore)
           )
           Map.empty
@@ -365,32 +364,31 @@ recalcRC h@RCCalHelper{stack = node : xs} = do
   goTMAbsAddrMust (sufIrredToAddr node)
   nodeStr <- tshow node
   traceSpanTM (printf "recalcRC %s" nodeStr) $ do
-    r <-
-      recalcNode
-        node
-        ( \dep ->
-            let
-              -- If the dep is a sub-field of any node in the current stack, then it forms a cycle.
-              depOnStack = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.stack
-              depIsDone = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.doneRCAddrs
-             in
-              if
-                -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
-                -- incorrectly raise error.
-                | depOnStack -> RsCyclic
-                -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
-                -- locateRef fetch the latest value.
-                | depIsDone -> RsNormal
-                | otherwise -> RsDirty
-        )
-        `catchError` ( \case
-                        DirtyDep dep -> recalcRC h{stack = dep : h.stack}
-                        e -> throwError e
-                     )
+    recalcNode
+      node
+      ( \dep ->
+          let
+            -- If the dep is a sub-field of any node in the current stack, then it forms a cycle.
+            depOnStack = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.stack
+            depIsDone = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.doneRCAddrs
+           in
+            if
+              -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
+              -- incorrectly raise error.
+              | depOnStack -> RsCyclic
+              -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
+              -- locateRef fetch the latest value.
+              | depIsDone -> RsNormal
+              | otherwise -> RsDirty
+      )
+      `catchError` ( \case
+                      DirtyDep dep -> recalcRC h{stack = dep : h.stack}
+                      e -> throwError e
+                   )
 
     debugInstantTM
       (printf "recalcRC %s" nodeStr)
-      (printf "stack: %s, done: %s, r: %s" (show h.stack) (show h.doneRCAddrs) (show r))
+      (msprintf "stack: %s, done: %s" [packFmtA (show h.stack), packFmtA (show h.doneRCAddrs)])
     recalcRC
       h{stack = xs, doneRCAddrs = node : h.doneRCAddrs}
 
@@ -411,7 +409,7 @@ recalcNode nodeSIAddr fetch = do
       anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
     debugInstantTM
       "recalcNode"
-      (printf "nodes: %s, anyArgChanged: %s" (show nodes) (show anyArgChanged))
+      (msprintf "nodes: %s, anyArgChanged: %s" [packFmtA (show nodes), packFmtA (show anyArgChanged)])
     t <- getTMVal
     case t of
       -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we

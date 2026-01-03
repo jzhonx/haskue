@@ -90,7 +90,7 @@ treeTests =
 -- --     BL.putStr (encode rep)
 
 -- --     putStrLn "-----"
--- --     let astE = buildASTExprDebug t
+-- --     let astE = buildExprDebug t
 -- --     case runExcept astE of
 -- --       Left err -> assertFailure err
 -- --       Right expr -> putStrLn $ exprToOneLinerStr expr
@@ -126,7 +126,7 @@ treeTests =
 -- --     BL.putStr (encode rep)
 
 -- --     putStrLn "-----"
--- --     let astE = buildASTExprDebug x
+-- --     let astE = buildExprDebug x
 -- --     case runExcept astE of
 -- --       Left err -> assertFailure err
 -- --       Right expr -> putStrLn $ exprToOneLinerStr expr

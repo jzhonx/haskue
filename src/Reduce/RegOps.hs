@@ -64,12 +64,7 @@ resolveUnaryOp op tM = do
 
 resolveRegBinOp ::
   AST.BinaryOp -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
-resolveRegBinOp op t1M t2M opTC = do
-  -- debugInstantOpRM
-  --   "resolveRegBinOp"
-  --   (printf "reduced args, op: %s, L: %s with R: %s" (show $ AST.anVal op) (show t1M) (show t2M))
-  --   (vcAddr opTC)
-  resolveRegBinDir op (L, t1M) (R, t2M)
+resolveRegBinOp op t1M t2M _ = resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
   AST.BinaryOp ->

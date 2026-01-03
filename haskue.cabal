@@ -34,7 +34,8 @@ library
         Reduce.Root,
         Reduce.UnifyOp,
         StringIndex,
-        Util,
+        Util.Format,
+        Util.Trace,
         Value,
         Value.Atom,
         Value.Bottom,
@@ -51,8 +52,9 @@ library
         Value.Struct,
         Value.Op,
         Value.UnifyOp,
-        Value.Util.BuildASTExpr,
-        Value.Util.ValRep,
+        Value.Export.AST,
+        Value.Export.Debug,
+        Value.Export.JSON,
         Value.Val,
 
     other-modules:
@@ -93,6 +95,7 @@ library
       unordered-containers,
       deepseq,
       hashable,
+      formatting,
 
     hs-source-dirs:   src
     default-language: Haskell2010

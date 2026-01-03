@@ -212,7 +212,7 @@ propUpVCMaybe (VCur subT ((seg, parT) : cs)) = do
 
 {- | Descend into the tree with the given segment.
 
-It returns the sub tree and the updated parent tree with
+It returns the sub tree and the updated parent tree.
 
 This should only be used by TreeCursor.
 -}
@@ -233,10 +233,8 @@ subVal seg parentT = do
       | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
     (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
     (PatternLabelType, IsStruct struct) ->
-      let
-        (i, j) = getPatternIndexesFromFeature f
-       in
-        (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
+      let (i, j) = getPatternIndexesFromFeature f
+       in (if j == 0 then scsPattern else scsValue) <$> stcCnstrs struct IntMap.!? i
     (DynFieldLabelType, IsStruct struct) ->
       let (i, j) = getDynFieldIndexesFromFeature f
        in (if j == 0 then dsfLabel else dsfValue) <$> stcDynFields struct IntMap.!? i

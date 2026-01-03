@@ -10,7 +10,13 @@ import System.IO (readFile, stdout)
 options :: Parser EvalConfig
 options =
   EvalConfig
-    <$> switch
+    <$> option
+      str
+      ( long "output"
+          <> help "Output format: json, cue"
+          <> value "cue"
+      )
+    <*> switch
       ( long "debug"
           <> short 'd'
           <> help "Enable debug mode"

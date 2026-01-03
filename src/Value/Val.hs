@@ -37,13 +37,13 @@ import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
 import Value.Disj
+import {-# SOURCE #-} Value.Export.AST (buildExprDebug)
 import Value.Fix
 import Value.List
 import Value.Op
 import Value.Reference
 import Value.Struct
 import Value.UnifyOp (UnifyOp (..))
-import {-# SOURCE #-} Value.Util.BuildASTExpr (buildASTExprDebug)
 
 -- | ValNode represents a tree structure that contains values.
 data ValNode
@@ -74,8 +74,8 @@ data Val = Val
   -- ^ wrappedBy is used to indicate which tree node wraps this tree node.
   -- This is used by preserving wrapping information when going into a wrapped node.
   -- By default, it is noval.
-  , treeExpr :: Maybe AST.Expression
-  -- ^ treeExpr is the parsed expression.
+  , origExpr :: Maybe AST.Expression
+  -- ^ origExpr is the parsed expression.
   , op :: Maybe SOp
   , isRecurClosed :: !Bool
   -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
@@ -165,7 +165,7 @@ setVN :: ValNode -> Val -> Val
 setVN n v = v{valNode = n}
 
 setExpr :: Maybe AST.Expression -> Val -> Val
-setExpr eM v = v{treeExpr = eM}
+setExpr eM v = v{origExpr = eM}
 
 setTOp :: SOp -> Val -> Val
 setTOp f t = t{op = Just f}
@@ -176,33 +176,12 @@ supersedeVN tn t = t{valNode = tn, wrappedBy = valNode t}
 unwrapVN :: (Val -> ValNode) -> Val -> Val
 unwrapVN f t = t{valNode = f t, wrappedBy = VNNoVal}
 
-{- | Retrieve the deterministic value from the tree.
-
-A deterministic value is a value that can not be interpreted as multiple kinds of values.
-
-For example, a mutalbe that has cached value is not deterministic, because it contains two kinds of values: the cached
-value and the mutable value itself.
--}
-rtrDeterministic :: Val -> Maybe Val
-rtrDeterministic t = case valNode t of
-  VNAtom _ -> Just t
-  VNBottom _ -> Just t
-  VNTop -> Just t
-  VNBounds _ -> Just t
-  VNList _ -> Just t
-  VNDisj _ -> Just t
-  VNFix{} -> Just t
-  VNNoVal -> Just t
-  VNStruct _ -> Just t
-  VNAtomCnstr c -> Just $ mkAtomVal c.value
-
 {- | Retrieve the value of non-union type.
 
 Union type represents an incomplete value, such as a disjunction or bounds.
 -}
 rtrNonUnion :: Val -> Maybe Val
-rtrNonUnion t = do
-  v <- rtrDeterministic t
+rtrNonUnion v = do
   case valNode v of
     VNAtom _ -> Just v
     VNBottom _ -> Just v
@@ -261,22 +240,18 @@ rtrBottom t = do
     _ -> Nothing
 
 rtrBounds :: Val -> Maybe Bounds
-rtrBounds t = do
-  v <- rtrDeterministic t
-  case v of
-    IsBounds b -> Just b
-    _ -> Nothing
+rtrBounds v = case v of
+  IsBounds b -> Just b
+  _ -> Nothing
 
 {- | Get the disjunction from the tree.
 
 It stops at the first disjunction found. It does not go deeper to the default value of the disjunction.
 -}
 rtrDisj :: Val -> Maybe Disj
-rtrDisj t = do
-  v <- rtrDeterministic t
-  case v of
-    IsDisj d -> Just d
-    _ -> Nothing
+rtrDisj v = case v of
+  IsDisj d -> Just d
+  _ -> Nothing
 
 rtrList :: Val -> Maybe List
 rtrList t = do
@@ -314,7 +289,7 @@ emptyVal =
     { valNode = VNTop
     , wrappedBy = VNNoVal
     , op = Nothing
-    , treeExpr = Nothing
+    , origExpr = Nothing
     , isRecurClosed = False
     , isRootOfSubVal = False
     , isSCyclic = False
@@ -422,7 +397,7 @@ builtinMutableTable =
 oneLinerStringOfVal :: (TextIndexerMonad s m) => Val -> m T.Text
 oneLinerStringOfVal t = do
   tier <- gets getTextIndexer
-  let m = buildASTExprDebug t tier
+  let m = buildExprDebug t tier
       e = runExcept m
   case e of
     Left err -> return $ T.pack err

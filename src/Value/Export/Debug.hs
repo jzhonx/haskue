@@ -4,7 +4,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Value.Util.ValRep where
+module Value.Export.Debug where
 
 import Control.Monad (foldM)
 import Data.Aeson (ToJSON, object, toJSON, (.=))
@@ -171,7 +171,7 @@ buildCommonInfo t = do
         VNNoVal -> ""
         _ -> "wrappedby:" ++ showValSymbol (mkNewVal t.wrappedBy)
     , if isRecurClosed t then "%#" else ""
-    , if isJust (treeExpr t) then "" else "N"
+    , if isJust (origExpr t) then "" else "N"
     , if isRootOfSubVal t then "R" else ""
     , if isSCyclic t then "SC" else ""
     , case t.embType of

@@ -23,10 +23,14 @@ class (Show a) => ShowWTIndexer a where
   tshow :: (MonadState s m, HasTextIndexer s) => a -> m T.Text
   tshow = return . T.pack . show
 
-instance (ShowWTIndexer a) => ShowWTIndexer [a] where
+instance {-# OVERLAPPABLE #-} (ShowWTIndexer a) => ShowWTIndexer [a] where
   tshow xs = do
     ts <- mapM tshow xs
     return $ if null ts then "[]" else T.pack $ "[" ++ T.unpack (T.intercalate "," ts) ++ "]"
+
+-- Specific instance for String to avoid matching [Char] with the list instance
+instance ShowWTIndexer String where
+  tshow = return . T.pack
 
 instance (ShowWTIndexer k, ShowWTIndexer v) => ShowWTIndexer (Map.Map k v) where
   tshow xs = do
@@ -40,6 +44,8 @@ instance (ShowWTIndexer k, ShowWTIndexer v) => ShowWTIndexer (Map.Map k v) where
 
 instance ShowWTIndexer Int
 instance ShowWTIndexer Bool
+instance ShowWTIndexer Char
+instance ShowWTIndexer T.Text
 instance (ShowWTIndexer a) => ShowWTIndexer (Maybe a)
 instance (ShowWTIndexer a, ShowWTIndexer b) => ShowWTIndexer (a, b)
 
