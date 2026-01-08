@@ -125,8 +125,6 @@ Test-Suite haskue-unit-test
   main-is: Main.hs
   other-modules:
     SpecTest,
-    PropGraphTest,
-    TreeTest,
   build-depends:
         base,
         tasty >= 0.7,
