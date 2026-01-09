@@ -2,16 +2,14 @@
 
 module SpecTest where
 
-import AST (declsBld)
 import Control.Monad (when)
-import Control.Monad.Except (MonadError, runExcept, runExceptT, throwError)
+import Control.Monad.Except (MonadError, runExceptT)
 import Data.ByteString.Builder (toLazyByteString)
-import qualified Data.ByteString.Lazy.Char8 as BS (ByteString, lines, pack)
+import qualified Data.ByteString.Char8 as BS (ByteString, lines, pack, toStrict)
 import Data.List (sort)
 import Eval (ecMaxTreeDepth, emptyEvalConfig, runIO)
 import Exception (throwErrSt)
 import System.Directory (listDirectory)
-import System.IO (readFile)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Printf (printf)
@@ -48,12 +46,12 @@ createTest path name = testCase name $ do
   file <- readFile path
   x <- runExceptT $ do
     (input, exp) <- parseTxtar file
-    r <- runIO input emptyEvalConfig{ecMaxTreeDepth = 20}
+    r <- runIO (BS.pack input) emptyEvalConfig{ecMaxTreeDepth = 20}
     return (exp, r)
   case x of
     Left err -> assertFailure (show err)
     Right (_exp, b) -> do
-      let act = toLazyByteString b
+      let act = BS.toStrict $ toLazyByteString b
           exp = BS.pack _exp
       cmpStrings exp act
 

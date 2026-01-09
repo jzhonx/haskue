@@ -24,6 +24,7 @@ import Control.Monad.RWS.Strict (MonadState (get), RWST, runRWST)
 import Control.Monad.Reader (MonadReader (..))
 import Cursor
 import Data.Aeson (Value, encode)
+import qualified Data.ByteString as B
 import Data.ByteString.Builder (
   Builder,
   lazyByteString,
@@ -72,7 +73,7 @@ emptyEvalConfig =
     , ecFilePath = ""
     }
 
-runIO :: String -> EvalConfig -> ExceptT String IO Builder
+runIO :: B.ByteString -> EvalConfig -> ExceptT String IO Builder
 runIO eStr conf
   | conf.outputFormat == "json" = do
       r <- evalStrToJSON eStr conf
@@ -106,10 +107,10 @@ runIO eStr conf
             return (declsToBuilder decls)
         Right e -> return $ exprToBuilder False e
 
-runTreeIO :: String -> ExceptT String IO Val
+runTreeIO :: B.ByteString -> ExceptT String IO Val
 runTreeIO s = fst <$> evalStrToVal s emptyEvalConfig
 
-evalStrToAST :: String -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
+evalStrToAST :: B.ByteString -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
 evalStrToAST s conf = do
   (t, cs) <- evalStrToVal s conf
   case valNode t of
@@ -121,7 +122,7 @@ evalStrToAST s conf = do
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-evalStrToJSON :: String -> EvalConfig -> ExceptT String IO (Either String Value)
+evalStrToJSON :: B.ByteString -> EvalConfig -> ExceptT String IO (Either String Value)
 evalStrToJSON s conf = do
   (t, cs) <- evalStrToVal s conf
   case valNode t of
@@ -133,12 +134,12 @@ evalStrToJSON s conf = do
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-strToCUEVal :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+strToCUEVal :: B.ByteString -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 strToCUEVal s conf = do
   e <- liftEither $ parseExpr s
   mapErrToString $ evalVal (evalExpr e) conf
 
-evalStrToVal :: String -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+evalStrToVal :: B.ByteString -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
 evalStrToVal s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a

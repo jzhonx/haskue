@@ -7,6 +7,7 @@ module Parser where
 
 import AST
 import Control.Monad (void, when)
+import qualified Data.ByteString as B
 import Data.Maybe (fromJust, isNothing)
 import qualified Data.Text as T
 import Text.Parsec (
@@ -42,7 +43,7 @@ import Text.Parsec (
 import Text.Printf (printf)
 import Prelude hiding (GT, LT, null)
 
-type Parser a = Parsec String Int a
+type Parser a = Parsec B.ByteString Int a
 
 data TokenType
   = TokenNone
@@ -85,12 +86,12 @@ type WithTokenPos a = WithTokenInfo (ASTN a)
 emptyLexeme :: WithTokenInfo ()
 emptyLexeme = WithTokenInfo () TokenNone False
 
-parseExpr :: String -> Either String Expression
+parseExpr :: B.ByteString -> Either String Expression
 parseExpr s = case runParser (entry expr) 0 "" s of
   Left err -> Left $ show err
   Right res -> return $ wtVal res
 
-parseSourceFile :: String -> String -> Either String SourceFile
+parseSourceFile :: String -> B.ByteString -> Either String SourceFile
 parseSourceFile filename s = case runParser (entry sourceFile) 0 filename s of
   Left err -> Left $ show err
   Right res -> return $ wtVal res
@@ -657,7 +658,9 @@ skip _ (ASTN{anVal = (x, ltok), anPos = posM}) = do
                    ]
   when commaFound $ do
     s <- getInput
-    setInput $ "," ++ s
+    -- Add a comma to the input stream.
+    -- The comma byte is 0x2C.
+    setInput $ B.cons 0x2C s
   return $ annotatePos (fromJust posM) (WithTokenInfo x ltok hasnl)
 
 -- | Match the grammar {p ","} but loose restriction on the last comma if the enclosing element is matched.

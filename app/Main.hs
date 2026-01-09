@@ -1,11 +1,11 @@
 module Main where
 
-import AST (declsBld)
-import Control.Monad.Except (MonadError, runExceptT, throwError)
+import Control.Monad.Except (runExceptT)
+import qualified Data.ByteString as B
 import Data.ByteString.Builder (hPutBuilder)
 import Eval (EvalConfig (..), runIO)
 import Options.Applicative
-import System.IO (readFile, stdout)
+import System.IO (stdout)
 
 options :: Parser EvalConfig
 options =
@@ -58,7 +58,7 @@ options =
 main :: IO ()
 main = do
   opts <- execParser (info (options <**> helper) fullDesc)
-  file <- readFile (ecFilePath opts)
+  file <- B.readFile (ecFilePath opts)
   x <- runExceptT $ runIO file opts
   case x of
     Left err -> putStrLn $ "Internal bug: " ++ err
