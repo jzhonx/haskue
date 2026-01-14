@@ -23,15 +23,18 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (MonadState (get), RWST, runRWST)
 import Control.Monad.Reader (MonadReader (..))
 import Cursor
-import Data.Aeson (Value, encode)
+import Data.Aeson (Value)
+import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as B
 import Data.ByteString.Builder (
   Builder,
+  byteString,
   lazyByteString,
   string7,
  )
 import Data.List.Split (splitOn)
 import qualified Data.Set as Set
+import qualified Data.Yaml as Yaml
 import Env (
   Config (..),
  )
@@ -80,8 +83,15 @@ runIO eStr conf
       case r of
         Left err -> return $ string7 err
         Right val -> do
-          let bs = encode val
+          let bs = encodePretty val
           return $ lazyByteString bs
+  | conf.outputFormat == "yaml" = do
+      r <- evalStrToJSON eStr conf
+      case r of
+        Left err -> return $ string7 err
+        Right val -> do
+          let bs = Yaml.encode val
+          return $ byteString bs
   | otherwise = do
       r <- evalStrToAST eStr conf
       case r of

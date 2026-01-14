@@ -13,7 +13,7 @@ options =
     <$> option
       str
       ( long "output"
-          <> help "Output format: json, cue"
+          <> help "Output format: json, yaml, cue"
           <> value "cue"
       )
     <*> switch

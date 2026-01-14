@@ -96,6 +96,8 @@ library
       deepseq,
       hashable,
       formatting,
+      yaml,
+      aeson-pretty,
 
     hs-source-dirs:   src
     default-language: Haskell2010

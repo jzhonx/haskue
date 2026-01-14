@@ -3,7 +3,7 @@ module Value.Export.JSON where
 import Control.Monad (foldM)
 import Control.Monad.Except (Except)
 import Control.Monad.RWS.Strict (RWST, runRWST)
-import Data.Aeson (ToJSON (..), Value, object)
+import Data.Aeson (ToJSON (..), Value)
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import Exception (throwErrSt)
@@ -33,7 +33,10 @@ buildJSONExt v = case valNode v of
     let elems = V.toList l.final
     jsonElems <- mapM buildJSONExt elems
     return $ toJSON jsonElems
-  _ -> throwErrSt "unsupported value for JSON export"
+  VNDisj dj | Just df <- rtrDisjDefVal dj -> buildJSONExt df
+  _ -> do
+    vType <- Value.Val.showValueType v
+    throwErrSt $ printf "unsupported value for JSON export %s" vType
 
 buildJSONStruct :: Struct -> JM Value
 -- Handle embedded values first.
