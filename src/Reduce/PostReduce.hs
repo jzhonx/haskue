@@ -10,13 +10,13 @@ module Reduce.PostReduce where
 import Control.Monad (unless)
 import Cursor
 import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
+import DepGraph
 import Feature
-import PropGraph
-import Reduce.Nodes (normalizeDisj)
-import Reduce.RMonad (
+import Reduce.Core (reduce)
+import Reduce.Disjunction (normalizeDisj)
+import Reduce.Monad (
   RM,
-  ctxPropGraph,
-  debugInstantRM,
+  depGraph,
   descendTMSeg,
   getRMContext,
   getTMCursor,
@@ -29,11 +29,13 @@ import Reduce.RMonad (
   putTMCursor,
   putTMVal,
   throwFatal,
-  traceSpanArgsTM,
-  traceSpanTM,
   withVN,
  )
-import Reduce.Root (reduce)
+import Reduce.TraceSpan (
+  debugInstantRM,
+  traceSpanArgsTM,
+  traceSpanTM,
+ )
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Value
@@ -42,7 +44,7 @@ postValidation :: RM ()
 postValidation = traceSpanTM "postValidation" $ do
   ctx <- getRMContext
   -- remove all notifiers.
-  putRMContext $ ctx{ctxPropGraph = emptyPropGraph}
+  putRMContext $ ctx{depGraph = emptyPropGraph}
 
   -- rewrite all functions to their results if the results exist.
   simplifyRM
@@ -132,17 +134,6 @@ validateCnstr c = traceSpanTM "validateCnstr" $ do
     | otherwise -> do
         resStr <- tshow res
         putTMVal $ mkBottomVal $ printf "constraint not satisfied, %s" resStr
-
--- case rtrVal res of
---   Just (IsBottom _) -> putTMVal res
---   -- The result is valid.
---   Just (IsAtom _) -> putTMVal (mkAtomVal c.value)
---   Just (IsEmbedVal (IsAtom _)) -> putTMVal (mkAtomVal c.value)
---   -- Incomplete case.
---   Nothing -> return ()
---   _ -> do
---     resStr <- tshow res
---     putTMVal $ mkBottomVal $ printf "constraint not satisfied, %s" resStr
 
 {- | Traverse the leaves of the tree cursor in the following order
 

@@ -8,15 +8,13 @@ module Util.Trace where
 import Control.DeepSeq (NFData)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.State (MonadState, gets, modify')
-import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
-import Data.Aeson.Text (encodeToLazyText)
+import Data.Aeson (ToJSON, Value, encode, object, toJSON, (.=))
+import qualified Data.ByteString.Lazy as LB
 import qualified Data.Text as T
-import Data.Text.Lazy (toStrict)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), getCurrentTime, secondsToDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import GHC.Generics (Generic)
-import System.IO (hPutStr, stderr)
 import Text.Printf (printf)
 
 class HasTrace a where
@@ -26,8 +24,9 @@ class HasTrace a where
 data Trace = Trace
   { traceID :: Int
   , traceTime :: UTCTime
+  , tPut :: LB.ByteString -> IO ()
   }
-  deriving (Eq, Generic, NFData)
+  deriving (Generic, NFData)
 
 instance Show Trace where
   show t = printf "id=%s" (show $ traceID t)
@@ -100,18 +99,15 @@ instance ToJSON ChromeInstantTrace where
 
 traceSpanStart :: (TraceM s m) => T.Text -> Value -> m ()
 traceSpanStart name args = do
-  -- let msg = pack $ printf "%s, at:%s" name addr
-  -- bTracedInfo <- if extraInfo then fetchFocus else return $ object []
   tr <- newTrace
   let
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
     st =
-      toStrict $
-        encodeToLazyText
-          ( ChromeStartTrace name timeInMicros args
-          )
+      encode
+        ( ChromeStartTrace name timeInMicros args
+        )
 
-  dumpTrace st
+  dumpTrace tr.tPut st
 
 {- | Trace the execution span of an action.
 
@@ -119,35 +115,27 @@ The function `g` is used to retrieve focus and result information after the acti
 -}
 traceSpanExec :: (TraceM s m) => T.Text -> Value -> m ()
 traceSpanExec name args = do
-  -- let msg = pack $ printf "%s, at:%s" name addr
   tr <- newTrace
   let
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  -- (focusInfo, resInfo) <- if extraInfo then g res else return (object [], object [])
-  dumpTrace $
-    toStrict
-      ( encodeToLazyText
-          ( ChromeEndTrace name timeInMicros args
-          )
+  dumpTrace tr.tPut $
+    encode
+      ( ChromeEndTrace name timeInMicros args
       )
 
 debugInstant :: (TraceM s m) => T.Text -> Value -> m ()
 debugInstant name args = do
-  -- start <- lastTraceID
   tr <- gets getTrace
-  let
-    -- msg = pack $ printf "%s, at:%s" name addr
-    timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
-  -- argsInfo = if extraInfo then args else object []
-  dumpTrace $
-    toStrict
-      ( encodeToLazyText
-          ( ChromeInstantTrace name timeInMicros args
-          )
+  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+  dumpTrace tr.tPut $
+    encode
+      ( ChromeInstantTrace name timeInMicros args
       )
 
-dumpTrace :: (MonadIO m) => T.Text -> m ()
-dumpTrace msg = liftIO $ hPutStr stderr $ printf "ChromeTrace%s\n" msg
+dumpTrace :: (MonadIO m) => (LB.ByteString -> IO ()) -> LB.ByteString -> m ()
+dumpTrace f msg = liftIO $ do
+  f msg
+  f "\n"
 
 getTraceID :: (MonadState s m, HasTrace s) => m Int
 getTraceID = gets $ traceID . getTrace
@@ -156,13 +144,14 @@ newTrace :: (TraceM s m) => m Trace
 newTrace = do
   tr <- gets getTrace
   currentTime <- liftIO getCurrentTime
-  let ntr = Trace{traceTime = currentTime, traceID = traceID tr + 1}
+  let ntr = tr{traceTime = currentTime, traceID = traceID tr + 1}
   modify' $ \s -> setTrace s ntr
   return ntr
 
-emptyTrace :: Trace
-emptyTrace =
+emptyTrace :: (LB.ByteString -> IO ()) -> Trace
+emptyTrace f =
   Trace
     { traceID = 0
     , traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}
+    , tPut = f
     }

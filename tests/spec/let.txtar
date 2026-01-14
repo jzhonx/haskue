@@ -1,0 +1,95 @@
+-- let1 --
+let a = 1
+x1: a
+x2: a
+let b = 2
+x3: b
+-- exp_let1 --
+x1: 1
+x2: 1
+x3: 2
+
+-- let2 --
+// test referencing non-existed field in let
+let x = {}
+y: x.b
+-- exp_let2 --
+y: x.b
+
+-- let3 --
+// checks if a chain of let statements is correctly resolved.
+let a = {
+	let ia = ib
+	let ib = 1
+	z: ia
+}
+x: a.z
+-- exp_let3 --
+x: 1
+
+-- let4 --
+// string field "x" is not incompatible with let binding x.
+"x": 1
+let x = 2
+y: x
+-- exp_let4 --
+x: 1
+y: 2
+
+-- let5 --
+x: {
+  let z = 42
+  a: z
+}
+y: {
+  let z = "s"
+  b: z
+}
+out: x & y
+-- exp_let5 --
+x: {
+    a: 42
+}
+y: {
+    b: "s"
+}
+out: {
+    a: 42
+    b: "s"
+}
+
+-- let6 --
+// this tests inner scope can find the outer scope's let
+x: {
+	let z = 1
+	a: {
+		b: z
+	}
+}
+y: {
+	let z = {v: 1}
+	a: {
+		b: z.v
+	}
+}
+-- exp_let6 --
+x: {
+    a: {
+        b: 1
+    }
+}
+y: {
+    a: {
+        b: 1
+    }
+}
+
+-- let7 --
+// checks that referencing an unbound let
+let a = {
+	let ib = 1
+}
+x: a.ib
+-- exp_let7 --
+error: unreferenced let clause let "ib"
+

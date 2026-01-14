@@ -2,40 +2,79 @@
 
 module SpecTest where
 
-import Control.Monad (when)
+import Control.Monad (foldM, when)
 import Control.Monad.Except (MonadError, runExceptT)
-import Data.ByteString.Builder (toLazyByteString)
+import Data.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.ByteString.Char8 as BS (ByteString, lines, pack, toStrict)
 import Data.List (sort)
-import Eval (ecMaxTreeDepth, emptyEvalConfig, runIO)
+import Eval (ecMaxTreeDepth, emptyConfig, evalStr)
 import Exception (throwErrSt)
 import System.Directory (listDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Printf (printf)
 
-parseTxtar :: (MonadError String m) => String -> m (String, String)
+data TestCase = TestCase
+  { name :: String
+  , input :: String
+  , output :: Builder
+  , expectedOutput :: String
+  }
+
+emptyTestCase :: TestCase
+emptyTestCase =
+  TestCase
+    { name = ""
+    , input = ""
+    , output = mempty
+    , expectedOutput = ""
+    }
+
+data TxtarParseState
+  = TPSInitial
+  | TPSFoundCaseHeader
+  | TPSReadingInput
+  | TPSFoundExpHeader
+  | TPSReadingExpectedOutput
+  deriving (Eq)
+
+parseTxtar :: (MonadError String m) => String -> m [TestCase]
 parseTxtar file = do
-  let ((input, exp), state) =
-        foldr
-          ( \line ((input, exp), state) ->
-              if length line >= 6 && take 3 line == "-- " && drop (length line - 3) line == " --"
-                then case state of
-                  0 -> ((input, exp), 1)
-                  1 -> ((input, exp), 2)
-                else case state of
-                  0 -> ((input, line ++ "\n" ++ exp), 0)
-                  1 -> ((line ++ "\n" ++ input, exp), 1)
-                  2 -> ((input, exp), 2)
-          )
-          (("", ""), 0)
-          (lines file)
-  when (state /= 2) $ throwErrSt "No expected output"
-  return (input, exp)
+  ((acc, cases), final) <-
+    foldM
+      ( \((cur, out), state) line ->
+          if length line >= 6 && take 3 line == "-- " && drop (length line - 3) line == " --"
+            then
+              let header = take (length line - 6) (drop 3 line)
+               in case state of
+                    TPSInitial -> return ((cur{name = header}, out), TPSFoundCaseHeader)
+                    TPSFoundCaseHeader -> throwErrSt $ "Unexpected case header: " ++ header
+                    TPSReadingInput -> return ((cur, out), TPSFoundExpHeader)
+                    TPSFoundExpHeader -> throwErrSt $ "Unexpected expected output header: " ++ header
+                    TPSReadingExpectedOutput -> return ((emptyTestCase, cur : out), TPSFoundCaseHeader)
+            else case state of
+              TPSInitial -> throwErrSt $ "Expected case header, got: " ++ line
+              TPSFoundCaseHeader -> return ((cur{input = cur.input ++ line ++ "\n"}, out), TPSReadingInput)
+              TPSReadingInput -> return ((cur{input = cur.input ++ line ++ "\n"}, out), TPSReadingInput)
+              TPSFoundExpHeader ->
+                return ((cur{expectedOutput = cur.expectedOutput ++ line ++ "\n"}, out), TPSReadingExpectedOutput)
+              TPSReadingExpectedOutput ->
+                -- allow empty lines in expected output
+                if line == "\n" || line == ""
+                  then return ((cur, out), TPSReadingExpectedOutput)
+                  else
+                    return ((cur{expectedOutput = cur.expectedOutput ++ line ++ "\n"}, out), TPSReadingExpectedOutput)
+      )
+      ((emptyTestCase, []), TPSInitial)
+      (lines file)
+  when (final /= TPSReadingExpectedOutput) $
+    throwErrSt "Incomplete test case at end of file"
+
+  return $ reverse $ acc : cases
 
 cmpStrings :: BS.ByteString -> BS.ByteString -> IO ()
-cmpStrings exp act = do
-  let _exp = BS.lines exp
+cmpStrings want act = do
+  let _exp = BS.lines want
       _act = BS.lines act
   if length _exp /= length _act
     then assertFailure $ printf "Expected %d lines, got %d. got:\n%s" (length _exp) (length _act) (show _act)
@@ -45,15 +84,23 @@ createTest :: String -> String -> TestTree
 createTest path name = testCase name $ do
   file <- readFile path
   x <- runExceptT $ do
-    (input, exp) <- parseTxtar file
-    r <- runIO (BS.pack input) emptyEvalConfig{ecMaxTreeDepth = 20}
-    return (exp, r)
+    cases <- parseTxtar file
+    mapM
+      ( \c@(TestCase{input = input}) -> do
+          r <- evalStr (BS.pack input) emptyConfig{ecMaxTreeDepth = 20}
+          return (c{output = r})
+      )
+      cases
   case x of
     Left err -> assertFailure (show err)
-    Right (_exp, b) -> do
-      let act = BS.toStrict $ toLazyByteString b
-          exp = BS.pack _exp
-      cmpStrings exp act
+    Right cases -> do
+      mapM_
+        ( \c -> do
+            let act = BS.toStrict $ toLazyByteString c.output
+                expOut = BS.pack c.expectedOutput
+            cmpStrings expOut act
+        )
+        cases
 
 specTests :: IO TestTree
 specTests = do

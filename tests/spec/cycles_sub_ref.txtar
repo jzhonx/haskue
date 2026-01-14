@@ -1,0 +1,73 @@
+-- cycles_sub_ref1 --
+x: {z: a: 1} & x.z
+-- exp_cycles_sub_ref1 --
+x: {
+    z: {
+        a: 1
+    }
+    a: 1
+}
+
+-- cycles_sub_ref2 --
+// This differs from CUE output.
+// x.z is incomplete, making the first disjunct incomplete
+// TODO
+x: x.z & {z: a: 1} | {y: 1}
+-- exp_cycles_sub_ref2 --
+x: x.z & {
+    z: a: 1
+} | {
+    y: 1
+}
+
+-- cycles_sub_ref3 --
+x: x.f & {f: f: {a:1}}
+-- exp_cycles_sub_ref3 --
+x: {
+    f: {
+        f: {
+            a: 1
+        }
+        a: 1
+    }
+    a: 1
+}
+
+-- cycles_sub_ref4 --
+x: x.f & x.g & {
+	f: g: a: 1
+	g: f: b: 2
+}
+-- exp_cycles_sub_ref4 --
+x: {
+    f: {
+        g: {
+            a: 1
+        }
+        b: 2
+    }
+    g: {
+        f: {
+            b: 2
+        }
+        a: 1
+    }
+    b: 2
+    a: 1
+}
+
+-- cycles_sub_ref5 --
+r: {
+	p: x: {a: int}
+	("p"): x: {a: 2}
+} & r.p.x
+-- exp_cycles_sub_ref5 --
+r: {
+    p: {
+        x: {
+            a: 2
+        }
+    }
+    a: 2
+}
+

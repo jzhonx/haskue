@@ -1,0 +1,45 @@
+-- vars1 --
+z: x
+x: 1
+y: z
+-- exp_vars1 --
+z: 1
+x: 1
+y: 1
+
+-- vars2 --
+x: {
+	a: 1
+	b: 2
+	c: (a+b)*(y.e-y.f) + z
+}
+y: {
+	e: 3
+	f: 4
+	g: x.c
+}
+z: 12
+-- exp_vars2 --
+x: {
+    a: 1
+    b: 2
+    c: 9
+}
+y: {
+    e: 3
+    f: 4
+    g: 9
+}
+z: 12
+
+-- vars3 --
+x: {
+	a: x.b
+	b: 2
+}
+-- exp_vars3 --
+x: {
+    a: 2
+    b: 2
+}
+

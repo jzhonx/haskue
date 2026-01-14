@@ -16,16 +16,15 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
+import DepGraph
 import Feature
-import PropGraph
-import Reduce.Nodes (validateStructPerm)
-import Reduce.RMonad (
+import {-# SOURCE #-} Reduce.Core (reduce)
+import Reduce.Monad (
   Error (..),
   RM,
   RecalcRCFetch,
   RecalcRCResult (..),
-  ctxPropGraph,
-  debugInstantTM,
+  depGraph,
   fetch,
   getRMContext,
   getTMAbsAddr,
@@ -44,11 +43,14 @@ import Reduce.RMonad (
   recalcRootQ,
   setIsReducingRC,
   throwFatal,
+ )
+import Reduce.Struct (validateStructPerm)
+import Reduce.TraceSpan (
+  debugInstantTM,
   traceSpanArgsAdaptTM,
   traceSpanArgsTM,
   traceSpanTM,
  )
-import {-# SOURCE #-} Reduce.Root (reduce)
 import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
 import Util.Format (msprintf, packFmtA)
@@ -70,7 +72,7 @@ recalc = do
 
 getRecalcGAddr :: SuffixIrredAddr -> RM (Maybe GrpAddr)
 getRecalcGAddr siAddr = do
-  ng <- ctxPropGraph <$> getRMContext
+  ng <- depGraph <$> getRMContext
   case lookupGrpAddr siAddr ng of
     Just gAddr -> return $ Just gAddr
     _ -> return Nothing
@@ -102,7 +104,7 @@ drainQ = do
   case gAddrM of
     Nothing -> return ()
     Just start@(_, gAddr) -> do
-      g <- ctxPropGraph <$> getRMContext
+      g <- depGraph <$> getRMContext
       let qSetList = getNodeAddrsInGrp gAddr g
       debugInstantTM "drainQ" (msprintf "new popped root gAddr: %s, qSet: %s" [packFmtA gAddr, packFmtA qSetList])
       run
@@ -138,7 +140,7 @@ run state = do
   case state.q of
     Seq.Empty -> return ()
     (cur Seq.:<| rest) -> do
-      g <- ctxPropGraph <$> getRMContext
+      g <- depGraph <$> getRMContext
       noFieldInQ <- hasNoFieldInQ cur state.qSet
       if not noFieldInQ
         -- If there is a field of the current node in queue, we put it back to the end of the queue.
@@ -159,7 +161,7 @@ run state = do
             then run state{q = rest}
             else do
               nextState <- do
-                ng <- ctxPropGraph <$> getRMContext
+                ng <- depGraph <$> getRMContext
                 parentGrpAddrs <- getAncestorGrpAddrs state.startAddr cur
                 let
                   useGrpAddrs = getUseGroups cur ng
@@ -266,7 +268,7 @@ hasNoFieldInQ gaddr qSet = case gaddr of
 
 getCyclicGrpNodeAddrs :: GrpAddr -> RM [SuffixIrredAddr]
 getCyclicGrpNodeAddrs gaddr = do
-  ng <- ctxPropGraph <$> getRMContext
+  ng <- depGraph <$> getRMContext
   let
     compAddrs = getElemAddrInGrp gaddr ng
     epAddrs = removeChildSIAddrs compAddrs
@@ -309,7 +311,7 @@ recalcGroup (IsAcyclicGrpAddr node) = recalcNode node (const RsNormal)
 recalcGroup sccAddr = do
   setIsReducingRC True
 
-  ng <- ctxPropGraph <$> getRMContext
+  ng <- depGraph <$> getRMContext
   -- If any node in the SCC is a child of another node in the SCC, then it should be removed as it is a sub-field
   -- reference cycle, which should be handled specially.
   let
@@ -403,7 +405,7 @@ recalcNode nodeSIAddr fetch = do
   -- First we need to go to the base irreducible address.
   ok <- goTMAbsAddr (sufIrredToAddr nodeSIAddr)
   when ok $ traceSpanArgsTM "recalcNode" (printf "addr: %s" addrStr) $ do
-    g <- ctxPropGraph <$> getRMContext
+    g <- depGraph <$> getRMContext
     let
       nodes = getNodeAddrsByFunc nodeSIAddr g
       anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
@@ -459,7 +461,7 @@ getAncestorGrpAddrs startAddr (IsAcyclicGrpAddr addr) = do
   let rM = getAncGrpFromAddr startAddr addr
   return $ maybeToList rM
 getAncestorGrpAddrs startAddr sccAddr = do
-  ng <- ctxPropGraph <$> getRMContext
+  ng <- depGraph <$> getRMContext
   r <-
     foldM
       ( \acc addr -> do

@@ -1,0 +1,50 @@
+-- embed_close1 --
+x: close({
+	a: 1
+	{
+		b: 2
+	}
+})
+-- exp_embed_close1 --
+x: {
+    a: 1
+    b: 2
+}
+
+-- embed_close2 --
+// The closed embedding will make the x closed.
+x: {
+	a: 1
+	close({
+		b: 2
+	})
+}
+-- exp_embed_close2 --
+x: {
+    a: 1
+    b: 2
+}
+
+-- embed_close3 --
+// This case tests the unification of embedded disjunction that has a closed struct.
+x: 1
+(close({}) | int) // ok, embedded closed struct can be unified with the parent struct.
+-- exp_embed_close3 --
+x: 1
+
+-- embed_close4 --
+// This case tests the unification of embedded closed struct ignore the close limit.
+x: {
+	close({
+		b: 2
+	})
+	close({
+		c: 2
+	})
+}
+-- exp_embed_close4 --
+x: {
+    b: 2
+    c: 2
+}
+

@@ -1,9 +1,0 @@
--- cp_if4 --
-if true {
-	x: 1
-}
-if false {
-	x: 2
-}
--- exp --
-x: 1

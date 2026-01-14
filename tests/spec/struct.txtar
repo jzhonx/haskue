@@ -1,0 +1,101 @@
+-- struct1 --
+s1: {
+	a: 1
+	b: 2
+	{
+		c: 3
+	}
+}
+-- exp_struct1 --
+s1: {
+    a: 1
+    b: 2
+    c: 3
+}
+
+-- struct2 --
+a: b: c: d: 123
+a: b: d: 12
+a: c: 42
+-- exp_struct2 --
+a: {
+    b: {
+        c: {
+            d: 123
+        }
+        d: 12
+    }
+    c: 42
+}
+
+-- struct3 --
+x0: {f?: 3} & {f: 3}
+x1: {f!: 3} & {f: 3}
+x2: {f!: int} & {f: int}
+x3: {f!: int} & {f?: <1}
+x4: {f!: int} & {f: <=3}
+x5: {f!: int} & {f: 3}
+x6: {f!: 3} & {f: int}
+x7: {f!: 3} & {f: <=4}
+// x8: {f?: 1} & {f?: 2}
+-- exp_struct3 --
+x0: {
+    f: 3
+}
+x1: {
+    f: 3
+}
+x2: {
+    f: int
+}
+x3: {
+    f!: <1
+}
+x4: {
+    f: <=3
+}
+x5: {
+    f: 3
+}
+x6: {
+    f: 3
+}
+x7: {
+    f: 3
+}
+
+-- struct4 --
+// dynamic fields
+a:   "foo"
+b:   "bar"
+(a): "baz"
+(a + b): "qux"
+(a)?: string
+(b)!: string
+-- exp_struct4 --
+a: "foo"
+b: "bar"
+foo: "baz"
+foobar: "qux"
+bar!: string
+
+-- struct5 --
+// This tests dynamic field can change an existing field.
+a: {
+	c: "b"
+}
+b: {
+	x: "x"
+}
+(a.c): {
+	y: "y"
+}
+-- exp_struct5 --
+a: {
+    c: "b"
+}
+b: {
+    x: "x"
+    y: "y"
+}
+

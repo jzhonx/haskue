@@ -1,0 +1,100 @@
+-- ref1 --
+a: 4
+b: a
+-- exp_ref1 --
+a: 4
+b: 4
+
+-- ref2 --
+a: x.c
+x: {
+	c: 1
+	d: _
+}
+-- exp_ref2 --
+a: 1
+x: {
+    c: 1
+    d: _
+}
+
+-- ref3 --
+x: {
+	a: 1
+}
+x: {
+	c: 2
+}
+d: {
+	y: x
+}
+-- exp_ref3 --
+x: {
+    a: 1
+    c: 2
+}
+d: {
+    y: {
+        a: 1
+        c: 2
+    }
+}
+
+-- ref4 --
+a: {
+	place:    string
+	greeting: place
+}
+// dep: a.place -> a.greeting
+// referencing a will make dependencies change.
+// b.place -> b.greeting
+b: a & {place: "world"}
+c: a & {place: "you"}
+-- exp_ref4 --
+a: {
+    place: string
+    greeting: string
+}
+b: {
+    place: "world"
+    greeting: "world"
+}
+c: {
+    place: "you"
+    greeting: "you"
+}
+
+-- ref5 --
+// this tests whether the chained reference is resolved correctly.
+y: x
+x: {a: z}
+z: {b: 1 + 2}
+-- exp_ref5 --
+y: {
+    a: {
+        b: 3
+    }
+}
+x: {
+    a: {
+        b: 3
+    }
+}
+z: {
+    b: 3
+}
+
+-- ref6 --
+// this tests that chained references are resolved correctly.
+a: x.z // simple substitution would not work here.
+x: {
+	d: 1
+	z: d
+}
+-- exp_ref6 --
+a: 1
+x: {
+    d: 1
+    z: 1
+}
+

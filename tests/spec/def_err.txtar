@@ -1,0 +1,31 @@
+-- def_err1 --
+#S: {
+	a: b: string
+}
+m: #S & {
+	a: c: 2 // error, feild not defined in #S
+}
+-- exp_def_err1 --
+error: "c" is not allowed
+
+-- def_err2 --
+#D: {
+	#OneOf
+	c: int // adds this field.
+}
+#OneOf: {a: int} | {b: int}
+D2: #D & {a: 12, b: 33} // _|_ // cannot define both `a` and `b`
+-- exp_def_err2 --
+error: "b" is not allowed
+
+-- def_err3 --
+#A: {a: int}
+B: {
+	#A
+	b: c: int
+}
+x: B
+x: d: 3 // not allowed, as closed by embedded #A
+-- exp_def_err3 --
+error: "d" is not allowed
+

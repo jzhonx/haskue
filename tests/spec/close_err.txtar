@@ -1,0 +1,31 @@
+-- close_err1 --
+x: close({
+	a: 1
+})
+y: x & {
+	b: 2 // error: field "b" not allowed in struct.
+}
+-- exp_close_err1 --
+error: "b" is not allowed
+
+-- close_err2 --
+x: close({
+	[=~"a"]: int
+})
+y: x & {
+	b: 2 // error: field "b" not allowed in struct because of the pattern constraint.
+}
+-- exp_close_err2 --
+error: "b" is not allowed
+
+-- close_err3 --
+x: close({
+	[=~y]: int
+}) & {
+	a: 1
+}
+y:     *"a" | "b"
+("y"): "b"
+-- exp_close_err3 --
+error: "a" is not allowed
+

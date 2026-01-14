@@ -1,0 +1,79 @@
+-- ref_dyn1 --
+// this test the reference can be populated by a struct that is dynamically created.
+b: c.z // b will be 1
+c: {} // c will be {z: 1}
+df: "c"
+(df): {z: 1}
+-- exp_ref_dyn1 --
+b: 1
+c: {
+    z: 1
+}
+df: "c"
+
+-- ref_dyn2 --
+// This case tests that a reference to a field in a function node is resolved correctly.
+y: A.b
+B: {d: 2}
+A: B & {
+	b: c: int
+} // A is a function node that has temporary result because B is a reference and evaluated to mutable result.
+("A"): {b: d: string}
+-- exp_ref_dyn2 --
+y: {
+    c: int
+    d: string
+}
+B: {
+    d: 2
+}
+A: {
+    d: 2
+    b: {
+        c: int
+        d: string
+    }
+}
+
+-- ref_dyn3 --
+// This case tests that a reference to a function field in a function node is resolved correctly.
+y: A.b
+r1: {d: 2}
+r2: {e: 2}
+A: r1 & {
+	b: c: int
+} // A is a function node that has temporary result because B is a reference and evaluated to mutable result.
+("A"): {b: r2}
+-- exp_ref_dyn3 --
+y: {
+    c: int
+    e: 2
+}
+r1: {
+    d: 2
+}
+r2: {
+    e: 2
+}
+A: {
+    d: 2
+    b: {
+        c: int
+        e: 2
+    }
+}
+
+-- ref_dyn4 --
+// this tests versioned tree works correctly.
+// b first saw an empty {} with version 0, then it got notified with change.
+b: c // b will be {z:1}
+c: {}
+("c"): {z: 1}
+-- exp_ref_dyn4 --
+b: {
+    z: 1
+}
+c: {
+    z: 1
+}
+

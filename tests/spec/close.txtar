@@ -1,0 +1,77 @@
+-- close1 --
+// successful cases
+c1: {
+	x: close({
+		[=~"a"]: int
+	})
+	y: x & {
+		a: 1
+	}
+}
+c2: {
+	x: close({
+		[=~"a"]: int
+	})
+	y: x & close({
+		a: 1
+	})
+}
+c3: {
+	x: close({
+		[=~"a"]: int
+	})
+	y: close({
+		a: 1
+	})
+	z: x & y
+}
+-- exp_close1 --
+c1: {
+    x: {}
+    y: {
+        a: 1
+    }
+}
+c2: {
+    x: {}
+    y: {
+        a: 1
+    }
+}
+c3: {
+    x: {}
+    y: {
+        a: 1
+    }
+    z: {
+        a: 1
+    }
+}
+-- close2 --
+// dynamic field should allow "a" joining in.
+x: close({
+	("a"): int
+}) & {
+  a: 1
+}
+-- exp_close2 --
+x: {
+    a: 1
+}
+-- close3 --
+x: close({
+	[=~y.f]: int
+}) & {
+	a: 1
+}
+y: {
+	f:     *"b" | "a"
+	("f"): "a"
+}
+-- exp_close3 --
+x: {
+    a: 1
+}
+y: {
+    f: "a"
+}

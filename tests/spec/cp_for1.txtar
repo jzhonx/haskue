@@ -1,6 +1,0 @@
--- cp_for1 --
-if true {
-	x: 1
-}
--- exp --
-x: 1

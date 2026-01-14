@@ -1,8 +1,0 @@
--- let4 --
-// string field "x" is not incompatible with let binding x.
-"x": 1
-let x = 2
-y: x
--- exp --
-x: 1
-y: 2

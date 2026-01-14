@@ -1,0 +1,131 @@
+-- disj1 --
+x1: *"tcp" | "udp"
+x2: *1 | 2 | 3
+x3: (*1 | 2 | 3) | (1 | *2 | 3)
+x4: (*1 | 2 | 3) | *(1 | *2 | 3)
+x5: (*1 | 2 | 3) | (1 | *2 | 3) & 2
+x6: (*1 | 2) & (1 | *2)
+y0: 1 | 2 | 3
+y1: 1 | *2 | 3
+y2: 1 | 2 | *3
+z1: (*1 | 2) + 2
+-- exp_disj1 --
+x1: "tcp"
+x2: 1
+x3: 1 | 2
+x4: 2
+x5: 1 | 2
+x6: 1 | 2
+y0: 1 | 2 | 3
+y1: 2
+y2: 3
+z1: 3
+
+-- disj2 --
+x: {
+	y: 1
+	z: 3
+} | {y: 2}
+-- exp_disj2 --
+x: {
+    y: 1
+    z: 3
+} | {
+    y: 2
+}
+
+-- disj3 --
+a0: "tcp" | "udp"
+a1: *"tcp" | "udp"
+a2: (*1 | 2) + (2 | *3)
+b0: (*1 | 2 | 3) | (1 | *2 | 3)
+b1: (*1 | 2 | 3) & (1 | *2 | 3)
+c0: (*"tcp" | "udp") & ("udp" | *"tcp")
+c1: (*"tcp" | "udp") & ("udp" | "tcp")
+c2: (*"tcp" | "udp") & "tcp"
+c3: (*"tcp" | "udp") & (*"udp" | "tcp")
+d0: (*true | false) & (true | false)
+e0: {a: 1} | {b: 1}
+e1: {a: 1} | *{b: 1}
+e2: *{a: 1} | *{b: 1}
+e3: ({a: 1} | {b: 1}) & {a: 1}
+e4: ({a: 1} | *{b: 1}) & ({a: 1} | *{b: 1})
+-- exp_disj3 --
+a0: "tcp" | "udp"
+a1: "tcp"
+a2: 4
+b0: 1 | 2
+b1: 1 | 2 | 3
+c0: "tcp"
+c1: "tcp"
+c2: "tcp"
+c3: "tcp" | "udp"
+d0: true
+e0: {
+    a: 1
+} | {
+    b: 1
+}
+e1: {
+    b: 1
+}
+e2: {
+    a: 1
+} | {
+    b: 1
+}
+e3: {
+    a: 1
+} | {
+    b: 1
+    a: 1
+}
+e4: {
+    b: 1
+}
+
+-- disj4 --
+x: *"a" | string
+y: *"a" | string
+z: x & y
+-- exp_disj4 --
+x: "a"
+y: "a"
+z: "a"
+
+-- disj5 --
+x1: 1 | _|_
+x2: 1 | *_|_
+x3: *1 | _|_
+x4: *1 | *_|_
+-- exp_disj5 --
+x1: 1
+x2: 1
+x3: 1
+x4: 1
+
+-- disj6 --
+_|_ | _|_
+-- exp_disj6 --
+error: 
+
+-- disj7 --
+_|_ | *_|_
+-- exp_disj7 --
+error: 
+
+-- disj8 --
+x: *y.z | 1 | 2
+y: {}
+-- exp_disj8 --
+x: 1 | 2
+y: {}
+
+-- disj9 --
+// this tests incomplete disjuncts
+x: *y.z | y.f
+y: {}
+-- exp_disj9 --
+x: *y.z | y.f
+y: {}
+

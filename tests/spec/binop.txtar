@@ -9,7 +9,7 @@ x7:  3 + 6/3
 x8:  (1+2)*(3-4) + 12 // should be 9
 x9:  12 + (1+2)*(3-4) // should be 9
 x10: 1 / 2
--- exp --
+-- exp_binop --
 x1: 3
 x2: 8
 x3: 2.0
@@ -20,3 +20,15 @@ x7: 5.0
 x8: 9
 x9: 9
 x10: 0.5
+
+-- binop2 --
+x1: 1 + 2*3
+x2: 2*3 + 1
+-- exp_binop2 --
+x1: 7
+x2: 7
+
+-- binop3 --
+x1: "foo" + "bar"
+-- exp_binop3 --
+x1: "foobar"

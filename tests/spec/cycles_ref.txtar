@@ -1,0 +1,134 @@
+-- cycles_ref1 --
+x: x
+b: c
+c: d
+d: b
+-- exp_cycles_ref1 --
+x: _
+b: _
+c: _
+d: _
+
+-- cycles_ref2 --
+a: b + 100
+b: a - 100
+-- exp_cycles_ref2 --
+a: b + 100
+b: a - 100
+
+-- cycles_ref3 --
+a: b + 100
+b: a - 100
+a: 200
+-- exp_cycles_ref3 --
+a: 200
+b: 100
+
+-- cycles_ref4 --
+x: {
+	a: b + 100
+	b: a - 100
+}
+y: x & {
+	a: 200
+}
+-- exp_cycles_ref4 --
+x: {
+    a: b + 100
+    b: a - 100
+}
+y: {
+    a: 200
+    b: 100
+}
+
+-- cycles_ref5 --
+a: b & {x: 1}
+b: c & {y: 2}
+c: a & {z: 3}
+-- exp_cycles_ref5 --
+a: {
+    z: 3
+    y: 2
+    x: 1
+}
+b: {
+    x: 1
+    z: 3
+    y: 2
+}
+c: {
+    y: 2
+    x: 1
+    z: 3
+}
+
+-- cycles_ref6 --
+a: b & {x: 1} | {y: 1}
+b: {x: 2} | c & {z: 2}
+c: a & {y: 3} | {z: 3}
+-- exp_cycles_ref6 --
+a: {
+    y: 3
+    z: 2
+    x: 1
+} | {
+    y: 1
+}
+b: {
+    x: 2
+} | {
+    x: 1
+    y: 3
+    z: 2
+}
+c: {
+    z: 2
+    x: 1
+    y: 3
+} | {
+    z: 3
+}
+
+-- cycles_ref7 --
+// referencing a cycle
+x: {
+	a: a
+	b: a
+}
+y: {
+	a: a
+	b: a
+	b: 2
+}
+z: {
+	a: a
+	b: a
+	a: 2
+}
+dfa: "a"
+z2: {
+	a: a
+	b: a
+	// dynamically add a field to break the cycle
+	(dfa): 2
+}
+-- exp_cycles_ref7 --
+x: {
+    a: _
+    b: _
+}
+y: {
+    a: _
+    b: 2
+}
+z: {
+    a: 2
+    b: 2
+}
+dfa: "a"
+z2: {
+    a: 2
+    b: 2
+}
+

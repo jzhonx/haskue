@@ -1,8 +1,0 @@
--- let_err5 --
-// let binding x must be referenced as the first segment of a path.
-t: {
-	let x = 1
-	y: t.x
-}
--- exp --
-error: unreferenced let clause let "x"

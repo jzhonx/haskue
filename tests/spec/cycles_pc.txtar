@@ -1,0 +1,48 @@
+-- cycles_pc1 --
+p: {
+	a: b
+	b: p.a
+}
+-- exp_cycles_pc1 --
+p: {
+    a: _
+    b: _
+}
+
+-- cycles_pc2 --
+p: {
+	a: b
+	b: p["a"]
+}
+-- exp_cycles_pc2 --
+p: {
+    a: _
+    b: _
+}
+
+-- cycles_pc3 --
+p: {
+	a:     b
+	b:     p[p.x]
+	("x"): "a"
+}
+-- exp_cycles_pc3 --
+p: {
+    a: _
+    b: _
+    x: "a"
+}
+
+-- cycles_pc4 --
+p: {
+	a:     b
+	b:     p.c
+	("c"): a
+}
+-- exp_cycles_pc4 --
+p: {
+    a: _
+    b: _
+    c: _
+}
+

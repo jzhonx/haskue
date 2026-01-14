@@ -7,11 +7,10 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Eval (
-  EvalConfig (..),
-  runIO,
-  runTreeIO,
+  Config (..),
+  evalStr,
   evalFile,
-  emptyEvalConfig,
+  emptyConfig,
   strToCUEVal,
 )
 where
@@ -32,50 +31,52 @@ import Data.ByteString.Builder (
   lazyByteString,
   string7,
  )
+import qualified Data.ByteString.Lazy as LB
 import Data.List.Split (splitOn)
 import qualified Data.Set as Set
 import qualified Data.Yaml as Yaml
-import Env (
-  Config (..),
- )
+import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter, stTracePrintTree)
+import qualified Env
 import EvalExpr (evalExpr, evalSourceFile)
 import Feature (rootFeature)
 import Parser (parseExpr, parseSourceFile)
 import Reduce (postValidation, reduce)
-import Reduce.RMonad
+import Reduce.Monad
 import StringIndex (TextIndexer)
-import System.IO (hPutStr, stderr)
+import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
 import Value.Export.Debug (treeToFullRepString)
 import Value.Export.JSON (buildJSON)
 
-data EvalConfig = EvalConfig
+data Config = Config
   { outputFormat :: String
   , ecDebugMode :: Bool
   , ecTraceExec :: Bool
   , ecTracePrintTree :: Bool
   , ecTraceExtraInfo :: Bool
   , ecTraceFilter :: String
+  , ecTraceHandle :: Handle
   , ecMaxTreeDepth :: Int
   , ecFilePath :: String
   }
 
-emptyEvalConfig :: EvalConfig
-emptyEvalConfig =
-  EvalConfig
+emptyConfig :: Config
+emptyConfig =
+  Config
     { outputFormat = ""
     , ecDebugMode = False
     , ecTraceExec = False
     , ecTracePrintTree = False
     , ecTraceExtraInfo = False
     , ecTraceFilter = ""
+    , ecTraceHandle = stdout
     , ecMaxTreeDepth = 0
     , ecFilePath = ""
     }
 
-runIO :: B.ByteString -> EvalConfig -> ExceptT String IO Builder
-runIO eStr conf
+evalStr :: B.ByteString -> Config -> ExceptT String IO Builder
+evalStr eStr conf
   | conf.outputFormat == "json" = do
       r <- evalStrToJSON eStr conf
       case r of
@@ -115,10 +116,7 @@ runIO eStr conf
             return (declsToBuilder decls)
         Right e -> return $ exprToBuilder False e
 
-runTreeIO :: B.ByteString -> ExceptT String IO Val
-runTreeIO s = fst <$> evalStrToVal s emptyEvalConfig
-
-evalStrToAST :: B.ByteString -> EvalConfig -> ExceptT String IO (Either String AST.Expression)
+evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String AST.Expression)
 evalStrToAST s conf = do
   (t, cs) <- evalStrToVal s conf
   case valNode t of
@@ -130,7 +128,7 @@ evalStrToAST s conf = do
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-evalStrToJSON :: B.ByteString -> EvalConfig -> ExceptT String IO (Either String Value)
+evalStrToJSON :: B.ByteString -> Config -> ExceptT String IO (Either String Value)
 evalStrToJSON s conf = do
   (t, cs) <- evalStrToVal s conf
   case valNode t of
@@ -142,12 +140,12 @@ evalStrToJSON s conf = do
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-strToCUEVal :: B.ByteString -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+strToCUEVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
 strToCUEVal s conf = do
   e <- liftEither $ parseExpr s
   mapErrToString $ evalVal (evalExpr e) conf
 
-evalStrToVal :: B.ByteString -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
 evalStrToVal s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
@@ -160,17 +158,17 @@ mapErrToString =
           Right v -> Right v
     )
 
-evalFile :: SourceFile -> EvalConfig -> ExceptT String IO (Val, TextIndexer)
+evalFile :: SourceFile -> Config -> ExceptT String IO (Val, TextIndexer)
 evalFile sf conf = mapErrToString $ evalVal (evalSourceFile sf) conf
 
 evalVal ::
   RWST ReduceConfig () RTCState (ExceptT Error IO) Val ->
-  EvalConfig ->
+  Config ->
   ExceptT Error IO (Val, TextIndexer)
 evalVal f conf =
   do
     let config =
-          Config
+          Env.Config
             { stTraceEnable = ecTraceExec conf
             , stTracePrintTree = ecTracePrintTree conf
             , stTraceExtraInfo = ecTraceExtraInfo conf
@@ -203,7 +201,7 @@ evalVal f conf =
                   "Final eval result: " ++ rep ++ "\n"
         )
         (ReduceConfig config (emptyReduceParams{createCnstr = True}))
-        (RTCState (VCur (mkNewVal VNTop) []) emptyContext)
+        (RTCState (VCur (mkNewVal VNTop) []) (emptyContext (LB.hPut conf.ecTraceHandle)))
 
     return
       ( finalized.rtsTC.focus

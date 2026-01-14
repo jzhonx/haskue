@@ -1,6 +1,0 @@
--- let2 --
-// test referencing non-existed field in let
-let x = {}
-y: x.b
--- exp --
-y: x.b

@@ -1,0 +1,31 @@
+-- bounds1 --
+x0: 2 & >=2 & <=5
+x1: !=null & 2
+x2: "a" & string
+x3: "a" & =~"a" & string & !~"b"
+x4: true & bool
+x5: false & bool
+-- exp_bounds1 --
+x0: 2
+x1: 2
+x2: "a"
+x3: "a"
+x4: true
+x5: false
+
+-- bounds2 --
+x0: 2 & >=2 & <=5
+x1: 2.5 & >=1 & <=5
+x2: 2 & >=1.0 & <3.0
+x3: 2 & >1 & <3.0
+x4: 2.5 & float & >1 & <5 // 2.5
+x5: !=null & 1
+x6: >=5 & <=5
+-- exp_bounds2 --
+x0: 2
+x1: 2.5
+x2: 2
+x3: 2
+x4: 2.5
+x5: 1
+x6: 5

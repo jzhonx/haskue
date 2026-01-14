@@ -1,0 +1,75 @@
+-- pat_cons1 --
+// This tests when the pattern of a constraint is a ref and when the ref's value changes,
+// the previously applied constraint value is removed.
+x: {
+	[y.z]: {f1: 1}
+	a: {f2: 2}
+	b: {f3: 3}
+}
+y: {
+	z:     string
+	("z"): =~"a"
+}
+-- exp_pat_cons1 --
+x: {
+    a: {
+        f2: 2
+        f1: 1
+    }
+    b: {
+        f3: 3
+    }
+}
+y: {
+    z: =~"a"
+}
+
+-- pat_cons2 --
+// This tests when the pattern of a constraint is a ref and when the ref's value changes,
+// the previously invalid value is valid.
+x: {
+	[y.z]: {f1: 1}
+	a: {f2: 2}
+	b: 1 // previously invalid value if string is matched.
+}
+y: {
+	z:     string
+	("z"): =~"a"
+}
+-- exp_pat_cons2 --
+x: {
+    a: {
+        f2: 2
+        f1: 1
+    }
+    b: 1
+}
+y: {
+    z: =~"a"
+}
+
+-- pat_cons3 --
+// It tests both dynamic fields and changing pattern.
+x: {
+	[y.z]: {f1: 1} // changing pattern
+	a: {f2: 2}
+	("b"): {f3: 3} // dynamic field
+}
+y: {
+	z:     string
+	("z"): =~"a"
+}
+-- exp_pat_cons3 --
+x: {
+    a: {
+        f2: 2
+        f1: 1
+    }
+    b: {
+        f3: 3
+    }
+}
+y: {
+    z: =~"a"
+}
+

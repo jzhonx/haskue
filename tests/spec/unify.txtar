@@ -1,0 +1,146 @@
+-- unify1 --
+{
+	a: 123
+	d: "hello"
+} & {
+	a: 123
+	b: 456
+} & {
+	z: 4321
+}
+-- exp_unify1 --
+a: 123
+d: "hello"
+b: 456
+z: 4321
+
+-- unify2 --
+x: {
+	a: _
+	b: a
+}
+y: x & {
+	a: 200
+}
+-- exp_unify2 --
+x: {
+    a: _
+    b: _
+}
+y: {
+    a: 200
+    b: 200
+}
+
+-- unify3 --
+x: {
+	a: _
+	b: x.a
+}
+y: x & {
+	a: 200
+}
+-- exp_unify3 --
+x: {
+    a: _
+    b: _
+}
+y: {
+    a: 200
+    b: _
+}
+
+-- unify4 --
+x: {a: _}
+y: x & {a: 2}
+// dynamic field that modifies the x.
+df: "x"
+(df): {b: 1}
+-- exp_unify4 --
+x: {
+    a: _
+    b: 1
+}
+y: {
+    a: 2
+    b: 1
+}
+df: "x"
+
+-- unify5 --
+x: _ & {a: 1 + 2}
+-- exp_unify5 --
+x: {
+    a: 3
+}
+
+-- unify6 --
+a: {i1: {j1: c}}
+b: {i1: {j1: c}}
+c:   1
+res: a & b
+-- exp_unify6 --
+a: {
+    i1: {
+        j1: 1
+    }
+}
+b: {
+    i1: {
+        j1: 1
+    }
+}
+c: 1
+res: {
+    i1: {
+        j1: 1
+    }
+}
+
+-- unify7 --
+x: {
+	a: int
+	b: x.a
+}
+y: {a: 1}
+z: x & y
+-- exp_unify7 --
+x: {
+    a: int
+    b: int
+}
+y: {
+    a: 1
+}
+z: {
+    a: 1
+    b: int
+}
+
+-- unify8 --
+res: x & {}
+x: a & b // a and b are out of scope too.
+a: {}
+b: {}
+-- exp_unify8 --
+res: {}
+x: {}
+a: {}
+b: {}
+
+-- unify9 --
+a: a: true
+b: b: true
+x: a & b
+-- exp_unify9 --
+a: {
+    a: true
+}
+b: {
+    b: true
+}
+x: {
+    a: true
+    b: true
+}
+

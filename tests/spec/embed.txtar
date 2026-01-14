@@ -1,0 +1,76 @@
+-- embed1 --
+x: {
+  a: 1
+  {
+    b: 2
+  }
+}
+-- exp_embed1 --
+x: {
+    a: 1
+    b: 2
+}
+
+-- embed2 --
+c1: {1, [string]: 1}
+c2: {"a", [string]: 1}
+c3: {1 | 2, [string]: 1}
+c4: {[1], [string]: 1}
+c5: {_, [string]: 1}
+-- exp_embed2 --
+c1: 1
+c2: "a"
+c3: 1 | 2
+c4: [1]
+c5: _
+
+-- embed3 --
+c1: {1} & 1
+c2: {"a"} & "a"
+c3: {1 | 2} & (1 | 2)
+// c4: {[1]} & [1]
+c5: {_} & 1
+// c6: {_, [string]: 2} & {_h: 1}
+-- exp_embed3 --
+c1: 1
+c2: "a"
+c3: 1 | 2
+c5: 1
+
+-- embed4 --
+a: 1
+{
+  b: a
+}
+-- exp_embed4 --
+a: 1
+b: 1
+
+-- embed5 --
+x: {
+	f: {y: 1}
+	f
+}
+-- exp_embed5 --
+x: {
+    f: {
+        y: 1
+    }
+    y: 1
+}
+
+-- embed6 --
+// This tests whether the let binding can be correctly looked up in embedded.
+x: {
+	let z = {a: 1}
+	{
+		k: z
+	}
+}
+-- exp_embed6 --
+x: {
+    k: {
+        a: 1
+    }
+}
+

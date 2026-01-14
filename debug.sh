@@ -54,9 +54,9 @@ if [[ "$1" == "run" ]]; then
   echo ""
   # Run the program with the input file and redirect the output to a log file.
   if [[ -z "$maxTreeDepth" ]]; then
-    cabal run haskue -- -d --trace --trace-filter="" --trace-print-tree --trace-print-extra-info --show-mutable-args $input 2> _debug/t.log
+    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info $input 2> _debug/t.log
   else
-    cabal run haskue -- -d --trace --trace-filter="" --trace-print-tree --trace-print-extra-info --show-mutable-args --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
+    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
   fi
 
   echo ""

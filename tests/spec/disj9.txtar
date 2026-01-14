@@ -1,7 +1,0 @@
--- disj9 --
-// this tests incomplete disjuncts
-x: *y.z | y.f
-y: {}
--- exp --
-x: *y.z | y.f
-y: {}

@@ -1,0 +1,16 @@
+-- cnstr1 --
+// the result of b is _|_.
+// First b is 200 because of atom unifying with other.
+// Then validating b finds 300.
+b: 200 & (b + 100)
+-- exp_cnstr1 --
+error: values mismatch: 200 != 300
+
+-- cnstr2 --
+// the result of b is incomplete
+a: a
+b: 200 & (a + 100)
+-- exp_cnstr2 --
+a: _
+b: 200 & a + 100
+

@@ -14,7 +14,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Reduce.RMonad (RM, allocRMObjID, throwFatal)
+import Reduce.Monad (RM, allocRMObjID, throwFatal)
 import StringIndex (ShowWTIndexer (..), TextIndex, textToTextIndex)
 import Text.Printf (printf)
 import Value

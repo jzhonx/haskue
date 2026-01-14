@@ -1,0 +1,68 @@
+-- cp_if1 --
+if true {
+	x: 1
+}
+-- exp_cp_if1 --
+x: 1
+
+-- cp_if2 --
+p: {a: true}
+if p.a {
+	x: 1
+}
+-- exp_cp_if2 --
+p: {
+    a: true
+}
+x: 1
+
+-- cp_if3 --
+p: {a: true}
+if p.a {
+	x: p.a
+}
+-- exp_cp_if3 --
+p: {
+    a: true
+}
+x: true
+
+-- cp_if4 --
+if true {
+	x: 1
+}
+if false {
+	x: 2
+}
+-- exp_cp_if4 --
+x: 1
+
+-- cp_if5 --
+p: {a: *true | bool}
+if p.a {
+	x: 1
+}
+if !p.a {
+	x: 2
+}
+("p"): {a: false}
+-- exp_cp_if5 --
+p: {
+    a: false
+}
+x: 2
+
+-- cp_if6 --
+// This tests whether embedded reference can be notified correctly.
+x: {
+	y: 1 == 1
+  if y {
+    z: 1
+  }
+}
+-- exp_cp_if6 --
+x: {
+    y: true
+    z: 1
+}
+

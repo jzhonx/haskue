@@ -1,0 +1,69 @@
+-- def1 --
+#S: {
+	a: c?: bool
+}
+m: #S & {
+	a: c: true // okay
+}
+-- exp_def1 --
+#S: {
+    a: {
+        c?: bool
+    }
+}
+m: {
+    a: {
+        c: true
+    }
+}
+
+-- def2 --
+#D: {
+	#OneOf
+	c: int // adds this field.
+}
+#OneOf: {a: int} | {b: int}
+D1: #D & {a: 12, c: 22} // { a: 12, c: 22 }
+-- exp_def2 --
+#D: {
+    c: int
+    a: int
+} | {
+    c: int
+    b: int
+}
+#OneOf: {
+    a: int
+} | {
+    b: int
+}
+D1: {
+    c: 22
+    a: 12
+}
+
+-- def3 --
+#A: {a: int}
+B: {
+	// #A only "recursively" closes the #A, and the B via embedding. But {b: c: int} is not closed by #A because no
+	// #ident exists for {b: c: int}.
+	#A
+	b: c: int
+}
+y: B.b
+y: d: 3 // allowed as nothing closes b
+-- exp_def3 --
+#A: {
+    a: int
+}
+B: {
+    b: {
+        c: int
+    }
+    a: int
+}
+y: {
+    c: int
+    d: 3
+}
+
