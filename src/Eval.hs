@@ -57,7 +57,6 @@ data EvalConfig = EvalConfig
   , ecTracePrintTree :: Bool
   , ecTraceExtraInfo :: Bool
   , ecTraceFilter :: String
-  , ecShowMutArgs :: Bool
   , ecMaxTreeDepth :: Int
   , ecFilePath :: String
   }
@@ -71,7 +70,6 @@ emptyEvalConfig =
     , ecTracePrintTree = False
     , ecTraceExtraInfo = False
     , ecTraceFilter = ""
-    , ecShowMutArgs = False
     , ecMaxTreeDepth = 0
     , ecFilePath = ""
     }
@@ -179,7 +177,6 @@ evalVal f conf =
             , stTraceFilter =
                 let s = ecTraceFilter conf
                  in if null s then Set.empty else Set.fromList $ splitOn "," s
-            , stShowMutArgs = ecShowMutArgs conf
             , stMaxTreeDepth = ecMaxTreeDepth conf
             }
     (_, finalized, _) <-

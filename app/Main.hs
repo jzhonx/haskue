@@ -39,10 +39,6 @@ options =
           <> help "Filter for trace output. If empty, all traces are shown. Delimited by commas."
           <> value "reduce,fullReduce,drainRefSysQueue,notify,bfsLoopQ"
       )
-    <*> switch
-      ( long "show-mutable-args"
-          <> help "Show mutable args in the mermaid graph"
-      )
     <*> option
       auto
       ( long "max-tree-depth"

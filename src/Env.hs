@@ -18,7 +18,6 @@ data Config = Config
   , stTraceExtraInfo :: Bool
   , stTracePrintTree :: Bool
   , stTraceFilter :: Set.Set String
-  , stShowMutArgs :: Bool
   , stMaxTreeDepth :: Int
   }
   deriving (Show)
@@ -30,6 +29,5 @@ emptyConfig =
     , stTraceExtraInfo = False
     , stTracePrintTree = False
     , stTraceFilter = Set.empty
-    , stShowMutArgs = False
     , stMaxTreeDepth = 0
     }
