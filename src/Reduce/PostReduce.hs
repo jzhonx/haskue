@@ -50,7 +50,7 @@ postValidation = traceSpanTM "postValidation" $ do
   simplifyRM
 
   t <- getTMVal
-  traceSpanArgsTM "validate" (show t) $ do
+  traceSpanArgsTM "validate" (const $ return $ show t) $ do
     -- then validate all constraints.
     traverseTM $ withVN $ \case
       VNAtomCnstr c -> validateCnstr c
@@ -100,7 +100,7 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
                     embErrM = mkNewVal . VNBottom <$> rtrBottom t
                 debugInstantRM
                   "simplifyRM"
-                  (printf "struct subErrM: %s, embErrM: %s" (show subErrM) (show embErrM))
+                  (const $ return $ printf "struct subErrM: %s, embErrM: %s" (show subErrM) (show embErrM))
                   x
                 maybe
                   (return $ setValImmutable t `setVCFocus` x)

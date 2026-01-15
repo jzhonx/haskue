@@ -192,11 +192,13 @@ checkLabelAllowed ::
 checkLabelAllowed baseLabels baseAllCnstrs newLabel vc =
   traceSpanArgsRMTC
     "checkLabelAllowed"
-    ( printf
-        "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s"
-        (show newLabel)
-        (show $ Set.toList baseLabels)
-        (show $ IntMap.toList baseAllCnstrs)
+    ( const $
+        return $
+          printf
+            "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s"
+            (show newLabel)
+            (show $ Set.toList baseLabels)
+            (show $ IntMap.toList baseAllCnstrs)
     )
     vc
     $ _checkLabelAllowed baseLabels baseAllCnstrs newLabel vc
@@ -489,12 +491,14 @@ removeAppliedObject objID struct vc =
               baseRawM = ssfValue <$> Map.lookup name (stcStaticFieldBases struct)
             debugInstantRM
               "removeAppliedObject"
-              ( printf
-                  "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
-                  (show name)
-                  (show objID)
-                  (show $ Set.toList newObjectIDs)
-                  (show baseRawM)
+              ( const $
+                  return $
+                    printf
+                      "field: %s, objID: %s, newObjectIDs: %s, raw: %s"
+                      (show name)
+                      (show objID)
+                      (show $ Set.toList newObjectIDs)
+                      (show baseRawM)
               )
               vc
 

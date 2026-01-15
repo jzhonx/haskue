@@ -93,23 +93,38 @@ spanTreeMsgs isTreeRoot ignore t = do
       return $ toJSON rep
 
 traceSpanTM :: (ToJSONWTIndexer a) => String -> RM a -> RM a
-traceSpanTM name = traceActionTM name Nothing ttoJSON
+traceSpanTM name = traceActionTM name (const $ return Nothing) ttoJSON
 
-traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> String -> RM a -> RM a
-traceSpanArgsTM name args = traceActionTM name (Just args) ttoJSON
+traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> (() -> RM String) -> RM a -> RM a
+traceSpanArgsTM name args = traceActionTM name ((Just <$>) <$> args) ttoJSON
 
 traceSpanAdaptTM :: String -> (a -> RM Value) -> RM a -> RM a
-traceSpanAdaptTM name = traceActionTM name Nothing
+traceSpanAdaptTM name = traceActionTM name (const $ return Nothing)
 
-traceSpanArgsAdaptTM :: String -> String -> (a -> RM Value) -> RM a -> RM a
-traceSpanArgsAdaptTM name args = traceActionTM name (Just args)
+traceSpanArgsAdaptTM :: String -> (() -> RM String) -> (a -> RM Value) -> RM a -> RM a
+traceSpanArgsAdaptTM name args = traceActionTM name ((Just <$>) <$> args)
 
-traceActionTM :: String -> Maybe String -> (a -> RM Value) -> RM a -> RM a
+traceActionTM :: String -> (() -> RM (Maybe String)) -> (a -> RM Value) -> RM a -> RM a
 traceActionTM name argsM jsonfy f = withAddrAndFocus $ \addr _ ->
   traceAction name addr argsM jsonfy False f
 
-traceAction :: String -> ValAddr -> Maybe String -> (a -> RM Value) -> Bool -> RM a -> RM a
-traceAction name addr argsM jsonfy ignoreFocus f = whenTraceEnabled name f do
+traceSpanRMTC :: (ToJSONWTIndexer a) => String -> VCur -> RM a -> RM a
+traceSpanRMTC name = traceActionRM name (const $ return Nothing) ttoJSON
+
+traceSpanArgsRMTC :: (ToJSONWTIndexer a) => String -> (() -> RM String) -> VCur -> RM a -> RM a
+traceSpanArgsRMTC name args = traceActionRM name ((Just <$>) <$> args) ttoJSON
+
+traceSpanAdaptRM :: String -> (a -> RM Value) -> VCur -> RM a -> RM a
+traceSpanAdaptRM name = traceActionRM name (const $ return Nothing)
+
+traceSpanArgsAdaptRM :: String -> (() -> RM String) -> (a -> RM Value) -> VCur -> RM a -> RM a
+traceSpanArgsAdaptRM name args = traceActionRM name ((Just <$>) <$> args)
+
+traceActionRM :: String -> (() -> RM (Maybe String)) -> (a -> RM Value) -> VCur -> RM a -> RM a
+traceActionRM name argsM resFetch vc = traceAction name (vcAddr vc) argsM resFetch True
+
+traceAction :: String -> ValAddr -> (() -> RM (Maybe String)) -> (a -> RM Value) -> Bool -> RM a -> RM a
+traceAction name addr argsMGen jsonfy ignoreFocus f = whenTraceEnabled name f do
   let isRoot = addr == rootValAddr
   bTraced <- getTMVal >>= spanTreeMsgs isRoot ignoreFocus
   addrS <- tshow addr
@@ -118,6 +133,7 @@ traceAction name addr argsM jsonfy ignoreFocus f = whenTraceEnabled name f do
   let
     header = T.pack $ printf "%s, at:%s" name addrS
 
+  argsM <- argsMGen ()
   traceSpanStart
     header
     ( toJSON $
@@ -146,16 +162,26 @@ traceAction name addr argsM jsonfy ignoreFocus f = whenTraceEnabled name f do
 optVal :: Bool -> Value -> Value
 optVal extraInfo v = if extraInfo then v else object []
 
-debugInstantTM :: String -> RM T.Text -> RM ()
-debugInstantTM name margs = withAddrAndFocus $ \addr _ -> do
-  args <- margs
-  debugInst name (T.unpack args) addr
+emptySpanValue :: a -> RM Value
+emptySpanValue _ = return $ toJSON ()
 
-debugInst :: String -> String -> ValAddr -> RM ()
-debugInst name args addr = whenTraceEnabled name (return ()) $ do
+-- === Debug instant traces ===
+
+debugInstantRM :: String -> (() -> RM String) -> VCur -> RM ()
+debugInstantRM name args vc = debugInst name args (vcAddr vc)
+
+debugInstantOpRM :: String -> (() -> RM String) -> ValAddr -> RM ()
+debugInstantOpRM = debugInst
+
+debugInstantTM :: String -> RM T.Text -> RM ()
+debugInstantTM name margs = withAddrAndFocus $ \addr _ -> debugInst name (const $ T.unpack <$> margs) addr
+
+debugInst :: String -> (() -> RM String) -> ValAddr -> RM ()
+debugInst name argsGen addr = whenTraceEnabled name (return ()) $ do
   addrS <- tshow addr
   extraInfo <- asks (stTraceExtraInfo . baseConfig)
   trID <- getTraceID
+  args <- argsGen ()
   debugInstant
     (T.pack name)
     ( toJSON $
@@ -165,27 +191,3 @@ debugInst name args addr = whenTraceEnabled name (return ()) $ do
           , ctiCustomVal = optVal extraInfo (toJSON args)
           }
     )
-
-traceSpanRMTC :: (ToJSONWTIndexer a) => String -> VCur -> RM a -> RM a
-traceSpanRMTC name = traceActionRM name Nothing ttoJSON
-
-traceSpanArgsRMTC :: (ToJSONWTIndexer a) => String -> String -> VCur -> RM a -> RM a
-traceSpanArgsRMTC name args = traceActionRM name (Just args) ttoJSON
-
-traceSpanAdaptRM :: String -> (a -> RM Value) -> VCur -> RM a -> RM a
-traceSpanAdaptRM name = traceActionRM name Nothing
-
-traceSpanArgsAdaptRM :: String -> String -> (a -> RM Value) -> VCur -> RM a -> RM a
-traceSpanArgsAdaptRM name args = traceActionRM name (Just args)
-
-traceActionRM :: String -> Maybe String -> (a -> RM Value) -> VCur -> RM a -> RM a
-traceActionRM name argsM resFetch vc = traceAction name (vcAddr vc) argsM resFetch True
-
-debugInstantRM :: String -> String -> VCur -> RM ()
-debugInstantRM name args vc = debugInst name args (vcAddr vc)
-
-debugInstantOpRM :: String -> String -> ValAddr -> RM ()
-debugInstantOpRM = debugInst
-
-emptySpanValue :: a -> RM Value
-emptySpanValue _ = return $ toJSON ()

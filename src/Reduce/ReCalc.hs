@@ -317,14 +317,17 @@ recalcGroup sccAddr = do
   let
     compAddrs = getElemAddrInGrp sccAddr ng
     epAddrs = removeChildSIAddrs compAddrs
-  compAddrStrs <- mapM tshow compAddrs
-  epAddrStrs <- mapM tshow epAddrs
+
   traceSpanArgsAdaptTM
     "recalcCyclic"
-    ( printf
-        "compAddrs: %s, epAddrs: %s"
-        (show compAddrStrs)
-        (show epAddrStrs)
+    ( const $ do
+        compAddrStrs <- mapM tshow compAddrs
+        epAddrStrs <- mapM tshow epAddrs
+        return $
+          printf
+            "compAddrs: %s, epAddrs: %s"
+            (show compAddrStrs)
+            (show epAddrStrs)
     )
     (const $ return $ toJSON ())
     $ do
@@ -401,34 +404,40 @@ permissions.
 -}
 recalcNode :: SuffixIrredAddr -> RecalcRCFetch -> RM ()
 recalcNode nodeSIAddr fetch = do
-  addrStr <- tshow nodeSIAddr
   -- First we need to go to the base irreducible address.
   ok <- goTMAbsAddr (sufIrredToAddr nodeSIAddr)
-  when ok $ traceSpanArgsTM "recalcNode" (printf "addr: %s" addrStr) $ do
-    g <- depGraph <$> getRMContext
-    let
-      nodes = getNodeAddrsByFunc nodeSIAddr g
-      anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
-    debugInstantTM
+  when ok
+    $ traceSpanArgsTM
       "recalcNode"
-      (msprintf "nodes: %s, anyArgChanged: %s" [packFmtA (show nodes), packFmtA (show anyArgChanged)])
-    t <- getTMVal
-    case t of
-      -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
-      -- only need to check whether the struct is ready to be used for validating its permissions.
-      IsStruct _
-        | IsValMutable mut <- t
-        , Op (UOp _) <- mut
-        , -- No argument affected, we can just check whether the struct is ready.
-          not anyArgChanged ->
-            validateStructPerm
-        -- Same as above but for immutable tgen.
-        | IsValImmutable <- t -> validateStructPerm
-      -- For mutable, list, disjunction, just re-calculate it.
-      _ -> do
-        local (mapParams (\p -> p{fetch})) do
-          -- invalidateUpToRootMut baseAddr dirtyLeaves
-          reduce
+      ( const $ do
+          addrStr <- tshow nodeSIAddr
+          return $ printf "addr: %s" addrStr
+      )
+    $ do
+      g <- depGraph <$> getRMContext
+      let
+        nodes = getNodeAddrsByFunc nodeSIAddr g
+        anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
+      debugInstantTM
+        "recalcNode"
+        (msprintf "nodes: %s, anyArgChanged: %s" [packFmtA (show nodes), packFmtA (show anyArgChanged)])
+      t <- getTMVal
+      case t of
+        -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
+        -- only need to check whether the struct is ready to be used for validating its permissions.
+        IsStruct _
+          | IsValMutable mut <- t
+          , Op (UOp _) <- mut
+          , -- No argument affected, we can just check whether the struct is ready.
+            not anyArgChanged ->
+              validateStructPerm
+          -- Same as above but for immutable tgen.
+          | IsValImmutable <- t -> validateStructPerm
+        -- For mutable, list, disjunction, just re-calculate it.
+        _ -> do
+          local (mapParams (\p -> p{fetch})) do
+            -- invalidateUpToRootMut baseAddr dirtyLeaves
+            reduce
 
 {- | Because reduce is a top-down process, we need to invalidate all mutable ancestors up to the root mutable.
 

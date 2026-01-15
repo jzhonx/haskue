@@ -140,9 +140,11 @@ partialReduceUnifyOp = traceSpanTM "partialReduceUnifyOp" $ do
                   IsNoVal -> do
                     debugInstantRM
                       "partialReduceUnifyOp"
-                      ( printf
-                          "setting accumulating conjunct to reduced conjunct %s"
-                          (show $ valNode $ focus r)
+                      ( const $
+                          return $
+                            printf
+                              "setting accumulating conjunct to reduced conjunct %s"
+                              (show $ valNode $ focus r)
                       )
                       acc
                     modifyTMVN (valNode $ focus r)
@@ -279,7 +281,7 @@ unifyTCs tcs unifyTC = traceSpanRMTC "unifyTCs" unifyTC $ do
   if isAllCyclic
     then return $ mkBottomVal "structural cycle"
     else do
-      debugInstantRM "unifyTCs" (printf "normalized: %s" (show tcs)) unifyTC
+      debugInstantRM "unifyTCs" (const $ return $ printf "normalized: %s" (show tcs)) unifyTC
       s <-
         foldM
           ( \acc vc -> do
@@ -313,8 +315,13 @@ unifyTCs tcs unifyTC = traceSpanRMTC "unifyTCs" unifyTC $ do
             then return r
             else do
               let f = mkNewVal $ VNFix (Fix (valNode r) fconjs True)
-              fStr <- treeToRepString f
-              debugInstantRM "unifyTCs" (printf "Fix: %s" fStr) unifyTC
+              debugInstantRM
+                "unifyTCs"
+                ( const $ do
+                    fStr <- treeToRepString f
+                    return $ printf "Fix: %s" fStr
+                )
+                unifyTC
               return f
 
 data PrepState = PrepState
@@ -347,11 +354,21 @@ alias, or package.
 -}
 prepConj :: Bool -> VCur -> RM VCur
 prepConj toRewriteLets structTC@(VCFocus (IsStruct struct)) = traceSpanRMTC "prepConj" structTC $ do
-  tStr <- tshow structTC
-  debugInstantRM "prepConj" (printf "before first pass: %s" tStr) structTC
+  debugInstantRM
+    "prepConj"
+    ( const $ do
+        tStr <- tshow structTC
+        return $ printf "before first pass: %s" tStr
+    )
+    structTC
   (updatedTC, ps) <- preVisitVal (subNodes True) firstPass (structTC, emptyPS)
-  tStr2 <- tshow updatedTC
-  debugInstantRM "prepConj" (printf "after first pass: state: %s, t: %s" (show ps) tStr2) updatedTC
+  debugInstantRM
+    "prepConj"
+    ( const $ do
+        tStr2 <- tshow updatedTC
+        return $ printf "after first pass: state: %s, t: %s" (show ps) tStr2
+    )
+    updatedTC
   case ps.error of
     Just err -> return $ err `setVCFocus` updatedTC
     Nothing -> do
@@ -412,11 +429,13 @@ prepConj toRewriteLets structTC@(VCFocus (IsStruct struct)) = traceSpanRMTC "pre
                   else do
                     debugInstantRM
                       "prepConj.firstPass"
-                      ( printf
-                          "rewriting ref %s that references a let var with suffix %d. dstAddr: %s"
-                          (show ident)
-                          sid
-                          (show dstAddr)
+                      ( const $
+                          return $
+                            printf
+                              "rewriting ref %s that references a let var with suffix %d. dstAddr: %s"
+                              (show ident)
+                              sid
+                              (show dstAddr)
                       )
                       vc
                     let newAcc = acc{rwLetIdents = (vcAddr vc, sid) : rwLetIdents acc}
@@ -433,16 +452,18 @@ prepConj toRewriteLets structTC@(VCFocus (IsStruct struct)) = traceSpanRMTC "pre
     VCFocus t@(IsRef mut ref@(Reference{refArg = RefPath ident xs})) -> do
       newIdentF <- mkLetFeature ident (Just suffix)
       let newIdx = getTextIndexFromFeature newIdentF
-      identStr <- tshow ident
-      newIdentStr <- tshow newIdentF
       debugInstantRM
         "prepConj.rewriteRefIdent"
-        ( printf
-            "rewriting ref ident %s to %s with suffix %d, newidx: %s"
-            (show identStr)
-            (show newIdentStr)
-            suffix
-            (show newIdx)
+        ( const $ do
+            identStr <- tshow ident
+            newIdentStr <- tshow newIdentF
+            return $
+              printf
+                "rewriting ref ident %s to %s with suffix %d, newidx: %s"
+                (show identStr)
+                (show newIdentStr)
+                suffix
+                (show newIdx)
         )
         vc
       let
@@ -452,7 +473,10 @@ prepConj toRewriteLets structTC@(VCFocus (IsStruct struct)) = traceSpanRMTC "pre
     _ -> return vc
 prepConj _ vc = do
   tStr <- treeToRepString (focus vc)
-  debugInstantRM "prepConj" (printf "focus is not a struct: %s, focus: %s" (showValSymbol vc.focus) tStr) vc
+  debugInstantRM
+    "prepConj"
+    (const $ return $ printf "focus is not a struct: %s, focus: %s" (showValSymbol vc.focus) tStr)
+    vc
   return vc
 
 {- | Unify two UTrees that are discovered in the merging process.
@@ -483,24 +507,30 @@ unifyForNewConjs uts vc = do
 -- | Merge a list of processed tree cursors into one tree.
 mergeTCs :: [VCur] -> VCur -> RM Val
 mergeTCs tcs unifyTC = do
-  tcsStr <- mapM tshow tcs
-  traceSpanArgsRMTC "mergeTCs" (show tcsStr) unifyTC $ do
-    when (null tcs) $ throwFatal "not enough arguments"
-    let headTC = head tcs
-    -- TODO: does the first tree need to be not embedded?
-    r <-
-      foldM
-        ( \acc vc -> do
-            r <-
-              mergeBinUTrees
-                (acc{dir = L})
-                (UTree{dir = R, utTC = vc, embType = (focus vc).embType})
-                unifyTC
-            return $ acc{utTC = r `setVCFocus` acc.utTC}
-        )
-        (UTree{dir = L, utTC = headTC, embType = headTC.focus.embType})
-        (tail tcs)
-    return $ focus (utTC r)
+  traceSpanArgsRMTC
+    "mergeTCs"
+    ( const $ do
+        tcsStr <- mapM tshow tcs
+        return $ show tcsStr
+    )
+    unifyTC
+    $ do
+      when (null tcs) $ throwFatal "not enough arguments"
+      let headTC = head tcs
+      -- TODO: does the first tree need to be not embedded?
+      r <-
+        foldM
+          ( \acc vc -> do
+              r <-
+                mergeBinUTrees
+                  (acc{dir = L})
+                  (UTree{dir = R, utTC = vc, embType = (focus vc).embType})
+                  unifyTC
+              return $ acc{utTC = r `setVCFocus` acc.utTC}
+          )
+          (UTree{dir = L, utTC = headTC, embType = headTC.focus.embType})
+          (tail tcs)
+      return $ focus (utTC r)
 
 {- | Merge Two UTrees that are not of type mutable.
 
@@ -544,16 +574,18 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
   let t1 = focus tc1
       t2 = focus tc2
 
-  t1Str <- treeToRepString t1
-  t2Str <- treeToRepString t2
   r <- traceSpanArgsRMTC
     "mergeBinUTrees"
-    ( printf
-        "merging\n%s:\n%s\nwith\n%s:\n%s"
-        (show $ dir ut1)
-        t1Str
-        (show $ dir ut2)
-        t2Str
+    ( const $ do
+        t1Str <- treeToRepString t1
+        t2Str <- treeToRepString t2
+        return $
+          printf
+            "merging\n%s:\n%s\nwith\n%s:\n%s"
+            (show $ dir ut1)
+            t1Str
+            (show $ dir ut2)
+            t2Str
     )
     unifyTC
     $ do
@@ -577,8 +609,13 @@ mergeBinUTrees ut1@(UTree{utTC = tc1}) ut2@(UTree{utTC = tc2}) unifyTC = do
       -- close the merged tree
       return (r{isRecurClosed = isRecurClosed t1 || isRecurClosed t2})
 
-  rStr <- treeToRepString r
-  debugInstantRM "mergeBinUTrees" (printf "result: %s" rStr) unifyTC
+  debugInstantRM
+    "mergeBinUTrees"
+    ( const $ do
+        rStr <- treeToRepString r
+        return $ printf "result: %s" rStr
+    )
+    unifyTC
   return r
 
 mergeLeftTop :: UTree -> UTree -> VCur -> RM Val
@@ -921,38 +958,44 @@ recursively, the only way is to reference the struct via a #ident.
 -}
 mergeStructs :: (Struct, UTree) -> (Struct, UTree) -> VCur -> RM Val
 mergeStructs (s1, ut1@UTree{dir = L}) (s2, ut2) unifyTC = do
-  ut1Str <- tshow ut1
-  ut2Str <- tshow ut2
-  traceSpanArgsRMTC "mergeStructs" (printf "ut1: %s\nut2: %s" ut1Str ut2Str) unifyTC $ do
-    let
-      neitherEmbedded = not (ut1 `isEmbeddedIn` ut2 || ut2 `isEmbeddedIn` ut1)
-    -- Consider: {a: _, s1|s2} -> {a: _} & s1
+  traceSpanArgsRMTC
+    "mergeStructs"
+    ( const $ do
+        ut1Str <- tshow ut1
+        ut2Str <- tshow ut2
+        return $ printf "ut1: %s\nut2: %s" ut1Str ut2Str
+    )
+    unifyTC
+    $ do
+      let
+        neitherEmbedded = not (ut1 `isEmbeddedIn` ut2 || ut2 `isEmbeddedIn` ut1)
+      -- Consider: {a: _, s1|s2} -> {a: _} & s1
 
-    let
-      tc1 = utTC ut1
-      tc2 = utTC ut2
-    case (tc1.focus, tc2.focus) of
-      (IsStruct rs1, IsStruct rs2) -> do
-        newID <-
-          if
-            | ut1 `isEmbeddedIn` ut2 -> return (stcID s2)
-            | ut2 `isEmbeddedIn` ut1 -> return (stcID s1)
-            | otherwise -> allocRMObjID
+      let
+        tc1 = utTC ut1
+        tc2 = utTC ut2
+      case (tc1.focus, tc2.focus) of
+        (IsStruct rs1, IsStruct rs2) -> do
+          newID <-
+            if
+              | ut1 `isEmbeddedIn` ut2 -> return (stcID s2)
+              | ut2 `isEmbeddedIn` ut1 -> return (stcID s1)
+              | otherwise -> allocRMObjID
 
-        let s = mergeStructsInner rs1 rs2 neitherEmbedded
-        -- renamedLets1 <- renameLets (stcID s1) (stcBindings s1)
-        -- renamedLets2 <- renameLets (stcID s2) (stcBindings s2)
-        return $
-          mkStructVal
-            s
-              { stcID = newID
-              }
-      _ ->
-        throwFatal $
-          printf
-            "structs expected after preparation, got %s and %s"
-            (showValSymbol tc1.focus)
-            (showValSymbol tc2.focus)
+          let s = mergeStructsInner rs1 rs2 neitherEmbedded
+          -- renamedLets1 <- renameLets (stcID s1) (stcBindings s1)
+          -- renamedLets2 <- renameLets (stcID s2) (stcBindings s2)
+          return $
+            mkStructVal
+              s
+                { stcID = newID
+                }
+        _ ->
+          throwFatal $
+            printf
+              "structs expected after preparation, got %s and %s"
+              (showValSymbol tc1.focus)
+              (showValSymbol tc2.focus)
 mergeStructs dt1@(_, UTree{dir = R}) dt2 unifyTC = mergeStructs dt2 dt1 unifyTC
 
 mergeStructsInner :: Struct -> Struct -> Bool -> Struct
@@ -1284,15 +1327,17 @@ runFix count conjs = do
         ([], False)
         conjs
 
-    tStr <- tshow prevT
     newConjsStr <- mapM tshow newConjTCs
     debugInstantRM
       "runFix"
-      ( printf
-          "resolving Fix, prev result: %s, newConjsStr: %s, unknownExists: %s"
-          tStr
-          (show newConjsStr)
-          (show unknownExists)
+      ( const $ do
+          tStr <- tshow prevT
+          return $
+            printf
+              "resolving Fix, prev result: %s, newConjsStr: %s, unknownExists: %s"
+              tStr
+              (show newConjsStr)
+              (show unknownExists)
       )
       unifyTC
 
@@ -1308,11 +1353,13 @@ runFix count conjs = do
       then return (False, unknownExists)
       -- Only update the tree node. Other parts should remain the same.
       else do
-        prevTRep <- treeToRepString prevT
-        newTRep <- treeToRepString t
         debugInstantRM
           "runFix"
-          (printf "Fix iteration updated tree from: %s\nto:\n%s" prevTRep newTRep)
+          ( const $ do
+              prevTRep <- treeToRepString prevT
+              newTRep <- treeToRepString t
+              return $ printf "Fix iteration updated tree from: %s\nto:\n%s" prevTRep newTRep
+          )
           unifyTC
         return (True, unknownExists)
 

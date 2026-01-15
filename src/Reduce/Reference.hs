@@ -248,15 +248,17 @@ watch tarIdentAddr tarAddr refEnv = do
         then return RCDetected
         else return NoCycleDetected
 
-  tarAddrStr <- tshow tarAddrR
-  refAddrStr <- tshow refAddr
   debugInstantRM
     "watch"
-    ( printf
-        "tried to detect if tar: %s forms a cycle with %s's dependents. result: %s"
-        (show tarAddrStr)
-        (show refAddrStr)
-        (show cd)
+    ( const $ do
+        tarAddrStr <- tshow tarAddrR
+        refAddrStr <- tshow refAddr
+        return $
+          printf
+            "tried to detect if tar: %s forms a cycle with %s's dependents. result: %s"
+            (show tarAddrStr)
+            (show refAddrStr)
+            (show cd)
     )
     refEnv
   return cd
@@ -314,8 +316,13 @@ copyConcrete tarTC = do
   -- resolved to new fields. So there is no need to recursively make the block immutable.
   let immutTarget = setValImmutable (focus tarTC)
   r <- checkRefDef (vcAddr tarTC) (fetchAtomFromAC immutTarget)
-  rep <- treeToFullRepString r
-  debugInstantRM "copyConcrete" (printf "target concrete is %s" rep) tarTC
+  debugInstantRM
+    "copyConcrete"
+    ( const $ do
+        rep <- treeToFullRepString r
+        return $ printf "target concrete is %s" rep
+    )
+    tarTC
   case r of
     IsNoVal -> return Nothing
     _ -> return $ Just r
@@ -400,14 +407,17 @@ locateRef fieldPath vc = do
               then vcAddr matchedTC
               else appendValAddr (vcAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels))
 
-      debugInstantRM "locateRef" (printf "fieldPath: %s, before fetch" (show fieldPath)) vc
+      debugInstantRM "locateRef" (const $ return $ printf "fieldPath: %s, before fetch" (show fieldPath)) vc
 
       -- Check if the target address is dirty.
       fetch <- asks (fetch . params)
       case addrIsSufIrred targetAddr of
         Just tSIAddr
           | RsDirty <- fetch tSIAddr -> do
-              debugInstantRM "locateRef" (printf "target addr %s is dirty, throwDirty" (show targetAddr)) vc
+              debugInstantRM
+                "locateRef"
+                (const $ return $ printf "target addr %s is dirty, throwDirty" (show targetAddr))
+                vc
               throwDirty tSIAddr
           | RsCyclic <- fetch tSIAddr
           , -- If the target is atom, even if it is cyclic, we can still return the value.
@@ -478,9 +488,14 @@ searchTCIdent inEnclosing ident = go
  where
   go :: VCur -> RM (Maybe (VCur, IdentType))
   go vc = do
-    identStr <- tshow ident
     tarM <- findIdent ident vc
-    debugInstantRM "searchTCIdent" (printf "searching %s, found: %s" identStr (show $ isJust tarM)) vc
+    debugInstantRM
+      "searchTCIdent"
+      ( const $ do
+          identStr <- tshow ident
+          return $ printf "searching %s, found: %s" identStr (show $ isJust tarM)
+      )
+      vc
     maybe
       ( upOrLeft inEnclosing vc >>= \case
           Nothing -> return Nothing
@@ -510,7 +525,10 @@ upOrLeft True utc@(VCur t ((f, IsEmbedUnifyOp sop) : _))
       case jM of
         Nothing -> throwFatal $ printf "upOrLeft: embedding %s's parent does not have the embedding struct" (show sid)
         Just j -> do
-          debugInstantRM "upOrLeft" (printf "going up from embedding to parent block arg %s" (show j)) utc
+          debugInstantRM
+            "upOrLeft"
+            (const $ return $ printf "going up from embedding to parent block arg %s" (show j))
+            utc
           structTC <- liftEitherRM (propUpVC utc >>= goDownVCSegMust j)
           return $ Just structTC
 upOrLeft _ utc = do
@@ -555,7 +573,10 @@ findIdent ident vc = do
               , ITField
               )
     IsValMutable (Op (Compreh c)) -> do
-      debugInstantRM "findIdent" (printf "search in the compreh, bindings: %s" (show c.iterBindings)) vc
+      debugInstantRM
+        "findIdent"
+        (const $ return $ printf "search in the compreh, bindings: %s" (show c.iterBindings))
+        vc
       return $ do
         v <- Map.lookup ident c.iterBindings
         return (v `setVCFocus` vc, ITIterBinding)

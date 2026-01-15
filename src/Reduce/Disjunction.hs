@@ -55,10 +55,10 @@ resolveDisjOp disjOpTC@(VCFocus (IsValMutable (Op (DisjOp disjOp)))) = traceSpan
     throwFatal $
       printf "disjunction operation requires at least 2 terms, got %d" (length terms)
 
-  debugInstantRM "resolveDisjOp" (printf "terms: %s" (show terms)) disjOpTC
+  debugInstantRM "resolveDisjOp" (const $ return $ printf "terms: %s" (show terms)) disjOpTC
   disjuncts <- procMarkedTerms terms
 
-  debugInstantRM "resolveDisjOp" (printf "disjuncts: %s" (show disjuncts)) disjOpTC
+  debugInstantRM "resolveDisjOp" (const $ return $ printf "disjuncts: %s" (show disjuncts)) disjOpTC
   if null disjuncts
     -- If none of the disjuncts are ready, return Nothing.
     then return Nothing
@@ -78,33 +78,41 @@ resolveDisjOp _ = throwFatal "resolveDisjOp: focus is not a disjunction operatio
 -}
 normalizeDisj :: (Val -> Bool) -> Disj -> VCur -> RM Val
 normalizeDisj discardDisjunct d vc = do
-  dStr <- tshow (mkDisjVal d)
-  traceSpanArgsRMTC "normalizeDisj" (show dStr) vc $ do
-    flattened <- flattenDisjunction discardDisjunct d
-    final <- modifyDisjuncts discardDisjunct flattened vc
-    debugInstantRM
-      "normalizeDisj"
-      ( printf
-          "flattened: %s, flattened disjuncts: %s, final: %s"
-          (show $ mkDisjVal flattened)
-          (show $ dsjDisjuncts flattened)
-          (show final.dsjDisjuncts)
-      )
-      vc
-    if
-      | null final.dsjDisjuncts ->
-          let
-            noVals = filter (\case IsNoVal -> True; _ -> False) flattened.dsjDisjuncts
-            bottoms = filter (isJust . rtrBottom) flattened.dsjDisjuncts
-           in
-            if
-              | length noVals == length flattened.dsjDisjuncts -> return $ mkNewVal VNNoVal
-              | not (null bottoms) -> return $ head bottoms
-              | otherwise ->
-                  throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
-      -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
-      | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head final.dsjDisjuncts
-      | otherwise -> return $ mkDisjVal final
+  traceSpanArgsRMTC
+    "normalizeDisj"
+    ( const $ do
+        dStr <- tshow (mkDisjVal d)
+        return $ show dStr
+    )
+    vc
+    $ do
+      flattened <- flattenDisjunction discardDisjunct d
+      final <- modifyDisjuncts discardDisjunct flattened vc
+      debugInstantRM
+        "normalizeDisj"
+        ( const $
+            return $
+              printf
+                "flattened: %s, flattened disjuncts: %s, final: %s"
+                (show $ mkDisjVal flattened)
+                (show $ dsjDisjuncts flattened)
+                (show final.dsjDisjuncts)
+        )
+        vc
+      if
+        | null final.dsjDisjuncts ->
+            let
+              noVals = filter (\case IsNoVal -> True; _ -> False) flattened.dsjDisjuncts
+              bottoms = filter (isJust . rtrBottom) flattened.dsjDisjuncts
+             in
+              if
+                | length noVals == length flattened.dsjDisjuncts -> return $ mkNewVal VNNoVal
+                | not (null bottoms) -> return $ head bottoms
+                | otherwise ->
+                    throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
+        -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
+        | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head final.dsjDisjuncts
+        | otherwise -> return $ mkDisjVal final
 
 {- | Flatten the disjunction.
 
@@ -131,7 +139,7 @@ flattenDisjunction discardDisjunct (Disj{dsjDefIndexes = idxes, dsjDisjuncts = d
   reps <- mapM treeToRepString disjuncts
   debugInstantOpRM
     "flattenDisjunction"
-    (printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes))
+    (const $ return $ printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes))
     emptyValAddr
 
   -- Use foldl because the new default indexes are based on the length of the accumulated disjuncts.
@@ -145,7 +153,7 @@ flattenDisjunction discardDisjunct (Disj{dsjDefIndexes = idxes, dsjDisjuncts = d
   flatten (accIs, accDs) (origIdx, t) = do
     debugInstantOpRM
       "flattenDisjunction"
-      (printf "At %s, val: %s" (show origIdx) (show t))
+      (const $ return $ printf "At %s, val: %s" (show origIdx) (show t))
       emptyValAddr
     case rtrDisj t of
       Just sub -> do
@@ -187,10 +195,12 @@ TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
 modifyDisjuncts :: (Val -> Bool) -> Disj -> VCur -> RM Disj
 modifyDisjuncts discardDisjunct idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) vc = do
-  disjStr <- tshow (mkDisjVal idisj)
   traceSpanArgsAdaptRM
     "modifyDisjuncts"
-    (show disjStr)
+    ( const $ do
+        disjStr <- tshow (mkDisjVal idisj)
+        return $ show disjStr
+    )
     emptySpanValue
     vc
     $ do
