@@ -5,7 +5,7 @@ import qualified Data.ByteString as B
 import Data.ByteString.Builder (hPutBuilder)
 import Eval (Config (..), evalStr)
 import Options.Applicative
-import System.IO (Handle, IOMode (..), openFile, stdout)
+import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
 import Util.ShowTrace (runServer)
 
 -- New data types for subcommands
@@ -187,6 +187,7 @@ runEval conf = do
   case x of
     Left err -> putStrLn $ "Internal bug: " ++ err
     Right b -> hPutBuilder stdout b
+  hClose (ecTraceHandle conf)
 
 main :: IO ()
 main = do
