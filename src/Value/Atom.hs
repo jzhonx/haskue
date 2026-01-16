@@ -4,12 +4,16 @@
 
 module Value.Atom where
 
-import qualified AST
 import Control.DeepSeq (NFData (..))
 import Data.Aeson (ToJSON (..))
 import qualified Data.Aeson
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+import Syntax.AST (textToMultiLineLiteral, textToSimpleStrLiteral)
+import qualified Syntax.AST as AST
+import Syntax.Token (mkToken)
+import qualified Syntax.Token as Token
 
 data Atom
   = String T.Text
@@ -45,9 +49,9 @@ instance ToJSON Atom where
   toJSON Null = Data.Aeson.Null
 
 aToLiteral :: Atom -> AST.Literal
-aToLiteral a = pure $ case a of
-  String s -> AST.anVal $ AST.strToLit s
-  Int i -> AST.IntLit i
-  Float f -> AST.FloatLit f
-  Bool b -> AST.BoolLit b
-  Null -> AST.NullLit
+aToLiteral a = case a of
+  String s -> let f = if T.elem '\n' s then textToMultiLineLiteral else textToSimpleStrLiteral in f s
+  Int i -> AST.LitBasic $ AST.IntLit (mkToken Token.Int (BC.pack (show i)))
+  Float f -> AST.LitBasic $ AST.FloatLit (mkToken Token.Float (BC.pack (show f)))
+  Bool b -> AST.LitBasic $ AST.BoolLit (mkToken Token.Bool (if b then "true" else "false"))
+  Null -> AST.LitBasic $ AST.NullLit (mkToken Token.Null "null")

@@ -39,9 +39,7 @@ fi
 
 # If the first argument is "show", run the file server and exit
 if [[ "$1" == "show" ]]; then
-  go run tools/tracep/main.go -input=_debug/t.log -output=_debug/trace.json
-
-  tools/open_trace_in_ui -n --trace _debug/trace.json
+  cabal run haskue -- show-trace _debug/trace.log
   exit 0
 fi
 
@@ -54,9 +52,9 @@ if [[ "$1" == "run" ]]; then
   echo ""
   # Run the program with the input file and redirect the output to a log file.
   if [[ -z "$maxTreeDepth" ]]; then
-    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info $input 2> _debug/t.log
+    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info --trace-output=_debug/trace.log $input 2> _debug/t.log
   else
-    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
+    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-val --trace-print-extra-info --trace-output=_debug/trace.log --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
   fi
 
   echo ""

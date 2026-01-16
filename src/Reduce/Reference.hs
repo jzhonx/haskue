@@ -6,7 +6,6 @@
 
 module Reduce.Reference where
 
-import qualified AST
 import Control.Monad (when)
 import Control.Monad.Reader (asks)
 import Cursor
@@ -16,6 +15,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
+import Debug.Trace (trace)
 import DepGraph
 import Feature
 import Reduce.Monad (
@@ -37,6 +37,8 @@ import Reduce.TraceSpan (
   traceSpanRMTC,
  )
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..))
+import Syntax.AST (getNodeLoc)
+import Syntax.Token (Location (..))
 import Text.Printf (printf)
 import Value
 import Value.Export.Debug (treeToFullRepString)
@@ -361,17 +363,12 @@ markRecurClosed val = do
         )
         vc
 
-notFoundMsg :: TextIndex -> Maybe AST.Position -> RM String
-notFoundMsg ident (Just AST.Position{AST.posStart = pos, AST.posFile = fM}) = do
+notFoundMsg :: TextIndex -> Maybe Location -> RM String
+notFoundMsg ident locM = do
   idStr <- tshow ident
-  return $
-    printf
-      "reference %s is not found:\n\t%s:%s:%s"
-      (show idStr)
-      (fromMaybe "-" fM)
-      (show $ AST.posLine pos)
-      (show $ AST.posColumn pos)
-notFoundMsg ident pinfo = throwFatal $ printf "position %s is not enough for identifier %s" (show pinfo) (show ident)
+  case locM of
+    Nothing -> return $ printf "reference %s is not found" (show idStr)
+    Just loc -> do return $ printf "reference %s is not found:\n\t%s" (show idStr) (show loc)
 
 data LocateRefResult
   = LRIdentNotFound Val
@@ -396,7 +393,7 @@ locateRef fieldPath vc = do
   ident <- selToIdent fstSel
   searchTCIdent False ident vc >>= \case
     Nothing -> do
-      errMsg <- notFoundMsg ident (origExpr (focus vc) >>= AST.anPos)
+      errMsg <- notFoundMsg ident (getNodeLoc <$> origExpr (focus vc))
       return . LRIdentNotFound $ mkBottomVal errMsg
     Just (identTC, _) -> do
       -- The ref is non-empty, so the rest must be a valid addr.

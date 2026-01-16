@@ -8,12 +8,13 @@
 
 module Value.Op where
 
-import qualified AST
 import Control.DeepSeq (NFData (..))
 import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
 import Feature (Feature, mkMutArgFeature)
 import GHC.Generics (Generic)
+import qualified Syntax.AST as AST
+import Syntax.Token as Token
 import Value.Comprehension
 import Value.DisjoinOp
 import Value.Interpolation
@@ -87,8 +88,8 @@ data RegularOp = RegularOp
   deriving (Generic)
 
 data RegOpType
-  = UnaryOpType AST.UnaryOp
-  | BinOpType AST.BinaryOp
+  = UnaryOpType TokenType
+  | BinOpType TokenType
   | CloseFunc
   | InvalidOpType
   deriving (Eq, Show, Generic, NFData)
@@ -101,7 +102,7 @@ emptyRegularOp =
     , ropArgs = Seq.empty
     }
 
-mkUnaryOp :: AST.UnaryOp -> Val -> SOp
+mkUnaryOp :: TokenType -> Val -> SOp
 mkUnaryOp op n =
   withEmptyOpFrame $
     RegOp $
@@ -111,7 +112,7 @@ mkUnaryOp op n =
         , ropArgs = Seq.fromList [n]
         }
 
-mkBinaryOp :: AST.BinaryOp -> Val -> Val -> SOp
+mkBinaryOp :: TokenType -> Val -> Val -> SOp
 mkBinaryOp op l r =
   withEmptyOpFrame $
     RegOp $

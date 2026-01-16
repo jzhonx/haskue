@@ -10,8 +10,6 @@
 
 module Value.Val where
 
-import AST (exprToOneLinerStr)
-import qualified AST
 import Control.Monad.Except (runExcept)
 import Control.Monad.State.Strict (gets, modify')
 import Data.Maybe (fromJust, isJust)
@@ -31,6 +29,8 @@ import Feature (
  )
 import GHC.Generics (Generic)
 import StringIndex (HasTextIndexer (..), TextIndexerMonad, getTextIndexer, textToTextIndex)
+import Syntax.AST (exprToOneLinerStr)
+import qualified Syntax.AST as AST
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
@@ -377,8 +377,8 @@ addrToVals p = do
     _ -> return Nothing
 
 -- built-in functions
-builtinMutableTable :: [(String, Val)]
-builtinMutableTable =
+builtinFuncTable :: [(String, Val)]
+builtinFuncTable =
   [
     ( "close"
     , mkMutableVal $

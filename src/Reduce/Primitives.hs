@@ -3,11 +3,9 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Reduce.Primitives where
 
-import qualified AST
 import Control.Monad (foldM)
 import Cursor
 import Data.Foldable (toList)
@@ -22,6 +20,8 @@ import Reduce.Monad (
   modifyTMVN,
   throwFatal,
  )
+import Syntax.Token (TokenType)
+import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
 
@@ -30,29 +30,36 @@ import Value
 retVal :: (Monad m) => Val -> m (Maybe Val)
 retVal = return . Just
 
-resolveUnaryOp :: (Monad m) => AST.UnaryOp -> Maybe Val -> m (Maybe Val)
+resolveUnaryOp :: (Monad m) => TokenType -> Maybe Val -> m (Maybe Val)
 resolveUnaryOp op tM = do
   case tM of
     Just (IsBottom _) -> return tM
-    Just t | Just a <- rtrAtom t -> case (AST.anVal op, a) of
-      (AST.Plus, Int i) -> ia i id
-      (AST.Plus, Float i) -> fa i id
-      (AST.Minus, Int i) -> ia i negate
-      (AST.Minus, Float i) -> fa i negate
-      (AST.Not, Bool b) -> retVal (mkAtomVal (Bool (not b)))
-      (AST.UnaRelOp uop, _) -> case (uop, a) of
-        (AST.NE, x) -> mkb (BdNE x)
-        (AST.LT, Int i) -> mkib BdLT i
-        (AST.LT, Float f) -> mkfb BdLT f
-        (AST.LE, Int i) -> mkib BdLE i
-        (AST.LE, Float f) -> mkfb BdLE f
-        (AST.GT, Int i) -> mkib BdGT i
-        (AST.GT, Float f) -> mkfb BdGT f
-        (AST.GE, Int i) -> mkib BdGE i
-        (AST.GE, Float f) -> mkfb BdGE f
-        (AST.ReMatch, String p) -> retVal (mkBoundsValFromList [BdStrMatch $ BdReMatch p])
-        (AST.ReNotMatch, String p) -> retVal (mkBoundsValFromList [BdStrMatch $ BdReNotMatch p])
-        _ -> returnErr t
+    Just t | Just a <- rtrAtom t -> case op of
+      Token.Plus
+        | Int i <- a -> ia i id
+        | Float f <- a -> fa f id
+      Token.Minus
+        | Int i <- a -> ia i negate
+        | Float f <- a -> fa f negate
+      Token.Exclamation
+        | Bool b <- a -> retVal (mkAtomVal (Bool (not b)))
+      Token.NotEqual -> mkb (BdNE a)
+      Token.Less
+        | Int i <- a -> mkib BdLT i
+        | Float f <- a -> mkfb BdLT f
+      Token.LessEqual
+        | Int i <- a -> mkib BdLE i
+        | Float f <- a -> mkfb BdLE f
+      Token.Greater
+        | Int i <- a -> mkib BdGT i
+        | Float f <- a -> mkfb BdGT f
+      Token.GreaterEqual
+        | Int i <- a -> mkib BdGE i
+        | Float f <- a -> mkfb BdGE f
+      Token.Match
+        | String p <- a -> retVal (mkBoundsValFromList [BdStrMatch $ BdReMatch p])
+      Token.NotMatch
+        | String p <- a -> retVal (mkBoundsValFromList [BdStrMatch $ BdReNotMatch p])
       _ -> returnErr t
     _ -> return Nothing
  where
@@ -70,19 +77,18 @@ resolveUnaryOp op tM = do
 
 -- * Regular Binary Ops
 
-resolveRegBinOp ::
-  AST.BinaryOp -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
+resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
 resolveRegBinOp op t1M t2M _ = resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
-  AST.BinaryOp ->
+  TokenType ->
   (BinOpDirect, Maybe Val) ->
   (BinOpDirect, Maybe Val) ->
   RM (Maybe Val)
-resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
+resolveRegBinDir op (d1, t1M) (d2, t2M) = do
   if
-    | opv `elem` cmpOps -> return $ cmp (opv == AST.Equ) (d1, t1M) (d2, t2M)
-    | opv `elem` arithOps -> case (t1M, t2M) of
+    | op `elem` cmpOps -> return $ cmp (op == Token.Equal) (d1, t1M) (d2, t2M)
+    | op `elem` arithOps -> case (t1M, t2M) of
         -- First consider when either of the trees is bottom.
         (Just (IsBottom _), _) -> return t1M
         (_, Just (IsBottom _)) -> return t2M
@@ -99,10 +105,10 @@ resolveRegBinDir op@(AST.anVal -> opv) (d1, t1M) (d2, t2M) = do
         _ -> return Nothing
     | otherwise ->
         throwFatal $
-          printf "regular binary op %s is not supported for %s and %s" (show $ AST.anVal op) (show t1M) (show t2M)
+          printf "regular binary op %s is not supported for %s and %s" (show op) (show t1M) (show t2M)
  where
-  cmpOps = [AST.Equ, AST.BinRelOp AST.NE]
-  arithOps = [AST.Add, AST.Sub, AST.Mul, AST.Div]
+  cmpOps = [Token.Equal, Token.NotEqual, Token.Less, Token.LessEqual, Token.Greater, Token.GreaterEqual]
+  arithOps = [Token.Plus, Token.Minus, Token.Multiply, Token.Divide]
 
 cmp :: Bool -> (BinOpDirect, Maybe Val) -> (BinOpDirect, Maybe Val) -> Maybe Val
 cmp cmpEqu (d1, t1M) (d2, t2M) =
@@ -135,29 +141,29 @@ cmpNull cmpEqu t =
     -- There is no way for a non-atom to be compared with a non-null atom.
     | otherwise -> mkAtomVal (Bool $ not cmpEqu)
 
-calc :: AST.BinaryOp -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Val
-calc op@(AST.anVal -> opv) (L, a1) (_, a2) =
+calc :: TokenType -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Val
+calc op (L, a1) (_, a2) =
   case a1 of
     Int i1
-      | Int i2 <- a2, Just f <- lookup opv regIntOps -> ri (f i1 i2)
-      | Int i2 <- a2, opv == AST.Div -> rf (fromIntegral i1 / fromIntegral i2)
-      | Float f2 <- a2, Just f <- lookup opv floatOps -> rf (f (fromIntegral i1) f2)
+      | Int i2 <- a2, Just f <- lookup op regIntOps -> ri (f i1 i2)
+      | Int i2 <- a2, op == Token.Divide -> rf (fromIntegral i1 / fromIntegral i2)
+      | Float f2 <- a2, Just f <- lookup op floatOps -> rf (f (fromIntegral i1) f2)
     Float f1
-      | Float f2 <- a2, Just f <- lookup opv floatOps -> rf (f f1 f2)
-      | Int i2 <- a2, Just f <- lookup opv floatOps -> rf (f f1 (fromIntegral i2))
+      | Float f2 <- a2, Just f <- lookup op floatOps -> rf (f f1 f2)
+      | Int i2 <- a2, Just f <- lookup op floatOps -> rf (f f1 (fromIntegral i2))
     String s1
-      | String s2 <- a2, opv == AST.Add -> mkAtomVal (String $ s1 <> s2)
+      | String s2 <- a2, op == Token.Plus -> mkAtomVal (String $ s1 <> s2)
     _ -> mismatch op a1 a2
  where
   ri = mkAtomVal . Int
   rf = mkAtomVal . Float
 
-  regIntOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*))]
-  floatOps = [(AST.Add, (+)), (AST.Sub, (-)), (AST.Mul, (*)), (AST.Div, (/))]
+  regIntOps = [(Token.Plus, (+)), (Token.Minus, (-)), (Token.Multiply, (*))]
+  floatOps = [(Token.Plus, (+)), (Token.Minus, (-)), (Token.Multiply, (*)), (Token.Divide, (/))]
 calc op x@(R, _) y = calc op y x
 
-mismatch :: (Show a, Show b) => AST.BinaryOp -> a -> b -> Val
-mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show $ AST.anVal op) (show x) (show y)
+mismatch :: (Show a, Show b) => TokenType -> a -> b -> Val
+mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
 reduceList :: List -> RM ()
 reduceList l = do

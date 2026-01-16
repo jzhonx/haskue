@@ -7,8 +7,10 @@ module StringIndex where
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState, gets, modify')
 import Data.Aeson (ToJSON, ToJSONKey, Value, toJSON)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
@@ -130,3 +132,6 @@ textToTextIndex t = do
 
 strToTextIndex :: (TextIndexerMonad s m) => String -> m TextIndex
 strToTextIndex s = textToTextIndex (T.pack s)
+
+bsToTextIndex :: (TextIndexerMonad s m) => BC.ByteString -> m TextIndex
+bsToTextIndex bs = textToTextIndex (TE.decodeUtf8 bs)

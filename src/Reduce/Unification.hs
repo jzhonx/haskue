@@ -6,7 +6,6 @@
 
 module Reduce.Unification where
 
-import qualified AST
 import Control.Monad (foldM, forM, when)
 import Control.Monad.Except (modifyError)
 import Control.Monad.Reader (asks, local)
@@ -56,6 +55,7 @@ import Reduce.TraceSpan (
   traceSpanTM,
  )
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..))
+import qualified Syntax.AST as AST
 import Text.Printf (printf)
 import Value
 import Value.Export.Debug (treeToRepString)

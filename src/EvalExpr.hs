@@ -7,20 +7,31 @@
 
 module EvalExpr where
 
-import AST
 import Control.Monad (foldM)
+import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Reduce.Monad (RM, allocRMObjID, throwFatal)
-import StringIndex (ShowWTIndexer (..), TextIndex, textToTextIndex)
+import StringIndex (ShowWTIndexer (..), TextIndex, bsToTextIndex, textToTextIndex)
+import Syntax.AST
+import qualified Syntax.AST as AST
+import Syntax.Token (
+  Token,
+  TokenType (Disjoin, Exclamation, QuestionMark, Unify),
+  emptyLoc,
+  tkLiteral,
+  tkLiteralToText,
+  tkType,
+ )
+import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
 
 evalSourceFile :: SourceFile -> RM Val
-evalSourceFile (SourceFile decls) = evalStructLit (pure $ StructLit decls)
+evalSourceFile (SourceFile decls) = evalStructLit (StructLit emptyLoc decls emptyLoc)
 
 {- | evalExpr and all expr* should return the same level tree cursor.
 The label and the evaluated result of the expression will be added to the input tree cursor, making the tree one
@@ -31,32 +42,42 @@ tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
 evalExpr :: Expression -> RM Val
 evalExpr e = do
-  t <- case anVal e of
-    (ExprUnaryExpr ue) -> evalUnaryExpr ue
-    (ExprBinaryOp op e1 e2) -> evalBinary op e1 e2
+  t <- case e of
+    (Unary ue) -> evalUnaryExpr ue
+    (Binary op e1 e2) -> evalBinary op.tkType e1 e2
   return $ setExpr (Just e) t
 
 evalLiteral :: Literal -> RM Val
-evalLiteral (anVal -> LitStructLit s) = evalStructLit s
-evalLiteral (anVal -> ListLit l) = evalListLit l
-evalLiteral (anVal -> StringLit (anVal -> SimpleStringL s)) = do
-  rE <- simpleStringLitToStr s
-  return $ case rE of
-    Left t -> t
-    Right str -> mkAtomVal $ String str
-evalLiteral lit = return v
+evalLiteral (LitStruct s) = evalStructLit s
+evalLiteral (LitList (ListLit _ l _)) = evalListLit l
+evalLiteral (LitBasic a)
+  | (StringLit (SimpleStringL (SimpleStringLit _ segs))) <- a = segsToStrAtom segs
+  | (StringLit (MultiLineStringL (MultiLineStringLit _ segs))) <- a = segsToStrAtom segs
  where
-  v = case anVal lit of
-    IntLit i -> mkAtomVal $ Int i
-    FloatLit a -> mkAtomVal $ Float a
-    BoolLit b -> mkAtomVal $ Bool b
-    NullLit -> mkAtomVal Null
-    TopLit -> mkNewVal VNTop
-    BottomLit -> mkBottomVal ""
-    _ -> error "evalLiteral: invalid literal"
+  segsToStrAtom segs = do
+    rE <- strLitSegsToStr segs
+    return $ case rE of
+      Left t -> t
+      Right str -> mkAtomVal $ String str
+evalLiteral (LitBasic a) = case a of
+  IntLit i -> do
+    let v = read (BC.unpack (tkLiteral i)) :: Integer
+    return $ mkAtomVal $ Int v
+  FloatLit f -> do
+    let v = read (BC.unpack (tkLiteral f)) :: Double
+    return $ mkAtomVal $ Float v
+  BoolLit b -> do
+    v <- case BC.unpack (tkLiteral b) of
+      "true" -> return True
+      "false" -> return False
+      _ -> throwFatal $ printf "invalid boolean literal: %s" (show b)
+    return $ mkAtomVal $ Bool v
+  NullLit _ -> return $ mkAtomVal Null
+  -- TopLit -> mkNewVal VNTop
+  BottomLit _ -> return $ mkBottomVal ""
 
 evalStructLit :: StructLit -> RM Val
-evalStructLit (anVal -> StructLit decls) = do
+evalStructLit (StructLit _ decls _) = do
   sid <- allocRMObjID
   elems <- mapM evalDecl decls
   res <-
@@ -75,19 +96,19 @@ evalStructLit (anVal -> StructLit decls) = do
           return $ mkMutableVal (mkEmbedUnifyOp $ res{embType = ETEnclosing} : embeds)
     _ -> return res
 
-simpleStringLitToStr :: SimpleStringLit -> RM (Either Val T.Text)
-simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
+strLitSegsToStr :: [StringLitSeg] -> RM (Either Val T.Text)
+strLitSegsToStr segs = do
+  -- TODO: efficiency
   (asM, aSegs, aExprs) <-
     foldM
       ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
-          UnicodeVal x ->
+          UnicodeChars x ->
             return
-              -- TODO: efficiency
-              ( maybe (Just (T.singleton x)) (\y -> Just $ T.snoc y x) accCurStrM
+              ( Just x
               , accItpSegs
               , accItpExprs
               )
-          InterpolationStr (anVal -> AST.Interpolation e) -> do
+          AST.Interpolation _ e -> do
             t <- evalExpr e
             -- First append the current string segment to the accumulator if the current string segment exists, then
             -- append the interpolation segment. Finally reset the current string segment to Nothing.
@@ -109,29 +130,33 @@ simpleStringLitToStr (anVal -> SimpleStringLit segs) = do
 
 -- | Evaluates a declaration.
 evalDecl :: Declaration -> RM StructElemAdder
-evalDecl decl = case anVal decl of
-  AST.Embedding ed -> do
+evalDecl decl = case decl of
+  Embedding ed -> do
     v <- evalEmbedding False ed
     return $ EmbedSAdder v
-  EllipsisDecl (anVal -> Ellipsis cM) ->
+  EllipsisDecl (Ellipsis _ cM) ->
     maybe
       (return EmptyAdder) -- TODO: implement real ellipsis handling
       (\_ -> throwFatal "default constraints are not implemented yet")
       cM
-  FieldDecl (anVal -> AST.Field ls e) ->
+  FieldDecl (AST.Field ls e) ->
     evalFDeclLabels ls e
-  DeclLet (anVal -> LetClause ident binde) -> do
-    idIdx <- textToTextIndex (anVal ident)
+  DeclLet (LetClause _ ident binde) -> do
+    idIdx <- identTokenToTextIndex ident
     val <- evalExpr binde
     return $ LetSAdder idIdx val
 
-evalEmbedding :: Bool -> AST.Embedding -> RM Val
-evalEmbedding _ (anVal -> AliasExpr e) = evalExpr e
+identTokenToTextIndex :: Token -> RM TextIndex
+identTokenToTextIndex tk = case tk.tkType of
+  Token.Identifier -> bsToTextIndex tk.tkLiteral
+  _ -> throwFatal $ printf "expected identifier token, got %s" (show tk)
+
+evalEmbedding :: Bool -> Embedding -> RM Val
+evalEmbedding _ (AliasExpr e) = evalExpr e
 evalEmbedding
   isListCompreh
-  ( anVal ->
-      EmbedComprehension
-        (anVal -> AST.Comprehension (anVal -> Clauses (anVal -> GuardClause ge) cls) lit)
+  ( EmbedComprehension
+      (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit)
     ) = do
     gev <- evalExpr ge
     clsv <- mapM evalClause cls
@@ -139,42 +164,38 @@ evalEmbedding
     return $ mkMutableVal $ withEmptyOpFrame $ Compreh $ mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
 evalEmbedding
   isListCompreh
-  ( anVal ->
-      EmbedComprehension (anVal -> AST.Comprehension (anVal -> Clauses (anVal -> ForClause i jM fe) cls) lit)
-    ) = do
+  (EmbedComprehension (AST.Comprehension (Clauses (ForClause _ i jM fe) cls) lit)) = do
     fev <- evalExpr fe
     clsv <- mapM evalClause cls
     sv <- evalStructLit lit
-    iidx <- textToTextIndex (anVal i)
+    iidx <- identTokenToTextIndex i
     jidxM <- case jM of
-      Just j -> Just <$> textToTextIndex (anVal j)
+      Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
     return $
       mkMutableVal $
         withEmptyOpFrame $
           Compreh $
             mkComprehension isListCompreh (ComprehArgFor iidx jidxM fev : clsv) sv
-evalEmbedding _ _ = throwFatal "invalid embedding"
 
 evalClause :: Clause -> RM ComprehArg
-evalClause c = case anVal c of
-  ClauseStartClause (anVal -> GuardClause e) -> do
+evalClause c = case c of
+  ClauseStart (GuardClause _ e) -> do
     t <- evalExpr e
     return $ ComprehArgIf t
-  ClauseStartClause (anVal -> ForClause (anVal -> i) jM e) -> do
-    iidx <- textToTextIndex i
+  ClauseStart (ForClause _ i jM e) -> do
+    iidx <- identTokenToTextIndex i
     jidxM <- case jM of
-      Just j -> Just <$> textToTextIndex (anVal j)
+      Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
     t <- evalExpr e
     return $ ComprehArgFor iidx jidxM t
-  ClauseLetClause (anVal -> LetClause (anVal -> ident) le) -> do
-    idIdx <- textToTextIndex ident
+  ClauseLet (LetClause _ ident le) -> do
+    idIdx <- identTokenToTextIndex ident
     lt <- evalExpr le
     return $ ComprehArgLet idIdx lt
-  _ -> throwFatal $ printf "invalid clause: %s" (show c)
 
-evalFDeclLabels :: [AST.Label] -> AST.Expression -> RM StructElemAdder
+evalFDeclLabels :: [Label] -> Expression -> RM StructElemAdder
 evalFDeclLabels lbls e =
   case lbls of
     [] -> throwFatal "empty labels"
@@ -190,19 +211,19 @@ evalFDeclLabels lbls e =
         mkAdder l1 val
  where
   mkAdder :: Label -> Val -> RM StructElemAdder
-  mkAdder (anVal -> Label le) val = case anVal le of
-    AST.LabelName ln c ->
+  mkAdder (Label le) val = case le of
+    LabelName ln c ->
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
        in case ln of
             (toIDentLabel -> Just key) -> do
-              keyIdx <- textToTextIndex key
+              keyIdx <- identTokenToTextIndex key
               return $ StaticSAdder keyIdx (staticFieldMker val attr)
             (toDynLabel -> Just se) -> do
               selTree <- evalExpr se
               oid <- allocRMObjID
               return $ DynamicSAdder oid (DynamicField oid attr selTree False val)
-            (toSStrLabel -> Just ss) -> do
-              rE <- simpleStringLitToStr ss
+            (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
+              rE <- strLitSegsToStr segs
               case rE of
                 Right str -> do
                   strIdx <- textToTextIndex str
@@ -211,32 +232,31 @@ evalFDeclLabels lbls e =
                   oid <- allocRMObjID
                   return $ DynamicSAdder oid (DynamicField oid attr t True val)
             _ -> throwFatal "invalid label"
-    AST.LabelPattern pe -> do
+    LabelExpr _ pe _ -> do
       pat <- evalExpr pe
       oid <- allocRMObjID
       return (CnstrSAdder oid pat val)
 
-  -- Returns the label name and the whether the label is static.
-  toIDentLabel :: LabelName -> Maybe T.Text
-  toIDentLabel (anVal -> LabelID (anVal -> ident)) = Just ident
+  -- Returns the label identifier and the whether the label is static.
+  toIDentLabel :: LabelName -> Maybe Token
+  toIDentLabel (LabelID ident) = Just ident
   toIDentLabel _ = Nothing
 
-  toDynLabel :: LabelName -> Maybe AST.Expression
-  toDynLabel (anVal -> LabelNameExpr lne) = Just lne
+  toDynLabel :: LabelName -> Maybe Expression
+  toDynLabel (LabelNameExpr _ lne _) = Just lne
   toDynLabel _ = Nothing
 
-  toSStrLabel :: LabelName -> Maybe AST.SimpleStringLit
-  toSStrLabel (anVal -> LabelString ls) = Just ls
+  toSStrLabel :: LabelName -> Maybe SimpleStringLit
+  toSStrLabel (LabelString ls) = Just ls
   toSStrLabel _ = Nothing
 
-  cnstrFrom :: AST.LabelConstraint -> StructFieldCnstr
-  cnstrFrom c = case c of
-    RegularLabel -> SFCRegular
-    OptionalLabel -> SFCOptional
-    RequiredLabel -> SFCRequired
+  cnstrFrom :: Maybe TokenType -> StructFieldCnstr
+  cnstrFrom (Just QuestionMark) = SFCOptional
+  cnstrFrom (Just Exclamation) = SFCRequired
+  cnstrFrom _ = SFCRegular
 
   isVar :: LabelName -> Bool
-  isVar (anVal -> LabelID _) = True
+  isVar (LabelID _) = True
   -- Labels which are quoted or expressions are not variables.
   isVar _ = False
 
@@ -305,45 +325,48 @@ insertElemToStruct adder struct = case adder of
       ([_, _], _) -> Just $ aliasErr name
       _ -> Nothing
 
-evalListLit :: AST.ElementList -> RM Val
-evalListLit (anVal -> AST.EmbeddingList es) = do
+evalListLit :: ElementList -> RM Val
+evalListLit (EmbeddingList es) = do
   xs <- mapM (evalEmbedding True) es
   return $ mkListVal xs []
 
 evalUnaryExpr :: UnaryExpr -> RM Val
 evalUnaryExpr ue = do
-  t <- case anVal ue of
-    UnaryExprPrimaryExpr primExpr -> evalPrimExpr primExpr
-    UnaryExprUnaryOp op e -> evalUnaryOp op e
-  return $ setExpr (Just (AST.ExprUnaryExpr ue <$ ue)) t
+  t <- case ue of
+    Primary primExpr -> evalPrimExpr primExpr
+    UnaryOp op e -> evalUnaryOp op.tkType e
+  return $ setExpr (Just (Unary ue)) t
 
 builtinOpNameTable :: [(String, Val)]
 builtinOpNameTable =
-  -- bounds
-  map (\b -> (show b, mkBoundsValFromList [BdType b])) [minBound :: BdType .. maxBound :: BdType]
+  -- built-in identifier names
+  [("_", mkNewVal VNTop)]
+    ++
+    -- bounds
+    map (\b -> (show b, mkBoundsValFromList [BdType b])) [minBound :: BdType .. maxBound :: BdType]
     -- built-in function names
     -- We use the function to distinguish the identifier from the string literal.
-    ++ builtinMutableTable
+    ++ builtinFuncTable
 
 evalPrimExpr :: PrimaryExpr -> RM Val
-evalPrimExpr e = case anVal e of
-  (PrimExprOperand op) -> case anVal op of
+evalPrimExpr e = case e of
+  (PrimExprOperand op) -> case op of
     OpLiteral lit -> evalLiteral lit
-    OperandName (anVal -> Identifier (anVal -> ident)) -> case lookup (T.unpack ident) builtinOpNameTable of
+    OpName (OperandName ident) -> case lookup (T.unpack (tkLiteralToText ident)) builtinOpNameTable of
       Just v -> return v
       Nothing -> do
-        idIdx <- textToTextIndex ident
+        idIdx <- identTokenToTextIndex ident
         return $ mkMutableVal $ withEmptyOpFrame $ Ref $ emptyIdentRef idIdx
-    OpExpression expr -> do
+    OpExpression _ expr _ -> do
       x <- evalExpr expr
       return $ x{isRootOfSubVal = True}
-  (PrimExprSelector primExpr sel) -> do
+  (PrimExprSelector primExpr _ sel) -> do
     p <- evalPrimExpr primExpr
     evalSelector e sel p
-  (PrimExprIndex primExpr idx) -> do
+  (PrimExprIndex primExpr _ idx _) -> do
     p <- evalPrimExpr primExpr
     evalIndex e idx p
-  (PrimExprArguments primExpr aes) -> do
+  (PrimExprArguments primExpr _ aes _) -> do
     p <- evalPrimExpr primExpr
     args <- mapM evalExpr aes
     replaceFuncArgs p args
@@ -369,21 +392,19 @@ Parameters:
 For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structValAddr is "x".
 -}
-evalSelector ::
-  PrimaryExpr -> AST.Selector -> Val -> RM Val
+evalSelector :: PrimaryExpr -> Selector -> Val -> RM Val
 evalSelector _ astSel oprnd = do
   let f sel = appendSelToRefVal oprnd (mkAtomVal (String sel))
-  case anVal astSel of
-    IDSelector ident -> return $ f (anVal ident)
-    AST.StringSelector s -> do
-      rE <- simpleStringLitToStr s
+  case astSel of
+    IDSelector ident -> return $ f (tkLiteralToText ident)
+    StringSelector (SimpleStringLit _ segs) -> do
+      rE <- strLitSegsToStr segs
       case rE of
         Left _ -> return $ mkBottomVal $ printf "selector should not have interpolation"
         Right str -> return $ f str
 
-evalIndex ::
-  PrimaryExpr -> AST.Index -> Val -> RM Val
-evalIndex _ (anVal -> AST.Index e) oprnd = do
+evalIndex :: PrimaryExpr -> Expression -> Val -> RM Val
+evalIndex _ e oprnd = do
   sel <- evalExpr e
   return $ appendSelToRefVal oprnd sel
 
@@ -391,24 +412,24 @@ evalIndex _ (anVal -> AST.Index e) oprnd = do
 
 unary operator should only be applied to atoms.
 -}
-evalUnaryOp :: UnaryOp -> UnaryExpr -> RM Val
+evalUnaryOp :: TokenType -> UnaryExpr -> RM Val
 evalUnaryOp op e = do
   t <- evalUnaryExpr e
-  let tWithE = setExpr (Just (AST.ExprUnaryExpr e <$ e)) t
+  let tWithE = setExpr (Just (Unary e)) t
   return $ mkMutableVal (mkUnaryOp op tWithE)
 
 {- | order of arguments is important for disjunctions.
 
 left is always before right.
 -}
-evalBinary :: BinaryOp -> Expression -> Expression -> RM Val
+evalBinary :: TokenType -> Expression -> Expression -> RM Val
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-evalBinary (anVal -> AST.Disjoin) e1 e2 = evalDisj e1 e2
+evalBinary Disjoin e1 e2 = evalDisj e1 e2
 evalBinary op e1 e2 = do
   lt <- evalExpr e1
   rt <- evalExpr e2
   case op of
-    (anVal -> AST.Unify) -> return $ flattenUnify lt rt
+    Unify -> return $ flattenUnify lt rt
     _ -> return $ mkMutableVal (mkBinaryOp op lt rt)
 
 flattenUnify :: Val -> Val -> Val
@@ -423,18 +444,18 @@ flattenUnify l r = case getLeftAcc of
 
 evalDisj :: Expression -> Expression -> RM Val
 evalDisj e1 e2 = do
-  ((isLStar, lt), (isRStar, rt)) <- case (anVal e1, anVal e2) of
-    ( ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1)
-      , ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se2)
+  ((isLStar, lt), (isRStar, rt)) <- case (e1, e2) of
+    ( Unary (UnaryOp (tkType -> Token.Multiply) se1)
+      , Unary (UnaryOp (tkType -> Token.Multiply) se2)
       ) -> do
         l <- evalUnaryExpr se1
         r <- evalUnaryExpr se2
         return ((,) True l, (,) True r)
-    (ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se1), _) -> do
+    (Unary (UnaryOp (tkType -> Token.Multiply) se1), _) -> do
       l <- evalUnaryExpr se1
       r <- evalExpr e2
       return ((,) True l, (,) False r)
-    (_, ExprUnaryExpr (anVal -> UnaryExprUnaryOp (anVal -> Star) se2)) -> do
+    (_, Unary (UnaryOp (tkType -> Token.Multiply) se2)) -> do
       l <- evalExpr e1
       r <- evalUnaryExpr se2
       return ((,) False l, (,) True r)

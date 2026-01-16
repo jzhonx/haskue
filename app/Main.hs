@@ -157,7 +157,7 @@ showTraceParser =
           <> value "https://ui.perfetto.dev"
       )
 
--- Main command parser
+-- | Main command parser
 commandParser :: Parser Command
 commandParser =
   subparser $

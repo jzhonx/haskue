@@ -15,7 +15,6 @@ extra-source-files: CHANGELOG.md
 
 library
     exposed-modules:  
-        AST,
         Cursor,
         DepGraph,
         Env,
@@ -23,7 +22,6 @@ library
         EvalExpr,
         Exception,
         Feature,
-        Parser,
         Reduce,
         Reduce.Comprehension,
         Reduce.Core,
@@ -37,6 +35,10 @@ library
         Reduce.TraceSpan,
         Reduce.Unification,
         StringIndex,
+        Syntax.AST,
+        Syntax.Parser,
+        Syntax.Scanner,
+        Syntax.Token,
         Util.Format,
         Util.ShowTrace,
         Util.Trace,
@@ -138,6 +140,7 @@ Test-Suite haskue-unit-test
   hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
+    ScannerTest,
     SpecTest,
   build-depends:
         base,

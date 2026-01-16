@@ -2,7 +2,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Value.Export.AST (
@@ -13,7 +12,6 @@ module Value.Export.AST (
 )
 where
 
-import qualified AST
 import Control.Monad (foldM)
 import Control.Monad.Except (Except, MonadError (..))
 import Control.Monad.RWS.Strict (RWST, runRWST)
@@ -25,8 +23,10 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexer, textToTextIndex)
+import qualified Syntax.AST as AST
+import Syntax.Token as Token
 import Text.Printf (printf)
-import Value.Atom
+import Value.Atom as Atom
 import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
@@ -59,8 +59,8 @@ buildExprExt :: Val -> EM AST.Expression
 buildExprExt t@Val{isSCyclic = True} = buildSCyclicASTExpr t
 buildExprExt t@(IsValMutable mut) | IsNoVal <- t = buildMutableASTExpr mut t
 buildExprExt t = case valNode t of
-  VNTop -> return $ AST.litCons (pure AST.TopLit)
-  VNBottom _ -> return $ AST.litCons (pure AST.BottomLit)
+  VNTop -> return $ AST.idCons "_"
+  VNBottom _ -> buildBottom
   VNAtom a -> return $ (AST.litCons . aToLiteral) a
   VNBounds b -> return $ buildBoundsASTExpr b
   VNStruct struct -> buildStructASTExpr struct t
@@ -69,10 +69,10 @@ buildExprExt t = case valNode t of
       mapM
         ( \x -> do
             e <- buildExprExt x
-            return $ pure $ AST.AliasExpr e
+            return $ AST.AliasExpr e
         )
         (toList l.final)
-    return $ AST.litCons $ AST.ListLit AST.<^> pure (AST.EmbeddingList ls)
+    return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls) emptyLoc
   VNDisj dj
     | null (rtrDisjDefVal dj) -> disjunctsToAST (dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
@@ -81,8 +81,11 @@ buildExprExt t = case valNode t of
   VNNoVal -> do
     isDebug <- asks isDebug
     if isDebug
-      then return (AST.idCons $ pure $ T.pack "NoVal")
+      then return $ AST.idCons "NoVal"
       else throwExprNotFound t
+
+buildBottom :: EM AST.Expression
+buildBottom = return $ AST.litCons (AST.LitBasic $ AST.BottomLit $ mkTypeToken Token.Bottom)
 
 throwExprNotFound :: Val -> EM a
 throwExprNotFound t = do
@@ -115,7 +118,7 @@ buildMutableASTExprForce (SOp mop _) t = case mop of
     ce <- buildComprehASTExpr cph
     return $
       AST.litCons $
-        AST.LitStructLit AST.<^> pure (AST.StructLit [AST.Embedding AST.<<^>> AST.EmbedComprehension AST.<^> ce])
+        AST.LitStruct (AST.StructLit emptyLoc [AST.Embedding (AST.EmbedComprehension ce)] emptyLoc)
   DisjOp dop -> buildDisjoinOpASTExpr dop t
   UOp u -> buildUnifyOpASTExpr u
   Itp _ -> throwExprNotFound t
@@ -124,7 +127,7 @@ buildFixASTExpr :: Fix -> Val -> EM AST.Expression
 buildFixASTExpr r t = do
   isDebug <- asks isDebug
   if isDebug
-    then return (AST.idCons $ pure $ T.pack "Fix")
+    then return (AST.idCons "Fix")
     else do
       if r.unknownExists
         then maybe (throwExprNotFound t) return (origExpr t)
@@ -143,15 +146,14 @@ buildStaticFieldExpr (sIdx, sf) = do
   e <- buildExprExt (ssfValue sf)
   let decl =
         AST.FieldDecl
-          AST.<^> pure
-            ( AST.Field
-                [ labelCons (ssfAttr sf) $
-                    if lbAttrIsIdent (ssfAttr sf)
-                      then AST.LabelID AST.<^> pure sel
-                      else AST.LabelString AST.<^> AST.strToSimpleStrLit sel
-                ]
-                e
-            )
+          ( AST.Field
+              [ labelCons (ssfAttr sf) $
+                  if lbAttrIsIdent (ssfAttr sf)
+                    then AST.LabelID (textIdentToken sel)
+                    else AST.LabelString $ AST.textToSimpleStrLit sel
+              ]
+              e
+          )
   return decl
 
 buildDynFieldExpr :: DynamicField -> EM AST.Declaration
@@ -160,26 +162,20 @@ buildDynFieldExpr sf = do
   ve <- buildExprExt (dsfValue sf)
   let decl =
         AST.FieldDecl
-          AST.<^> pure
-            ( AST.Field
-                [ labelCons
-                    (dsfAttr sf)
-                    ( if dsfLabelIsInterp sf
-                        then pure $ AST.LabelNameExpr le
-                        else pure $ AST.LabelNameExpr le
-                    )
-                ]
-                ve
-            )
+          ( AST.Field
+              [ labelCons
+                  (dsfAttr sf)
+                  (AST.LabelNameExpr emptyLoc le emptyLoc)
+              ]
+              ve
+          )
   return decl
 
 buildPatternExpr :: StructCnstr -> EM AST.Declaration
 buildPatternExpr pat = do
   pte <- buildExprExt (scsPattern pat)
   ve <- buildExprExt (scsValue pat)
-  return $
-    AST.FieldDecl
-      AST.<^> pure (AST.Field [labelPatternCons pte] ve)
+  return $ AST.FieldDecl (AST.Field [labelPatternCons pte] ve)
 
 buildLetExpr :: (TextIndex, Binding) -> EM AST.Declaration
 buildLetExpr (ident, binding) = do
@@ -187,23 +183,22 @@ buildLetExpr (ident, binding) = do
   ve <- buildExprExt binding.value
   let
     letClause :: AST.LetClause
-    letClause = pure (AST.LetClause (pure s) ve)
-  return (pure $ AST.DeclLet letClause)
+    letClause = AST.LetClause emptyLoc (textIdentToken s) ve
+  return (AST.DeclLet letClause)
 
 labelCons :: LabelAttr -> AST.LabelName -> AST.Label
 labelCons a ln =
   AST.Label
-    AST.<^> pure
-      ( AST.LabelName
-          ln
-          ( case lbAttrCnstr a of
-              SFCRegular -> AST.RegularLabel
-              SFCRequired -> AST.RequiredLabel
-              SFCOptional -> AST.OptionalLabel
-          )
-      )
+    ( AST.LabelName
+        ln
+        ( case lbAttrCnstr a of
+            SFCRegular -> Nothing
+            SFCRequired -> Just Exclamation
+            SFCOptional -> Just QuestionMark
+        )
+    )
 labelPatternCons :: AST.Expression -> AST.Label
-labelPatternCons le = AST.Label AST.<^> pure (AST.LabelPattern le)
+labelPatternCons le = AST.Label (AST.LabelExpr emptyLoc le emptyLoc)
 
 buildStructASTExpr :: Struct -> Val -> EM AST.Expression
 buildStructASTExpr struct t = do
@@ -220,7 +215,7 @@ buildStructASTExprDebug s _ = do
   lets <- mapM buildLetExpr (Map.toList $ stcBindings s)
   let
     decls = statics ++ dynamics ++ patterns ++ lets
-    e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
+    e = AST.litCons $ AST.LitStruct (AST.StructLit emptyLoc decls emptyLoc)
   return e
 
 buildStructASTExprNormal :: Struct -> Val -> EM AST.Expression
@@ -243,7 +238,7 @@ buildStructASTExprNormal s t = do
           labels
 
       let decls = fields
-          e = AST.litCons $ AST.LitStructLit AST.<^> pure (AST.StructLit decls)
+          e = AST.litCons $ AST.LitStruct (AST.StructLit emptyLoc decls emptyLoc)
       return e
     -- If not all dynamic fields can be resolved to string labels, we can not build the struct expression.
     Nothing ->
@@ -261,93 +256,80 @@ buildComprehASTExpr cph = do
   rest <- mapM buildIterClause (tail clauses)
 
   e <- buildExprExt (getValFromIterClause structTmpl)
-  sl <- case AST.anVal e of
-    AST.ExprUnaryExpr
-      ( AST.anVal ->
-          AST.UnaryExprPrimaryExpr
-            ( AST.anVal ->
-                AST.PrimExprOperand
-                  ( AST.anVal ->
-                      AST.OpLiteral
-                        (AST.anVal -> AST.LitStructLit l)
-                    )
-              )
-        ) -> return l
+  sl <- case e of
+    AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l)))) -> return l
     _ -> throwErrSt "struct lit is not found"
   return $
-    pure $
-      AST.Comprehension (pure $ AST.Clauses (pure start) (map pure rest)) sl
+    AST.Comprehension (AST.Clauses start rest) sl
  where
   buildStartClause clause = case clause of
     ComprehArgIf val -> do
       ve <- buildExprExt val
-      return (AST.GuardClause ve)
+      return (AST.GuardClause emptyLoc ve)
     ComprehArgFor varNameIdx secVarIdxM val -> do
       varName <- tshow varNameIdx
       secVarM <- case secVarIdxM of
         Just sIdx -> Just <$> tshow sIdx
         Nothing -> return Nothing
       ve <- buildExprExt val
-      return (AST.ForClause (pure varName) (pure <$> secVarM) ve)
+      return (AST.ForClause emptyLoc (textIdentToken varName) (textIdentToken <$> secVarM) ve)
     _ -> throwErrSt "start clause should not be let clause"
 
   buildIterClause clause = case clause of
     ComprehArgLet varNameIdx val -> do
       varName <- tshow varNameIdx
       ve <- buildExprExt val
-      return $ AST.ClauseLetClause (pure $ AST.LetClause (pure varName) ve)
+      return $ AST.ClauseLet (AST.LetClause emptyLoc (textIdentToken varName) ve)
     _ -> do
       start <- buildStartClause clause
-      return $ AST.ClauseStartClause (pure start)
+      return $ AST.ClauseStart start
 
 buildBoundsASTExpr :: Bounds -> AST.Expression
-buildBoundsASTExpr bds = foldl1 (\acc x -> pure $ AST.ExprBinaryOp (pure AST.Unify) acc x) es
+buildBoundsASTExpr bds = foldl1 (AST.Binary (mkTypeToken Token.Unify)) es
  where
   es = map buildBoundASTExpr (bdsList bds)
 
 buildBoundASTExpr :: Bound -> AST.Expression
 buildBoundASTExpr b = case b of
-  BdNE a -> litOp AST.NE (AST.anVal $ aToLiteral a)
+  BdNE a -> litOp NotEqual (aToLiteral a)
   BdNumCmp (BdNumCmpCons o n) -> case o of
-    BdLT -> numOp AST.LT n
-    BdLE -> numOp AST.LE n
-    BdGT -> numOp AST.GT n
-    BdGE -> numOp AST.GE n
+    BdLT -> numOp Less n
+    BdLE -> numOp LessEqual n
+    BdGT -> numOp Greater n
+    BdGE -> numOp GreaterEqual n
   BdStrMatch m -> case m of
-    BdReMatch s -> litOp AST.ReMatch (AST.anVal $ AST.strToLit s)
-    BdReNotMatch s -> litOp AST.ReNotMatch (AST.anVal $ AST.strToLit s)
-  BdType t -> AST.idCons (pure $ T.pack (show t))
+    BdReMatch s -> litOp Match (AST.textToSimpleStrLiteral s)
+    BdReNotMatch s -> litOp NotMatch (AST.textToSimpleStrLiteral s)
+  BdType t -> AST.idCons (T.pack (show t))
   BdIsAtom a -> AST.litCons (aToLiteral a)
  where
-  litOp :: AST.RelOpNode -> AST.LiteralNode -> AST.Expression
+  litOp :: TokenType -> AST.Literal -> AST.Expression
   litOp op l =
-    let uop = pure $ AST.UnaRelOp op
-        ue = AST.PrimExprOperand AST.<<^>> AST.OpLiteral AST.<^> pure l
-     in AST.ExprUnaryExpr
-          AST.<<^>> AST.UnaryExprUnaryOp uop
-          AST.<<^>> AST.UnaryExprPrimaryExpr
-          AST.<^> ue
+    let
+      ue = AST.PrimExprOperand $ AST.OpLiteral l
+     in
+      AST.Unary $ AST.UnaryOp (mkTypeToken op) $ AST.Primary ue
 
-  numOp :: AST.RelOpNode -> Number -> AST.Expression
+  numOp :: TokenType -> Number -> AST.Expression
   numOp op n =
-    AST.ExprUnaryExpr
-      AST.<<^>> AST.UnaryExprUnaryOp (pure $ AST.UnaRelOp op)
-      AST.<<^>> AST.UnaryExprPrimaryExpr
-      AST.<<^>> AST.PrimExprOperand
-      AST.<<^>> AST.OpLiteral
-      AST.<^> case n of
-        NumInt i -> pure $ AST.IntLit i
-        NumFloat f -> pure $ AST.FloatLit f
+    AST.Unary $
+      AST.UnaryOp (mkTypeToken op) $
+        AST.Primary $
+          AST.PrimExprOperand $
+            AST.OpLiteral $
+              case n of
+                NumInt i -> aToLiteral (Atom.Int i)
+                NumFloat f -> aToLiteral (Atom.Float f)
 
 bdRep :: Bound -> String
 bdRep b = case b of
-  BdNE _ -> show AST.NE
+  BdNE _ -> show NotEqual
   BdNumCmp (BdNumCmpCons o _) -> show o
   BdStrMatch m -> case m of
-    BdReMatch _ -> show AST.ReMatch
-    BdReNotMatch _ -> show AST.ReNotMatch
+    BdReMatch _ -> show Match
+    BdReNotMatch _ -> show NotMatch
   BdType t -> show t
-  BdIsAtom _ -> "="
+  BdIsAtom _ -> show Assign
 
 disjunctsToAST :: [Val] -> EM AST.Expression
 disjunctsToAST ds = do
@@ -356,14 +338,11 @@ disjunctsToAST ds = do
   -- We might print unresolved disjunctions in debug mode with only one disjunct.
   if isDebug && length xs < 2
     then case xs of
-      [] -> return $ AST.litCons (pure AST.BottomLit)
+      [] -> buildBottom
       [x] -> return x
       _ -> throwErrSt "unreachable"
     else
-      return $
-        foldr1
-          (\x acc -> pure $ AST.ExprBinaryOp (pure AST.Disjoin) x acc)
-          xs
+      return $ foldr1 (AST.Binary (mkTypeToken Disjoin)) xs
 
 buildUnifyOpASTExpr :: UnifyOp -> EM AST.Expression
 buildUnifyOpASTExpr op
@@ -374,7 +353,7 @@ buildUnifyOpASTExpr op
       foldM
         ( \acc x -> do
             right <- buildExprExt x
-            return $ pure $ AST.ExprBinaryOp (pure AST.Unify) acc right
+            return $ AST.Binary (mkTypeToken Unify) acc right
         )
         leftMost
         rest
@@ -395,7 +374,7 @@ buildDisjoinOpASTExpr op t = do
         foldM
           ( \acc x -> do
               right <- buildExprExt (dstValue x)
-              return $ pure $ AST.ExprBinaryOp (pure AST.DisjoinDebugOp) acc right
+              return $ AST.Binary (mkTypeToken Disjoin) acc right
           )
           leftMost
           rest
@@ -405,37 +384,32 @@ buildRefASTExpr :: Reference -> EM AST.Expression
 buildRefASTExpr ref = case refArg ref of
   RefPath var xs -> do
     varS <- tshow var
-    let varE =
-          AST.PrimExprOperand
-            AST.<<^>> AST.OperandName
-            AST.<<^>> AST.Identifier
-            AST.<^> pure varS
+    let varE = AST.PrimExprOperand $ AST.OpName $ AST.OperandName (textIdentToken varS)
     r <-
       foldM
         ( \acc x -> do
             xe <- buildExprExt x
-            return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index xe)
+            return $ AST.PrimExprIndex acc emptyLoc xe emptyLoc
         )
         varE
         xs
-    return $ AST.ExprUnaryExpr AST.<^> pure (AST.UnaryExprPrimaryExpr r)
+    return $ AST.Unary (AST.Primary r)
   RefIndex xs -> do
     case xs of
       (x Seq.:<| rest) -> do
         xe <- buildExprExt x
-        v <- case AST.anVal xe of
-          AST.ExprUnaryExpr
-            (AST.anVal -> AST.UnaryExprPrimaryExpr v) -> return v
+        v <- case xe of
+          AST.Unary (AST.Primary v) -> return v
           _ -> throwErrSt "the first element of RefIndex should be a primary expression"
         r <-
           foldM
             ( \acc y -> do
                 ye <- buildExprExt y
-                return $ pure $ AST.PrimExprIndex acc (pure $ AST.Index ye)
+                return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
             )
             v
             rest
-        return $ AST.ExprUnaryExpr AST.<^> pure (AST.UnaryExprPrimaryExpr r)
+        return $ AST.Unary (AST.Primary r)
       _ -> throwErrSt "RefIndex should have at least one element"
 
 buildRegOpASTExpr :: RegularOp -> EM AST.Expression
@@ -444,34 +418,32 @@ buildRegOpASTExpr op = case ropOpType op of
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
   BinOpType bop
     | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-  CloseFunc -> return $ AST.litCons (AST.strToLit (T.pack "close func"))
+  CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (T.pack "close func"))
   _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
-buildUnaryExpr :: AST.UnaryOp -> Val -> EM AST.Expression
+buildUnaryExpr :: TokenType -> Val -> EM AST.Expression
 buildUnaryExpr op t = do
   te <- buildExprExt t
-  case AST.anVal te of
-    (AST.ExprUnaryExpr ue) -> return $ AST.ExprUnaryExpr AST.<<^>> AST.UnaryExprUnaryOp op AST.<^> ue
+  case te of
+    (AST.Unary ue) -> return $ AST.Unary $ AST.UnaryOp (mkTypeToken op) ue
     _ ->
       return $
-        AST.ExprUnaryExpr
-          AST.<<^>> AST.UnaryExprUnaryOp op
-          AST.<<^>> AST.UnaryExprPrimaryExpr
-          AST.<<^>> AST.PrimExprOperand
-          AST.<<^>> AST.OpExpression
-          AST.<^> te
+        AST.Unary $
+          AST.UnaryOp (mkTypeToken op) $
+            AST.Primary $
+              AST.PrimExprOperand $
+                AST.OpExpression emptyLoc te emptyLoc
 
-buildBinaryExpr :: AST.BinaryOp -> Val -> Val -> EM AST.Expression
+buildBinaryExpr :: TokenType -> Val -> Val -> EM AST.Expression
 buildBinaryExpr op l r = do
   xe <- buildExprExt l
   ye <- buildExprExt r
-  return $ pure $ AST.ExprBinaryOp op xe ye
+  return $ AST.Binary (mkTypeToken op) xe ye
 
 buildArgsExpr :: String -> [Val] -> EM AST.Expression
 buildArgsExpr func ts = do
   ets <- mapM buildExprExt ts
   return $
-    AST.ExprUnaryExpr
-      AST.<<^>> AST.UnaryExprPrimaryExpr
-      AST.<^> pure
-        (AST.PrimExprArguments (AST.idToPrimExpr (pure $ T.pack func)) ets)
+    AST.Unary $
+      AST.Primary
+        (AST.PrimExprArguments (AST.idToPrimExpr (T.pack func)) emptyLoc ets emptyLoc)

@@ -4,7 +4,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Eval (
   Config (..),
@@ -15,7 +14,6 @@ module Eval (
 )
 where
 
-import AST
 import Control.Monad (when)
 import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
@@ -39,10 +37,12 @@ import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter, stTr
 import qualified Env
 import EvalExpr (evalExpr, evalSourceFile)
 import Feature (rootFeature)
-import Parser (parseExpr, parseSourceFile)
 import Reduce (postValidation, reduce)
 import Reduce.Monad
 import StringIndex (TextIndexer)
+import Syntax.AST
+import Syntax.Parser (parseExpr, parseSourceFile)
+import Syntax.Scanner (scanTokens, scanTokensFromFile)
 import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
@@ -96,27 +96,11 @@ evalStr eStr conf
       case r of
         Left err -> return $ string7 err
         -- For the declaration result, we don't want to print the curly braces.
-        Right
-          ( anVal ->
-              AST.ExprUnaryExpr
-                ( anVal ->
-                    AST.UnaryExprPrimaryExpr
-                      ( anVal ->
-                          AST.PrimExprOperand
-                            ( anVal ->
-                                AST.OpLiteral
-                                  ( anVal ->
-                                      AST.LitStructLit
-                                        (anVal -> AST.StructLit decls)
-                                    )
-                              )
-                        )
-                  )
-            ) ->
-            return (declsToBuilder decls)
+        Right (Unary (Primary (PrimExprOperand (OpLiteral (LitStruct (StructLit _ decls _)))))) ->
+          return (declsToBuilder decls)
         Right e -> return $ exprToBuilder False e
 
-evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String AST.Expression)
+evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String Expression)
 evalStrToAST s conf = do
   (t, cs) <- evalStrToVal s conf
   case valNode t of
@@ -142,11 +126,25 @@ evalStrToJSON s conf = do
 
 strToCUEVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
 strToCUEVal s conf = do
-  e <- liftEither $ parseExpr s
+  tokens <-
+    liftEither
+      ( case scanTokens s of
+          Left errTk -> Left (show errTk)
+          Right ts -> Right ts
+      )
+  e <- liftEither $ do
+    parseExpr tokens
   mapErrToString $ evalVal (evalExpr e) conf
 
 evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
-evalStrToVal s conf = liftEither (parseSourceFile (ecFilePath conf) s) >>= flip evalFile conf
+evalStrToVal s conf = do
+  tokens <-
+    liftEither
+      ( case scanTokensFromFile (ecFilePath conf) s of
+          Left errTk -> Left (show errTk)
+          Right ts -> Right ts
+      )
+  liftEither (parseSourceFile tokens) >>= flip evalFile conf
 
 mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
 mapErrToString =
