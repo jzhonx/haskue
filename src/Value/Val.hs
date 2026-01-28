@@ -62,12 +62,6 @@ data ValNode
     VNNoVal
   deriving (Generic)
 
-data EmbedType
-  = ETNone
-  | ETEnclosing
-  | ETEmbedded !Int
-  deriving (Eq, Show, Generic)
-
 data Val = Val
   { valNode :: ValNode
   , wrappedBy :: ValNode
@@ -76,20 +70,13 @@ data Val = Val
   -- By default, it is noval.
   , origExpr :: Maybe AST.Expression
   -- ^ origExpr is the parsed expression.
+  -- If the op is not Nothing, then origExpr represents the op expression.
+  -- If the op is Nothing, then origExpr represents the value expression.
   , op :: Maybe SOp
   , isRecurClosed :: !Bool
   -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
   , isRootOfSubVal :: !Bool
   -- ^ isRootOfSubVal is used to indicate whether the tree is the root of a sub-tree formed by parentheses.
-  , isSCyclic :: !Bool
-  -- ^ isSCyclic is used to indicate whether the tree is cyclic.
-  -- According to the spec,
-  -- If a node a references an ancestor node, we call it and any of its field values a.f cyclic. So if a is cyclic, all
-  -- of its descendants are also regarded as cyclic.
-  , embType :: EmbedType
-  -- ^ embType is used to indicate whether the tree is embedded in a struct. If it is, by convention, the first
-  -- argument of a mutable should be the struct itself.
-  , tmpSub :: Maybe Val
   }
   deriving (Generic)
 
@@ -144,20 +131,20 @@ pattern IsValImmutable <- Val{op = Nothing}
 pattern IsRef :: SOp -> Reference -> Val
 pattern IsRef mut ref <- IsValMutable mut@(Op (Ref ref))
 
+pattern IsIndex :: SOp -> InplaceIndex -> Val
+pattern IsIndex mut idx <- IsValMutable mut@(Op (Index idx))
+
 pattern IsRegOp :: SOp -> RegularOp -> Val
 pattern IsRegOp mut rop <- IsValMutable mut@(Op (RegOp rop))
 
 pattern IsCompreh :: SOp -> Comprehension -> Val
 pattern IsCompreh mut comp <- IsValMutable mut@(Op (Compreh comp))
 
-pattern IsEmbedUnifyOp :: SOp -> Val
-pattern IsEmbedUnifyOp sop <- IsValMutable sop@(Op (UOp UnifyOp{hasEmbeds = True}))
+pattern IsEmbedUnifyOp :: SOp -> UnifyOp -> Val
+pattern IsEmbedUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify = True}))
 
-pattern IsStrictUnifyOp :: SOp -> Val
-pattern IsStrictUnifyOp sop <- IsValMutable sop@(Op (UOp UnifyOp{hasEmbeds = False}))
-
-pattern IsSCycle :: Val
-pattern IsSCycle <- Val{isSCyclic = True}
+pattern IsRegularUnifyOp :: SOp -> UnifyOp -> Val
+pattern IsRegularUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify = False}))
 
 -- = ValNode getters and setters =
 
@@ -175,6 +162,13 @@ supersedeVN tn t = t{valNode = tn, wrappedBy = valNode t}
 
 unwrapVN :: (Val -> ValNode) -> Val -> Val
 unwrapVN f t = t{valNode = f t, wrappedBy = VNNoVal}
+
+setValImmutable :: Val -> Val
+setValImmutable t = t{op = Nothing}
+
+invalidateMutable :: Val -> Val
+invalidateMutable t@(IsValMutable _) = t{valNode = VNNoVal}
+invalidateMutable t = t
 
 {- | Retrieve the value of non-union type.
 
@@ -276,11 +270,6 @@ rtrDisjDefVal d =
         | length dfs == 1 -> Just (head dfs)
         | otherwise -> Just $ mkDisjVal $ emptyDisj{dsjDisjuncts = dfs}
 
-isEmbedded :: Val -> Bool
-isEmbedded t = case embType t of
-  ETEmbedded _ -> True
-  _ -> False
-
 -- = Helpers =
 
 emptyVal :: Val
@@ -292,13 +281,7 @@ emptyVal =
     , origExpr = Nothing
     , isRecurClosed = False
     , isRootOfSubVal = False
-    , isSCyclic = False
-    , embType = ETNone
-    , tmpSub = Nothing
     }
-
-setValImmutable :: Val -> Val
-setValImmutable t = t{op = Nothing}
 
 mkNewVal :: ValNode -> Val
 mkNewVal n = emptyVal{valNode = n}
@@ -339,12 +322,14 @@ mkStructVal s = mkNewVal (VNStruct s)
 singletonNoVal :: Val
 singletonNoVal = mkNewVal VNNoVal
 
--- | Create an index function node.
-appendSelToRefVal :: Val -> Val -> Val
-appendSelToRefVal oprnd selArg = case oprnd of
-  IsValMutable mut@(Op (Ref ref)) ->
-    mkMutableVal $ setOpInSOp (Ref $ ref{refArg = appendRefArg selArg (refArg ref)}) mut
-  _ -> mkMutableVal $ withEmptyOpFrame $ Ref $ mkIndexRef (Seq.fromList [oprnd, selArg])
+-- | Create an index or reference to select val from an operand.
+selectValFromVal :: Val -> Val -> Val
+selectValFromVal oprnd selArg = case oprnd of
+  IsValMutable sop@(Op (Ref ref)) ->
+    mkMutableVal $ setOpInSOp (Ref $ appendRefArg selArg ref) sop
+  IsValMutable sop@(Op (Index index)) ->
+    mkMutableVal $ setOpInSOp (Index $ appendInplaceIndexArg selArg index) sop
+  _ -> mkMutableVal $ withEmptyOpFrame $ Index $ InplaceIndex (Seq.fromList [oprnd, selArg])
 
 valsToFieldPath :: (TextIndexerMonad s m) => [Val] -> m (Maybe FieldPath)
 valsToFieldPath ts = do
@@ -404,10 +389,6 @@ oneLinerStringOfVal t = do
     Right (expr, newTier) -> do
       modify' $ setTextIndexer newTier
       return $ T.pack $ exprToOneLinerStr expr
-
-invalidateMutable :: Val -> Val
-invalidateMutable t@(IsValMutable _) = t{valNode = VNNoVal}
-invalidateMutable t = t
 
 showValSymbol :: Val -> String
 showValSymbol t = case valNode t of

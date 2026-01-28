@@ -14,6 +14,7 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Feature (
@@ -173,12 +174,11 @@ buildCommonInfo t = do
     , if isRecurClosed t then "%#" else ""
     , if isJust (origExpr t) then "" else "N"
     , if isRootOfSubVal t then "R" else ""
-    , if isSCyclic t then "SC" else ""
-    , case t.embType of
-        ETNone -> ""
-        ETEnclosing -> "EC"
-        ETEmbedded i -> "EM_" ++ show i
-    , case t.op of
+    , -- , case t.embType of
+      --     ETNone -> ""
+      --     ETEnclosing -> "EC"
+      --     ETEmbedded i -> "EM_" ++ show i
+      case t.op of
         Just _ -> "TO"
         _ -> ""
     ]
@@ -213,56 +213,80 @@ buildRepValVN Val{valNode = tn} opt = case tn of
   _ -> return $ consRep ([], [], [])
 
 buildRepValMutable :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
-buildRepValMutable (IsValMutable mut@(SOp op _)) opt =
-  let
-    args =
-      if trboShowMutArgs opt
-        then map (\(j, v) -> (show j, mempty, v)) (toList $ getSOpArgs mut)
-        else []
-    metas = [("tgen", showOpType op)]
-   in
-    case op of
-      RegOp rop -> do
-        fields <- consFields args opt
-        return $ consTGenRep (("op", ropName rop) : metas, fields)
-      Ref ref -> do
-        fields <- consFields args opt
-        ra <- case ref.refArg of
-          RefPath s _ -> do
-            sStr <- tshow s
-            return $ T.unpack sStr
-          RefIndex _ -> return "<index>"
-        return $ consTGenRep (("ref", ra) : metas, fields)
-      Compreh c -> do
-        fields <- consFields args opt
-        bindings <-
-          mapM
-            ( \(k, v) -> do
-                kstr <- tshow k
-                vstr <- tshow v
-                return $ T.unpack kstr ++ ":" ++ T.unpack vstr
-            )
-            (Map.toList c.iterBindings)
-        return $ consTGenRep (metas ++ [("bindings", show bindings)], fields)
-      DisjOp d ->
-        let
-          terms =
-            if trboShowMutArgs opt
-              then
-                zipWith
-                  ( \j v ->
-                      (show (mkMutArgFeature j False), if dstMarked v then ",*" else "", dstValue v)
-                  )
-                  [0 ..]
-                  (toList $ djoTerms d)
-              else []
-         in
-          do
-            fields <- consFields terms opt
-            return $ consTGenRep (metas, fields)
-      _ -> do
-        fields <- consFields args opt
-        return $ consTGenRep (metas, fields)
+buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
+  args <-
+    if trboShowMutArgs opt
+      then
+        mapM
+          ( \(i, (f, v)) -> do
+              fT <- tshow f
+              meta <- case op of
+                Compreh c -> case c.args `Seq.index` i of
+                  ComprehArgLet j _ -> do
+                    jT <- tshow j
+                    return $ ",let," ++ T.unpack jT
+                  ComprehArgIf _ -> return ",if"
+                  ComprehArgFor p q _ -> do
+                    pT <- tshow p
+                    qT <- case q of
+                      Just qIdx -> tshow qIdx
+                      Nothing -> return ""
+                    return $ ",for," ++ T.unpack pT ++ (if T.null qT then "" else "," ++ T.unpack qT)
+                  ComprehArgTmpl _ -> return "tmpl"
+                  ComprehArgIterVal _ -> return "iterval"
+                _ -> return ""
+              return
+                ( T.unpack fT
+                , meta
+                , v
+                )
+          )
+          ( zip
+              [0 ..]
+              (toList $ getSOpArgs mut)
+          )
+      else return []
+  let metas = [("tgen", showOpType op)]
+  case op of
+    RegOp rop -> do
+      fields <- consFields args opt
+      return $ consTGenRep (("op", ropName rop) : metas, fields)
+    Ref ref -> do
+      fields <- consFields args opt
+      ra <- do
+        sStr <- tshow ref.ident
+        return $ T.unpack sStr
+      return $ consTGenRep (("ref", ra) : metas, fields)
+    Compreh c -> do
+      fields <- consFields args opt
+      bindings <-
+        mapM
+          ( \(k, v) -> do
+              kstr <- tshow k
+              vstr <- tshow v
+              return $ T.unpack kstr ++ ":" ++ T.unpack vstr
+          )
+          (Map.toList c.iterBindings)
+      return $ consTGenRep (metas ++ [("bindings", show bindings)], fields)
+    DisjOp d ->
+      let
+        terms =
+          if trboShowMutArgs opt
+            then
+              zipWith
+                ( \j v ->
+                    (show (mkMutArgFeature j False), if dstMarked v then ",*" else "", dstValue v)
+                )
+                [0 ..]
+                (toList $ djoTerms d)
+            else []
+       in
+        do
+          fields <- consFields terms opt
+          return $ consTGenRep (metas, fields)
+    _ -> do
+      fields <- consFields args opt
+      return $ consTGenRep (metas, fields)
 buildRepValMutable _ _ = return $ consTGenRep ([], [])
 
 buildRepValStruct :: (TextIndexerMonad s m) => Struct -> ValRepBuildOption -> m ValRep
@@ -365,7 +389,7 @@ buildRepValStruct struct opt =
         , ("orig_fs", tshow $ Map.keys $ stcStaticFieldBases s)
         , ("lets", tshow $ Map.keys $ stcBindings s)
         , ("perms", tshow $ stcPerms s)
-        , ("ev", fromMaybe "" <$> mapM tshow (stcEmbedVal s))
+        , ("ev", fromMaybe "Nothing" <$> mapM tshow (stcEmbedVal s))
         , ("perm", tshow $ stcPermErr s)
         ]
    in
@@ -429,10 +453,8 @@ showSimpleVal t = case t of
 
 showOrigVal :: (TextIndexerMonad s m) => Val -> m String
 showOrigVal t = case t of
-  IsRef _ ref -> case ref.refArg of
-    RefPath s _ -> do
-      sStr <- tshow s
-      return $ T.unpack sStr
-    RefIndex _ -> return "<index>"
+  IsRef _ ref -> do
+    sStr <- tshow ref.ident
+    return $ T.unpack sStr
   IsValMutable (SOp mutop _) -> return $ showOpType mutop
   _ -> return $ showValSymbol t

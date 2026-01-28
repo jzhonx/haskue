@@ -10,12 +10,12 @@ module Reduce.Recalc where
 import Control.Monad (foldM, unless, when)
 import Control.Monad.Except
 import Control.Monad.Reader (local)
-import Data.Aeson (toJSON)
 import qualified Data.IntMap as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
+import qualified Data.Text as T
 import DepGraph
 import Feature
 import {-# SOURCE #-} Reduce.Core (reduce)
@@ -36,18 +36,17 @@ import Reduce.Monad (
   lastValueMap,
   mapParams,
   modifyRMContext,
-  modifyTMVN,
-  noRecalc,
   putRMContext,
   putTMVal,
   recalcRootQ,
   setIsReducingRC,
+  setTMVN,
   throwFatal,
+  withNoRecalcFlag,
  )
 import Reduce.Struct (validateStructPerm)
 import Reduce.TraceSpan (
   debugInstantTM,
-  traceSpanArgsAdaptTM,
   traceSpanArgsTM,
   traceSpanTM,
  )
@@ -55,15 +54,18 @@ import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
 import Util.Format (msprintf, packFmtA)
 import Value
+import Value.Export.Debug (treeToFullRepString)
 
 -- | Start re-calculation.
 recalc :: RM ()
 recalc = do
+  pushRecalcRootQ
+
   origAddr <- getTMAbsAddr
   ctx <- getRMContext
-  when (not (isRecalcing ctx) && not ctx.noRecalc) $ traceSpanTM "recalc" $ do
-    pushRecalcRootQ
-
+  -- If we are already in recalcing mode, then do not re-enter.
+  -- Let drainQ handle it.
+  unless (isRecalcing ctx) $ traceSpanTM "recalc" $ do
     modifyRMContext $ \c -> c{isRecalcing = True}
     drainQ
     -- Reset the context to not notifying.
@@ -84,10 +86,27 @@ pushRecalcRootQ = do
   case addrIsRfbAddr addr of
     Nothing -> return ()
     Just rfbAddr -> do
-      gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
-      case gAddrM of
-        Nothing -> return ()
-        Just gAddr -> modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> (addr, gAddr)}
+      lvM <- queryLastValue (rfbAddrToSufIrred rfbAddr)
+      shouldPush <- case lvM of
+        Nothing -> return True
+        Just seen -> do
+          t <- getTMVal
+          repT <- treeToFullRepString t
+          repSeen <- treeToFullRepString seen
+          debugInstantTM
+            "pushRecalcRootQ"
+            (return $ T.pack $ printf "t: %s, seen: %s" repT repSeen)
+          return (t /= seen)
+      debugInstantTM
+        "pushRecalcRootQ"
+        (msprintf "addr: %s, shouldPush: %s" [packFmtA addr, packFmtA shouldPush])
+      -- Only push if the value has changed.
+      -- TOOD: use version.
+      when shouldPush $ do
+        gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
+        case gAddrM of
+          Nothing -> return ()
+          Just gAddr -> modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> (addr, gAddr)}
 
 popRecalcRootQ :: RM (Maybe (ValAddr, GrpAddr))
 popRecalcRootQ = do
@@ -154,8 +173,9 @@ run state = do
                     _ -> False
           -- We do not need to recalc the starting acyclic node since it must have been reduced before recalc.
           unless curNodeIsAcyclicStart $ recalcGroup cur
-          -- After recalculation, we check whether the value has changed. If not, we do not need to continue traversing
-          -- its dependents. This makes sure early-cutoff.
+          -- After recalculation, we check whether the value has changed.
+          -- If not, we do not need to continue traversing its dependents. This makes sure early-cutoff.
+          -- Do it here out of the
           hasSeen <- updateLastValues cur
           if hasSeen
             then run state{q = rest}
@@ -223,6 +243,11 @@ updateLastValues gaddr = do
         return r
       -- If the address does not exist, we consider it same as before.
       else return True
+
+queryLastValue :: SuffixIrredAddr -> RM (Maybe Val)
+queryLastValue siAddr = do
+  m <- lastValueMap <$> getRMContext
+  return $ Map.lookup siAddr m
 
 -- | Check whether there is no fields of structs specified by the GrpAddr in the given set.
 hasNoFieldInQ :: GrpAddr -> Set.Set ValAddr -> RM Bool
@@ -310,47 +335,44 @@ recalcGroup :: GrpAddr -> RM ()
 recalcGroup (IsAcyclicGrpAddr node) = recalcNode node (const RsNormal)
 recalcGroup sccAddr = do
   setIsReducingRC True
+  -- In the intermediate steps of resolving RCs, we do not want to trigger recalculation of functions.
+  -- TODO: what if the RC is a dynamic field or a constraint?
+  withNoRecalcFlag True $ do
+    ng <- depGraph <$> getRMContext
+    -- If any node in the SCC is a child of another node in the SCC, then it should be removed as it is a sub-field
+    -- reference cycle, which should be handled specially.
+    let
+      compAddrs = getElemAddrInGrp sccAddr ng
+      epAddrs = removeChildSIAddrs compAddrs
 
-  ng <- depGraph <$> getRMContext
-  -- If any node in the SCC is a child of another node in the SCC, then it should be removed as it is a sub-field
-  -- reference cycle, which should be handled specially.
-  let
-    compAddrs = getElemAddrInGrp sccAddr ng
-    epAddrs = removeChildSIAddrs compAddrs
+    traceSpanArgsTM
+      "recalcCyclic"
+      ( const $ do
+          compAddrStrs <- mapM tshow compAddrs
+          epAddrStrs <- mapM tshow epAddrs
+          return $ printf "compAddrs: %s, epAddrs: %s" (show compAddrStrs) (show epAddrStrs)
+      )
+      $ do
+        store <-
+          foldM
+            ( \accStore siAddr -> do
+                goTMAbsAddrMust (sufIrredToAddr siAddr)
+                recalcRC (RCCalHelper epAddrs [siAddr] [])
+                -- We have to save the recalculated value to the store since it will be overwritten when we go to the
+                -- next RC node.
+                v <- inRemoteTM (sufIrredToAddr siAddr) getTMVal
+                debugInstantTM
+                  "recalcCyclic"
+                  (msprintf "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
+                return (Map.insert siAddr v accStore)
+            )
+            Map.empty
+            epAddrs
 
-  traceSpanArgsAdaptTM
-    "recalcCyclic"
-    ( const $ do
-        compAddrStrs <- mapM tshow compAddrs
-        epAddrStrs <- mapM tshow epAddrs
-        return $
-          printf
-            "compAddrs: %s, epAddrs: %s"
-            (show compAddrStrs)
-            (show epAddrStrs)
-    )
-    (const $ return $ toJSON ())
-    $ do
-      store <-
-        foldM
-          ( \accStore siAddr -> do
-              goTMAbsAddrMust (sufIrredToAddr siAddr)
-              recalcRC (RCCalHelper epAddrs [siAddr] [])
-              -- We have to save the recalculated value to the store since it will be overwritten when we go to the
-              -- next RC node.
-              v <- inRemoteTM (sufIrredToAddr siAddr) getTMVal
-              debugInstantTM
-                "recalcCyclic"
-                (msprintf "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
-              return (Map.insert siAddr v accStore)
-          )
-          Map.empty
-          epAddrs
-
-      -- We have to put back all the recalculated values because some of them could be overwritten during the process.
-      mapM_
-        (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMVal t))
-        (Map.toList store)
+        -- We have to put back all the recalculated values because some of them could be overwritten during the process.
+        mapM_
+          (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMVal t))
+          (Map.toList store)
 
   setIsReducingRC False
 
@@ -455,7 +477,7 @@ invalidateUpToRootMut base addrSet = go (filter (isPrefix base) (Set.toList addr
         goTMAbsAddrMust addr
         t <- getTMVal
         case t of
-          IsValMutable (Op _) -> modifyTMVN VNNoVal
+          IsValMutable (Op _) -> setTMVN VNNoVal
           -- TODO: what if the intermediate value is not mutable? How to invalidate then?
           _ -> throwFatal $ printf "expected mutable node at address %s during invalidation" (show addr)
         let parentAddr = fromJust $ initValAddr addr

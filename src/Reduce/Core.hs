@@ -6,7 +6,7 @@
 
 module Reduce.Core where
 
-import Control.Monad (foldM, when)
+import Control.Monad (foldM, unless, when)
 import Cursor
 import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, isJust)
@@ -16,13 +16,14 @@ import Reduce.Monad (
   Context (..),
   RM,
   getIsReducingRC,
+  getRMContext,
   getTMCursor,
   getTMVal,
   inRemoteTM,
   inSubTM,
   modifyRMContext,
-  modifyTMVN,
   modifyTMVal,
+  setTMVN,
   throwFatal,
   treeDepthCheck,
  )
@@ -32,6 +33,7 @@ import Reduce.Recalc (recalc)
 import Reduce.Reference (
   CycleDetection (..),
   DerefResult (DerefResult),
+  deref,
   index,
  )
 import Reduce.Struct (
@@ -51,11 +53,13 @@ import Value
 reduce :: RM ()
 reduce = do
   traceSpanTM "reduce" reducePureFocus
-  recalc
+  ctx <- getRMContext
+  unless ctx.noRecalc recalc
 
-  -- If the reduced node is a struct object, we need to handle the side effects.
-  affectedAddrs <- handleSObjChange
-  mapM_ (\afAddr -> inRemoteTM afAddr reduce) affectedAddrs
+  -- If the reduced node is a struct object, which is either a constraint or dynamic field, we need to handle the side
+  -- effects.
+  (affectedAddrs, removedPairs) <- handleSObjChange
+  mapM_ (\afAddr -> inRemoteTM afAddr reduce) (affectedAddrs ++ map snd removedPairs)
 
 withValDepthLimit :: RM a -> RM a
 withValDepthLimit f = do
@@ -80,10 +84,7 @@ reducePureFocus = withValDepthLimit $ do
     IsValMutable mut -> reduceMutable mut
     _ -> reducePureVN
 
-  modifyTMVal $ \t ->
-    (setVN (valNode t) orig)
-      { isSCyclic = isSCyclic orig || isSCyclic t
-      }
+  modifyTMVal $ \t -> setVN (valNode t) orig
 
 reduceMutable :: SOp -> RM ()
 reduceMutable (SOp mop _) = case mop of
@@ -97,11 +98,11 @@ reduceMutable (SOp mop _) = case mop of
           -- mutval populated.
           -- TODO: set NoValRef
           vc <- getTMCursor
-          (DerefResult rM _ _ _) <- index vc
+          (DerefResult rM _ _ _) <- deref vc
           handleRefRes rM
       | otherwise -> do
           vc <- getTMCursor
-          (DerefResult rM _ cd _) <- index vc
+          (DerefResult rM _ cd _) <- deref vc
           case cd of
             NoCycleDetected -> handleRefRes rM
             RCDetected -> do
@@ -112,6 +113,17 @@ reduceMutable (SOp mop _) = case mop of
               --    But this new reference cycle should not contain new info about the SCC as they are the same SCC.
               -- we should treat the reference cycle as an incomplete result.
               handleRefRes Nothing
+  Index _ -> do
+    (_, isReady) <- reduceArgs reduce rtrVal
+    if not isReady
+      then return ()
+      else do
+        vc <- getTMCursor
+        (DerefResult rM _ cd _) <- index vc
+        case cd of
+          -- For the index operation, the operand has been fully reduced. There is no need to further reduce the result.
+          NoCycleDetected -> handleMutRes rM False
+          _ -> throwFatal "reduceMutable: unexpected cycle detection in index"
   RegOp rop -> do
     r <-
       case ropOpType rop of
@@ -142,19 +154,24 @@ reduceMutable (SOp mop _) = case mop of
     handleMutRes r True
   UOp _ -> partialReduceUnifyOp >>= handleResolvedPConjsForUnifyMut
 
+-- | Handle the resolved pending conjuncts for mutable trees.
+handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
+handleResolvedPConjsForUnifyMut IncompleteConjuncts = setTMVN VNNoVal
+handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = setTMVN (VNAtomCnstr ac)
+handleResolvedPConjsForUnifyMut (CompletelyResolved t) = handleMutRes (Just t) True
+
 handleRefRes :: Maybe Val -> RM ()
 handleRefRes Nothing = return ()
 handleRefRes (Just result) = do
   vc <- getTMCursor
   case vc of
     VCFocus (IsRef _ _) -> do
-      modifyTMVN (valNode result)
+      setTMVN (valNode result)
       -- If the result is Fix, we need to reduce it further since the target of the reference cycles might point to
       -- self.
       case result of
         IsFix f -> reduceFix f
         _ -> return ()
-      when result.isSCyclic $ modifyTMVal $ \t -> t{isSCyclic = True}
     _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show vc)
 
 handleMutRes :: Maybe Val -> Bool -> RM ()
@@ -164,7 +181,7 @@ handleMutRes (Just result) furtherReduce = do
   case vc of
     (VCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
     (VCFocus (IsValMutable _)) -> do
-      modifyTMVN (valNode result)
+      setTMVN (valNode result)
       when furtherReduce reducePureVN
     _ -> throwFatal "handleMutRes: not a mutable tree"
 
@@ -199,12 +216,6 @@ reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwFatal "reduceArgs: not a mutable tree"
-
--- | Handle the resolved pending conjuncts for mutable trees.
-handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
-handleResolvedPConjsForUnifyMut IncompleteConjuncts = modifyTMVN VNNoVal
-handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = modifyTMVN (VNAtomCnstr ac)
-handleResolvedPConjsForUnifyMut (CompletelyResolved t) = handleMutRes (Just t) True
 
 reduceToNonMut :: RM ()
 reduceToNonMut = do

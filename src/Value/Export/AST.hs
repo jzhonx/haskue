@@ -56,7 +56,6 @@ buildExprDebug t tier = do
 newtype BuildConfig = BuildConfig {isDebug :: Bool}
 
 buildExprExt :: Val -> EM AST.Expression
-buildExprExt t@Val{isSCyclic = True} = buildSCyclicASTExpr t
 buildExprExt t@(IsValMutable mut) | IsNoVal <- t = buildMutableASTExpr mut t
 buildExprExt t = case valNode t of
   VNTop -> return $ AST.idCons "_"
@@ -114,6 +113,7 @@ buildMutableASTExprForce :: SOp -> Val -> EM AST.Expression
 buildMutableASTExprForce (SOp mop _) t = case mop of
   RegOp op -> buildRegOpASTExpr op
   Ref ref -> buildRefASTExpr ref
+  Index idx -> buildIndexASTExpr idx
   Compreh cph -> do
     ce <- buildComprehASTExpr cph
     return $
@@ -132,13 +132,6 @@ buildFixASTExpr r t = do
       if r.unknownExists
         then maybe (throwExprNotFound t) return (origExpr t)
         else buildExprExt (mkNewVal r.val)
-
-buildSCyclicASTExpr :: Val -> EM AST.Expression
-buildSCyclicASTExpr inner = do
-  isDebug <- asks isDebug
-  if isDebug
-    then buildArgsExpr "SC" [inner{isSCyclic = False}]
-    else throwErrSt "structural cycle expression should not be built in non-debug mode"
 
 buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
@@ -243,7 +236,7 @@ buildStructASTExprNormal s t = do
     -- If not all dynamic fields can be resolved to string labels, we can not build the struct expression.
     Nothing ->
       maybe
-        (throwErrSt "struct expression not found")
+        (throwErrSt "not all dynamic fields can be resolved to string labels")
         return
         (origExpr t)
 
@@ -381,36 +374,37 @@ buildDisjoinOpASTExpr op t = do
     | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
 
 buildRefASTExpr :: Reference -> EM AST.Expression
-buildRefASTExpr ref = case refArg ref of
-  RefPath var xs -> do
-    varS <- tshow var
-    let varE = AST.PrimExprOperand $ AST.OpName $ AST.OperandName (textIdentToken varS)
-    r <-
-      foldM
-        ( \acc x -> do
-            xe <- buildExprExt x
-            return $ AST.PrimExprIndex acc emptyLoc xe emptyLoc
-        )
-        varE
-        xs
-    return $ AST.Unary (AST.Primary r)
-  RefIndex xs -> do
-    case xs of
-      (x Seq.:<| rest) -> do
-        xe <- buildExprExt x
-        v <- case xe of
-          AST.Unary (AST.Primary v) -> return v
-          _ -> throwErrSt "the first element of RefIndex should be a primary expression"
-        r <-
-          foldM
-            ( \acc y -> do
-                ye <- buildExprExt y
-                return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
-            )
-            v
-            rest
-        return $ AST.Unary (AST.Primary r)
-      _ -> throwErrSt "RefIndex should have at least one element"
+buildRefASTExpr ref = do
+  varS <- tshow ref.ident
+  let varE = AST.PrimExprOperand $ AST.OpName $ AST.OperandName (textIdentToken varS)
+  r <-
+    foldM
+      ( \acc x -> do
+          xe <- buildExprExt x
+          return $ AST.PrimExprIndex acc emptyLoc xe emptyLoc
+      )
+      varE
+      ref.selectors
+  return $ AST.Unary (AST.Primary r)
+
+buildIndexASTExpr :: InplaceIndex -> EM AST.Expression
+buildIndexASTExpr (InplaceIndex xs) = do
+  case xs of
+    (x Seq.:<| rest) -> do
+      xe <- buildExprExt x
+      v <- case xe of
+        AST.Unary (AST.Primary v) -> return v
+        _ -> throwErrSt "the first element of InplaceIndex should be a primary expression"
+      r <-
+        foldM
+          ( \acc y -> do
+              ye <- buildExprExt y
+              return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
+          )
+          v
+          rest
+      return $ AST.Unary (AST.Primary r)
+    _ -> throwErrSt "InplaceIndex should have at least one element"
 
 buildRegOpASTExpr :: RegularOp -> EM AST.Expression
 buildRegOpASTExpr op = case ropOpType op of

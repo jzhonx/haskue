@@ -17,7 +17,7 @@ import Reduce.Monad (
   RM,
   getTMVal,
   inSubTM,
-  modifyTMVN,
+  setTMVN,
   throwFatal,
  )
 import Syntax.Token (TokenType)
@@ -186,7 +186,7 @@ reduceList l = do
   case t of
     IsList lst -> do
       let newList = lst{final = V.fromList r}
-      modifyTMVN (VNList newList)
+      setTMVN (VNList newList)
     _ -> return ()
 
 -- | Closes a struct when the tree has struct.

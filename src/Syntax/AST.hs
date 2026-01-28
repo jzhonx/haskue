@@ -8,7 +8,8 @@ module Syntax.AST where
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify')
-import Data.ByteString.Builder (Builder, byteString, char7, string7, toLazyByteString)
+import qualified Data.ByteString as BS
+import Data.ByteString.Builder (Builder, byteString, char7, string7, toLazyByteString, word8)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
@@ -393,10 +394,24 @@ multilineStrLitBld (Syntax.AST.MultiLineStringLit _ segs) =
     segs
 
 strLitSegBld :: (M m) => StringLitSeg -> m Builder
-strLitSegBld (UnicodeChars chs) = return $ string7 (T.unpack chs)
+strLitSegBld (UnicodeChars chs) = return $ escapeBS $ TE.encodeUtf8 chs
 strLitSegBld (Syntax.AST.Interpolation _ e) = do
   b <- exprBld e
   return $ string7 "\\(" <> b <> char7 ')'
+
+escapeBS :: BS.ByteString -> Builder
+escapeBS =
+  BS.foldl'
+    ( \acc w -> acc <> escape1 w
+    )
+    mempty
+ where
+  escape1 w =
+    case w of
+      34 -> word8 92 <> word8 34 -- Escape double quote (")
+      92 -> word8 92 <> word8 92 -- Escape backslash (\)
+      -- 10 -> word8 92 <> word8 110 -- Escape newline (\n)
+      _ -> word8 w
 
 structLitBld :: (M m) => StructLit -> m Builder
 structLitBld (StructLit _ decls _)

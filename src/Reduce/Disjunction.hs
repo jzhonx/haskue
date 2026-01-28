@@ -18,7 +18,7 @@ import Reduce.Monad (
   RM,
   getTMCursor,
   inSubTM,
-  modifyTMVN,
+  setTMVN,
   throwFatal,
  )
 import Reduce.TraceSpan (
@@ -45,7 +45,7 @@ reduceDisj d = do
   case valNode (focus vc) of
     VNDisj nd -> do
       newDisjT <- normalizeDisj (isJust . rtrBottom) nd vc
-      modifyTMVN (valNode newDisjT)
+      setTMVN (valNode newDisjT)
     _ -> return ()
 
 resolveDisjOp :: VCur -> RM (Maybe Val)

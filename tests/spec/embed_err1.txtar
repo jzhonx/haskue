@@ -5,4 +5,5 @@ a: b
 	b: 1
 }
 -- exp --
-error: identifier "b" is not found
+error: reference "b" is not found:
+	-:2:4

@@ -29,7 +29,7 @@ deriving instance Eq Comprehension
 deriving instance Eq ComprehArg
 
 deriving instance Eq Reference
-deriving instance Eq RefArg
+deriving instance Eq InplaceIndex
 
 deriving instance Eq Interpolation
 
@@ -88,10 +88,11 @@ instance Eq Val where
 deriving instance Show Comprehension
 deriving instance Show ComprehArg
 
-deriving instance Show Reference
-instance Show RefArg where
-  show (RefPath s _) = "ref_v_" ++ show s
-  show (RefIndex _) = "index"
+instance Show Reference where
+  show (Reference{ident}) = "ref_" ++ show ident
+
+instance Show InplaceIndex where
+  show (InplaceIndex _) = "index"
 
 deriving instance Show Interpolation
 
@@ -143,7 +144,7 @@ deriving instance NFData Comprehension
 deriving instance NFData ComprehArg
 
 deriving instance NFData Reference
-deriving instance NFData RefArg
+deriving instance NFData InplaceIndex
 
 deriving instance NFData Interpolation
 
@@ -170,5 +171,4 @@ deriving instance NFData Fix
 deriving instance NFData FixConj
 
 deriving instance NFData ValNode
-deriving instance NFData EmbedType
 deriving instance NFData Val

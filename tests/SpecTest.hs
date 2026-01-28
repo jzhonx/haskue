@@ -3,7 +3,8 @@
 module SpecTest where
 
 import Control.Monad (foldM, when)
-import Control.Monad.Except (MonadError, runExceptT)
+import Control.Monad.Except (ExceptT, MonadError, runExceptT)
+import Control.Monad.IO.Class (liftIO)
 import Data.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.ByteString.Char8 as BS (ByteString, lines, pack, toStrict)
 import Data.List (sort)
@@ -51,7 +52,7 @@ parseTxtar file = do
                     TPSFoundCaseHeader -> throwErrSt $ "Unexpected case header: " ++ header
                     TPSReadingInput -> return ((cur, out), TPSFoundExpHeader)
                     TPSFoundExpHeader -> throwErrSt $ "Unexpected expected output header: " ++ header
-                    TPSReadingExpectedOutput -> return ((emptyTestCase, cur : out), TPSFoundCaseHeader)
+                    TPSReadingExpectedOutput -> return ((emptyTestCase{name = header}, cur : out), TPSFoundCaseHeader)
             else case state of
               TPSInitial -> throwErrSt $ "Expected case header, got: " ++ line
               TPSFoundCaseHeader -> return ((cur{input = cur.input ++ line ++ "\n"}, out), TPSReadingInput)
@@ -80,27 +81,25 @@ cmpStrings want act = do
     then assertFailure $ printf "Expected %d lines, got %d. got:\n%s" (length _exp) (length _act) (show _act)
     else mapM_ (\(i, e, a) -> assertEqual ("line " ++ show i) e a) (zip3 [0 ..] _exp _act)
 
-createTest :: String -> String -> TestTree
-createTest path name = testCase name $ do
-  file <- readFile path
-  x <- runExceptT $ do
-    cases <- parseTxtar file
-    mapM
-      ( \c@(TestCase{input = input}) -> do
-          r <- evalStr (BS.pack input) emptyConfig{ecMaxTreeDepth = 20}
-          return (c{output = r})
-      )
-      cases
-  case x of
+runCase :: TestCase -> IO ()
+runCase c = do
+  rE <- runExceptT $ evalStr (BS.pack c.input) emptyConfig{ecMaxTreeDepth = 20}
+  case rE of
     Left err -> assertFailure (show err)
+    Right b -> do
+      let act = BS.toStrict $ toLazyByteString b
+          expOut = BS.pack c.expectedOutput
+      liftIO $ cmpStrings expOut act
+
+createTestsInTxtar :: String -> String -> IO TestTree
+createTestsInTxtar path name = do
+  file <- readFile path
+  casesE <- runExceptT $ parseTxtar file
+  case casesE of
+    Left err -> assertFailure ("Failed to parse txtar file: " ++ err)
     Right cases -> do
-      mapM_
-        ( \c -> do
-            let act = BS.toStrict $ toLazyByteString c.output
-                expOut = BS.pack c.expectedOutput
-            cmpStrings expOut act
-        )
-        cases
+      let ts = map (\c -> testCase c.name (runCase c)) cases
+      return $ testGroup name ts
 
 specTests :: IO TestTree
 specTests = do
@@ -108,13 +107,15 @@ specTests = do
   -- sort the files so that the tests are run in order
   files <- sort <$> listDirectory dir
   -- only run the .txtar files
-  let cases =
-        foldr
-          ( \file acc ->
-              if reverse (take 6 (reverse file)) == ".txtar"
-                then createTest (dir ++ "/" ++ file) file : acc
-                else acc
-          )
-          []
-          files
-  return $ testGroup "spec_tests" cases
+  cases <-
+    foldM
+      ( \acc file ->
+          if reverse (take 6 (reverse file)) == ".txtar"
+            then do
+              g <- createTestsInTxtar (dir ++ "/" ++ file) file
+              return $ g : acc
+            else return acc
+      )
+      []
+      files
+  return $ testGroup "spec_tests" (reverse cases)

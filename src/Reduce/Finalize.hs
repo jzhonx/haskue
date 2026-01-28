@@ -5,56 +5,48 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Reduce.PostReduce where
+module Reduce.Finalize where
 
-import Control.Monad (unless)
 import Cursor
-import Data.Maybe (catMaybes, fromJust, isJust, listToMaybe)
-import DepGraph
+import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Feature
 import Reduce.Core (reduce)
 import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (
   RM,
-  depGraph,
-  descendTMSeg,
-  getRMContext,
   getTMCursor,
   getTMVal,
   inSubTM,
-  modifyTMNodeWithVal,
   postVisitValSimple,
-  propUpTM,
-  putRMContext,
   putTMCursor,
   putTMVal,
-  throwFatal,
   withVN,
  )
 import Reduce.TraceSpan (
   debugInstantRM,
-  traceSpanArgsTM,
   traceSpanTM,
  )
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Value
 
-postValidation :: RM ()
-postValidation = traceSpanTM "postValidation" $ do
-  ctx <- getRMContext
-  -- remove all notifiers.
-  putRMContext $ ctx{depGraph = emptyPropGraph}
+{- | Finalize the reduced value.
 
-  -- rewrite all functions to their results if the results exist.
-  simplifyRM
+After the value is reduced to the fixpoint, we need to do some finalization work:
 
-  t <- getTMVal
-  traceSpanArgsTM "validate" (const $ return $ show t) $ do
+1. Validate all constraints.
+2. Pop up bottoms.
+-}
+finalize :: RM ()
+finalize = traceSpanTM "finalize" $ do
+  traceSpanTM "validate" $ do
     -- then validate all constraints.
     traverseTM $ withVN $ \case
       VNAtomCnstr c -> validateCnstr c
       _ -> return ()
+
+  -- rewrite all functions to their results if the results exist.
+  simplifyRM
 
 {- | Traverse the tree and does the following things with the node:
 
@@ -67,10 +59,10 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
   putTMCursor
     =<< postVisitValSimple
       (subNodes False)
-      ( \x -> case addrIsRfbAddr (vcAddr x) of
-          -- We only need to care about the referable node.
-          Nothing -> return x
-          Just _ -> do
+      ( \x -> case fetchLabelType <$> lastSeg (vcAddr x) of
+          -- We do not need to simplify mutable argument labels.
+          Just MutArgLabelType -> return x
+          _ -> do
             let t = focus x
             case t of
               -- Keep the genop if the value is no val.
@@ -79,7 +71,6 @@ simplifyRM = traceSpanTM "simplifyRM" $ do
                 r <-
                   normalizeDisj
                     ( \y -> case y of
-                        IsSCycle -> True
                         IsNoVal -> True
                         _ -> isJust (rtrBottom y)
                     )
@@ -141,56 +132,7 @@ validateCnstr c = traceSpanTM "validateCnstr" $ do
 2. Traverse the sub-tree with the segment.
 -}
 traverseTM :: RM () -> RM ()
-traverseTM f = f >> traverseSub (traverseTM f)
-
-{- | Traverse all the one-level sub nodes of the tree.
-
-For the bottom handling:
-1. It surfaces the bottom as field value.
-2. Normalize the disjunction if any of the sub node becomes bottom.
--}
-traverseSub :: RM () -> RM ()
-traverseSub f = do
-  do
-    vc <- getTMCursor
-    mapM_
-      ( \case
-          SubNodeSegNormal seg -> inSubTM seg f
-          SubNodeSegEmbed seg -> do
-            x <- getTMCursor
-            let origSeg = fromJust $ vcFocusSeg x
-            propUpTM
-            inSubTM seg f
-            ok <- descendTMSeg origSeg
-            unless ok $ throwFatal "original segment not found after embedding traversal"
-      )
-      (subNodes False vc)
-
+traverseTM f = do
+  f
   vc <- getTMCursor
-  let t = focus vc
-  case valNode t of
-    -- If the any of the sub node is reduced to bottom, then the parent struct node should be reduced to bottom.
-    VNStruct struct -> do
-      let errM =
-            foldl
-              ( \acc field ->
-                  if
-                    | isJust acc -> acc
-                    | IsBottom _ <- (ssfValue field) -> Just (ssfValue field)
-                    | otherwise -> Nothing
-              )
-              Nothing
-              (stcFields struct)
-      maybe (return ()) putTMVal errM
-    VNDisj dj -> do
-      newDjT <-
-        normalizeDisj
-          ( \x -> case x of
-              IsSCycle -> True
-              IsNoVal -> True
-              _ -> isJust (rtrBottom x)
-          )
-          dj
-          vc
-      modifyTMNodeWithVal newDjT
-    _ -> return ()
+  mapM_ (\seg -> inSubTM seg (traverseTM f)) (subNodes False vc)

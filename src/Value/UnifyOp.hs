@@ -14,7 +14,9 @@ It is used to handle reference unifications, so that when values of references c
 created correctly.
 -}
 data UnifyOp = UnifyOp
-  { hasEmbeds :: Bool
+  { isEmbedUnify :: Bool
+  -- ^ Indicates whether this unify op is for embed unification, which means the first argument is a struct value and
+  -- the rest are embeddings of the struct.
   , conjs :: Seq.Seq Val
   }
   deriving (Generic)

@@ -1,9 +1,13 @@
 -- cp_for1 --
-if true {
-	x: 1
+data: {a: 1}
+for k, v in data {
+	(k): v
 }
 -- exp_cp_for1 --
-x: 1
+data: {
+    a: 1
+}
+a: 1
 
 -- cp_for2 --
 data: {
@@ -34,3 +38,24 @@ data: {
     s: 1
 }
 
+-- cp_for4 --
+for k, v in x {
+	(k): _
+}
+
+x: {
+	a: {i1: 1, i2: 2}
+	b: {j1: 3}
+}
+-- exp --
+x: {
+    a: {
+        i1: 1
+        i2: 2
+    }
+    b: {
+        j1: 3
+    }
+}
+a: _
+b: _

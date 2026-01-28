@@ -228,7 +228,6 @@ subVal seg parentT = do
     -- go into withRCs will immediately go into its inner tree.
     (_, IsFix r) -> go f (supersedeVN r.val t)
     (MutArgLabelType, IsValMutable mut) -> snd <$> (getSOpArgs mut Seq.!? fst (getMutArgInfoFromFeature f))
-    (TempLabelType, _) -> tmpSub t
     (StringLabelType, IsStruct struct)
       | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
     (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
@@ -241,6 +240,7 @@ subVal seg parentT = do
     (StubFieldLabelType, IsStruct struct)
       | Just sf <- lookupStructStaticFieldBase (getTextIndexFromFeature f) struct ->
           Just $ ssfValue sf
+    (EmbedValueLabelType, IsStruct struct) -> stcEmbedVal struct
     (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
     (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
     (DisjLabelType, IsDisj d) -> dsjDisjuncts d `indexList` fetchIndex f
@@ -253,7 +253,6 @@ The sub tree should already exist in the parent tree.
 setSubVal :: (HasCallStack) => Feature -> Val -> Val -> Maybe Val
 setSubVal f@(fetchLabelType -> MutArgLabelType) subT parT@(IsValMutable mut) =
   return $ setTOp (updateSOpArg (fst (getMutArgInfoFromFeature f)) subT mut) parT
-setSubVal (fetchLabelType -> TempLabelType) subT parT = return $ parT{tmpSub = Just subT}
 setSubVal f subT parT = case (fetchLabelType f, parT) of
   (StringLabelType, IsStruct parStruct)
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
@@ -274,6 +273,7 @@ setSubVal f subT parT = case (fetchLabelType f, parT) of
     ret $ VNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
   (LetLabelType, IsStruct parStruct) ->
     ret $ VNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
+  (EmbedValueLabelType, IsStruct parStruct) -> ret $ VNStruct (parStruct{stcEmbedVal = Just subT})
   (ListStoreIdxLabelType, IsList l) ->
     let i = fetchIndex f in ret $ VNList $ updateListStoreAt i subT l
   (ListIdxLabelType, IsList l) ->
@@ -312,15 +312,15 @@ topVC vc = do
 data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (Eq)
 
 -- | Generate a list of immediate sub-trees that have values to reduce, not the values that have been reduced.
-subNodes :: Bool -> VCur -> [SubNodeSeg]
+subNodes :: Bool -> VCur -> [Feature]
 subNodes withStub (VCFocus t@(IsValMutable mut)) =
-  let xs = [SubNodeSegNormal f | (f, _) <- toList $ getSOpArgs mut]
+  let xs = [f | (f, _) <- toList $ getSOpArgs mut]
       ys = subVNSegsOpt withStub t
    in xs ++ ys
 subNodes withStub vc = subVNSegsOpt withStub (focus vc)
 
-subVNSegsOpt :: Bool -> Val -> [SubNodeSeg]
-subVNSegsOpt withStub t = map SubNodeSegNormal $ subVNSegs t ++ if withStub then subStubSegs t else []
+subVNSegsOpt :: Bool -> Val -> [Feature]
+subVNSegsOpt withStub t = subVNSegs t ++ if withStub then subStubSegs t else []
 
 subVNSegs :: Val -> [Feature]
 subVNSegs t = case valNode t of

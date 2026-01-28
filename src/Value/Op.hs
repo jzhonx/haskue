@@ -13,7 +13,6 @@ import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
 import Feature (Feature, mkMutArgFeature)
 import GHC.Generics (Generic)
-import qualified Syntax.AST as AST
 import Syntax.Token as Token
 import Value.Comprehension
 import Value.DisjoinOp
@@ -32,6 +31,7 @@ setOpInSOp op (SOp _ frame) = SOp op frame
 data Op
   = RegOp RegularOp
   | Ref Reference
+  | Index InplaceIndex
   | Compreh Comprehension
   | DisjOp DisjoinOp
   | UOp UnifyOp
@@ -57,7 +57,8 @@ getSOpArgs (SOp op _) =
 
 getOpArgs :: Op -> (Seq.Seq Val, Bool)
 getOpArgs (RegOp rop) = (ropArgs rop, False)
-getOpArgs (Ref ref) = (subRefArgs $ refArg ref, False)
+getOpArgs (Ref ref) = (getRefSels ref, False)
+getOpArgs (Index (InplaceIndex xs)) = (xs, False)
 getOpArgs (Compreh c) = (fmap getValFromIterClause c.args, False)
 getOpArgs (DisjOp d) = (fmap dstValue (djoTerms d), False)
 getOpArgs (UOp u) = (conjs u, True)
@@ -68,7 +69,8 @@ updateSOpArg i t (SOp op frame) = SOp (updateOpArg i t op) frame
 
 updateOpArg :: Int -> Val -> Op -> Op
 updateOpArg i t (RegOp r) = RegOp $ r{ropArgs = Seq.update i t (ropArgs r)}
-updateOpArg i t (Ref ref) = Ref $ ref{refArg = modifySubRefArgs (Seq.update i t) (refArg ref)}
+updateOpArg i t (Ref ref) = Ref $ mapRefSels (Seq.update i t) ref
+updateOpArg i t (Index (InplaceIndex xs)) = Index $ InplaceIndex $ Seq.update i t xs
 updateOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
 updateOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
 updateOpArg i t (UOp u) = UOp $ u{conjs = Seq.update i t (conjs u)}
@@ -129,19 +131,24 @@ mkDisjoinOpFromList :: [DisjTerm] -> SOp
 mkDisjoinOpFromList ts = mkDisjoinOp (Seq.fromList ts)
 
 mkUnifyOp :: [Val] -> SOp
-mkUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, hasEmbeds = False}
+mkUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, isEmbedUnify = False}
 
 mkEmbedUnifyOp :: [Val] -> SOp
-mkEmbedUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, hasEmbeds = True}
+mkEmbedUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, isEmbedUnify = True}
 
 mkItpSOp :: [IplSeg] -> [Val] -> SOp
 mkItpSOp segs exprs = withEmptyOpFrame $ Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
+
+modifyRefInSOp :: (Reference -> Reference) -> SOp -> SOp
+modifyRefInSOp f (SOp (Ref r) frame) = SOp (Ref $ f r) frame
+modifyRefInSOp _ r = r
 
 showOpType :: Op -> String
 showOpType op = case op of
   RegOp _ -> "fn"
   Ref _ -> "ref"
+  Index _ -> "index"
   Compreh _ -> "compreh"
   DisjOp _ -> "disjoin"
-  UOp _ -> "unify"
+  UOp u -> if isEmbedUnify u then "embedUnify" else "unify"
   Itp _ -> "inter"

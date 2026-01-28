@@ -26,7 +26,7 @@ data Selector = StringSel !TextIndex | IntSel !Int
 
 The selectors are not stored in reverse order.
 -}
-newtype FieldPath = FieldPath {getRefSels :: [Selector]}
+newtype FieldPath = FieldPath {getFieldPath :: [Selector]}
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show Selector where
@@ -70,12 +70,12 @@ data LabelType
   | ListIdxLabelType
   | DisjLabelType
   | MutArgLabelType
-  | TempLabelType
   | StringLabelType
   | LetLabelType
   | PatternLabelType
   | DynFieldLabelType
   | StubFieldLabelType
+  | EmbedValueLabelType
   deriving (Eq, Ord, Generic, NFData, Enum)
 
 instance Show Feature where
@@ -85,12 +85,12 @@ instance Show Feature where
     ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
     MutArgLabelType -> "fa" ++ showSub (getMutArgInfoFromFeature f) (\case True -> "u"; False -> "")
-    TempLabelType -> "tmp_" ++ show (fetchIndex f)
     StringLabelType -> "str_" ++ show (fetchIndex f)
     LetLabelType -> "let_" ++ show (fetchIndex f)
     PatternLabelType -> "cns_" ++ showSub (getPatternIndexesFromFeature f) show
     DynFieldLabelType -> "dyn_" ++ showSub (getDynFieldIndexesFromFeature f) show
     StubFieldLabelType -> "__" ++ show (fetchIndex f)
+    EmbedValueLabelType -> "embed_" ++ show (fetchIndex f)
    where
     showSub :: (Int, a) -> (a -> String) -> String
     showSub (x, y) g = show x ++ "_" ++ g y
@@ -104,9 +104,6 @@ instance ShowWTIndexer Feature where
     LetLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))
       return $ T.pack $ printf "let_%s" str
-    TempLabelType -> do
-      str <- tshow (TextIndex (fetchIndex f))
-      return $ T.pack $ printf "tmp_%s" str
     _ -> return $ T.pack $ show f
 
 pattern FeatureType :: LabelType -> Feature
@@ -166,7 +163,12 @@ mkLetFeature (TextIndex i) (Just j) = modifyLetFeature j (mkFeature i LetLabelTy
 
 modifyLetFeature :: (TextIndexerMonad s m) => Int -> Feature -> m Feature
 modifyLetFeature oid f = do
-  t <- tshow (getTextIndexFromFeature f)
+  (TextIndex k) <- modifyTISuffix oid (getTextIndexFromFeature f)
+  return $ mkFeature k LetLabelType
+
+modifyTISuffix :: (TextIndexerMonad s m) => Int -> TextIndex -> m TextIndex
+modifyTISuffix oid ti = do
+  t <- tshow ti
   -- "." is not a valid character in identifier, so we use it to separate the let name and the index.
   case T.findIndex (== '.') t of
     Just dotIdx ->
@@ -176,11 +178,13 @@ modifyLetFeature oid f = do
  where
   append prefix = do
     let str = T.unpack prefix ++ "." ++ show oid
-    (TextIndex k) <- textToTextIndex (T.pack str)
-    return $ mkFeature k LetLabelType
+    textToTextIndex (T.pack str)
 
 mkStubFieldFeature :: TextIndex -> Feature
 mkStubFieldFeature (TextIndex i) = mkFeature i StubFieldLabelType
+
+mkEmbedValueFeature :: Feature
+mkEmbedValueFeature = mkFeature 0 EmbedValueLabelType
 
 getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m T.Text
 getTextFromFeature f = case fetchLabelType f of
@@ -263,12 +267,6 @@ toBinOpTASeg R = binOpRightTASeg
 
 rootFeature :: Feature
 rootFeature = mkFeature 0 RootLabelType
-
-mkTempFeature :: TextIndex -> Feature
-mkTempFeature (TextIndex i) = mkFeature i TempLabelType
-
-strToTempFeature :: (MonadState s m, HasTextIndexer s) => String -> m Feature
-strToTempFeature s = mkTempFeature <$> textToTextIndex (T.pack s)
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 

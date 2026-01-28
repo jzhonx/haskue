@@ -15,7 +15,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Debug.Trace (trace)
 import DepGraph
 import Feature
 import Reduce.Monad (
@@ -25,7 +24,6 @@ import Reduce.Monad (
   fetch,
   getRMContext,
   liftEitherRM,
-  markRMLetReferred,
   params,
   preVisitValSimple,
   putRMContext,
@@ -86,7 +84,8 @@ derefResFromTrCur vc = DerefResult (Just (focus vc)) (Just (vcAddr vc)) NoCycleD
 -- | Resolve the reference value.
 resolveTCIfRef :: VCur -> RM DerefResult
 resolveTCIfRef vc = case vc of
-  VCFocus (IsRef _ _) -> index vc
+  VCFocus (IsRef _ _) -> deref vc
+  VCFocus (IsIndex _ _) -> index vc
   _ -> return $ derefResFromTrCur vc
 
 {- | Index the tree with the segments.
@@ -100,72 +99,72 @@ The return value will not be another reference.
 The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
 arguments are the segments.
 -}
-index :: VCur -> RM DerefResult
-index vc@(VCFocus (IsRef _ argRef@Reference{refArg = (RefPath ident sels)})) = do
-  identStr <- tshow ident
-  traceSpanRMTC (printf "index: ident: %s" identStr) vc $ do
-    lbM <- searchTCIdent False ident vc
+deref :: VCur -> RM DerefResult
+deref vc@(VCFocus (IsRef _ ref)) = do
+  identStr <- tshow ref.ident
+  traceSpanRMTC (printf "deref: ident: %s" identStr) vc $ do
+    lbM <- searchTCIdent ref.ident vc
     case lbM of
-      Just (VCFocus (IsRef mut rf), typ)
-        -- Let value is an index. For example, let x = ({a:1}).a
-        | Just segs <- getIndexSegs rf
-        , typ /= ITField -> do
-            let newRef = mkIndexRef (segs Seq.>< sels)
-                -- build the new reference tree.
-                refTC = setVCFocusMut (setOpInSOp (Ref newRef) mut) vc
-            resolveTCIfRef refTC
+      -- Let value is an index. For example, let x = ({a:1}).a
+      Just (VCFocus (IsIndex mut (InplaceIndex indexSels)), typ) | typ /= ITField -> do
+        let newIndex = InplaceIndex (indexSels Seq.>< ref.selectors)
+            -- build the new reference tree.
+            refTC = setVCFocusMut (setOpInSOp (Index newIndex) mut) vc
+        resolveTCIfRef refTC
       Just (VCFocus lb, typ) | typ /= ITField -> do
         -- If the let value is not a reference, but a regular expression.
         -- For example, let x = {}, let x = 1 + 2
         let
-          newRef = mkIndexRef (lb Seq.<| sels)
+          newIndex = InplaceIndex (lb Seq.<| ref.selectors)
           -- build the new reference tree.
-          refTC = setVCFocusMut (withEmptyOpFrame (Ref newRef)) vc
+          refTC = setVCFocusMut (withEmptyOpFrame (Index newIndex)) vc
         resolveTCIfRef refTC
 
       -- Rest of the cases. For cases such as { let x = a.b, a: b: {}, c: x } where let value is a refernece, it can be
       -- handled.
       _ -> do
-        refTCM <- refTCFromRef argRef vc
+        refTCM <- refTCFromRef ref vc
         maybe
           (return notFound)
           ( \(refTC, newRefFieldPath) -> getDstTC newRefFieldPath refTC
           )
           refTCM
+deref vc = throwFatal $ printf "deref: invalid tree cursor %s" (show vc)
 
+-- | TODO: the value indexed should not be another reference. It should always be resolved.
+index :: VCur -> RM DerefResult
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index vc@(VCFocus (IsRef _ Reference{refArg = arg@(RefIndex _)})) = traceSpanRMTC "index" vc $ do
+index vc@(VCFocus (IsIndex _ indx)) = traceSpanRMTC "index" vc $ do
   operandTC <- liftEitherRM $ goDownVCSegMust (mkMutArgFeature 0 False) vc
-  idxFieldPathM <- convertRefArgTreesToSels arg
+  idxFieldPathM <- convertIndexTreesToSels indx
   let
-    reducedOperandM = rtrVal (focus operandTC)
     tarTCM = do
-      idxFieldPath <- idxFieldPathM
-      reducedOperand <- reducedOperandM
+      reducedOperand <- rtrVal (focus operandTC)
       -- Use the vc as the environment for the reduced operand.
       let reducedTC = reducedOperand `setVCFocus` vc
       case valNode reducedOperand of
         -- If the operand evaluates to a bottom, we should return the bottom.
         VNBottom _ -> return reducedTC
-        _ -> goDownVCAddr (fieldPathToAddr idxFieldPath) reducedTC
+        _ -> do
+          idxFieldPath <- idxFieldPathM
+          goDownVCAddr (fieldPathToAddr idxFieldPath) reducedTC
 
   maybe (return notFound) resolveTCIfRef tarTCM
 index vc = throwFatal $ printf "index: invalid tree cursor %s" (show vc)
 
 -- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
 refTCFromRef :: Reference -> VCur -> RM (Maybe (VCur, FieldPath))
-refTCFromRef Reference{refArg = arg@(RefPath ident _)} vc = do
-  m <- convertRefArgTreesToSels arg
+refTCFromRef ref vc = do
+  m <- convertReferenceToSels ref
   maybe
     (return Nothing)
     ( \fp@(FieldPath reducedSels) -> do
-        newRef <- mkRefFromFieldPath mkAtomVal ident (FieldPath (tail reducedSels))
+        newRef <- mkRefFromFieldPath mkAtomVal ref.ident (FieldPath (tail reducedSels))
         -- build the new reference tree.
         let refTC = setVCFocusMut (withEmptyOpFrame (Ref newRef)) vc
         return $ Just (refTC, fp)
     )
     m
-refTCFromRef _ _ = throwFatal "refTCFromRef: invalid reference"
 
 mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Val) -> TextIndex -> FieldPath -> m Reference
 mkRefFromFieldPath aToTree ident (FieldPath xs) = do
@@ -180,25 +179,27 @@ mkRefFromFieldPath aToTree ident (FieldPath xs) = do
       xs
   return $
     Reference
-      { refArg = RefPath ident (Seq.fromList ys)
+      { ident = ident
+      , selectors = Seq.fromList ys
       }
 
 {- | Convert the reference argument trees to selectors.
 
 Notice that even if the selector tree is concrete, it might not be valid selector. It could be a disjunction.
 -}
-convertRefArgTreesToSels :: RefArg -> RM (Maybe FieldPath)
-convertRefArgTreesToSels arg = case arg of
-  (RefPath ident sels) -> do
-    restM <- mapM valToSel (toList sels)
-    return $ do
-      let h = StringSel ident
-      rest <- sequence restM
-      return $ FieldPath (h : rest)
-  (RefIndex (_ Seq.:<| rest)) -> do
-    m <- mapM valToSel (toList rest)
-    return $ FieldPath <$> sequence m
-  _ -> return Nothing
+convertReferenceToSels :: Reference -> RM (Maybe FieldPath)
+convertReferenceToSels (Reference ident sels) = do
+  restM <- mapM valToSel (toList sels)
+  return $ do
+    let h = StringSel ident
+    rest <- sequence restM
+    return $ FieldPath (h : rest)
+
+convertIndexTreesToSels :: InplaceIndex -> RM (Maybe FieldPath)
+convertIndexTreesToSels (InplaceIndex (_ Seq.:<| rest)) = do
+  m <- mapM valToSel (toList rest)
+  return $ FieldPath <$> sequence m
+convertIndexTreesToSels _ = return Nothing
 
 {- | Get the value pointed by the value path and the original addresses.
 
@@ -287,23 +288,6 @@ instance ToJSONWTIndexer CycleDetection where
   ttoJSON NoCycleDetected = return $ toJSON $ show NoCycleDetected
   ttoJSON RCDetected = return $ toJSON $ show RCDetected
 
-{- | Mark the value and all its descendants as cyclic.
-
-We have to mark all descendants as cyclic here instead of just marking the focus because if the value is a struct and
-it is immediately unified with a non-cyclic value, the descendants of the merged value, which does not have the
-cyclic attribute, would lose the cyclic attribute.
--}
-markCyclic :: Val -> RM Val
-markCyclic val = do
-  utc <- preVisitValSimple (subNodes False) mark valTC
-  return $ focus utc
- where
-  -- Create a tree cursor based on the value.
-  valTC = VCur val [(rootFeature, mkNewVal VNTop)]
-
-  mark :: VCur -> RM VCur
-  mark vc = return $ mapVCFocus (\focus -> focus{isSCyclic = True}) vc
-
 {- | Copy the concrete value from the target cursor if the target value has already been reduced.
 
 The tree cursor is the target cursor without the copied raw value.
@@ -391,14 +375,14 @@ locateRef fieldPath vc = do
   when (isFieldPathEmpty fieldPath) $ throwFatal "empty fieldPath"
   let fstSel = fromJust $ headSel fieldPath
   ident <- selToIdent fstSel
-  searchTCIdent False ident vc >>= \case
+  searchTCIdent ident vc >>= \case
     Nothing -> do
       errMsg <- notFoundMsg ident (getNodeLoc <$> origExpr (focus vc))
       return . LRIdentNotFound $ mkBottomVal errMsg
     Just (identTC, _) -> do
       -- The ref is non-empty, so the rest must be a valid addr.
       let rest = fromJust $ tailFieldPath fieldPath
-          (matchedTC, unmatchedSels) = go identTC (getRefSels rest)
+          (matchedTC, unmatchedSels) = go identTC (getFieldPath rest)
           targetAddr =
             if null unmatchedSels
               then vcAddr matchedTC
@@ -480,8 +464,8 @@ already exist.
 
 The tree cursor must at least have the root segment.
 -}
-searchTCIdent :: Bool -> TextIndex -> VCur -> RM (Maybe (VCur, IdentType))
-searchTCIdent inEnclosing ident = go
+searchTCIdent :: TextIndex -> VCur -> RM (Maybe (VCur, IdentType))
+searchTCIdent ident = go
  where
   go :: VCur -> RM (Maybe (VCur, IdentType))
   go vc = do
@@ -490,47 +474,29 @@ searchTCIdent inEnclosing ident = go
       "searchTCIdent"
       ( const $ do
           identStr <- tshow ident
-          return $ printf "searching %s, found: %s" identStr (show $ isJust tarM)
+          addrT <- tshow (vcAddr vc)
+          return $
+            printf
+              "searching %s, at: %s, val type: %s, found: %s"
+              identStr
+              (T.unpack addrT)
+              (showValSymbol vc.focus)
+              (show $ isJust tarM)
       )
       vc
     maybe
-      ( upOrLeft inEnclosing vc >>= \case
+      ( up vc >>= \case
           Nothing -> return Nothing
           Just next -> go next
       )
-      ( \(identTC, typ) -> do
-          -- Mark the ident as referred if it is a let binding.
-          when (typ == ITLetBinding) $ markRMLetReferred (vcAddr identTC)
-          return $ Just (identTC, typ)
-      )
+      (\(identTC, typ) -> return $ Just (identTC, typ))
       tarM
 
-upOrLeft :: Bool -> VCur -> RM (Maybe VCur)
-upOrLeft _ (VCur _ [(FeatureType RootLabelType, _)]) = return Nothing -- stop at the root.
--- If the current node is an embedding, we should go to the parent block which by convention is the first mutable
--- argument.
-upOrLeft True utc@(VCur t ((f, IsEmbedUnifyOp sop) : _))
-  | fetchIndex f > 0
-  , ETEmbedded sid <- t.embType = do
-      let jM =
-            do
-              (j, s) <- case getSOpArgs sop of
-                s Seq.:<| _ -> return s
-                _ -> Nothing
-              struct <- rtrStruct s
-              if struct.stcID == sid then Just j else Nothing
-      case jM of
-        Nothing -> throwFatal $ printf "upOrLeft: embedding %s's parent does not have the embedding struct" (show sid)
-        Just j -> do
-          debugInstantRM
-            "upOrLeft"
-            (const $ return $ printf "going up from embedding to parent block arg %s" (show j))
-            utc
-          structTC <- liftEitherRM (propUpVC utc >>= goDownVCSegMust j)
-          return $ Just structTC
-upOrLeft _ utc = do
-  ptc <- liftEitherRM (propUpVC utc)
-  return $ Just ptc
+  up :: VCur -> RM (Maybe VCur)
+  up (VCur _ [(FeatureType RootLabelType, _)]) = return Nothing -- stop at the root.
+  up utc = do
+    ptc <- liftEitherRM (propUpVC utc)
+    return $ Just ptc
 
 findIdent :: TextIndex -> VCur -> RM (Maybe (VCur, IdentType))
 findIdent ident vc = do

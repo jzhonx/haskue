@@ -8,45 +8,32 @@ import GHC.Generics (Generic)
 import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Val
 
-newtype Reference = Reference {refArg :: RefArg} deriving (Generic)
-
-data RefArg
-  = -- | RefPath denotes a reference starting with an identifier.
-    RefPath TextIndex (Seq.Seq Val)
-  | -- | RefIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
-    RefIndex (Seq.Seq Val)
+-- | Reference denotes a reference starting with an identifier.
+data Reference = Reference
+  { ident :: TextIndex
+  , selectors :: Seq.Seq Val
+  }
   deriving (Generic)
 
-refHasRefPath :: Reference -> Bool
-refHasRefPath r = case refArg r of
-  RefPath _ _ -> True
-  RefIndex _ -> False
+getRefSels :: Reference -> Seq.Seq Val
+getRefSels (Reference _ xs) = xs
 
-getIndexSegs :: Reference -> Maybe (Seq.Seq Val)
-getIndexSegs r = case refArg r of
-  RefPath _ _ -> Nothing
-  RefIndex xs -> Just xs
+mapRefSels :: (Seq.Seq Val -> Seq.Seq Val) -> Reference -> Reference
+mapRefSels f (Reference s xs) = Reference s (f xs)
 
-appendRefArg :: Val -> RefArg -> RefArg
-appendRefArg y (RefPath s xs) = RefPath s (xs Seq.|> y)
-appendRefArg y (RefIndex xs) = RefIndex (xs Seq.|> y)
-
-subRefArgs :: RefArg -> Seq.Seq Val
-subRefArgs (RefPath _ xs) = xs
-subRefArgs (RefIndex xs) = xs
-
-modifySubRefArgs :: (Seq.Seq Val -> Seq.Seq Val) -> RefArg -> RefArg
-modifySubRefArgs f (RefPath s xs) = RefPath s (f xs)
-modifySubRefArgs f (RefIndex xs) = RefIndex (f xs)
-
-mkIndexRef :: Seq.Seq Val -> Reference
-mkIndexRef ts =
+singletonIdentRef :: TextIndex -> Reference
+singletonIdentRef ident =
   Reference
-    { refArg = RefIndex ts
+    { ident = ident
+    , selectors = Seq.empty
     }
 
-emptyIdentRef :: TextIndex -> Reference
-emptyIdentRef ident =
-  Reference
-    { refArg = RefPath ident Seq.empty
-    }
+appendRefArg :: Val -> Reference -> Reference
+appendRefArg y (Reference s xs) = Reference s (xs Seq.|> y)
+
+-- | InplaceIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
+newtype InplaceIndex = InplaceIndex (Seq.Seq Val)
+  deriving (Generic)
+
+appendInplaceIndexArg :: Val -> InplaceIndex -> InplaceIndex
+appendInplaceIndexArg y (InplaceIndex xs) = InplaceIndex (xs Seq.|> y)

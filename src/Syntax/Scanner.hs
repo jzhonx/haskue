@@ -344,32 +344,33 @@ scanStringLit = do
 
 -- | Scan string content.
 scanString :: Scanner ()
-scanString = chars
- where
-  chars = do
-    ch <- advance
-    case ch of
-      Nothing -> addInvalidToken (const "Unterminated string literal")
-      -- From spec, unicode_char: /* an arbitrary Unicode code point except newline */ .
-      Just c -> case c of
-        '\n' -> addInvalidToken (const "Unterminated string literal")
-        '"' -> addTokenTransLit (const String) (BC.tail . BC.init) -- remove the surrounding quotes
-        _ -> chars
+scanString = do
+  pc <- peekChar
+  case pc of
+    EOFPC -> addInvalidToken (const "Unterminated string literal")
+    NormalPC c
+      | c == '\n' -> addInvalidToken (const "Unterminated string literal")
+      | c == '"' -> advance >> addTokenTransLit (const String) (BC.tail . BC.init) -- remove the surrounding quotes
+      | otherwise -> advance >> scanString
+    -- From spec, unicode_char: /* an arbitrary Unicode code point except newline */ .
+    EscapePC _ -> advance >> advance >> scanString
+    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
+    InterpolationStartPC -> scanInterEnd >> scanString
 
 -- | Scan multiline string content.
 scanMultiline :: Scanner ()
-scanMultiline = chars
+scanMultiline = do
+  pc <- peekChar
+  case pc of
+    EOFPC -> addInvalidToken (const "Unterminated multiline string literal")
+    NormalPC c
+      | c == '"' -> advance >> tryClose
+      | otherwise -> advance >> scanMultiline
+    EscapePC _ -> advance >> advance >> scanMultiline
+    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
+    InterpolationStartPC -> scanInterEnd >> scanMultiline
  where
-  chars = do
-    ch <- advance
-    case ch of
-      Nothing -> addInvalidToken (const "Unterminated multiline string literal")
-      Just c -> case c of
-        -- If we see a quote, we can proceed to check if it's the closing triple quotes without checking newline before
-        -- the closing quotes.
-        '"' -> close
-        _ -> chars
-  close = do
+  tryClose = do
     (first, second) <- peek2
     case (first, second) of
       (Just '"', Just '"') ->
@@ -378,7 +379,7 @@ scanMultiline = chars
           >>
           -- Remove the first newline plus the triple quotes in the beginning.
           addTokenTransLit (const MultiLineString) (BC.drop 4 . BC.dropEnd 3)
-      _ -> addInvalidToken (const "Unterminated multiline string literal")
+      _ -> scanMultiline
 
 partitionUnquotedStr :: Token -> Either Token [Token]
 partitionUnquotedStr tk = do
@@ -406,64 +407,79 @@ It also handles escaped characters like \n, \t, etc.
 -}
 scanPartitions :: Builder -> Scanner ()
 scanPartitions b = do
-  ch <- peek
-  case ch of
-    -- EOF, there might be some non-empty string characters to add.
-    Nothing -> addNonEmptyChars
-    Just c | c == '\\' -> do
-      nextCh <- peekNext
-      case nextCh of
-        Nothing -> addInvalidToken (const "Unterminated escape sequence")
-        Just '(' -> do
-          -- We have detected an interpolation. There might be some non-empty string characters before it.
-          addNonEmptyChars
-          advance
-            >> advance
-            >> scanInterEnd
-            >>
-            -- Remove the surrounding \(...).
-            addTokenTransLit (const Interpolation) (BC.drop 2 . BC.init)
-          scanPartitions mempty
-        -- It is an escaped character, continue scanning interpolation.
-        Just nextC -> handleChar nextC True
-    -- Regular character, continue scanning.
-    Just c -> handleChar c False
+  cc <- peekChar
+  case cc of
+    EOFPC -> addNonEmptyChars
+    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
+    NormalPC c -> advance >> scanPartitions (b <> char7 c)
+    EscapePC c ->
+      advance -- consume the backslash
+        >> advance -- consume the escaped character
+        >> scanPartitions (b <> char7 c)
+    InterpolationStartPC -> do
+      -- We have detected an interpolation. There might be some non-empty string characters before it.
+      addNonEmptyChars
+      advance -- consume the backslash before '('
+        >> advance -- consume the '('
+        >> scanInterEnd
+        >>
+        -- Remove the surrounding \(...).
+        addTokenTransLit (const Interpolation) (BC.drop 2 . BC.init)
+      scanPartitions mempty
  where
-  scanInterEnd = do
-    ch <- advance
-    case ch of
-      Nothing -> addInvalidToken (const "Unterminated interpolation")
-      Just c -> case c of
-        ')' -> return ()
-        '\n' -> addInvalidToken (const "Unterminated interpolation")
-        _ -> scanInterEnd
-
-  handleChar :: Char -> Bool -> Scanner ()
-  handleChar c True = do
-    void advance -- consume the backslash
-    void advance -- consume the escaped character
-    let m = case c of
-          'a' -> Just '\a'
-          'b' -> Just '\b'
-          'f' -> Just '\f'
-          'n' -> Just '\n'
-          'r' -> Just '\r'
-          't' -> Just '\t'
-          'v' -> Just '\v'
-          '/' -> Just '/'
-          _ -> Nothing
-
-    case m of
-      Nothing -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton c)
-      Just escapedC -> scanPartitions (b <> char7 escapedC)
-  handleChar c False = advance >> scanPartitions (b <> char7 c)
-
   -- Add string token if there are non-empty characters consumed.
   addNonEmptyChars = do
     cur <- gets current
     when (cur > 0) $
       addTokenTransLit (const String) (const $ let x = toStrict $ toLazyByteString b in x)
         >> resetCurPosLoc
+
+scanInterEnd :: Scanner ()
+scanInterEnd = do
+  ch <- advance
+  case ch of
+    Nothing -> addInvalidToken (const "Unterminated interpolation")
+    Just c -> case c of
+      ')' -> return ()
+      '\n' -> addInvalidToken (const "Unterminated interpolation")
+      _ -> scanInterEnd
+
+data PeekedChar
+  = NormalPC Char
+  | EscapePC Char
+  | InterpolationStartPC
+  | EOFPC
+  | InvalidPC
+
+{- | Peek the next character and determine if it's a normal character, an escape sequence, or the start of an
+interpolation.
+-}
+peekChar :: Scanner PeekedChar
+peekChar = do
+  ch <- peek
+  case ch of
+    -- EOF, there might be some non-empty string characters to add.
+    Nothing -> return EOFPC
+    Just c | c == '\\' -> do
+      nextCh <- peekNext
+      case nextCh of
+        Nothing -> addInvalidToken (const "Unterminated escape sequence") >> return InvalidPC
+        Just nextC -> case nextC of
+          'a' -> escape '\a'
+          'b' -> escape '\b'
+          'f' -> escape '\f'
+          'n' -> escape '\n'
+          'r' -> escape '\r'
+          't' -> escape '\t'
+          'v' -> escape '\v'
+          '/' -> escape '/'
+          '\'' -> escape '\''
+          '"' -> escape '"'
+          '(' -> return InterpolationStartPC
+          _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC) >> return InvalidPC
+    Just c -> return (NormalPC c)
+ where
+  escape = return . EscapePC
 
 -- | Scan number literal (int or float).
 scanNumber :: Scanner ()

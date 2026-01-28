@@ -87,7 +87,6 @@ data Context = Context
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
   , lastValueMap :: Map.Map SuffixIrredAddr Val
-  , ctxLetMap :: Map.Map ValAddr Bool
   , rcdIsReducingRCs :: !Bool
   , noRecalc :: !Bool
   -- ^ If true, do not perform recalculation when reducing struct objects.
@@ -113,7 +112,6 @@ emptyContext tPut =
     , recalcRootQ = Seq.empty
     , depGraph = emptyPropGraph
     , lastValueMap = Map.empty
-    , ctxLetMap = Map.empty
     , rcdIsReducingRCs = False
     , noRecalc = False
     , ctxTrace = emptyTrace tPut
@@ -199,25 +197,6 @@ delTMDepPrefix addrPrefix =
 delMutValRecvs :: ValAddr -> RM ()
 delMutValRecvs = undefined
 
-addRMDanglingLet :: ValAddr -> RM ()
-addRMDanglingLet addr = modifyRMContext $ \ctx ->
-  let
-    oldMap = ctxLetMap ctx
-    newMap = if addr `Map.member` oldMap then oldMap else Map.insert addr False oldMap
-   in
-    ctx{ctxLetMap = newMap}
-
-getRMDanglingLets :: RM [ValAddr]
-getRMDanglingLets = do
-  ctx <- getRMContext
-  let letAddrs = Map.toList (ctxLetMap ctx)
-  return [addr | (addr, False) <- letAddrs]
-
-markRMLetReferred :: ValAddr -> RM ()
-markRMLetReferred addr = modifyRMContext $ \ctx ->
-  let newMap = Map.insert addr True (ctxLetMap ctx)
-   in ctx{ctxLetMap = newMap}
-
 -- Cursor
 
 {-# INLINE getTMCursor #-}
@@ -289,11 +268,8 @@ getTMParent = do
 withVN :: (ValNode -> RM a) -> RM a
 withVN f = withVal (f . valNode)
 
-modifyTMVN :: ValNode -> RM ()
-modifyTMVN vn = modifyTMVal $ \t -> setVN vn t
-
-modifyTMNodeWithVal :: Val -> RM ()
-modifyTMNodeWithVal t = modifyTMVN (valNode t)
+setTMVN :: ValNode -> RM ()
+setTMVN vn = modifyTMVal $ \t -> setVN vn t
 
 -- ReduceMonad operations
 
@@ -411,17 +387,6 @@ inRemoteTM addr f = do
   goTMAbsAddrMust origAddr
   return r
 
-inTempTM :: String -> Val -> RM a -> RM a
-inTempTM name tmpT f = do
-  modifyTMVal (\t -> t{tmpSub = Just tmpT})
-  tf <- strToTempFeature name
-  res <- inSubTM tf f
-  modifyTMVal (\t -> t{tmpSub = Nothing})
-  addr <- getTMAbsAddr
-  let tmpAddr = appendSeg addr tf
-  delTMDepPrefix tmpAddr
-  return res
-
 -- SOp operations
 
 -- Locate the immediate parent mutable of a reference.
@@ -443,8 +408,23 @@ getIsReducingRC :: RM Bool
 getIsReducingRC = rcdIsReducingRCs <$> getRMContext
 
 setIsReducingRC :: Bool -> RM ()
-setIsReducingRC b = do
-  modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
+setIsReducingRC b = modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
+
+-- NoRecalc
+
+getNoRecalc :: RM Bool
+getNoRecalc = noRecalc <$> getRMContext
+
+setNoRecalc :: Bool -> RM ()
+setNoRecalc b = modifyRMContext $ \ctx -> ctx{noRecalc = b}
+
+withNoRecalcFlag :: Bool -> RM a -> RM a
+withNoRecalcFlag b f = do
+  oldB <- getNoRecalc
+  setNoRecalc b
+  r <- f
+  setNoRecalc oldB
+  return r
 
 -- Val depth check
 
@@ -467,7 +447,7 @@ unlessFocusBottom a f = do
 It does not re-constrain struct fields.
 -}
 preVisitVal ::
-  (VCur -> [SubNodeSeg]) ->
+  (VCur -> [Feature]) ->
   ((VCur, a) -> RM (VCur, a)) ->
   (VCur, a) ->
   RM (VCur, a)
@@ -475,11 +455,7 @@ preVisitVal subs f x = do
   y <- f x
   foldM
     ( \acc subSeg -> do
-        (seg, pre, post) <- case subSeg of
-          SubNodeSegNormal seg -> return (seg, return, return)
-          SubNodeSegEmbed seg -> do
-            let origSeg = fromJust $ vcFocusSeg (fst acc)
-            return (seg, propUpVC, goDownVCSegMust origSeg)
+        (seg, pre, post) <- return (subSeg, return, return)
         subTC <- liftEitherRM (pre (fst acc) >>= goDownVCSegMust seg)
         z <- preVisitVal subs f (subTC, snd acc)
         nextTC <- liftEitherRM (propUpVC (fst z) >>= post)
@@ -490,7 +466,7 @@ preVisitVal subs f x = do
 
 -- | A simple version of the preVisitVal function that does not return a custom value.
 preVisitValSimple ::
-  (VCur -> [SubNodeSeg]) ->
+  (VCur -> [Feature]) ->
   (VCur -> RM VCur) ->
   VCur ->
   RM VCur
@@ -510,7 +486,7 @@ preVisitValSimple subs f vc = do
 It does not re-constrain struct fields.
 -}
 postVisitVal ::
-  (VCur -> [SubNodeSeg]) ->
+  (VCur -> [Feature]) ->
   ((VCur, a) -> RM (VCur, a)) ->
   (VCur, a) ->
   RM (VCur, a)
@@ -518,12 +494,7 @@ postVisitVal subs f x = do
   y <-
     foldM
       ( \acc subSeg -> do
-          (seg, pre, post) <- case subSeg of
-            SubNodeSegNormal seg -> return (seg, return, return)
-            SubNodeSegEmbed seg -> do
-              let origSeg = fromJust $ vcFocusSeg (fst acc)
-              return (seg, propUpVC, goDownVCSegMust origSeg)
-
+          (seg, pre, post) <- return (subSeg, return, return)
           subTC <- liftEitherRM (pre (fst acc) >>= goDownVCSegMust seg)
           z <- postVisitVal subs f (subTC, snd acc)
           nextTC <- liftEitherRM (propUpVC (fst z) >>= post)
@@ -534,7 +505,7 @@ postVisitVal subs f x = do
   f y
 
 postVisitValSimple ::
-  (VCur -> [SubNodeSeg]) ->
+  (VCur -> [Feature]) ->
   (VCur -> RM VCur) ->
   VCur ->
   RM VCur

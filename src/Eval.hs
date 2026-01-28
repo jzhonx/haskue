@@ -17,7 +17,7 @@ where
 import Control.Monad (when)
 import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.RWS.Strict (MonadState (get), RWST, runRWST)
+import Control.Monad.RWS.Strict (MonadState (get), runRWST)
 import Control.Monad.Reader (MonadReader (..))
 import Cursor
 import Data.Aeson (Value)
@@ -35,11 +35,12 @@ import qualified Data.Set as Set
 import qualified Data.Yaml as Yaml
 import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter, stTracePrintTree)
 import qualified Env
-import EvalExpr (evalExpr, evalSourceFile)
 import Feature (rootFeature)
-import Reduce (postValidation, reduce)
+import Reduce (finalize, reduce)
 import Reduce.Monad
-import StringIndex (TextIndexer)
+import Semant.Resolver (ResolveState (..), initResolveState, resolve)
+import Semant.Semant (TM, TransState (..), emptyTransState, transExpr, transSourceFile)
+import StringIndex (TextIndexer, emptyTextIndexer)
 import Syntax.AST
 import Syntax.Parser (parseExpr, parseSourceFile)
 import Syntax.Scanner (scanTokens, scanTokensFromFile)
@@ -134,7 +135,7 @@ strToCUEVal s conf = do
       )
   e <- liftEither $ do
     parseExpr tokens
-  mapErrToString $ evalVal (evalExpr e) conf
+  mapErrToString $ evalVal (transExpr e) conf
 
 evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
 evalStrToVal s conf = do
@@ -156,15 +157,26 @@ mapErrToString =
           Right v -> Right v
     )
 
-evalFile :: SourceFile -> Config -> ExceptT String IO (Val, TextIndexer)
-evalFile sf conf = mapErrToString $ evalVal (evalSourceFile sf) conf
+mapStringToErr :: (Monad m) => ExceptT String m a -> ExceptT Error m a
+mapStringToErr =
+  mapExceptT
+    ( \x -> do
+        e <- x
+        return $ case e of
+          Left err -> Left $ FatalErr err
+          Right v -> Right v
+    )
 
-evalVal ::
-  RWST ReduceConfig () RTCState (ExceptT Error IO) Val ->
-  Config ->
-  ExceptT Error IO (Val, TextIndexer)
+evalFile :: SourceFile -> Config -> ExceptT String IO (Val, TextIndexer)
+evalFile sf conf = mapErrToString $ evalVal (transSourceFile sf) conf
+
+evalVal :: TM Val -> Config -> ExceptT Error IO (Val, TextIndexer)
 evalVal f conf =
   do
+    (raw, transState, _) <- mapStringToErr (runRWST f () (emptyTransState emptyTextIndexer))
+    (rootVC, resolverState, _) <-
+      mapStringToErr (runRWST (resolve (VCur raw [(rootFeature, mkNewVal VNTop)])) () (initResolveState transState.tIndexer))
+
     let config =
           Env.Config
             { stTraceEnable = ecTraceExec conf
@@ -178,17 +190,15 @@ evalVal f conf =
     (_, finalized, _) <-
       runRWST
         ( do
-            root <- f
             when (ecDebugMode conf) $ do
-              rep <- treeToFullRepString root
-              liftIO $
-                hPutStr stderr $
-                  "Initial eval result: " ++ rep ++ "\n"
-            let
-              rootVC = VCur root [(rootFeature, mkNewVal VNTop)]
+              rawRep <- treeToFullRepString raw
+              liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
+              resolvedRep <- treeToFullRepString rootVC.focus
+              liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
+
             putTMCursor rootVC
             local (mapParams (\p -> p{createCnstr = True})) reduce
-            local (mapParams (\p -> p{createCnstr = False})) postValidation
+            local (mapParams (\p -> p{createCnstr = False})) finalize
 
             finalized <- get
             let finalTC = finalized.rtsTC
@@ -199,7 +209,10 @@ evalVal f conf =
                   "Final eval result: " ++ rep ++ "\n"
         )
         (ReduceConfig config (emptyReduceParams{createCnstr = True}))
-        (RTCState (VCur (mkNewVal VNTop) []) (emptyContext (LB.hPut conf.ecTraceHandle)))
+        ( RTCState
+            (VCur (mkNewVal VNTop) [])
+            (emptyContext (LB.hPut conf.ecTraceHandle)){Reduce.Monad.tIndexer = resolverState.tIndexer}
+        )
 
     return
       ( finalized.rtsTC.focus

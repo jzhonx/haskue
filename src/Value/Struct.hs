@@ -221,7 +221,9 @@ insertStructLet s t struct =
     { stcBindings = Map.insert s (Binding t False) (stcBindings struct)
     }
 
--- | Determines whether the block has empty fields, including both static and dynamic fields.
+{- | Determines whether the block has empty fields, including both static and dynamic fields.
+TODO: exclude definitions and hidden fields.
+-}
 hasEmptyFields :: Struct -> Bool
 hasEmptyFields struct = Map.null (stcStaticFieldBases struct) && null (stcDynFields struct)
 
@@ -268,9 +270,14 @@ updateStructField name sub struct = struct{stcFields = Map.insert name sub (stcF
 updateStructWithFields :: [(TextIndex, Field)] -> Struct -> Struct
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
 
--- | Remove the static fields by names from the struct.
+-- | Remove fields by names from the struct.
 removeStructFieldsByNames :: [TextIndex] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
+
+-- | Mark fields deleted by names from the struct.
+markDeletedStructFieldsByNames :: [TextIndex] -> Val -> Struct -> Struct
+markDeletedStructFieldsByNames names deletedMarker struct =
+  struct{stcFields = foldr (Map.adjust (\f -> f{ssfValue = deletedMarker})) (stcFields struct) names}
 
 updateStructCnstrByID :: Int -> Bool -> Val -> Struct -> Struct
 updateStructCnstrByID cid isPattern sub struct =

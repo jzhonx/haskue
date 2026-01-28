@@ -1,8 +1,8 @@
 module Reduce (
   module Reduce.Core,
-  module Reduce.PostReduce,
+  module Reduce.Finalize,
 )
 where
 
 import Reduce.Core
-import Reduce.PostReduce
+import Reduce.Finalize

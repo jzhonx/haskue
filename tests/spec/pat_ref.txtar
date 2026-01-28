@@ -9,7 +9,7 @@ y: {
 	z:     string
 	("z"): "b"
 }
--- exp_pat_ref1 --
+-- exp --
 x: {
     a: 1
 }
@@ -29,7 +29,7 @@ y: {
 	z:     string
 	("z"): "b"
 }
--- exp_pat_ref2 --
+-- exp --
 x: {
     a: {}
 }
