@@ -12,7 +12,7 @@ import Cursor
 import Data.Aeson (ToJSON, object, toJSON)
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import DepGraph
@@ -34,7 +34,7 @@ import Reduce.TraceSpan (
   debugInstantRM,
   traceSpanRMTC,
  )
-import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..))
+import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
 import Syntax.AST (getNodeLoc)
 import Syntax.Token (Location (..))
 import Text.Printf (printf)
@@ -42,20 +42,20 @@ import Value
 import Value.Export.Debug (treeToFullRepString)
 
 data DerefResult = DerefResult
-  { drValue :: Maybe Val
-  , drTargetAddr :: Maybe ValAddr
-  , drCycleDetection :: CycleDetection
-  , drIsInBinding :: Bool
+  { targetValue :: Maybe Val
+  , targetAddr :: Maybe ValAddr
+  , cycleDetection :: CycleDetection
+  , isTarBinding :: Bool
   -- ^ Whether the dereferenced value is part of a let binding.
   }
   deriving (Show)
 
 instance ShowWTIndexer DerefResult where
-  tshow DerefResult{drValue, drTargetAddr, drCycleDetection, drIsInBinding} = do
-    vStr <- tshow drValue
-    addrStr <- tshow drTargetAddr
-    cdStr <- tshow drCycleDetection
-    ibStr <- tshow drIsInBinding
+  tshow DerefResult{targetValue, targetAddr, cycleDetection, isTarBinding} = do
+    vStr <- tshow targetValue
+    addrStr <- tshow targetAddr
+    cdStr <- tshow cycleDetection
+    ibStr <- tshow isTarBinding
     return $ T.pack $ printf "DR(%s, %s, %s, %s)" vStr addrStr cdStr ibStr
 
 instance ToJSON DerefResult where
@@ -63,10 +63,10 @@ instance ToJSON DerefResult where
 
 instance ToJSONWTIndexer DerefResult where
   ttoJSON r = do
-    vJ <- ttoJSON r.drValue
-    addrJ <- ttoJSON r.drTargetAddr
-    cdJ <- ttoJSON r.drCycleDetection
-    ibJ <- ttoJSON r.drIsInBinding
+    vJ <- ttoJSON r.targetValue
+    addrJ <- ttoJSON r.targetAddr
+    cdJ <- ttoJSON r.cycleDetection
+    ibJ <- ttoJSON r.isTarBinding
     return $
       object
         [ ("value", vJ)
@@ -82,10 +82,10 @@ derefResFromTrCur :: VCur -> DerefResult
 derefResFromTrCur vc = DerefResult (Just (focus vc)) (Just (vcAddr vc)) NoCycleDetected False
 
 -- | Resolve the reference value.
-resolveTCIfRef :: VCur -> RM DerefResult
-resolveTCIfRef vc = case vc of
-  VCFocus (IsRef _ _) -> deref vc
-  VCFocus (IsIndex _ _) -> index vc
+resolveRefOrIndex :: VCur -> RM DerefResult
+resolveRefOrIndex vc = case vc of
+  VCFocus (IsRef _ ref) -> deref ref vc
+  VCFocus (IsIndex _ indx) -> index indx vc
   _ -> return $ derefResFromTrCur vc
 
 {- | Index the tree with the segments.
@@ -99,8 +99,8 @@ The return value will not be another reference.
 The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
 arguments are the segments.
 -}
-deref :: VCur -> RM DerefResult
-deref vc@(VCFocus (IsRef _ ref)) = do
+deref :: Reference -> VCur -> RM DerefResult
+deref ref vc = do
   identStr <- tshow ref.ident
   traceSpanRMTC (printf "deref: ident: %s" identStr) vc $ do
     lbM <- searchTCIdent ref.ident vc
@@ -110,7 +110,7 @@ deref vc@(VCFocus (IsRef _ ref)) = do
         let newIndex = InplaceIndex (indexSels Seq.>< ref.selectors)
             -- build the new reference tree.
             refTC = setVCFocusMut (setOpInSOp (Index newIndex) mut) vc
-        resolveTCIfRef refTC
+        resolveRefOrIndex refTC
       Just (VCFocus lb, typ) | typ /= ITField -> do
         -- If the let value is not a reference, but a regular expression.
         -- For example, let x = {}, let x = 1 + 2
@@ -118,25 +118,20 @@ deref vc@(VCFocus (IsRef _ ref)) = do
           newIndex = InplaceIndex (lb Seq.<| ref.selectors)
           -- build the new reference tree.
           refTC = setVCFocusMut (withEmptyOpFrame (Index newIndex)) vc
-        resolveTCIfRef refTC
+        resolveRefOrIndex refTC
 
       -- Rest of the cases. For cases such as { let x = a.b, a: b: {}, c: x } where let value is a refernece, it can be
       -- handled.
       _ -> do
-        refTCM <- refTCFromRef ref vc
-        maybe
-          (return notFound)
-          ( \(refTC, newRefFieldPath) -> getDstTC newRefFieldPath refTC
-          )
-          refTCM
-deref vc = throwFatal $ printf "deref: invalid tree cursor %s" (show vc)
+        lparamsM <- lparamsFromRef ref
+        maybe (return notFound) (`getDstTC` vc) lparamsM
 
 -- | TODO: the value indexed should not be another reference. It should always be resolved.
-index :: VCur -> RM DerefResult
+index :: InplaceIndex -> VCur -> RM DerefResult
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-index vc@(VCFocus (IsIndex _ indx)) = traceSpanRMTC "index" vc $ do
+index indx vc = traceSpanRMTC "index" vc $ do
   operandTC <- liftEitherRM $ goDownVCSegMust (mkMutArgFeature 0 False) vc
-  idxFieldPathM <- convertIndexTreesToSels indx
+  idxFieldPathM <- concreteIndexSels indx
   let
     tarTCM = do
       reducedOperand <- rtrVal (focus operandTC)
@@ -149,67 +144,39 @@ index vc@(VCFocus (IsIndex _ indx)) = traceSpanRMTC "index" vc $ do
           idxFieldPath <- idxFieldPathM
           goDownVCAddr (fieldPathToAddr idxFieldPath) reducedTC
 
-  maybe (return notFound) resolveTCIfRef tarTCM
-index vc = throwFatal $ printf "index: invalid tree cursor %s" (show vc)
+  maybe (return notFound) resolveRefOrIndex tarTCM
 
 -- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
-refTCFromRef :: Reference -> VCur -> RM (Maybe (VCur, FieldPath))
-refTCFromRef ref vc = do
-  m <- convertReferenceToSels ref
-  maybe
-    (return Nothing)
-    ( \fp@(FieldPath reducedSels) -> do
-        newRef <- mkRefFromFieldPath mkAtomVal ref.ident (FieldPath (tail reducedSels))
-        -- build the new reference tree.
-        let refTC = setVCFocusMut (withEmptyOpFrame (Ref newRef)) vc
-        return $ Just (refTC, fp)
-    )
-    m
+lparamsFromRef :: Reference -> RM (Maybe LocateParams)
+lparamsFromRef ref@Reference{ident} = do
+  m <- concreteRefSels ref
+  case m of
+    Just sels -> return $ Just (LocateParams ident sels)
+    Nothing -> return Nothing
 
-mkRefFromFieldPath :: (TextIndexerMonad s m) => (Atom -> Val) -> TextIndex -> FieldPath -> m Reference
-mkRefFromFieldPath aToTree ident (FieldPath xs) = do
-  ys <-
-    mapM
-      ( \y -> case y of
-          StringSel s -> do
-            str <- tshow s
-            return $ aToTree (String str)
-          IntSel i -> return $ aToTree (Int $ fromIntegral i)
-      )
-      xs
-  return $
-    Reference
-      { ident = ident
-      , selectors = Seq.fromList ys
-      }
-
-{- | Convert the reference argument trees to selectors.
-
-Notice that even if the selector tree is concrete, it might not be valid selector. It could be a disjunction.
--}
-convertReferenceToSels :: Reference -> RM (Maybe FieldPath)
-convertReferenceToSels (Reference ident sels) = do
-  restM <- mapM valToSel (toList sels)
+-- | Get the concrete selectors from the reference.
+concreteRefSels :: Reference -> RM (Maybe Selectors)
+concreteRefSels (Reference{selectors}) = do
+  restM <- mapM valToSel (toList selectors)
   return $ do
-    let h = StringSel ident
     rest <- sequence restM
-    return $ FieldPath (h : rest)
+    return $ Selectors rest
 
-convertIndexTreesToSels :: InplaceIndex -> RM (Maybe FieldPath)
-convertIndexTreesToSels (InplaceIndex (_ Seq.:<| rest)) = do
+concreteIndexSels :: InplaceIndex -> RM (Maybe Selectors)
+concreteIndexSels (InplaceIndex (_ Seq.:<| rest)) = do
   m <- mapM valToSel (toList rest)
-  return $ FieldPath <$> sequence m
-convertIndexTreesToSels _ = return Nothing
+  return $ Selectors <$> sequence m
+concreteIndexSels _ = return Nothing
 
 {- | Get the value pointed by the value path and the original addresses.
 
 The env is to provide the context for the dereferencing the reference.
 -}
-getDstTC :: FieldPath -> VCur -> RM DerefResult
-getDstTC fieldPath env = do
+getDstTC :: LocateParams -> VCur -> RM DerefResult
+getDstTC lp env = do
   -- Make deref see the latest tree, even with unreduced nodes.
   traceSpanRMTC "getDstTC" env $ do
-    lr <- locateRef fieldPath env
+    lr <- locateRef lp env
     case lr of
       LRIdentNotFound err -> return (DerefResult (Just err) Nothing NoCycleDetected False)
       LRPartialFound tarIdentTC potentialTarAddr -> do
@@ -354,6 +321,11 @@ notFoundMsg ident locM = do
     Nothing -> return $ printf "reference %s is not found" (show idStr)
     Just loc -> do return $ printf "reference %s is not found:\n\t%s" (show idStr) (show loc)
 
+data LocateParams
+  = -- | The first is the ident, and the second is the selectors.
+    LocateParams TextIndex Selectors
+  deriving (Show)
+
 data LocateRefResult
   = LRIdentNotFound Val
   | -- | The ident and all the rest of the segments are matched.
@@ -370,25 +342,22 @@ data LocateRefResult
 
 The path must start with a locatable ident.
 -}
-locateRef :: FieldPath -> VCur -> RM LocateRefResult
-locateRef fieldPath vc = do
-  when (isFieldPathEmpty fieldPath) $ throwFatal "empty fieldPath"
-  let fstSel = fromJust $ headSel fieldPath
-  ident <- selToIdent fstSel
+locateRef :: LocateParams -> VCur -> RM LocateRefResult
+locateRef (LocateParams ident sels) vc = do
   searchTCIdent ident vc >>= \case
     Nothing -> do
       errMsg <- notFoundMsg ident (getNodeLoc <$> origExpr (focus vc))
       return . LRIdentNotFound $ mkBottomVal errMsg
     Just (identTC, _) -> do
       -- The ref is non-empty, so the rest must be a valid addr.
-      let rest = fromJust $ tailFieldPath fieldPath
-          (matchedTC, unmatchedSels) = go identTC (getFieldPath rest)
-          targetAddr =
-            if null unmatchedSels
-              then vcAddr matchedTC
-              else appendValAddr (vcAddr matchedTC) (fieldPathToAddr (FieldPath unmatchedSels))
+      let
+        (matchedTC, unmatchedSels) = go identTC (getSelectors sels)
+        targetAddr =
+          if null unmatchedSels
+            then vcAddr matchedTC
+            else appendValAddr (vcAddr matchedTC) (fieldPathToAddr (Selectors unmatchedSels))
 
-      debugInstantRM "locateRef" (const $ return $ printf "fieldPath: %s, before fetch" (show fieldPath)) vc
+      debugInstantRM "locateRef" (const $ return $ printf "fieldPath: %s, before fetch" (show sels)) vc
 
       -- Check if the target address is dirty.
       fetch <- asks (fetch . params)
@@ -420,9 +389,9 @@ locateRef fieldPath vc = do
               else LRPartialFound matchedTC targetAddr
  where
   go x [] = (x, [])
-  go x sels@(sel : rs) =
+  go x selectors@(sel : rs) =
     maybe
-      (x, sels)
+      (x, selectors)
       (`go` rs)
       (goDownVCSeg (selToTASeg sel) x)
 

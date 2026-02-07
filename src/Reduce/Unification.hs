@@ -16,10 +16,11 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromJust, isNothing, listToMaybe)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce, reducePureVN, reduceToNonMut)
+import {-# SOURCE #-} Reduce.Core (forceReduceMut, reduce, reducePureVN)
 import Reduce.Monad (
   Error (..),
   RM,
@@ -91,7 +92,7 @@ partialReduceUnifyOp = traceSpanTM "partialReduceUnifyOp" $ do
                 -- Comprehensions may have NoVal as their value.
                 IsCompreh _ _ -> return (vc, False)
                 _ -> do
-                  reduceToNonMut
+                  forceReduceMut
                   conjVC <- getTMCursor
                   return (conjVC, isNothing $ rtrVal (focus conjVC))
             if hasNoVal
@@ -115,7 +116,11 @@ partialReduceUnifyOp = traceSpanTM "partialReduceUnifyOp" $ do
                   _ -> do
                     res <- unifyTCs [acc, r] acc
                     setTMVN (valNode res)
-                return (rtrAtom r.focus, foundNoVal)
+                -- We should not use rtrAtom here. Consider (*1 | 2) & v, the result should be *1 & v | 2 & v, which is
+                -- not an atom.
+                case r.focus of
+                  IsAtom a -> return (Just a, foundNoVal)
+                  _ -> return (Nothing, foundNoVal)
         )
         (Nothing, False)
         conjAddrs
@@ -719,11 +724,9 @@ mergeLeftOther ut1@(UTree{utTC = tc1}) ut2 unifyTC = do
     -- For the constraint, unifying the constraint with a value will always lead to either the constraint, which
     -- containing an atom or a bottom.
     IsAtomCnstr c1 -> do
-      na <- unifyForNewBinConjs (ut1{utTC = mkNewVal (VNAtom c1.value) `setVCFocus` tc1}) ut2 unifyTC
-      -- Because the ut2 has been guaranteed to be a concrete tree cursor and the ut1 is an atom, so there must be a
-      -- result.
-      case valNode (fromJust na) of
-        VNBottom _ -> return (fromJust na)
+      na <- mergeBinUTrees (ut1{utTC = mkNewVal (VNAtom c1.value) `setVCFocus` tc1}) ut2 unifyTC
+      case valNode na of
+        VNBottom _ -> return na
         _ -> return t1
     _ -> returnNotUnifiable ut1 ut2
 
@@ -745,11 +748,7 @@ mergeLeftStruct (s1, ut1) ut2 unifyTC
   -- If the left struct is an empty struct with a non-struct embedded value, e.g. {embedded_val}.
   -- we merge the embedded value with the right value.
   | hasEmptyFields s1 = case stcEmbedVal s1 of
-      Just ev -> do
-        r <- unifyForNewBinConjs ut1{utTC = setVCFocus ev ut1.utTC} ut2 unifyTC
-        case r of
-          Just t -> return t
-          Nothing -> return $ mkNewVal VNNoVal
+      Just ev -> mergeBinUTrees ut1{utTC = setVCFocus ev ut1.utTC} ut2 unifyTC
       -- This is the case for {embedding} -> {} & embedding, where we try to evaluate a struct with an embedded value.
       Nothing | ut2 `isEmbeddedIn` ut1 -> case focus ut2.utTC of
         -- An embedded value can not be a struct, so we merge the embedded struct with its parent struct.
@@ -1006,7 +1005,7 @@ treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
         (ls, rs) -> concatMap (\i -> map (+ (i * n)) rs) ls
       disjuncts = concat matrix
       (newDefIndexes, newDisjuncts) = removeIncompleteDisjuncts defIndexes disjuncts
-  return $ mkDisjVal $ emptyDisj{dsjDefIndexes = newDefIndexes, dsjDisjuncts = newDisjuncts}
+  return $ mkDisjVal $ emptyDisj{dsjDefIndexes = newDefIndexes, dsjDisjuncts = Seq.fromList newDisjuncts}
 
 -- | TODO: efficient implementation
 removeIncompleteDisjuncts :: [Int] -> [Maybe Val] -> ([Int], [Val])

@@ -4,6 +4,7 @@
 
 module Value.Disj where
 
+import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Val
 
@@ -14,7 +15,7 @@ It is only created during reducing a disjunction operation (DisjOp).
 data Disj = Disj
   { dsjDefIndexes :: [Int]
   -- ^ Default disjunct indices.
-  , dsjDisjuncts :: [Val]
+  , dsjDisjuncts :: Seq.Seq Val
   -- ^ Disjuncts should not have values of type Disj or Bottom.
   -- It should have at least two disjuncts.
   -- It is a result of reducing a disjunction operation. Each time a reduction is done, a new disjunct is created. It
@@ -24,7 +25,8 @@ data Disj = Disj
 
 -- | Get the default disjuncts from the disjunction.
 defDisjunctsFromDisj :: Disj -> [Val]
-defDisjunctsFromDisj (Disj{dsjDefIndexes = indexes, dsjDisjuncts = disjuncts}) = map (\i -> disjuncts !! i) indexes
+defDisjunctsFromDisj (Disj{dsjDefIndexes = indexes, dsjDisjuncts = disjuncts}) =
+  map (\i -> disjuncts `Seq.index` i) indexes
 
 emptyDisj :: Disj
-emptyDisj = Disj{dsjDefIndexes = [], dsjDisjuncts = []}
+emptyDisj = Disj{dsjDefIndexes = [], dsjDisjuncts = Seq.empty}

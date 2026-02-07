@@ -9,6 +9,7 @@ module Reduce.Primitives where
 import Control.Monad (foldM)
 import Cursor
 import Data.Foldable (toList)
+import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
@@ -20,6 +21,8 @@ import Reduce.Monad (
   setTMVN,
   throwFatal,
  )
+import Reduce.TraceSpan (traceSpanArgsTM, traceSpanTM)
+import StringIndex (ShowWTIndexer (..))
 import Syntax.Token (TokenType)
 import qualified Syntax.Token as Token
 import Text.Printf (printf)
@@ -78,7 +81,15 @@ resolveUnaryOp op tM = do
 -- * Regular Binary Ops
 
 resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
-resolveRegBinOp op t1M t2M _ = resolveRegBinDir op (L, t1M) (R, t2M)
+resolveRegBinOp op t1M t2M _ =
+  traceSpanArgsTM
+    "resolveRegBinOp"
+    ( const $ do
+        t1MT <- mapM tshow t1M
+        t2MT <- mapM tshow t2M
+        return $ printf "op: %s, t1: %s, t2: %s" (show op) (show t1MT) (show t2MT)
+    )
+    $ resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
   TokenType ->
@@ -204,7 +215,7 @@ closeTree a =
     VNStruct s -> setVN (VNStruct $ s{stcClosed = True}) a
     VNDisj dj ->
       let
-        ds = map closeTree (dsjDisjuncts dj)
+        ds = Seq.mapWithIndex (\_ t -> closeTree t) (dsjDisjuncts dj)
        in
         setVN (VNDisj (dj{dsjDisjuncts = ds})) a
     -- TODO: SOp should be closed.

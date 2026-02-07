@@ -18,9 +18,9 @@ import qualified Data.Text as T
 import Env (ErrorEnv)
 import Exception (throwErrSt)
 import Feature (
-  FieldPath (FieldPath),
   LabelType (..),
   Selector (..),
+  Selectors (Selectors),
   ValAddr,
   addrToList,
   fetchIndex,
@@ -268,7 +268,7 @@ rtrDisjDefVal d =
    in if
         | null dfs -> Nothing
         | length dfs == 1 -> Just (head dfs)
-        | otherwise -> Just $ mkDisjVal $ emptyDisj{dsjDisjuncts = dfs}
+        | otherwise -> Just $ mkDisjVal $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
 
 -- = Helpers =
 
@@ -331,10 +331,10 @@ selectValFromVal oprnd selArg = case oprnd of
     mkMutableVal $ setOpInSOp (Index $ appendInplaceIndexArg selArg index) sop
   _ -> mkMutableVal $ withEmptyOpFrame $ Index $ InplaceIndex (Seq.fromList [oprnd, selArg])
 
-valsToFieldPath :: (TextIndexerMonad s m) => [Val] -> m (Maybe FieldPath)
+valsToFieldPath :: (TextIndexerMonad s m) => [Val] -> m (Maybe Selectors)
 valsToFieldPath ts = do
   xs <- mapM valToSel ts
-  return $ FieldPath <$> sequence xs
+  return $ Selectors <$> sequence xs
 
 valToSel :: (TextIndexerMonad s m) => Val -> m (Maybe Selector)
 valToSel t = case valNode t of

@@ -167,12 +167,7 @@ goDownVCSeg seg vc@VCur{focus} = do
               dft <- rtrDisjDefVal d
               let updatedParT =
                     focus
-                      { valNode =
-                          VNDisj $
-                            d
-                              { dsjDisjuncts =
-                                  take i (dsjDisjuncts d) ++ [singletonNoVal] ++ drop (i + 1) (dsjDisjuncts d)
-                              }
+                      { valNode = VNDisj $ d{dsjDisjuncts = Seq.update i singletonNoVal (dsjDisjuncts d)}
                       }
               return $ mkSubVC dft (mkDisjFeature i) updatedParT (crumbs vc)
         _ -> Nothing
@@ -243,7 +238,7 @@ subVal seg parentT = do
     (EmbedValueLabelType, IsStruct struct) -> stcEmbedVal struct
     (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
     (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
-    (DisjLabelType, IsDisj d) -> dsjDisjuncts d `indexList` fetchIndex f
+    (DisjLabelType, IsDisj d) -> dsjDisjuncts d Seq.!? fetchIndex f
     _ -> Nothing
 
 {- | Set the sub tree with the given segment and new tree.
@@ -280,7 +275,7 @@ setSubVal f subT parT = case (fetchLabelType f, parT) of
     let i = fetchIndex f in ret $ VNList $ updateListFinalAt i subT l
   (DisjLabelType, IsDisj d) ->
     let i = fetchIndex f
-     in ret (VNDisj $ d{dsjDisjuncts = take i (dsjDisjuncts d) ++ [subT] ++ drop (i + 1) (dsjDisjuncts d)})
+     in ret (VNDisj $ d{dsjDisjuncts = Seq.update i subT (dsjDisjuncts d)})
   (RootLabelType, _) -> Nothing
   -- parT is wrapped by withRCs, so we need to reconstruct the withRCs node.
   (_, WrappedBy (VNFix r)) ->
@@ -331,7 +326,7 @@ subVNSegs t = case valNode t of
       ++ [mkDynFieldFeature i 0 | i <- IntMap.keys $ stcDynFields s]
   VNList l -> [mkListStoreIdxFeature i | (i, _) <- zip [0 ..] (toList l.store)]
   VNDisj d ->
-    [mkDisjFeature i | (i, _) <- zip [0 ..] (dsjDisjuncts d)]
+    [mkDisjFeature i | (i, _) <- zip [0 ..] (toList $ dsjDisjuncts d)]
   _ -> []
 
 {- | Generate a list of sub-trees that are stubs.

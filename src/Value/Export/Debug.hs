@@ -197,7 +197,7 @@ buildRepValVN Val{valNode = tn} opt = case tn of
         fields <- consFields (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
   VNDisj d ->
-    let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (dsjDisjuncts d)
+    let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (toList $ dsjDisjuncts d)
      in do
           fields <- consFields djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)

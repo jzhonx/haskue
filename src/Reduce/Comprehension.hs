@@ -19,7 +19,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce, reducePureVN, reduceToNonMut)
+import {-# SOURCE #-} Reduce.Core (forceReduceMut, reduce, reducePureVN)
 import Reduce.Monad (
   RM,
   allocRMObjID,
@@ -149,7 +149,7 @@ comprehend i args iterCtx
                   -- Make the forked struct of this iteration immutable because it would simplify later unification of
                   -- iteration results, mostly because of removal of the embedded value.
                   putTMVal r
-                  reduceToNonMut >> setValImmutable <$> getTMVal
+                  forceReduceMut >> setValImmutable <$> getTMVal
               )
 
           debugInstantTM
@@ -371,11 +371,11 @@ createBindings bindings vc = do
       (Map.keys bindings)
 
   go (cur, (visited, mapping)) = case cur.focus of
-    IsRef op (Reference identTI xs) -> case Map.lookup identTI mapping of
+    IsRef op ref@(Reference{ident}) -> case Map.lookup ident mapping of
       Just newTI -> do
-        let newOp = modifyRefInSOp (const $ Reference newTI xs) op
+        let newOp = modifyRefInSOp (const $ ref{ident = newTI}) op
             newCur = modifyVCFocus (setTOp newOp) cur
-        return (newCur, (Set.insert identTI visited, mapping))
+        return (newCur, (Set.insert ident visited, mapping))
       Nothing -> return (cur, (visited, mapping))
     _ -> return (cur, (visited, mapping))
 

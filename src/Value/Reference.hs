@@ -4,6 +4,7 @@
 module Value.Reference where
 
 import qualified Data.Sequence as Seq
+import Feature (ReferableAddr)
 import GHC.Generics (Generic)
 import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Val
@@ -12,24 +13,30 @@ import {-# SOURCE #-} Value.Val
 data Reference = Reference
   { ident :: TextIndex
   , selectors :: Seq.Seq Val
+  , resolvedIdentAddr :: Maybe ReferableAddr
+  -- ^ The resolved address of the identifier.
+  , resolvedFullAddr :: Maybe ReferableAddr
+  -- ^ The resolved full address of the reference.
   }
   deriving (Generic)
 
 getRefSels :: Reference -> Seq.Seq Val
-getRefSels (Reference _ xs) = xs
+getRefSels (Reference _ xs _ _) = xs
 
 mapRefSels :: (Seq.Seq Val -> Seq.Seq Val) -> Reference -> Reference
-mapRefSels f (Reference s xs) = Reference s (f xs)
+mapRefSels f ref = ref{selectors = f (selectors ref)}
 
 singletonIdentRef :: TextIndex -> Reference
 singletonIdentRef ident =
   Reference
     { ident = ident
     , selectors = Seq.empty
+    , resolvedIdentAddr = Nothing
+    , resolvedFullAddr = Nothing
     }
 
 appendRefArg :: Val -> Reference -> Reference
-appendRefArg y (Reference s xs) = Reference s (xs Seq.|> y)
+appendRefArg v ref = ref{selectors = selectors ref Seq.|> v}
 
 -- | InplaceIndex denotes a reference starts with an in-place value. For example, ({x:1}.x).
 newtype InplaceIndex = InplaceIndex (Seq.Seq Val)

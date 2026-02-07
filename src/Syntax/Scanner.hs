@@ -222,7 +222,6 @@ scanToken = do
       ']' -> addToken RSquare
       ':' -> addToken Colon
       ',' -> addToken Comma
-      '\\' -> addToken Backslash
       '?' -> addToken QuestionMark
       '+' -> addToken Plus
       '-' -> addToken Minus
@@ -473,6 +472,7 @@ peekChar = do
           't' -> escape '\t'
           'v' -> escape '\v'
           '/' -> escape '/'
+          '\\' -> escape '\\'
           '\'' -> escape '\''
           '"' -> escape '"'
           '(' -> return InterpolationStartPC

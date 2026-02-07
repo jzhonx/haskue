@@ -50,7 +50,6 @@ data TokenType
   | Dot -- .
   | Colon -- :
   | Comma -- ,
-  | Backslash -- \
   | QuestionMark -- ?
   | Exclamation -- !
   | -- Operators
@@ -103,7 +102,6 @@ toByteString tt = case tt of
   Dot -> "."
   Colon -> ":"
   Comma -> ","
-  Backslash -> "\\"
   QuestionMark -> "?"
   Exclamation -> "!"
   Plus -> "+"

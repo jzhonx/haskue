@@ -9,7 +9,7 @@ y0: 1 | 2 | 3
 y1: 1 | *2 | 3
 y2: 1 | 2 | *3
 z1: (*1 | 2) + 2
--- exp_disj1 --
+-- exp --
 x1: "tcp"
 x2: 1
 x3: 1 | 2
@@ -26,7 +26,7 @@ x: {
 	y: 1
 	z: 3
 } | {y: 2}
--- exp_disj2 --
+-- exp --
 x: {
     y: 1
     z: 3
@@ -50,7 +50,7 @@ e1: {a: 1} | *{b: 1}
 e2: *{a: 1} | *{b: 1}
 e3: ({a: 1} | {b: 1}) & {a: 1}
 e4: ({a: 1} | *{b: 1}) & ({a: 1} | *{b: 1})
--- exp_disj3 --
+-- exp --
 a0: "tcp" | "udp"
 a1: "tcp"
 a2: 4
@@ -88,7 +88,7 @@ e4: {
 x: *"a" | string
 y: *"a" | string
 z: x & y
--- exp_disj4 --
+-- exp --
 x: "a"
 y: "a"
 z: "a"
@@ -98,7 +98,7 @@ x1: 1 | _|_
 x2: 1 | *_|_
 x3: *1 | _|_
 x4: *1 | *_|_
--- exp_disj5 --
+-- exp --
 x1: 1
 x2: 1
 x3: 1
@@ -106,18 +106,18 @@ x4: 1
 
 -- disj6 --
 _|_ | _|_
--- exp_disj6 --
+-- exp --
 error: 
 
 -- disj7 --
 _|_ | *_|_
--- exp_disj7 --
+-- exp --
 error: 
 
 -- disj8 --
 x: *y.z | 1 | 2
 y: {}
--- exp_disj8 --
+-- exp --
 x: 1 | 2
 y: {}
 
@@ -125,7 +125,29 @@ y: {}
 // this tests incomplete disjuncts
 x: *y.z | y.f
 y: {}
--- exp_disj9 --
+-- exp --
 x: *y.z | y.f
 y: {}
 
+-- disj10 --
+p: {
+	x:        *1 | 2
+	(fx.seg): 2
+}
+q: {
+	// p.x first evaluates to 1, then the a is bottom.
+	// later p.x becomes 2 because of fx.seg evaluated to 2, then the a becomes 3.
+  // This tests mutable arguments reduction is correct, whether caching is involved or not.
+	a: (1+p.x | 2+3) & 3
+}
+fx: ("seg"): "x"
+-- exp --
+p: {
+    x: 2
+}
+q: {
+    a: 3
+}
+fx: {
+    seg: "x"
+}

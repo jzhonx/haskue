@@ -6,5 +6,5 @@ import Reduce.Monad
 
 reduce :: RM ()
 reducePureFocus :: RM ()
-reduceToNonMut :: RM ()
+forceReduceMut :: RM ()
 reducePureVN :: RM ()

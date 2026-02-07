@@ -40,8 +40,6 @@ import Reduce.Monad (
   putTMVal,
   recalcRootQ,
   setIsReducingRC,
-  setTMVN,
-  throwFatal,
   withNoRecalcFlag,
  )
 import Reduce.Struct (validateStructPerm)
@@ -456,32 +454,7 @@ recalcNode nodeSIAddr fetch = do
           -- Same as above but for immutable tgen.
           | IsValImmutable <- t -> validateStructPerm
         -- For mutable, list, disjunction, just re-calculate it.
-        _ -> do
-          local (mapParams (\p -> p{fetch})) do
-            -- invalidateUpToRootMut baseAddr dirtyLeaves
-            reduce
-
-{- | Because reduce is a top-down process, we need to invalidate all mutable ancestors up to the root mutable.
-
-TODO: seems like all segments should be mutables, because we are like lazy evaluating the tree.
--}
-invalidateUpToRootMut :: ValAddr -> Set.Set ValAddr -> RM ()
-invalidateUpToRootMut base addrSet = go (filter (isPrefix base) (Set.toList addrSet)) Set.empty
- where
-  go [] _ = return ()
-  go (addr : rest) done
-    | addr `elem` done = go rest done
-    -- Stop when we reach above the base address. The base address itself can be a reference.
-    | isPrefix addr base && addr /= base = return ()
-    | otherwise = do
-        goTMAbsAddrMust addr
-        t <- getTMVal
-        case t of
-          IsValMutable (Op _) -> setTMVN VNNoVal
-          -- TODO: what if the intermediate value is not mutable? How to invalidate then?
-          _ -> throwFatal $ printf "expected mutable node at address %s during invalidation" (show addr)
-        let parentAddr = fromJust $ initValAddr addr
-        go (parentAddr : rest) (Set.insert addr done)
+        _ -> local (mapParams (\p -> p{fetch})) reduce
 
 {- | Get the ancestor GrpAddrs of the given GrpAddr.
 

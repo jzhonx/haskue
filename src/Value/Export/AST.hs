@@ -73,7 +73,7 @@ buildExprExt t = case valNode t of
         (toList l.final)
     return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls) emptyLoc
   VNDisj dj
-    | null (rtrDisjDefVal dj) -> disjunctsToAST (dsjDisjuncts dj)
+    | null (rtrDisjDefVal dj) -> disjunctsToAST (toList $ dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
   VNAtomCnstr ac -> buildAtomCnstrASTExpr ac t
   VNFix r -> buildFixASTExpr r t

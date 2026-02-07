@@ -22,38 +22,38 @@ import Text.Printf (printf)
 data Selector = StringSel !TextIndex | IntSel !Int
   deriving (Eq, Ord, Generic, NFData)
 
-{- FieldPath is a list of selectors.
+{- Selectors is a list of selectors.
 
 The selectors are not stored in reverse order.
 -}
-newtype FieldPath = FieldPath {getFieldPath :: [Selector]}
+newtype Selectors = Selectors {getSelectors :: [Selector]}
   deriving (Eq, Ord, Generic, NFData)
 
 instance Show Selector where
   show (StringSel s) = show s
   show (IntSel i) = show i
 
-instance Show FieldPath where
-  show :: FieldPath -> String
-  show (FieldPath sels) = intercalate "." (map show sels)
+instance Show Selectors where
+  show :: Selectors -> String
+  show (Selectors sels) = intercalate "." (map show sels)
 
-emptyFieldPath :: FieldPath
-emptyFieldPath = FieldPath []
+emptyFieldPath :: Selectors
+emptyFieldPath = Selectors []
 
-headSel :: FieldPath -> Maybe Selector
-headSel (FieldPath []) = Nothing
-headSel (FieldPath sels) = Just $ sels !! 0
+headSel :: Selectors -> Maybe Selector
+headSel (Selectors []) = Nothing
+headSel (Selectors sels) = Just $ sels !! 0
 
-tailFieldPath :: FieldPath -> Maybe FieldPath
-tailFieldPath (FieldPath []) = Nothing
-tailFieldPath (FieldPath sels) = Just $ FieldPath (tail sels)
+tailFieldPath :: Selectors -> Maybe Selectors
+tailFieldPath (Selectors []) = Nothing
+tailFieldPath (Selectors sels) = Just $ Selectors (tail sels)
 
-isFieldPathEmpty :: FieldPath -> Bool
-isFieldPathEmpty (FieldPath []) = True
+isFieldPathEmpty :: Selectors -> Bool
+isFieldPathEmpty (Selectors []) = True
 isFieldPathEmpty _ = False
 
-fieldPathToAddr :: FieldPath -> ValAddr
-fieldPathToAddr (FieldPath sels) =
+fieldPathToAddr :: Selectors -> ValAddr
+fieldPathToAddr (Selectors sels) =
   let xs = map selToTASeg sels
    in addrFromList xs
 
