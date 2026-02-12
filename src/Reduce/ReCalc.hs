@@ -22,6 +22,7 @@ import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Monad (
   Error (..),
   RM,
+  RecalcQItem (..),
   RecalcRCFetch,
   RecalcRCResult (..),
   depGraph,
@@ -57,7 +58,7 @@ import Value.Export.Debug (treeToFullRepString)
 -- | Start re-calculation.
 recalc :: RM ()
 recalc = do
-  pushRecalcRootQ
+  pushCurValToQ
 
   origAddr <- getTMAbsAddr
   ctx <- getRMContext
@@ -70,43 +71,49 @@ recalc = do
     modifyRMContext $ \c -> c{isRecalcing = False}
     goTMAbsAddrMust origAddr
 
+pushCurValToQ :: RM ()
+pushCurValToQ = createRecalcQItem >>= pushRecalcRootQ
+
+createRecalcQItem :: RM (Maybe RecalcQItem)
+createRecalcQItem = do
+  addr <- getTMAbsAddr
+  case addrIsRfbAddr addr of
+    Nothing -> return Nothing
+    Just rfbAddr -> do
+      gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
+      case gAddrM of
+        Nothing -> return Nothing
+        Just gAddr -> do
+          t <- getTMVal
+          return $ Just RecalcQItem{addr, rfbAddr, grpAddr = gAddr, value = t}
+
 getRecalcGAddr :: SuffixIrredAddr -> RM (Maybe GrpAddr)
 getRecalcGAddr siAddr = do
   ng <- depGraph <$> getRMContext
-  case lookupGrpAddr siAddr ng of
-    Just gAddr -> return $ Just gAddr
-    _ -> return Nothing
+  return $ lookupGrpAddr siAddr ng
 
 -- | Push the top of the tree to the recalculation root queue.
-pushRecalcRootQ :: RM ()
-pushRecalcRootQ = do
-  addr <- getTMAbsAddr
-  case addrIsRfbAddr addr of
-    Nothing -> return ()
-    Just rfbAddr -> do
-      lvM <- queryLastValue (rfbAddrToSufIrred rfbAddr)
-      shouldPush <- case lvM of
-        Nothing -> return True
-        Just seen -> do
-          t <- getTMVal
-          repT <- treeToFullRepString t
-          repSeen <- treeToFullRepString seen
-          debugInstantTM
-            "pushRecalcRootQ"
-            (return $ T.pack $ printf "t: %s, seen: %s" repT repSeen)
-          return (t /= seen)
+pushRecalcRootQ :: Maybe RecalcQItem -> RM ()
+pushRecalcRootQ Nothing = return ()
+pushRecalcRootQ (Just item) = do
+  lvM <- queryLastValue (rfbAddrToSufIrred item.rfbAddr)
+  shouldPush <- case lvM of
+    Nothing -> return True
+    Just seen -> do
+      repT <- treeToFullRepString item.value
+      repSeen <- treeToFullRepString seen
       debugInstantTM
         "pushRecalcRootQ"
-        (msprintf "addr: %s, shouldPush: %s" [packFmtA addr, packFmtA shouldPush])
-      -- Only push if the value has changed.
-      -- TOOD: use version.
-      when shouldPush $ do
-        gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
-        case gAddrM of
-          Nothing -> return ()
-          Just gAddr -> modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> (addr, gAddr)}
+        (return $ T.pack $ printf "t: %s, seen: %s" repT repSeen)
+      return (item.value /= seen)
+  debugInstantTM
+    "pushRecalcRootQ"
+    (msprintf "addr: %s, shouldPush: %s" [packFmtA item.addr, packFmtA shouldPush])
+  -- Only push if the value has changed.
+  -- TOOD: use version.
+  when shouldPush $ modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> item}
 
-popRecalcRootQ :: RM (Maybe (ValAddr, GrpAddr))
+popRecalcRootQ :: RM (Maybe RecalcQItem)
 popRecalcRootQ = do
   ctx <- getRMContext
   case recalcRootQ ctx of
@@ -117,17 +124,19 @@ popRecalcRootQ = do
 
 drainQ :: RM ()
 drainQ = do
-  gAddrM <- popRecalcRootQ
-  case gAddrM of
+  itemM <- popRecalcRootQ
+  case itemM of
     Nothing -> return ()
-    Just start@(_, gAddr) -> do
+    Just item -> do
       g <- depGraph <$> getRMContext
-      let qSetList = getNodeAddrsInGrp gAddr g
+      let
+        gAddr = item.grpAddr
+        qSetList = getNodeAddrsInGrp gAddr g
       debugInstantTM "drainQ" (msprintf "new popped root gAddr: %s, qSet: %s" [packFmtA gAddr, packFmtA qSetList])
       run
         ( RunState
             { startGAddr = gAddr
-            , startAddr = fst start
+            , startAddr = item.addr
             , q = Seq.singleton gAddr
             , qSet = Set.fromList qSetList
             , visited = Set.singleton gAddr
@@ -157,7 +166,6 @@ run state = do
   case state.q of
     Seq.Empty -> return ()
     (cur Seq.:<| rest) -> do
-      g <- depGraph <$> getRMContext
       noFieldInQ <- hasNoFieldInQ cur state.qSet
       if not noFieldInQ
         -- If there is a field of the current node in queue, we put it back to the end of the queue.
@@ -173,42 +181,42 @@ run state = do
           unless curNodeIsAcyclicStart $ recalcGroup cur
           -- After recalculation, we check whether the value has changed.
           -- If not, we do not need to continue traversing its dependents. This makes sure early-cutoff.
-          -- Do it here out of the
           hasSeen <- updateLastValues cur
           if hasSeen
             then run state{q = rest}
-            else do
-              nextState <- do
-                ng <- depGraph <$> getRMContext
-                parentGrpAddrs <- getAncestorGrpAddrs state.startAddr cur
-                let
-                  useGrpAddrs = getUseGroups cur ng
-                  (newQ, newVisited) =
-                    foldr
-                      ( \x (qAcc, vAcc) ->
-                          if Set.member x vAcc
-                            then (qAcc, vAcc)
-                            else (qAcc Seq.|> x, Set.insert x vAcc)
-                      )
-                      (rest, state.visited)
-                      (useGrpAddrs ++ parentGrpAddrs)
-                  restSet = foldr Set.delete state.qSet (getNodeAddrsInGrp cur g)
-                  newQSet =
-                    foldr
-                      ( \gAddrAcc acc ->
-                          let nodes = getNodeAddrsInGrp gAddrAcc ng
-                           in foldr Set.insert acc nodes
-                      )
-                      restSet
-                      useGrpAddrs
-                return $
-                  state
-                    { q = newQ
-                    , qSet = newQSet
-                    , visited = newVisited
-                    }
+            else
+              discoverNeighbors cur rest state >>= run
 
-              run nextState
+discoverNeighbors :: GrpAddr -> Seq.Seq GrpAddr -> RunState -> RM RunState
+discoverNeighbors cur rest state = do
+  ng <- depGraph <$> getRMContext
+  parentGrpAddrs <- getAncestorGrpAddrs state.startAddr cur
+  let
+    useGrpAddrs = getUseGroups cur ng
+    (newQ, newVisited) =
+      foldr
+        ( \x (qAcc, vAcc) ->
+            if Set.member x vAcc
+              then (qAcc, vAcc)
+              else (qAcc Seq.|> x, Set.insert x vAcc)
+        )
+        (rest, state.visited)
+        (useGrpAddrs ++ parentGrpAddrs)
+    restSet = foldr Set.delete state.qSet (getNodeAddrsInGrp cur ng)
+    newQSet =
+      foldr
+        ( \gAddrAcc acc ->
+            let nodes = getNodeAddrsInGrp gAddrAcc ng
+             in foldr Set.insert acc nodes
+        )
+        restSet
+        useGrpAddrs
+  return $
+    state
+      { q = newQ
+      , qSet = newQSet
+      , visited = newVisited
+      }
 
 {- | Update the last seen values for all nodes in the group address. Return whether all nodes have the same value
 as before.
@@ -229,14 +237,14 @@ updateLastValues gaddr = do
         addrs
  where
   go siAddr m = do
+    let foundInMap = Map.lookup siAddr m
     ok <- goTMAbsAddr (sufIrredToAddr siAddr)
     if ok
       then do
         t <- getTMVal
-        r <- case Map.lookup siAddr m of
+        r <- case foundInMap of
           Nothing -> return False
-          Just lastT -> do
-            return (t == lastT)
+          Just lastT -> return (t == lastT)
         modifyRMContext $ \ctx -> ctx{lastValueMap = Map.insert siAddr t ctx.lastValueMap}
         return r
       -- If the address does not exist, we consider it same as before.

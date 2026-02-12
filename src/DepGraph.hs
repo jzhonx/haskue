@@ -7,7 +7,7 @@ module DepGraph where
 
 import Control.DeepSeq (NFData)
 import Control.Monad (forM_, when)
-import Control.Monad.State.Strict (MonadState (..), State, execState, gets, modify')
+import Control.Monad.State.Strict (MonadState (..), State, evalState, execState, gets, modify', runState)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
 import qualified Data.Map.Strict as Map
@@ -91,19 +91,36 @@ insertVGraphSelEdge depVtx useVtx g =
     , vVertexes = Set.union (Set.fromList [useVtx, ExprVertex (getRefVertex depVtx)]) g.vVertexes
     }
 
-delVGVertexes :: (Int -> Bool) -> VGraph -> VGraph
-delVGVertexes keep g =
+-- | Delete all edges that have the given vertex as the dependency.
+delVGEdgeByDep :: RefVertex -> VGraph -> VGraph
+delVGEdgeByDep depVtx g =
   g
-    { vEdges =
-        HashMap.map
-          -- Then filter the values.
-          (filter (\v -> keep (getExprVertex v)))
-          $ HashMap.filterWithKey (\k _ -> keep (getRefVertex k)) (vEdges g)
-    , vVertexes =
-        Set.filter
-          (\v -> (keep (getExprVertex v)))
-          (vVertexes g)
+    { vEdges = HashMap.delete depVtx (vEdges g)
     }
+
+-- | Delete all edges that have the given vertex by matching the use vertex with the given predicate.
+delVGEdgeByUseMatch :: (ExprVertex -> Bool) -> VGraph -> VGraph
+delVGEdgeByUseMatch useMatch g =
+  g
+    { vEdges = HashMap.map (filter (not . useMatch)) (vEdges g)
+    }
+
+queryVGUsesByDepMatch :: (RefVertex -> Bool) -> VGraph -> [ExprVertex]
+queryVGUsesByDepMatch depMatch g = concatMap snd $ filter (depMatch . fst) (HashMap.toList $ vEdges g)
+
+-- delVGVertexes :: (Int -> Bool) -> VGraph -> VGraph
+-- delVGVertexes keep g =
+--   g
+--     { vEdges =
+--         HashMap.map
+--           -- Then filter the values.
+--           (filter (\v -> keep (getExprVertex v)))
+--           $ HashMap.filterWithKey (\k _ -> keep (getRefVertex k)) (vEdges g)
+--     , vVertexes =
+--         Set.filter
+--           (\v -> (keep (getExprVertex v)))
+--           (vVertexes g)
+--     }
 
 data CGraph = CGraph
   { pDAG :: HashMap.HashMap ExprVertex [ExprVertex]
@@ -404,29 +421,67 @@ liftGetVIDForG addr = state $ \g ->
         Just new -> (i, g{vidMapping = new})
         Nothing -> (i, g)
 
--- | Remove all vertexes from the propagation graph that start with the given prefix.
-delNGVertexPrefix :: (HasCallStack) => ValAddr -> DepGraph -> DepGraph
-delNGVertexPrefix prefix =
+-- | Remove all edges from the dependency graph that match the given predicate on the use vertex.
+delDGEdgesByUseMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> DepGraph
+delDGEdgesByUseMatch useMatch =
   execState
     ( do
         m <- gets vidMapping
-        modify' $ \g -> updateCGraph (mapVGraph (delVGVertexes (keep m)) g)
-        modify' $ \g ->
-          g
-            { nodesByUseFunc =
-                Map.map
-                  -- Then filter the values.
-                  (filter (\addr -> not (isPrefix prefix addr)))
-                  -- First filter the keys.
-                  ( Map.filterWithKey
-                      (\k _ -> not (isPrefix prefix (sufIrredToAddr k)))
-                      (nodesByUseFunc g)
-                  )
-            }
+        modify' $ \g -> updateCGraph (mapVGraph (delVGEdgeByUseMatch (useMatchAdapt m)) g)
+        -- modify' $ \g ->
+        --   g
+        --     { nodesByUseFunc =
+        --         Map.map
+        --           -- Then filter the values.
+        --           (filter (not . match))
+        --           -- First filter the keys.
+        --           ( Map.filterWithKey
+        --               (\k _ -> not (match (sufIrredToAddr k)))
+        --               (nodesByUseFunc g)
+        --           )
+        --     }
     )
  where
-  keep :: VIDMapping -> Int -> Bool
-  keep m x = not (isPrefix prefix (getAddrFromVIDMust x m))
+  useMatchAdapt :: VIDMapping -> ExprVertex -> Bool
+  useMatchAdapt m x = useMatch (getAddrFromVIDMust (getExprVertex x) m)
+
+-- | Query the dependents by matching the use vertex with the given predicate.
+queryUsesByDepMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> [ValAddr]
+queryUsesByDepMatch depMatch =
+  evalState
+    ( do
+        m <- gets vidMapping
+        g <- gets vgraph
+        let l = queryVGUsesByDepMatch (depMatchAdapt m) g
+        return $ map (\x -> getAddrFromVIDMust (getExprVertex x) m) l
+    )
+ where
+  depMatchAdapt :: VIDMapping -> RefVertex -> Bool
+  depMatchAdapt m x = depMatch (getAddrFromVIDMust (getRefVertex x) m)
+
+-- -- | Remove all vertexes from the dependency graph that match the given predicate.
+-- delDGVertexes :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> DepGraph
+-- delDGVertexes match =
+--   execState
+--     ( do
+--         m <- gets vidMapping
+--         modify' $ \g -> updateCGraph (mapVGraph (delVGVertexes (keep m)) g)
+--         modify' $ \g ->
+--           g
+--             { nodesByUseFunc =
+--                 Map.map
+--                   -- Then filter the values.
+--                   (filter (not . match))
+--                   -- First filter the keys.
+--                   ( Map.filterWithKey
+--                       (\k _ -> not (match (sufIrredToAddr k)))
+--                       (nodesByUseFunc g)
+--                   )
+--             }
+--     )
+--  where
+--   keep :: VIDMapping -> Int -> Bool
+--   keep m x = not (match (getAddrFromVIDMust x m))
 
 -- | Update the component graph based on the current propagation graph.
 updateCGraph :: (HasCallStack) => DepGraph -> DepGraph

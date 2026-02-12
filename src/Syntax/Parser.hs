@@ -196,16 +196,65 @@ decls = manyEndByComma decl rbrace "}"
 list :: Parser ListLit
 list = do
   l <- lsquare
-  elements <- manyEndByComma embedding rsquare "]"
+  el <-
+    ( do
+        e <- ellipsisExpr
+        _ <- optional comma
+        return $ EllipsisList e
+      )
+      <|> ( do
+              fstEmb <- embedding
+              revL <- manyCommaElem []
+              let xs = reverse revL
+                  embeds = [e | ListCommaEmbedding e <- xs]
+                  ellM = case [e | ListCommaEllipsis e <- xs] of
+                    [] -> Nothing
+                    [e] -> Just e
+                    _ -> error "multiple ellipsis in list literal should have been rejected by parser"
+
+              return $ EmbeddingList (fstEmb : embeds) ellM
+          )
   r <- rsquare
-  return $ ListLit l.tkLoc (EmbeddingList elements) r.tkLoc
+  return $ ListLit l.tkLoc el r.tkLoc
+ where
+  -- manyCommaElem is used to parse the ",<elem>" structure.
+  -- Given
+  -- ListLit       = "[" [ ElementList [ "," ] ] "]" .
+  -- ElementList   = Ellipsis | Embedding { "," Embedding } [ "," Ellipsis ] .
+  -- When we are at ",", we don't know if it's followed by an Embedding or an Ellipsis, or it's the end of the list,
+  -- which is indicated by "]". So we need to try all three possibilities.
+  manyCommaElem revAcc =
+    do
+      m <- optionMaybe comma
+      case m of
+        Nothing -> do
+          return revAcc
+        Just _ ->
+          ( do
+              e <- embedding
+              manyCommaElem (ListCommaEmbedding e : revAcc)
+          )
+            <|> ( do
+                    e <- ellipsisExpr
+                    manyCommaElem (ListCommaEllipsis e : revAcc)
+                )
+            <|> ( do
+                    -- If it's not followed by an embedding or an ellipsis, it must be followed by a "]". We use
+                    -- lookAhead to check if the next token is "]" without consuming it.
+                    _ <- lookAhead rsquare <?> "expected embedding, ellipsis or ] after comma in list literal"
+                    return revAcc
+                )
+
+data ListCommaElem
+  = ListCommaEmbedding Embedding
+  | ListCommaEllipsis EllipsisExpr
 
 decl :: Parser Declaration
 decl =
   try (FieldDecl <$> field)
-    -- let would not consume EllipsisDecl. But it could consume Embedding. So it needs "try".
+    -- let would not consume EllipsisExpr. But it could consume Embedding. So it needs "try".
     <|> try (DeclLet <$> letClause)
-    <|> (EllipsisDecl <$> ellipsisDecl)
+    <|> (EllipsisExpr <$> ellipsisExpr)
     <|> (Embedding <$> embedding)
     <?> "failed to parse declaration"
 
@@ -214,7 +263,7 @@ field = do
   l <- label
   -- labels might be in the form of "a: b: c: val". We need to try to match the b and c.
   others <- many (try label)
-  Field (l : others) <$> expr
+  Field (l : others) <$> aliasExpr
  where
   label :: Parser Label
   label = do
@@ -226,7 +275,7 @@ labelExpr :: Parser LabelExpr
 labelExpr =
   ( do
       l <- lsquare
-      e <- expr
+      e <- aliasExpr
       r <- rsquare
       return $ LabelExpr l.tkLoc e r.tkLoc
   )
@@ -242,8 +291,8 @@ labelNameConstraint = do
       _ -> unexpected $ printf "unexpected %s after label name" (show x.tkLiteral)
     Nothing -> return $ LabelName lnlem Nothing
 
-ellipsisDecl :: Parser EllipsisDecl
-ellipsisDecl = do
+ellipsisExpr :: Parser EllipsisExpr
+ellipsisExpr = do
   el <- ellipsis
   eNodeM <- optionMaybe expr
   return $ AST.Ellipsis el.tkLoc eNodeM
@@ -252,7 +301,20 @@ embedding :: Parser Embedding
 embedding = do
   -- Use try to avoid consuming expr when comprehension is not matched. For example, an identifier "fo".
   try (EmbedComprehension <$> comprehension)
-    <|> (AliasExpr <$> expr)
+    <|> (EmbeddingAlias <$> aliasExpr)
+    <?> "failed to parse embedding"
+
+aliasExpr :: Parser AliasExpr
+aliasExpr =
+  try
+    ( do
+        idM <- optionMaybe $ do
+          idTk <- identifier
+          _ <- accept Assign
+          return idTk
+        AliasExpr idM <$> expr
+    )
+    <|> (AliasExpr Nothing <$> expr)
 
 comprehension :: Parser Comprehension
 comprehension = do
@@ -306,7 +368,7 @@ labelName =
 labelNameExpr :: Parser LabelName
 labelNameExpr = do
   st <- lparen
-  e <- expr
+  e <- aliasExpr
   r <- rparen
   return $ LabelNameExpr st.tkLoc e r.tkLoc
 

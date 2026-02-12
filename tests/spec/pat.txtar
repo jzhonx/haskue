@@ -4,7 +4,7 @@
 	y: { b: 2 }
 	...
 }
--- exp_pat1 --
+-- exp --
 y: {
     b: 2
     a: 1
@@ -16,7 +16,7 @@ nameMap: [string]: {
 	nickName:  *firstName | string
 }
 nameMap: hank: firstName: "Hank"
--- exp_pat2 --
+-- exp --
 nameMap: {
     hank: {
         firstName: "Hank"
@@ -30,7 +30,7 @@ intMap: {
 	t1: 43
 	t2: 2.4 // error: 2.4 is not an integer
 }
--- exp_pat3 --
+-- exp --
 error: bounds "int" and "2.4" conflict
 
 -- pat4 --
@@ -40,6 +40,17 @@ x: {
 	a: true
 }
 y: d: =~"a"
--- exp_pat4 --
+-- exp --
 error: bounds "int" and "true" conflict
+
+-- pat5 --
+intMap: [X=string]: {a: X}
+intMap: t1: {}
+
+-- exp --
+intMap: {
+    t1: {
+        a: "t1"
+    }
+}
 

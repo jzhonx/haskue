@@ -88,9 +88,10 @@ transStructLit (StructLit _ decls _) = inStructScope decls $ do
   elems <- mapM transDecl decls
   res <-
     foldM
-      ( \acc elm -> case acc of
-          IsStruct struct -> mkStructVal <$> insertElemToStruct elm struct
-          _ -> return acc
+      ( \acc elm -> do
+          case acc of
+            IsStruct struct -> insertElemToStruct elm struct
+            _ -> return acc
       )
       (mkStructVal $ emptyStruct{stcID = sid})
       elems
@@ -141,7 +142,7 @@ transDecl decl = case decl of
   Embedding ed -> do
     v <- transEmbedding False ed
     return $ EmbedSAdder v
-  EllipsisDecl (Ellipsis _ cM) ->
+  EllipsisExpr (Ellipsis _ cM) ->
     maybe
       (return EmptyAdder) -- TODO: implement real ellipsis handling
       (\_ -> throwFatal "default constraints are not implemented yet")
@@ -161,7 +162,7 @@ identTokenToTextIndex tk = case tk.tkType of
   _ -> throwFatal $ printf "expected identifier token, got %s" (show tk)
 
 transEmbedding :: Bool -> Embedding -> TM Val
-transEmbedding _ (AliasExpr e) = transExpr e
+transEmbedding _ (EmbeddingAlias (AliasExpr _ e)) = transExpr e
 transEmbedding
   isListCompreh
   (EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit)) = do
@@ -228,52 +229,60 @@ transClause c = case c of
       idIdxUpdated <- modifyTISuffix cid idIdx
       return $ ComprehArgLet idIdxUpdated lt
 
-transFDeclLabels :: [Label] -> Expression -> TM StructElemAdder
-transFDeclLabels lbls e =
+transFDeclLabels :: [Label] -> AliasExpr -> TM StructElemAdder
+transFDeclLabels lbls ae@(AST.AliasExpr _ e) =
   case lbls of
     [] -> throwFatal "empty labels"
-    [l1] ->
-      do
-        val <- transExpr e
-        mkAdder l1 val
-    l1 : l2 : rs ->
-      do
-        sf2 <- transFDeclLabels (l2 : rs) e
-        sid <- allocObjID
-        val <- insertElemToStruct sf2 (emptyStruct{stcID = sid})
-        mkAdder l1 (mkStructVal val)
+    -- The adder is created before translating the expression because the label might have alias that can be
+    -- referred to in the expression, and the alias needs to be in scope when translating the expression.
+    [l1] -> mkAdderWithValGen l1 $ transExpr e
+    l1 : l2 : rs -> mkAdderWithValGen l1 $ do
+      sf2 <- transFDeclLabels (l2 : rs) ae
+      sid <- allocObjID
+      insertElemToStruct sf2 (emptyStruct{stcID = sid})
  where
-  mkAdder :: Label -> Val -> TM StructElemAdder
-  mkAdder (Label le) val = case le of
-    LabelName ln c ->
+  mkAdderWithValGen :: Label -> TM Val -> TM StructElemAdder
+  mkAdderWithValGen (Label le) vgen = case le of
+    LabelName ln c -> do
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
-       in case ln of
-            (toIDentLabel -> Just key) -> do
-              keyIdx <- identTokenToTextIndex key
-              return $ StaticSAdder keyIdx (staticFieldMker val attr)
-            (toDynLabel -> Just se) -> do
-              selTree <- transExpr se
+      val <- vgen
+      case ln of
+        (toIDentLabel -> Just key) -> do
+          keyIdx <- identTokenToTextIndex key
+          return $ StaticSAdder keyIdx (staticFieldMker val attr)
+        (toDynLabel -> Just se) -> do
+          selTree <- transExpr se
+          oid <- allocObjID
+          return $ DynamicSAdder oid (DynamicField oid attr selTree False val)
+        (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
+          rE <- strLitSegsToStr segs
+          case rE of
+            Right str -> do
+              strIdx <- textToTextIndex str
+              return $ StaticSAdder strIdx (staticFieldMker val attr)
+            Left t -> do
               oid <- allocObjID
-              return $ DynamicSAdder oid (DynamicField oid attr selTree False val)
-            (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
-              rE <- strLitSegsToStr segs
-              case rE of
-                Right str -> do
-                  strIdx <- textToTextIndex str
-                  return $ StaticSAdder strIdx (staticFieldMker val attr)
-                Left t -> do
-                  oid <- allocObjID
-                  return $ DynamicSAdder oid (DynamicField oid attr t True val)
-            _ -> throwFatal "invalid label"
-    LabelExpr _ pe _ -> do
+              return $ DynamicSAdder oid (DynamicField oid attr t True val)
+        _ -> throwFatal "invalid label"
+    LabelExpr _ (AliasExpr aliasM pe) _ -> do
       pat <- transExpr pe
-      oid <- allocObjID
-      return (CnstrSAdder oid pat val)
+      aliasIdxM <- case aliasM of
+        Just tk -> Just <$> identTokenToTextIndex tk
+        Nothing -> return Nothing
+      -- We use the original alias identifier without the suffix here so that the alias can be looked up in the scope.
+      -- However, for the adder we need to use the suffixed alias identifier.
+      inCnstrScope aliasIdxM $ do
+        oid <- getEnvID
+        val <- vgen
+        updatedAliasIdxM <- case aliasIdxM of
+          Just origIdx -> Just <$> modifyTISuffix oid origIdx
+          Nothing -> return Nothing
+        return $ CnstrSAdder oid pat updatedAliasIdxM val
 
   -- Returns the label identifier and the whether the label is static.
 
   toDynLabel :: LabelName -> Maybe Expression
-  toDynLabel (LabelNameExpr _ lne _) = Just lne
+  toDynLabel (LabelNameExpr _ (AliasExpr _ lne) _) = Just lne
   toDynLabel _ = Nothing
 
   toSStrLabel :: LabelName -> Maybe SimpleStringLit
@@ -297,21 +306,22 @@ toIDentLabel _ = Nothing
 data StructElemAdder
   = StaticSAdder TextIndex Field
   | DynamicSAdder !Int DynamicField
-  | CnstrSAdder !Int Val Val
+  | CnstrSAdder !Int Val (Maybe TextIndex) Val
   | LetSAdder TextIndex Val
   | EmbedSAdder Val
+  | ErrorAdder Val
   | EmptyAdder
 
 {- | Insert a new element into the struct.
 
 If the field is already in the struct, then unify the field with the new field.
 -}
-insertElemToStruct :: StructElemAdder -> Struct -> TM Struct
+insertElemToStruct :: StructElemAdder -> Struct -> TM Val
 insertElemToStruct adder struct = case adder of
   (StaticSAdder name sf) -> do
-    case lookupStructStubVal name struct of
+    case lookupStructStaticFieldBase name struct of
       -- The label is already in the struct, so we need to unify the field.
-      [StructStubField extSF] ->
+      Just extSF ->
         let
           unifySFOp =
             Value.Field
@@ -321,16 +331,20 @@ insertElemToStruct adder struct = case adder of
               }
           newStruct = updateStubAndField name unifySFOp struct
          in
-          return newStruct
+          retSt newStruct
       -- The label is not seen before in the struct.
-      _ -> return $ insertNewStubAndField name sf struct
-  (DynamicSAdder i dsf) -> return $ insertStructNewDynField i dsf struct
-  (CnstrSAdder i pattern val) -> return $ insertStructNewCnstr i pattern val struct
-  (LetSAdder name val) -> return $ insertStructLet name val struct
-  _ -> return struct
+      _ -> retSt $ insertNewStubAndField name sf struct
+  (DynamicSAdder i dsf) -> retSt $ insertStructNewDynField i dsf struct
+  (CnstrSAdder i pattern alias val) -> retSt $ insertStructNewCnstr i pattern alias val struct
+  (LetSAdder name val) -> retSt $ insertStructLet name val struct
+  (ErrorAdder errVal) -> return errVal
+  _ -> retSt struct
+ where
+  retSt = return . mkStructVal
 
 transListLit :: ElementList -> TM Val
-transListLit (EmbeddingList es) = do
+transListLit (EllipsisList _) = return $ mkListVal [] []
+transListLit (EmbeddingList es _) = do
   xs <- mapM (transEmbedding True) es
   return $ mkListVal xs []
 
@@ -363,7 +377,7 @@ transPrimExpr e = case e of
         res <- lookupIdentInScopes idIdx ident.tkLoc
         case res of
           Left errVal -> return errVal
-          Right (inTopScope, identEnvID, identType) -> do
+          Right (_, identEnvID, identType) -> do
             idIdxUpdated <- case identType of
               ITField -> return idIdx
               _ -> modifyTISuffix identEnvID idIdx
@@ -694,6 +708,35 @@ leaveStructScope = do
       firstNameT <- tshow firstName
       return $ Left $ mkBottomVal $ printf "unreferenced let clause let %s" (show firstNameT)
 
+{- | Enter a constraint scope for evaluating a constraint body.
+
+The alias identifier of the constraint, if exists, is added to the scope.
+For example, [X=constraint]: value, a new environment is created for evaluating "value" with just X in the scope.
+-}
+inCnstrScope :: Maybe TextIndex -> TM StructElemAdder -> TM StructElemAdder
+inCnstrScope aliasIdxM action = do
+  enterRes <- enterCnstrScope aliasIdxM
+  case enterRes of
+    Left errVal -> return (ErrorAdder errVal)
+    Right () -> do
+      result <- action
+      leaveCnstrScope
+      return result
+
+enterCnstrScope :: Maybe TextIndex -> TM (Either Val ())
+enterCnstrScope aliasIdxM = do
+  fid <- allocObjID
+  modify' $ mapEnvs (pushBlock fid EnvTypeCnstr)
+  case aliasIdxM of
+    Just aliasIdx -> addNameToCurrentEnv aliasIdx ITLetBinding
+    Nothing -> return $ Right ()
+
+leaveCnstrScope :: TM ()
+leaveCnstrScope = do
+  envs <- gets envs
+  let (_, restEnvs) = popBlock envs
+  modify' $ mapEnvs (const restEnvs)
+
 enterClauseScope :: TextIndex -> Maybe TextIndex -> TM (Either Val ())
 enterClauseScope iIdx jIdxM = do
   fid <- allocObjID
@@ -758,7 +801,7 @@ debugShowEnvs msg = do
   envsT <- tshow =<< gets envs
   trace (printf "In struct scope: %s envs=%s" msg (T.unpack envsT)) (return ())
 
-data EnvType = EnvTypeStruct | EnvTypeClause
+data EnvType = EnvTypeStruct | EnvTypeClause | EnvTypeCnstr
   deriving (Eq, Show)
 
 data Environment = Environment

@@ -83,7 +83,7 @@ data Context = Context
   { ctxObjID :: !Int
   , ctxReduceStack :: [ValAddr]
   , isRecalcing :: !Bool
-  , recalcRootQ :: Seq.Seq (ValAddr, GrpAddr)
+  , recalcRootQ :: Seq.Seq RecalcQItem
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
   , lastValueMap :: Map.Map SuffixIrredAddr Val
@@ -102,6 +102,17 @@ instance HasTrace Context where
 instance HasTextIndexer Context where
   getTextIndexer = Reduce.Monad.tIndexer
   setTextIndexer ti ctx = ctx{Reduce.Monad.tIndexer = ti}
+
+mapDepGraph :: (DepGraph -> DepGraph) -> Context -> Context
+mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
+
+data RecalcQItem = RecalcQItem
+  { addr :: ValAddr
+  , rfbAddr :: ReferableAddr
+  , grpAddr :: GrpAddr
+  , value :: Val
+  }
+  deriving (Show, Generic, NFData)
 
 emptyContext :: (LB.ByteString -> IO ()) -> Context
 emptyContext tPut =
@@ -169,6 +180,11 @@ putRMContext ctx = modify' $ \s -> s{rtsCtx = ctx}
 modifyRMContext :: (Context -> Context) -> RM ()
 modifyRMContext f = modify' $ \s -> s{rtsCtx = f (rtsCtx s)}
 
+-- DepGraph
+
+getRMDepGraph :: RM DepGraph
+getRMDepGraph = gets (depGraph . rtsCtx)
+
 -- ObjID
 
 allocRMObjID :: RM Int
@@ -183,19 +199,6 @@ getRMObjID = gets (ctxObjID . rtsCtx)
 
 setRMObjID :: Int -> RM ()
 setRMObjID newID = modify' $ mapCtx $ \ctx -> ctx{ctxObjID = newID}
-
-{- | Delete the notification receivers that have the specified prefix.
-
-we need to delete receiver starting with the addr, not only the addr. For example, if the function
-is index and the first argument is a reference, then the first argument dependency should also be
-deleted.
--}
-delTMDepPrefix :: ValAddr -> RM ()
-delTMDepPrefix addrPrefix =
-  modifyRMContext $ \ctx -> ctx{depGraph = delNGVertexPrefix addrPrefix (depGraph ctx)}
-
-delMutValRecvs :: ValAddr -> RM ()
-delMutValRecvs = undefined
 
 -- Cursor
 

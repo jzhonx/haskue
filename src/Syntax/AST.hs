@@ -149,21 +149,24 @@ newtype Label = Label LabelExpr deriving (Eq, Show, Generic, NFData)
 
 data Declaration
   = FieldDecl FieldDecl
-  | EllipsisDecl EllipsisDecl
+  | EllipsisExpr EllipsisExpr
   | Embedding Embedding
   | DeclLet LetClause
   deriving (Eq, Show, Generic, NFData)
 
 data FieldDecl
-  = Field [Label] Expression
+  = Field [Label] AliasExpr
   deriving (Eq, Show, Generic, NFData)
 
-data EllipsisDecl
+data EllipsisExpr
   = -- | Location is that of the ellipsis token.
     Ellipsis Location (Maybe Expression)
   deriving (Eq, Show, Generic, NFData)
 
-newtype ElementList = EmbeddingList [Embedding] deriving (Eq, Show, Generic, NFData)
+data ElementList
+  = EllipsisList EllipsisExpr
+  | EmbeddingList [Embedding] (Maybe EllipsisExpr)
+  deriving (Eq, Show, Generic, NFData)
 
 newtype OperandName = OperandName Token deriving (Eq, Show, Generic, NFData)
 
@@ -175,17 +178,24 @@ data LabelExpr
     -- exclamation mark (!) for required labels.
     LabelName LabelName (Maybe TokenType)
   | -- | A label expression. The location is that of the square brackets.
-    LabelExpr Location Expression Location
+    LabelExpr Location AliasExpr Location
   deriving (Eq, Show, Generic, NFData)
 
 data LabelName
   = LabelID Token
   | LabelString SimpleStringLit
   | -- | Parenthesized expression. The locations are that of the parentheses.
-    LabelNameExpr Location Expression Location
+    LabelNameExpr Location AliasExpr Location
   deriving (Eq, Show, Generic, NFData)
 
-data Embedding = EmbedComprehension Comprehension | AliasExpr Expression
+data Embedding = EmbedComprehension Comprehension | EmbeddingAlias AliasExpr
+  deriving (Eq, Show, Generic, NFData)
+
+{- | An alias expression.
+
+The first token is the alias name, and the second expression is the aliased expression.
+-}
+data AliasExpr = AliasExpr (Maybe Token) Expression
   deriving (Eq, Show, Generic, NFData)
 
 data Comprehension = Comprehension Clauses StructLit
@@ -445,7 +455,7 @@ declsBld (x : xs) = do
 declBld :: (M m) => Declaration -> m Builder
 declBld e = case e of
   FieldDecl f -> fieldDeclBld f
-  EllipsisDecl (Syntax.AST.Ellipsis _ eM) -> case eM of
+  EllipsisExpr (Syntax.AST.Ellipsis _ eM) -> case eM of
     Nothing -> return $ string7 "..."
     Just e' -> do
       b <- exprBld e'
@@ -458,7 +468,7 @@ declBld e = case e of
 fieldDeclBld :: (M m) => FieldDecl -> m Builder
 fieldDeclBld e = case e of
   Field ls fe -> do
-    declB <- exprBld fe
+    declB <- aliasExprBld fe
     labels <-
       foldM
         ( \acc l -> do
@@ -472,10 +482,14 @@ fieldDeclBld e = case e of
 embeddingBld :: (M m) => Embedding -> m Builder
 embeddingBld e = case e of
   EmbedComprehension _ -> return $ string7 "<undefined>"
-  AliasExpr ex -> exprBld ex
+  EmbeddingAlias ex -> aliasExprBld ex
+
+aliasExprBld :: (M m) => AliasExpr -> m Builder
+aliasExprBld (AliasExpr _ ex) = exprBld ex
 
 listBld :: (M m) => ElementList -> m Builder
-listBld (EmbeddingList l) = do
+listBld (EllipsisList _) = return $ string7 "[]"
+listBld (EmbeddingList l _) = do
   b <- goList l
   return $ string7 "[" <> b
  where
@@ -504,7 +518,7 @@ labelExprBld e = case e of
     _ -> error "Unsupported label constraint"
   -- The LabelPattern should not be exported.
   LabelExpr _ le _ -> do
-    b <- exprBld le
+    b <- aliasExprBld le
     return $ string7 "[" <> b <> string7 "]"
 
 labelNameBld :: (M m) => LabelName -> m Builder
@@ -512,7 +526,7 @@ labelNameBld e = case e of
   LabelID ident -> return $ byteString ident.tkLiteral
   LabelString s -> simpleStrLitBld s
   LabelNameExpr _ ex _ -> do
-    b <- exprBld ex
+    b <- aliasExprBld ex
     return $ char7 '(' <> b <> char7 ')'
 
 indentBld :: Int -> Builder

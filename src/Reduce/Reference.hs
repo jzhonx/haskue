@@ -417,7 +417,6 @@ selToIdent _ = throwFatal "invalid selector"
 data IdentType
   = ITField
   | ITLetBinding
-  | ITIterBinding
   deriving (Show, Eq)
 
 {- | Search in the tree for the first identifier that can match the name.
@@ -491,9 +490,7 @@ findIdent ident vc = do
                     Nothing
             , do
                 subTC <- goDownVCSeg lf vc
-                binding <- Map.lookup ident struct.stcBindings
-                let typ = if binding.isIterVar then ITIterBinding else ITLetBinding
-                return (subTC, typ)
+                return (subTC, ITLetBinding)
             ]
       case m of
         [] -> return Nothing
@@ -511,5 +508,5 @@ findIdent ident vc = do
         vc
       return $ do
         v <- Map.lookup ident c.iterBindings
-        return (v `setVCFocus` vc, ITIterBinding)
+        return (v `setVCFocus` vc, ITLetBinding)
     _ -> return Nothing

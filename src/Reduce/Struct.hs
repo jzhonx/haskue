@@ -5,23 +5,31 @@
 
 module Reduce.Struct where
 
-import Control.Monad (foldM, unless)
+import Control.Monad (foldM, unless, void, when)
 import Cursor
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import qualified Data.Set as Set
+import DepGraph (delDGEdgesByUseMatch, queryUsesByDepMatch)
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce)
+import {-# SOURCE #-} Reduce.Core (pushCurValToRootQ, reduce)
 import Reduce.Monad (
   RM,
-  delTMDepPrefix,
+  allocRMObjID,
   descendTMSegMust,
+  getRMDepGraph,
+  getTMAbsAddr,
   getTMCursor,
   getTMVal,
+  goTMAbsAddr,
+  inRemoteTM,
   inSubTM,
   liftEitherRM,
+  mapDepGraph,
+  modifyRMContext,
   propUpTM,
+  putTMVal,
   setTMVN,
  )
 import Reduce.Reference ()
@@ -208,12 +216,19 @@ If the field is reduced to bottom, the whole struct becomes bottom.
 reduceStructField :: TextIndex -> RM ()
 reduceStructField i = whenStruct $ \_ -> inSubTM (mkStringFeature i) reduce
 
+handleSObjChange :: RM ()
+handleSObjChange = do
+  -- If the reduced node is a struct object, which is either a constraint or dynamic field, we need to handle the side
+  -- effects.
+  affectedAddrs <- handleSObjChangeInner
+  mapM_ (\afAddr -> inRemoteTM afAddr reduce) affectedAddrs
+
 {- | Handle the post process of the mutable object change in the struct.
 
 Returns the affected labels and removed labels.
 -}
-handleSObjChange :: RM ([ValAddr], [(TextIndex, ValAddr)])
-handleSObjChange = do
+handleSObjChangeInner :: RM [ValAddr]
+handleSObjChangeInner = do
   vc <- getTMCursor
   seg <- liftEitherRM $ vcFocusSegMust vc
   stc <- liftEitherRM $ propUpVC vc
@@ -223,6 +238,8 @@ handleSObjChange = do
       | FeatureType DynFieldLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           let (i, _) = getDynFieldIndexesFromFeature seg
           (oldLRmd, remAffLabels, removedLabels) <- removeAppliedObject i struct stc
+          postRemoval $ genAddrs (vcAddr stc) (remAffLabels ++ removedLabels)
+
           let dsf = stcDynFields struct IntMap.! i
               allCnstrs = IntMap.elems $ stcCnstrs oldLRmd
           rE <- dynFieldToStatic (stcFields oldLRmd) dsf
@@ -230,10 +247,10 @@ handleSObjChange = do
             "handleSObjChange"
             (msprintf "dsf: %s, rE: %s, dsf: %s" [packFmtA $ show dsf, packFmtA $ show rE, packFmtA $ show dsf])
           case rE of
-            Left err -> setTMVN (valNode err) >> return ([], [])
+            Left err -> setTMVN (valNode err) >> return []
             -- If the dynamic field label is incomplete, no change is made. But we still need to return the removed
             -- affected labels.
-            Right Nothing -> return (genAddrs (vcAddr stc) remAffLabels, [])
+            Right Nothing -> return (genAddrs (vcAddr stc) remAffLabels)
             Right (Just (name, field)) -> do
               -- Constrain the dynamic field with all existing constraints.
               (addAffFields, addAffLabels) <- do
@@ -249,7 +266,7 @@ handleSObjChange = do
                 (msprintf "-: %s, +: %s" [packFmtA remAffLabels, packFmtA addAffLabels])
 
               propUpTM >> setTMVN (VNStruct newS) >> descendTMSegMust seg
-              return (genAddrs (vcAddr stc) (remAffLabels ++ addAffLabels), genDelPairs (vcAddr stc) removedLabels)
+              return (genAddrs (vcAddr stc) (remAffLabels ++ addAffLabels))
       | FeatureType PatternLabelType <- seg -> traceSpanTM (printf "handleSObjChange, seg: %s" (show seg)) do
           -- Constrain all fields with the new constraint if it exists.
           let
@@ -267,6 +284,8 @@ handleSObjChange = do
           -- B. It could also match more fields when the constraint just got reduced to a concrete pattern.
 
           (oldPVRmd, remAffLabels, removedLabels) <- removeAppliedObject i struct stc
+          postRemoval $ genAddrs (vcAddr stc) (remAffLabels ++ removedLabels)
+
           (newStruct, addAffLabels) <- applyCnstrToFields cnstr oldPVRmd stc
           let affectedLabels = remAffLabels ++ addAffLabels
 
@@ -278,12 +297,62 @@ handleSObjChange = do
                   "-: %s, +: %s, new struct: %s"
                   [packFmtA remAffLabels, packFmtA addAffLabels, packFmtA $ mkStructVal newStruct]
               )
-          return (genAddrs (vcAddr stc) (remAffLabels ++ addAffLabels), genDelPairs (vcAddr stc) removedLabels)
-    _ -> return ([], [])
+          return (genAddrs (vcAddr stc) (remAffLabels ++ addAffLabels))
+    _ -> return []
  where
   genAddrs baseAddr = map (\name -> appendSeg baseAddr (mkStringFeature name))
 
-  genDelPairs baseAddr = map (\name -> (name, appendSeg baseAddr (mkStringFeature name)))
+postRemoval :: [ValAddr] -> RM ()
+postRemoval =
+  mapM_
+    ( \afAddr -> inRemoteTM afAddr do
+        og <- getRMDepGraph
+        debugInstantTM
+          "postRemoval"
+          ( do
+              msprintf "removed affected addr: %s, graph: %s" [packFmtA afAddr, packFmtA og]
+          )
+
+        modifyRMContext $ mapDepGraph $ delDGEdgesByUseMatch (isPrefix afAddr)
+        putTMVal (mkNewVal VNNoVal)
+        g <- getRMDepGraph
+        let watchers = queryUsesByDepMatch (isPrefix afAddr) g
+
+        debugInstantTM
+          "postRemoval"
+          ( do
+              watchersT <- mapM tshow watchers
+              msprintf "removed affected addr: %s, watchers: %s, graph: %s" [packFmtA afAddr, packFmtA watchersT, packFmtA g]
+          )
+
+        mapM_
+          ( \w -> do
+              ok <- goTMAbsAddr w
+              -- A child node is a use of its parent node. Since the watched value is about to be deleted so the sub
+              -- nodes of a deleted value do not need to be invalidated.
+              when ok $ do
+                invalidateUpToRootMut
+                pushCurValToRootQ
+          )
+          watchers
+    )
+
+-- | Invalidate the mutable value up to the root mutable.
+invalidateUpToRootMut :: RM ()
+invalidateUpToRootMut = do
+  addr <- getTMAbsAddr
+  final <- go addr
+  void $ goTMAbsAddr final
+ where
+  go prev = do
+    v <- getTMVal
+    case v of
+      IsValMutable _ -> do
+        setTMVN VNNoVal
+        mutAddr <- getTMAbsAddr
+        propUpTM
+        go mutAddr
+      _ -> return prev
 
 {- | Convert a dynamic field to a static field.
 
@@ -342,16 +411,31 @@ bindFieldWithCnstr name field cnstr vc = do
   let selPattern = scsPattern cnstr
 
   matched <- patMatchLabel selPattern name vc
+  cnstrVal <- initiateCnstrVal name cnstr
 
   let
     fval = ssfValue field
-    op = mkMutableVal $ mkUnifyOp [fval, scsValue cnstr]
+    op = mkMutableVal $ mkUnifyOp [fval, cnstrVal]
     newField =
       if matched
         then field{ssfValue = op, ssfObjects = Set.insert (scsID cnstr) (ssfObjects field)}
         else field
 
   return (newField, matched)
+
+initiateCnstrVal :: TextIndex -> StructCnstr -> RM Val
+initiateCnstrVal name cnstr = case scsPatAlias cnstr of
+  Nothing -> return $ scsValue cnstr
+  Just aliasIdx -> do
+    oid <- allocRMObjID
+    nameT <- tshow name
+    let holder =
+          mkStructVal
+            emptyStruct
+              { stcID = oid
+              , stcBindings = Map.singleton aliasIdx (mkAtomVal $ String nameT)
+              }
+    return $ mkMutableVal (mkEmbedUnifyOp [holder, scsValue cnstr])
 
 {- | Update the struct with the constrained result.
 
@@ -498,19 +582,3 @@ applyCnstrToFields cnstr struct vc = traceSpanAdaptRM
         (Map.toList $ stcFields struct)
     let newStruct = updateStructWithFields addAffFields struct
     return (newStruct, addAffLabels)
-
--- | This should be run after handleSObjChange.
-deleteStructFields :: [TextIndex] -> RM ()
-deleteStructFields names
-  | null names = return ()
-  -- When the removed labels is not empty, it means we are in a struct object.
-  | otherwise = do
-      vc <- getTMCursor
-      seg <- liftEitherRM $ vcFocusSegMust vc
-      stc <- liftEitherRM $ propUpVC vc
-      case focus stc of
-        IsStruct struct -> do
-          delTMDepPrefix (vcAddr stc)
-          let newStruct = removeStructFieldsByNames names struct
-          propUpTM >> setTMVN (VNStruct newStruct) >> descendTMSegMust seg
-        _ -> return ()

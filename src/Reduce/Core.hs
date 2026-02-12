@@ -19,7 +19,6 @@ import Reduce.Monad (
   getRMContext,
   getTMCursor,
   getTMVal,
-  inRemoteTM,
   inSubTM,
   modifyRMContext,
   setTMVN,
@@ -28,7 +27,7 @@ import Reduce.Monad (
  )
 import Reduce.Primitives (reduceList, resolveCloseFunc, resolveInterpolation)
 import qualified Reduce.Primitives as Primitives
-import Reduce.Recalc (recalc)
+import Reduce.Recalc (pushCurValToQ, recalc)
 import Reduce.Reference (
   CycleDetection (..),
   DerefResult (..),
@@ -54,10 +53,7 @@ reduce = do
   ctx <- getRMContext
   unless ctx.noRecalc recalc
 
-  -- If the reduced node is a struct object, which is either a constraint or dynamic field, we need to handle the side
-  -- effects.
-  (affectedAddrs, removedPairs) <- handleSObjChange
-  mapM_ (\afAddr -> inRemoteTM afAddr reduce) (affectedAddrs ++ map snd removedPairs)
+  handleSObjChange
 
 withValDepthLimit :: RM a -> RM a
 withValDepthLimit f = do
@@ -215,3 +211,6 @@ reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
 
       return (reverse reducedArgs, isJust $ sequence reducedArgs)
     _ -> throwFatal "reduceArgs: not a mutable tree"
+
+pushCurValToRootQ :: RM ()
+pushCurValToRootQ = pushCurValToQ

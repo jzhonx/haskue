@@ -55,7 +55,6 @@ deriving instance Eq StructCnstr
 deriving instance Eq List
 deriving instance Eq Disj
 deriving instance Eq AtomCnstr
-deriving instance Eq Binding
 deriving instance Eq Fix
 deriving instance Eq FixConj
 
@@ -111,7 +110,6 @@ deriving instance Show Field
 deriving instance Show DynamicField
 deriving instance Show StructCnstr
 
-deriving instance Show Binding
 deriving instance Show List
 deriving instance Show Disj
 deriving instance Show AtomCnstr
@@ -163,7 +161,6 @@ deriving instance NFData Field
 deriving instance NFData DynamicField
 deriving instance NFData StructCnstr
 
-deriving instance NFData Binding
 deriving instance NFData List
 deriving instance NFData Disj
 deriving instance NFData AtomCnstr

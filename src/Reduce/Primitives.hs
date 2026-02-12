@@ -21,7 +21,7 @@ import Reduce.Monad (
   setTMVN,
   throwFatal,
  )
-import Reduce.TraceSpan (traceSpanArgsTM, traceSpanTM)
+import Reduce.TraceSpan (traceSpanArgsTM)
 import StringIndex (ShowWTIndexer (..))
 import Syntax.Token (TokenType)
 import qualified Syntax.Token as Token

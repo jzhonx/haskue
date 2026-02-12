@@ -19,7 +19,10 @@ data Token = Token
   deriving (Eq, Generic, NFData)
 
 instance Show Token where
-  show (Token t loc lit) = printf "Token(%s, %s, \"%s\")" (show t) (show loc) (BC.unpack lit)
+  show (Token t _ _) = show t
+
+detailedShowToken :: Token -> String
+detailedShowToken (Token t loc lit) = printf "Token(%s, %s, \"%s\")" (show t) (show loc) (BC.unpack lit)
 
 emptyToken :: Token
 emptyToken = Token Illegal emptyLoc ""

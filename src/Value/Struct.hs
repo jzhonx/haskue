@@ -8,7 +8,6 @@ import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
@@ -24,7 +23,7 @@ data Struct = Struct
   -- referenced. Should be directly copied from the block.
   , stcFields :: Map.Map TextIndex Field
   -- ^ It is the fields.
-  , stcBindings :: Map.Map TextIndex Binding
+  , stcBindings :: Map.Map TextIndex Val
   , stcDynFields :: IntMap.IntMap DynamicField
   , stcCnstrs :: IntMap.IntMap StructCnstr
   , stcStaticFieldBases :: Map.Map TextIndex Field
@@ -65,10 +64,6 @@ data StructFieldCnstr = SFCRegular | SFCRequired | SFCOptional
 data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
-data StructStubVal
-  = StructStubField Field
-  | StructStubLet Val
-
 data Field = Field
   { ssfValue :: Val
   , ssfAttr :: LabelAttr
@@ -108,6 +103,8 @@ According to sepc,
 data StructCnstr = StructCnstr
   { scsID :: !Int
   , scsPattern :: Val
+  , scsPatAlias :: Maybe TextIndex
+  -- ^ The alias for the matched.
   , scsValue :: Val
   }
   deriving (Generic)
@@ -209,17 +206,14 @@ dynToField df sfM unifier = case sfM of
       }
 
 lookupStructLet :: TextIndex -> Struct -> Maybe Val
-lookupStructLet name s = value <$> Map.lookup name (stcBindings s)
+lookupStructLet name s = Map.lookup name (stcBindings s)
 
 {- | Insert a new let binding into the block.
 
 Caller should ensure that the name is not already in the block.
 -}
 insertStructLet :: TextIndex -> Val -> Struct -> Struct
-insertStructLet s t struct =
-  struct
-    { stcBindings = Map.insert s (Binding t False) (stcBindings struct)
-    }
+insertStructLet s v struct = struct{stcBindings = Map.insert s v (stcBindings struct)}
 
 {- | Determines whether the block has empty fields, including both static and dynamic fields.
 TODO: exclude definitions and hidden fields.
@@ -233,17 +227,6 @@ getFieldType ident
   | head ident == '#' || length ident >= 2 && take 2 ident == "_#" = Just SFTDefinition
   | head ident == '_' = Just SFTHidden
   | otherwise = Just SFTRegular
-
-{- | Look up the stub value in the block.
-
-The name could be in both the fields and let bindings, or either.
--}
-lookupStructStubVal :: TextIndex -> Struct -> [StructStubVal]
-lookupStructStubVal name struct =
-  catMaybes
-    [ StructStubField <$> Map.lookup name (stcStaticFieldBases struct)
-    , StructStubLet . value <$> Map.lookup name struct.stcBindings
-    ]
 
 lookupStructDynField :: Int -> Struct -> Maybe DynamicField
 lookupStructDynField oid struct = IntMap.lookup oid (stcDynFields struct)
@@ -315,12 +298,6 @@ updateStructStaticFieldBase :: TextIndex -> Val -> Struct -> Struct
 updateStructStaticFieldBase name sub struct =
   struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
 
-updateStructLetBinding :: TextIndex -> Val -> Struct -> Struct
-updateStructLetBinding name sub struct =
-  struct
-    { stcBindings = Map.update (\b -> Just (b{value = sub})) name (stcBindings struct)
-    }
-
 {- | Build the ordered list of labels in the struct.
 
 If not all dynamic field labels can be resolved to strings, return Nothing.
@@ -381,9 +358,21 @@ insertStructNewDynField oid df struct =
     }
 
 -- | Insert a new constraint into the block stub struct.
-insertStructNewCnstr :: Int -> Val -> Val -> Struct -> Struct
-insertStructNewCnstr cid pat val struct =
-  struct{stcCnstrs = IntMap.insert cid (StructCnstr cid pat val) (stcCnstrs struct)}
+insertStructNewCnstr :: Int -> Val -> Maybe TextIndex -> Val -> Struct -> Struct
+insertStructNewCnstr cid pat alias val struct =
+  struct
+    { stcCnstrs =
+        IntMap.insert
+          cid
+          ( StructCnstr
+              { scsID = cid
+              , scsPattern = pat
+              , scsPatAlias = alias
+              , scsValue = val
+              }
+          )
+          (stcCnstrs struct)
+    }
 
 {- | Deduplicate the block labels by removing the static that have the same label or dynamic field that is evaluated to
 the same label.
@@ -405,9 +394,3 @@ dedupStructFieldLabels rtrString dynFields labels =
         | Set.member s seen -> (acc, seen)
         | otherwise -> (StructDynFieldOID i : acc, Set.insert s seen)
       Nothing -> (StructDynFieldOID i : acc, seen)
-
-data Binding = Binding
-  { value :: Val
-  , isIterVar :: !Bool
-  }
-  deriving (Generic)

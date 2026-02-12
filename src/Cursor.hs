@@ -267,7 +267,7 @@ setSubVal f subT parT = case (fetchLabelType f, parT) of
   (StubFieldLabelType, IsStruct parStruct) ->
     ret $ VNStruct (updateStructStaticFieldBase (getTextIndexFromFeature f) subT parStruct)
   (LetLabelType, IsStruct parStruct) ->
-    ret $ VNStruct (updateStructLetBinding (getTextIndexFromFeature f) subT parStruct)
+    ret $ VNStruct (insertStructLet (getTextIndexFromFeature f) subT parStruct)
   (EmbedValueLabelType, IsStruct parStruct) -> ret $ VNStruct (parStruct{stcEmbedVal = Just subT})
   (ListStoreIdxLabelType, IsList l) ->
     let i = fetchIndex f in ret $ VNList $ updateListStoreAt i subT l

@@ -68,10 +68,10 @@ buildExprExt t = case valNode t of
       mapM
         ( \x -> do
             e <- buildExprExt x
-            return $ AST.AliasExpr e
+            return $ AST.EmbeddingAlias $ AST.AliasExpr Nothing e
         )
         (toList l.final)
-    return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls) emptyLoc
+    return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls Nothing) emptyLoc
   VNDisj dj
     | null (rtrDisjDefVal dj) -> disjunctsToAST (toList $ dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
@@ -145,7 +145,7 @@ buildStaticFieldExpr (sIdx, sf) = do
                     then AST.LabelID (textIdentToken sel)
                     else AST.LabelString $ AST.textToSimpleStrLit sel
               ]
-              e
+              (AST.AliasExpr Nothing e)
           )
   return decl
 
@@ -158,9 +158,9 @@ buildDynFieldExpr sf = do
           ( AST.Field
               [ labelCons
                   (dsfAttr sf)
-                  (AST.LabelNameExpr emptyLoc le emptyLoc)
+                  (AST.LabelNameExpr emptyLoc (AST.AliasExpr Nothing le) emptyLoc)
               ]
-              ve
+              (AST.AliasExpr Nothing ve)
           )
   return decl
 
@@ -168,12 +168,12 @@ buildPatternExpr :: StructCnstr -> EM AST.Declaration
 buildPatternExpr pat = do
   pte <- buildExprExt (scsPattern pat)
   ve <- buildExprExt (scsValue pat)
-  return $ AST.FieldDecl (AST.Field [labelPatternCons pte] ve)
+  return $ AST.FieldDecl (AST.Field [labelPatternCons pte] (AST.AliasExpr Nothing ve))
 
-buildLetExpr :: (TextIndex, Binding) -> EM AST.Declaration
-buildLetExpr (ident, binding) = do
+buildLetExpr :: (TextIndex, Val) -> EM AST.Declaration
+buildLetExpr (ident, v) = do
   s <- tshow ident
-  ve <- buildExprExt binding.value
+  ve <- buildExprExt v
   let
     letClause :: AST.LetClause
     letClause = AST.LetClause emptyLoc (textIdentToken s) ve
@@ -191,7 +191,7 @@ labelCons a ln =
         )
     )
 labelPatternCons :: AST.Expression -> AST.Label
-labelPatternCons le = AST.Label (AST.LabelExpr emptyLoc le emptyLoc)
+labelPatternCons le = AST.Label (AST.LabelExpr emptyLoc (AST.AliasExpr Nothing le) emptyLoc)
 
 buildStructASTExpr :: Struct -> Val -> EM AST.Expression
 buildStructASTExpr struct t = do

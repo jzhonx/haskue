@@ -347,7 +347,7 @@ attachBindings rawBindings vc = do
                 Nothing -> throwFatal "failed to attach bindings to struct template in comprehension"
     _ -> throwFatal "attachBindings can only be used with a struct template"
 
-createBindings :: Map.Map TextIndex Val -> VCur -> RM (VCur, Map.Map TextIndex Binding)
+createBindings :: Map.Map TextIndex Val -> VCur -> RM (VCur, Map.Map TextIndex Val)
 createBindings bindings vc = do
   mapping <- Map.fromList <$> createMapping
   (uVC, (visited, _)) <- preVisitVal (subNodes True) go (vc, (Set.empty, mapping))
@@ -355,7 +355,7 @@ createBindings bindings vc = do
         foldr
           ( \ti acc ->
               let newTI = fromJust $ Map.lookup ti mapping
-               in Map.insert newTI (Binding (fromJust $ Map.lookup ti bindings) True) acc
+               in Map.insert newTI (fromJust $ Map.lookup ti bindings) acc
           )
           Map.empty
           (Set.toList visited)

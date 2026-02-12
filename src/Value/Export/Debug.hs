@@ -174,11 +174,7 @@ buildCommonInfo t = do
     , if isRecurClosed t then "%#" else ""
     , if isJust (origExpr t) then "" else "N"
     , if isRootOfSubVal t then "R" else ""
-    , -- , case t.embType of
-      --     ETNone -> ""
-      --     ETEnclosing -> "EC"
-      --     ETEmbedded i -> "EM_" ++ show i
-      case t.op of
+    , case t.op of
         Just _ -> "TO"
         _ -> ""
     ]
@@ -350,13 +346,13 @@ buildRepValStruct struct opt =
           (Map.toList $ stcFields struct)
       es <-
         foldM
-          ( \acc (l, bind) -> do
+          ( \acc (l, v) -> do
               lstr <- tshow l
-              tfv <- buildFieldRepValue bind.value opt
+              tfv <- buildFieldRepValue v opt
               return $
                 ValRepField
                   (T.unpack lstr)
-                  (if bind.isIterVar then ",itervar" else ",regvar")
+                  mempty
                   tfv
                   : acc
           )
