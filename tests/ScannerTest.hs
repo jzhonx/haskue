@@ -52,6 +52,7 @@ basicTokenTests =
             expected =
               [ mkT Identifier "hello"
               , mkT Identifier "world"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Identifiers" actual expected
@@ -63,6 +64,7 @@ basicTokenTests =
               , mkT For "for"
               , mkT If "if"
               , mkT Let "let"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Keywords" actual expected
@@ -71,6 +73,7 @@ basicTokenTests =
             expected =
               [ mkT Int "42"
               , mkT Float "3.14"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Numbers" actual expected
@@ -79,6 +82,7 @@ basicTokenTests =
             expected =
               [ mkT Bool "true"
               , mkT Bool "false"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Booleans" actual expected
@@ -88,9 +92,19 @@ basicTokenTests =
               [ mkT Null "null"
               , mkT Bottom "_|_"
               , mkT Identifier "_"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Special values" actual expected
+    , testCase "Empty struct" $
+        let actual = getTokens (BC.pack "{}")
+            expected =
+              [ mkT LBrace "{"
+              , mkT RBrace "}"
+              , mkT Comma ","
+              , mkT EOF ""
+              ]
+         in assertTokensEqual "Booleans" actual expected
     ]
 
 -- Operator tests
@@ -132,6 +146,7 @@ operatorTests =
               , mkT NotMatch "!~"
               , mkT Match "=~"
               , mkT Ellipsis "..."
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Compound operators" actual expected
@@ -147,6 +162,7 @@ stringLiteralTests =
             expected =
               [ mkT String "hello"
               , mkT String "world"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Simple strings" actual expected
@@ -154,6 +170,7 @@ stringLiteralTests =
         let actual = getTokens (BC.pack "\"\"")
             expected =
               [ mkT String ""
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Empty string" actual expected
@@ -161,6 +178,7 @@ stringLiteralTests =
         let actual = getTokens (BC.pack "\"hello\\nworld\"")
             expected =
               [ mkT String "hello\\nworld"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "String with escapes" actual expected
@@ -185,6 +203,7 @@ commaInsertionTests =
               , mkT Identifier "c"
               , mkT Colon ":"
               , mkT Int "3"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Identifiers at line endings" actual expected
@@ -202,6 +221,7 @@ commaInsertionTests =
               , mkT Identifier "c"
               , mkT Colon ":"
               , mkT Int "3"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "No comma on same line" actual expected
@@ -213,6 +233,7 @@ commaInsertionTests =
               , mkT Comma ","
               , mkT Import "import"
               , mkT Identifier "bar"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Keywords at line endings" actual expected
@@ -233,6 +254,7 @@ commentTests =
               , mkT Identifier "b"
               , mkT Colon ":"
               , mkT Int "2"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Line comments" actual expected
@@ -242,6 +264,7 @@ commentTests =
               [ mkT Identifier "a"
               , mkT Colon ":"
               , mkT Int "1"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Comments at EOF" actual expected
@@ -256,6 +279,7 @@ multilineStringTests =
         let actual = getTokens (BC.pack "\"\"\"\nhello\"\"\"")
             expected =
               [ mkT MultiLineString "hello"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Simple multiline string" actual expected
@@ -263,6 +287,7 @@ multilineStringTests =
         let actual = getTokens (BC.pack "\"\"\"\nhello\nworld\"\"\"")
             expected =
               [ mkT MultiLineString "hello\nworld"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Multiline with newlines" actual expected
@@ -290,6 +315,7 @@ complexExampleTests =
               , mkT Identifier "c"
               , mkT Colon ":"
               , mkT String "hello"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "CUE-like structure" actual expected
@@ -316,6 +342,7 @@ complexExampleTests =
               , mkT RSquare "]"
               , mkT Comma ","
               , mkT RBrace "}"
+              , mkT Comma ","
               , mkT EOF ""
               ]
          in assertTokensEqual "Nested structure" actual expected

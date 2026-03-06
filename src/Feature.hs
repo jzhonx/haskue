@@ -9,6 +9,7 @@ module Feature where
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)
 import Data.Aeson (ToJSON, toJSON)
+import Data.Aeson.Types (ToJSONKey)
 import Data.Bits (Bits (..))
 import Data.Hashable (Hashable (..))
 import Data.List (intercalate)
@@ -37,6 +38,10 @@ instance Show Selectors where
   show :: Selectors -> String
   show (Selectors sels) = intercalate "." (map show sels)
 
+instance ShowWTIndexer Selector where
+  tshow (StringSel s) = tshow s
+  tshow (IntSel i) = return $ T.pack $ show i
+
 emptyFieldPath :: Selectors
 emptyFieldPath = Selectors []
 
@@ -52,6 +57,7 @@ isFieldPathEmpty :: Selectors -> Bool
 isFieldPathEmpty (Selectors []) = True
 isFieldPathEmpty _ = False
 
+-- | TODO: can be just a list of features
 fieldPathToAddr :: Selectors -> ValAddr
 fieldPathToAddr (Selectors sels) =
   let xs = map selToTASeg sels
@@ -76,6 +82,7 @@ data LabelType
   | DynFieldLabelType
   | StubFieldLabelType
   | EmbedValueLabelType
+  | VSelectBaseLabelType
   deriving (Eq, Ord, Generic, NFData, Enum)
 
 instance Show Feature where
@@ -91,6 +98,7 @@ instance Show Feature where
     DynFieldLabelType -> "dyn_" ++ showSub (getDynFieldIndexesFromFeature f) show
     StubFieldLabelType -> "__" ++ show (fetchIndex f)
     EmbedValueLabelType -> "embed_" ++ show (fetchIndex f)
+    VSelectBaseLabelType -> "base_val"
    where
     showSub :: (Int, a) -> (a -> String) -> String
     showSub (x, y) g = show x ++ "_" ++ g y
@@ -157,9 +165,8 @@ mkPatternFeature objID selector = mkFeature combined PatternLabelType
   shiftedSelector = selector `shiftL` 23
   combined = objID .|. shiftedSelector
 
-mkLetFeature :: (TextIndexerMonad s m) => TextIndex -> Maybe Int -> m Feature
-mkLetFeature (TextIndex i) Nothing = return $ mkFeature i LetLabelType
-mkLetFeature (TextIndex i) (Just j) = modifyLetFeature j (mkFeature i LetLabelType)
+mkLetFeature :: TextIndex -> Feature
+mkLetFeature (TextIndex i) = mkFeature i LetLabelType
 
 modifyLetFeature :: (TextIndexerMonad s m) => Int -> Feature -> m Feature
 modifyLetFeature oid f = do
@@ -185,6 +192,9 @@ mkStubFieldFeature (TextIndex i) = mkFeature i StubFieldLabelType
 
 mkEmbedValueFeature :: Feature
 mkEmbedValueFeature = mkFeature 0 EmbedValueLabelType
+
+valueSelectFeature :: Feature
+valueSelectFeature = mkFeature 0 VSelectBaseLabelType
 
 getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m T.Text
 getTextFromFeature f = case fetchLabelType f of
@@ -232,6 +242,7 @@ isFeatureReducible f = case fetchLabelType f of
   MutArgLabelType -> True
   -- TODO: document why DisjLabelType is considered reducible.
   DisjLabelType -> True
+  ListStoreIdxLabelType -> True
   _ -> False
 
 isFeatureIrreducible :: Feature -> Bool
@@ -243,6 +254,7 @@ isFeatureReferable f = case fetchLabelType f of
   LetLabelType -> True
   ListIdxLabelType -> True
   RootLabelType -> True
+  VSelectBaseLabelType -> True -- The index value feature is used to store the index value. It can be referred by its sub fields.
   _ -> False
 
 textToStringFeature :: (MonadState s m, HasTextIndexer s) => T.Text -> m Feature
@@ -409,6 +421,8 @@ instance ToJSONWTIndexer SuffixIrredAddr where
   ttoJSON a = do
     s <- tshow a
     return $ toJSON s
+
+instance ToJSONKey SuffixIrredAddr
 
 addrIsSufIrred :: ValAddr -> Maybe SuffixIrredAddr
 addrIsSufIrred (ValAddr xs)

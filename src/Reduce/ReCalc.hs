@@ -7,9 +7,8 @@
 
 module Reduce.Recalc where
 
-import Control.Monad (foldM, unless, when)
-import Control.Monad.Except
-import Control.Monad.Reader (local)
+import Control.Monad (filterM, foldM, unless, void)
+import Data.Foldable (toList)
 import qualified Data.IntMap as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, maybeToList)
@@ -18,102 +17,79 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import DepGraph
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce)
+import {-# SOURCE #-} Reduce.Core (handleMutRes, reduce)
 import Reduce.Monad (
-  Error (..),
+  RCResolver (..),
   RM,
-  RecalcQItem (..),
-  RecalcRCFetch,
-  RecalcRCResult (..),
+  RecalcItem (..),
   depGraph,
-  fetch,
+  emptyRCResolver,
+  getRCResolver,
   getRMContext,
-  getTMAbsAddr,
-  getTMVal,
-  goTMAbsAddr,
-  goTMAbsAddrMust,
-  inRemoteTM,
-  isRecalcing,
-  lastValueMap,
-  mapParams,
+  mapRCResolver,
   modifyRMContext,
   putRMContext,
-  putTMVal,
   recalcRootQ,
-  setIsReducingRC,
-  withNoRecalcFlag,
+  withNoSignalReduced,
  )
-import Reduce.Struct (validateStructPerm)
+import Reduce.Reference (select)
+import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefedVal, storeVal, storeValUpToRoot)
+import Reduce.Struct (handleSObjChange, validateStructPerm)
 import Reduce.TraceSpan (
-  debugInstantTM,
+  debugInstText,
+  emptySpanValue,
   traceSpanArgsTM,
   traceSpanTM,
+  traceSpanValTM,
  )
 import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
 import Util.Format (msprintf, packFmtA)
 import Value
-import Value.Export.Debug (treeToFullRepString)
 
 -- | Start re-calculation.
 recalc :: RM ()
 recalc = do
-  pushCurValToQ
+  q <- recalcRootQ <$> getRMContext
+  debugInstText
+    "recalc"
+    rootValAddr
+    ( do
+        qT <- tshow (toList q)
+        return $ T.pack $ printf "starting queue: %s" qT
+    )
 
-  origAddr <- getTMAbsAddr
-  ctx <- getRMContext
-  -- If we are already in recalcing mode, then do not re-enter.
-  -- Let drainQ handle it.
-  unless (isRecalcing ctx) $ traceSpanTM "recalc" $ do
-    modifyRMContext $ \c -> c{isRecalcing = True}
-    drainQ
-    -- Reset the context to not notifying.
-    modifyRMContext $ \c -> c{isRecalcing = False}
-    goTMAbsAddrMust origAddr
+  traceSpanTM "recalc" rootValAddr emptySpanValue drainQ
 
-pushCurValToQ :: RM ()
-pushCurValToQ = createRecalcQItem >>= pushRecalcRootQ
+sendToRootRecalcQ :: Bool -> ValAddr -> RM ()
+sendToRootRecalcQ isReduced addr = createRecalcItem isReduced addr >>= flip pushToRecalcRootQ addr
 
-createRecalcQItem :: RM (Maybe RecalcQItem)
-createRecalcQItem = do
-  addr <- getTMAbsAddr
+createRecalcItem :: Bool -> ValAddr -> RM (Maybe RecalcItem)
+createRecalcItem isReduced addr = do
   case addrIsRfbAddr addr of
     Nothing -> return Nothing
     Just rfbAddr -> do
-      gAddrM <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
-      case gAddrM of
-        Nothing -> return Nothing
-        Just gAddr -> do
-          t <- getTMVal
-          return $ Just RecalcQItem{addr, rfbAddr, grpAddr = gAddr, value = t}
+      gAddr <- getRecalcGAddr (rfbAddrToSufIrred rfbAddr)
+      return $ Just RecalcItem{addr, rfbAddr, grpAddr = gAddr, isReduced}
 
-getRecalcGAddr :: SuffixIrredAddr -> RM (Maybe GrpAddr)
+getRecalcGAddr :: SuffixIrredAddr -> RM GrpAddr
 getRecalcGAddr siAddr = do
   ng <- depGraph <$> getRMContext
-  return $ lookupGrpAddr siAddr ng
+  let r = lookupGrpAddr siAddr ng
+  case r of
+    Just gAddr -> return gAddr
+    -- If its gaddr can not be found, it means:
+    -- 1) it does not depend on others
+    -- 2) dependents have not been evaluated yet
+    -- So it can not be an cyclic node.
+    Nothing -> return $ GrpAddr (siAddr, False)
 
--- | Push the top of the tree to the recalculation root queue.
-pushRecalcRootQ :: Maybe RecalcQItem -> RM ()
-pushRecalcRootQ Nothing = return ()
-pushRecalcRootQ (Just item) = do
-  lvM <- queryLastValue (rfbAddrToSufIrred item.rfbAddr)
-  shouldPush <- case lvM of
-    Nothing -> return True
-    Just seen -> do
-      repT <- treeToFullRepString item.value
-      repSeen <- treeToFullRepString seen
-      debugInstantTM
-        "pushRecalcRootQ"
-        (return $ T.pack $ printf "t: %s, seen: %s" repT repSeen)
-      return (item.value /= seen)
-  debugInstantTM
-    "pushRecalcRootQ"
-    (msprintf "addr: %s, shouldPush: %s" [packFmtA item.addr, packFmtA shouldPush])
-  -- Only push if the value has changed.
-  -- TOOD: use version.
-  when shouldPush $ modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> item}
+-- | Push the item to the recalculation root queue.
+pushToRecalcRootQ :: Maybe RecalcItem -> ValAddr -> RM ()
+pushToRecalcRootQ Nothing _ = return ()
+pushToRecalcRootQ (Just item) _ = modifyRMContext $ \ctx -> ctx{recalcRootQ = recalcRootQ ctx Seq.|> item}
 
-popRecalcRootQ :: RM (Maybe RecalcQItem)
+popRecalcRootQ :: RM (Maybe RecalcItem)
 popRecalcRootQ = do
   ctx <- getRMContext
   case recalcRootQ ctx of
@@ -128,20 +104,24 @@ drainQ = do
   case itemM of
     Nothing -> return ()
     Just item -> do
-      g <- depGraph <$> getRMContext
-      let
-        gAddr = item.grpAddr
-        qSetList = getNodeAddrsInGrp gAddr g
-      debugInstantTM "drainQ" (msprintf "new popped root gAddr: %s, qSet: %s" [packFmtA gAddr, packFmtA qSetList])
-      run
-        ( RunState
-            { startGAddr = gAddr
-            , startAddr = item.addr
-            , q = Seq.singleton gAddr
-            , qSet = Set.fromList qSetList
-            , visited = Set.singleton gAddr
-            }
-        )
+      let gAddr = item.grpAddr
+      state <-
+        -- If the item is reduced and its gAddr is not acyclic, then it means we can generate the new RunState from the
+        -- current item.
+        if item.isReduced && not (snd $ getGrpAddr gAddr)
+          then nextRunState gAddr Seq.empty
+          else do
+            g <- depGraph <$> getRMContext
+            let qSetList = getNodeAddrsInGrp gAddr g
+            return $ RunState{recalcQ = Seq.singleton gAddr, recalcQSet = Set.fromList qSetList}
+      unless (Seq.null state.recalcQ) $ do
+        recaclQT <- tshow (toList state.recalcQ)
+        debugInstText
+          "drainQ"
+          rootValAddr
+          (msprintf "new popped item: %s, recalcQ: %s" [packFmtA item, packFmtA recaclQT])
+        run state
+
       drainQ
 
 type ReCalcOrderState = (Set.Set SuffixIrredAddr, [GrpAddr])
@@ -150,110 +130,100 @@ type ReCalcOrderState = (Set.Set SuffixIrredAddr, [GrpAddr])
 their dependents.
 -}
 data RunState = RunState
-  { startGAddr :: GrpAddr
-  , startAddr :: ValAddr
-  , q :: Seq.Seq GrpAddr
+  { recalcQ :: Seq.Seq GrpAddr
   -- ^ The queue of GrpAddr for BFS traversal.
-  , qSet :: Set.Set ValAddr
+  , recalcQSet :: Set.Set ValAddr
   -- ^ The set of ValAddr in the queue for quick lookup.
-  , visited :: Set.Set GrpAddr
-  -- ^ The set of visited GrpAddr, used to avoid re-visiting.
   }
 
 -- | Run the recalculation list in breadth-first manner.
 run :: RunState -> RM ()
-run state = do
-  case state.q of
-    Seq.Empty -> return ()
-    (cur Seq.:<| rest) -> do
-      noFieldInQ <- hasNoFieldInQ cur state.qSet
-      if not noFieldInQ
-        -- If there is a field of the current node in queue, we put it back to the end of the queue.
-        -- The qSet remains the same since cur is still in the queue.
-        then run state{q = rest Seq.|> cur}
-        else do
-          let curNodeIsAcyclicStart =
-                cur == state.startGAddr
-                  && case cur of
-                    IsAcyclicGrpAddr _ -> True
-                    _ -> False
-          -- We do not need to recalc the starting acyclic node since it must have been reduced before recalc.
-          unless curNodeIsAcyclicStart $ recalcGroup cur
-          -- After recalculation, we check whether the value has changed.
-          -- If not, we do not need to continue traversing its dependents. This makes sure early-cutoff.
-          hasSeen <- updateLastValues cur
-          if hasSeen
-            then run state{q = rest}
-            else
-              discoverNeighbors cur rest state >>= run
+run state = case state.recalcQ of
+  Seq.Empty -> return ()
+  (cur Seq.:<| rest) -> do
+    noFieldInQ <- hasNoFieldInQ cur state.recalcQSet
+    if not noFieldInQ
+      -- If there is a field of the current node in queue, we put it back to the end of the queue.
+      -- The qSet remains the same since cur is still in the queue.
+      then do
+        debugInstText
+          "drainQ"
+          rootValAddr
+          (msprintf "put back gAddr: %s to the end of the queue since there is field in the queue" [packFmtA cur])
+        run state{recalcQ = rest Seq.|> cur}
+      else do
+        recalcGroup cur
+        nextRunState cur rest >>= run
 
-discoverNeighbors :: GrpAddr -> Seq.Seq GrpAddr -> RunState -> RM RunState
-discoverNeighbors cur rest state = do
+-- | Get the next RunState by disovering the neighbors of the current GrpAddr.
+nextRunState :: GrpAddr -> Seq.Seq GrpAddr -> RM RunState
+nextRunState cur restQ = do
   ng <- depGraph <$> getRMContext
-  parentGrpAddrs <- getAncestorGrpAddrs state.startAddr cur
+  parentGrpAddrs <- getAncestorGrpAddrs cur
+  let deps = cur : parentGrpAddrs
+  nextGAddrs <-
+    concat
+      <$> mapM
+        ( \dep -> do
+            let depAddr = trimAddrToRfb (sufIrredToAddr $ fst $ getGrpAddr dep)
+                uses = getUseGroups dep ng
+            filterM
+              ( \use -> do
+                  useSIAddrs <- getCyclicGrpNodeAddrs use
+                  foldM
+                    ( \acc useSIAddr ->
+                        -- If the use is a descendant of the dep, then it just represents a reference with selectors.
+                        -- The use should be skipped.
+                        if isPrefix (rfbAddrToAddr depAddr) (sufIrredToAddr useSIAddr)
+                          then return False
+                          else do
+                            extVal <- fetchValMust "nextRunState" (rfbAddrToAddr depAddr)
+                            lastDerefed <- queryLastDerefedVal useSIAddr depAddr
+                            debugInstText
+                              "nextRunState"
+                              rootValAddr
+                              ( do
+                                  siaddrT <- tshow useSIAddr
+                                  depAddrT <- tshow depAddr
+                                  extV <- tshow extVal
+                                  case lastDerefed of
+                                    Nothing -> return $ T.pack $ printf "useAddr: %s, depAddr: %s, ext: %s, lastDerefed: Nothing" siaddrT depAddrT extV
+                                    Just ld -> do
+                                      ldSeen <- tshow ld
+                                      return $ T.pack $ printf "useAddr: %s, depAddr: %s, ext: %s, lastDerefed: %s" siaddrT depAddrT extV ldSeen
+                              )
+                            return $ acc || Just extVal /= lastDerefed
+                    )
+                    False
+                    useSIAddrs
+              )
+              uses
+        )
+        deps
+
   let
-    useGrpAddrs = getUseGroups cur ng
-    (newQ, newVisited) =
+    (newQ, _) =
       foldr
         ( \x (qAcc, vAcc) ->
             if Set.member x vAcc
               then (qAcc, vAcc)
               else (qAcc Seq.|> x, Set.insert x vAcc)
         )
-        (rest, state.visited)
-        (useGrpAddrs ++ parentGrpAddrs)
-    restSet = foldr Set.delete state.qSet (getNodeAddrsInGrp cur ng)
+        (restQ, Set.fromList (toList restQ))
+        nextGAddrs
     newQSet =
       foldr
-        ( \gAddrAcc acc ->
-            let nodes = getNodeAddrsInGrp gAddrAcc ng
+        ( \item acc ->
+            let nodes = getNodeAddrsInGrp item ng
              in foldr Set.insert acc nodes
         )
-        restSet
-        useGrpAddrs
+        Set.empty
+        newQ
   return $
-    state
-      { q = newQ
-      , qSet = newQSet
-      , visited = newVisited
+    RunState
+      { recalcQ = newQ
+      , recalcQSet = newQSet
       }
-
-{- | Update the last seen values for all nodes in the group address. Return whether all nodes have the same value
-as before.
--}
-updateLastValues :: GrpAddr -> RM Bool
-updateLastValues gaddr = do
-  m <- lastValueMap <$> getRMContext
-  case gaddr of
-    IsAcyclicGrpAddr a -> go a m
-    _ -> do
-      addrs <- getCyclicGrpNodeAddrs gaddr
-      foldM
-        ( \acc a -> do
-            r <- go a m
-            return (acc && r)
-        )
-        True
-        addrs
- where
-  go siAddr m = do
-    let foundInMap = Map.lookup siAddr m
-    ok <- goTMAbsAddr (sufIrredToAddr siAddr)
-    if ok
-      then do
-        t <- getTMVal
-        r <- case foundInMap of
-          Nothing -> return False
-          Just lastT -> return (t == lastT)
-        modifyRMContext $ \ctx -> ctx{lastValueMap = Map.insert siAddr t ctx.lastValueMap}
-        return r
-      -- If the address does not exist, we consider it same as before.
-      else return True
-
-queryLastValue :: SuffixIrredAddr -> RM (Maybe Val)
-queryLastValue siAddr = do
-  m <- lastValueMap <$> getRMContext
-  return $ Map.lookup siAddr m
 
 -- | Check whether there is no fields of structs specified by the GrpAddr in the given set.
 hasNoFieldInQ :: GrpAddr -> Set.Set ValAddr -> RM Bool
@@ -275,27 +245,25 @@ hasNoFieldInQ gaddr qSet = case gaddr of
       baseAddr = sufIrredToAddr baseSIAddr
     -- First we need to go to the base irreducible address.
     -- The base address could not exist if the node is a sub RC.
-    ok <- goTMAbsAddr baseAddr
-    if ok
-      then do
-        t <- getTMVal
-        case t of
-          -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
-          -- only need to check whether the struct is ready to be used for validating its permissions.
-          IsStruct struct
-            | IsValMutable mut <- t
-            , let
-                -- If the node is an argument node, including a very deep argument in the comprehension.
-                isArgChanged = addr /= baseAddr
-            , Op (UOp _) <- mut
-            , not isArgChanged -> do
-                -- No argument affected, we can just check whether the struct is ready.
-                checkSClean baseAddr qSet struct
-            -- Same as above but for immutable tgen.
-            | IsValImmutable <- t -> do
-                checkSClean baseAddr qSet struct
-          _ -> return True
-      else return True
+    vM <- fetchValFromStore "hasNoFieldInQ" baseAddr
+    case vM of
+      Nothing -> return True
+      Just v -> case v of
+        -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
+        -- only need to check whether the struct is ready to be used for validating its permissions.
+        IsStruct struct
+          | IsValMutable mut <- v
+          , let
+              -- If the node is an argument node, including a very deep argument in the comprehension.
+              isArgChanged = addr /= baseAddr
+          , Op (UOp _) <- mut
+          , not isArgChanged -> do
+              -- No argument affected, we can just check whether the struct is ready.
+              checkSClean baseAddr qSet struct
+          -- Same as above but for immutable tgen.
+          | IsValImmutable <- v -> do
+              checkSClean baseAddr qSet struct
+        _ -> return True
 
 getCyclicGrpNodeAddrs :: GrpAddr -> RM [SuffixIrredAddr]
 getCyclicGrpNodeAddrs gaddr = do
@@ -338,12 +306,11 @@ checkSClean baseAddr qSet struct = do
   return $ null allAffected
 
 recalcGroup :: GrpAddr -> RM ()
-recalcGroup (IsAcyclicGrpAddr node) = recalcNode node (const RsNormal)
+recalcGroup (IsAcyclicGrpAddr node) = recalcNode node
 recalcGroup sccAddr = do
-  setIsReducingRC True
   -- In the intermediate steps of resolving RCs, we do not want to trigger recalculation of functions.
   -- TODO: what if the RC is a dynamic field or a constraint?
-  withNoRecalcFlag True $ do
+  withNoSignalReduced True $ do
     ng <- depGraph <$> getRMContext
     -- If any node in the SCC is a child of another node in the SCC, then it should be removed as it is a sub-field
     -- reference cycle, which should be handled specially.
@@ -353,6 +320,8 @@ recalcGroup sccAddr = do
 
     traceSpanArgsTM
       "recalcCyclic"
+      rootValAddr
+      emptySpanValue
       ( const $ do
           compAddrStrs <- mapM tshow compAddrs
           epAddrStrs <- mapM tshow epAddrs
@@ -362,13 +331,13 @@ recalcGroup sccAddr = do
         store <-
           foldM
             ( \accStore siAddr -> do
-                goTMAbsAddrMust (sufIrredToAddr siAddr)
-                recalcRC (RCCalHelper epAddrs [siAddr] [])
+                recalcRC siAddr
                 -- We have to save the recalculated value to the store since it will be overwritten when we go to the
                 -- next RC node.
-                v <- inRemoteTM (sufIrredToAddr siAddr) getTMVal
-                debugInstantTM
+                v <- fetchValMust "recalcGroup" (sufIrredToAddr siAddr)
+                debugInstText
                   "recalcCyclic"
+                  rootValAddr
                   (msprintf "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
                 return (Map.insert siAddr v accStore)
             )
@@ -377,107 +346,112 @@ recalcGroup sccAddr = do
 
         -- We have to put back all the recalculated values because some of them could be overwritten during the process.
         mapM_
-          (\(siAddr, t) -> inRemoteTM (sufIrredToAddr siAddr) (putTMVal t))
+          (\(siAddr, t) -> storeValUpToRoot (sufIrredToAddr siAddr) t)
           (Map.toList store)
 
-  setIsReducingRC False
-
-data RCCalHelper = RCCalHelper
-  { rcAddrs :: [SuffixIrredAddr]
-  -- ^ List of addresses in the current reference cycle.
-  , stack :: [SuffixIrredAddr]
-  -- ^ The current stack of RC addresses being recalculated.
-  , doneRCAddrs :: [SuffixIrredAddr]
-  }
+recalcRC :: SuffixIrredAddr -> RM ()
+recalcRC siAddr = do
+  mapRCResolver (const $ RCResolver{stack = [siAddr], doneRCAddrs = [], resolving = True})
+  traceSpanTM "recalcRC" (sufIrredToAddr siAddr) emptySpanValue $ do
+    recalcRCStack
+  mapRCResolver (const emptyRCResolver)
 
 -- | Calculate the reference cycle node given by the top of the stack.
-recalcRC :: RCCalHelper -> RM ()
-recalcRC RCCalHelper{stack = []} = return ()
-recalcRC h@RCCalHelper{stack = node : xs} = do
-  goTMAbsAddrMust (sufIrredToAddr node)
-  nodeStr <- tshow node
-  traceSpanTM (printf "recalcRC %s" nodeStr) $ do
-    recalcNode
-      node
-      ( \dep ->
-          let
-            -- If the dep is a sub-field of any node in the current stack, then it forms a cycle.
-            depOnStack = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.stack
-            depIsDone = any (\x -> isPrefix (sufIrredToAddr x) (sufIrredToAddr dep)) h.doneRCAddrs
-           in
-            if
-              -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
-              -- incorrectly raise error.
-              | depOnStack -> RsCyclic
-              -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
-              -- locateRef fetch the latest value.
-              | depIsDone -> RsNormal
-              | otherwise -> RsDirty
-      )
-      `catchError` ( \case
-                      DirtyDep dep -> recalcRC h{stack = dep : h.stack}
-                      e -> throwError e
-                   )
-
-    debugInstantTM
-      (printf "recalcRC %s" nodeStr)
-      (msprintf "stack: %s, done: %s" [packFmtA (show h.stack), packFmtA (show h.doneRCAddrs)])
-    recalcRC
-      h{stack = xs, doneRCAddrs = node : h.doneRCAddrs}
+recalcRCStack :: RM ()
+recalcRCStack = do
+  RCResolver{stack} <- getRCResolver
+  case stack of
+    [] -> return ()
+    node : xs -> do
+      recalcNode node
+      RCResolver{stack = stack', doneRCAddrs} <- getRCResolver
+      -- If the stack is growing, it means we discovered a new RC node during the reduction.
+      if length stack' > length stack
+        then recalcRCStack
+        else do
+          mapRCResolver $ \rs -> rs{stack = xs, doneRCAddrs = node : rs.doneRCAddrs}
+          debugInstText
+            "recalcRCStack"
+            (sufIrredToAddr node)
+            (msprintf "stack: %s, done: %s" [packFmtA (show xs), packFmtA (show $ node : doneRCAddrs)])
+          recalcRCStack
 
 {- | Re-calculate a single node given the dirty leaves and fetch function.
 
 If a node is a struct and under certain conditions, we do not need to fully re-calculate it. We just need to check its
 permissions.
 -}
-recalcNode :: SuffixIrredAddr -> RecalcRCFetch -> RM ()
-recalcNode nodeSIAddr fetch = do
+recalcNode :: SuffixIrredAddr -> RM ()
+recalcNode nodeSIAddr = do
+  let nodeAddr = sufIrredToAddr nodeSIAddr
   -- First we need to go to the base irreducible address.
-  ok <- goTMAbsAddr (sufIrredToAddr nodeSIAddr)
-  when ok
-    $ traceSpanArgsTM
-      "recalcNode"
-      ( const $ do
-          addrStr <- tshow nodeSIAddr
-          return $ printf "addr: %s" addrStr
-      )
-    $ do
+  vM <- fetchValFromStore "recalcNode" nodeAddr
+  case vM of
+    Nothing -> return ()
+    Just v -> void $ traceSpanValTM "recalcNode" nodeAddr v $ do
       g <- depGraph <$> getRMContext
       let
         nodes = getNodeAddrsByFunc nodeSIAddr g
-        anyArgChanged = any (\a -> a /= (sufIrredToAddr nodeSIAddr)) nodes
-      debugInstantTM
+        anyArgChanged = any (\a -> a /= nodeAddr) nodes
+      nodesT <- mapM tshow nodes
+      debugInstText
         "recalcNode"
-        (msprintf "nodes: %s, anyArgChanged: %s" [packFmtA (show nodes), packFmtA (show anyArgChanged)])
-      t <- getTMVal
-      case t of
+        nodeAddr
+        (msprintf "nodes: %s, anyArgChanged: %s" [packFmtA nodesT, packFmtA (show anyArgChanged)])
+      case v of
         -- If the current node is a struct, its tgen is a unify, and none of its mutable arguments is affected, then we
         -- only need to check whether the struct is ready to be used for validating its permissions.
         IsStruct _
-          | IsValMutable mut <- t
+          | IsValMutable mut <- v
           , Op (UOp _) <- mut
           , -- No argument affected, we can just check whether the struct is ready.
-            not anyArgChanged ->
-              validateStructPerm
+            not anyArgChanged -> do
+              r <- validateStructPerm nodeAddr v
+              storeValUpToRoot nodeAddr r
+              return r
           -- Same as above but for immutable tgen.
-          | IsValImmutable <- t -> validateStructPerm
+          | IsValImmutable <- v -> do
+              r <- validateStructPerm nodeAddr v
+              storeValUpToRoot nodeAddr r
+              return r
         -- For mutable, list, disjunction, just re-calculate it.
-        _ -> local (mapParams (\p -> p{fetch})) reduce
+        _ ->
+          ( do
+              r <- reduce nodeAddr v
+              storeValUpToRootRecalc nodeAddr r
+              return r
+          )
+
+-- | Store the value with the address and all its ancestors up to the root.
+storeValUpToRootRecalc :: ValAddr -> Val -> RM ()
+storeValUpToRootRecalc addr v = do
+  storeVal addr v
+  parentM <- propValUp addr v
+  case parentM of
+    Nothing -> return ()
+    Just (pAddr, pVal) -> do
+      newPVal <- case lastSeg addr of
+        Just (FeatureType VSelectBaseLabelType)
+          | IsVSelect sop vsel <- pVal -> do
+              r <- select vsel pAddr pVal
+              handleMutRes r False sop pAddr pVal
+        _ -> handleSObjChange addr pVal >>= validateStructPerm pAddr
+      storeValUpToRootRecalc pAddr newPVal
 
 {- | Get the ancestor GrpAddrs of the given GrpAddr.
 
 It handles the case that the cyclic group may contain structural cycles.
 -}
-getAncestorGrpAddrs :: ValAddr -> GrpAddr -> RM [GrpAddr]
-getAncestorGrpAddrs startAddr (IsAcyclicGrpAddr addr) = do
-  let rM = getAncGrpFromAddr startAddr addr
+getAncestorGrpAddrs :: GrpAddr -> RM [GrpAddr]
+getAncestorGrpAddrs (IsAcyclicGrpAddr addr) = do
+  let rM = getAncGrpFromAddr addr
   return $ maybeToList rM
-getAncestorGrpAddrs startAddr sccAddr = do
+getAncestorGrpAddrs sccAddr = do
   ng <- depGraph <$> getRMContext
   r <-
     foldM
       ( \acc addr -> do
-          let rM = getAncGrpFromAddr startAddr addr
+          let rM = getAncGrpFromAddr addr
           return $ maybe acc (: acc) rM
       )
       []
@@ -489,13 +463,9 @@ getAncestorGrpAddrs startAddr sccAddr = do
 Since it is a tree address, there is only one ancestor for each address, meaning that the ancestor must be acyclic.
 And because it is either a struct or a list.
 -}
-getAncGrpFromAddr :: ValAddr -> SuffixIrredAddr -> Maybe GrpAddr
-getAncGrpFromAddr startAddr raddr
+getAncGrpFromAddr :: SuffixIrredAddr -> Maybe GrpAddr
+getAncGrpFromAddr raddr
   | rootValAddr == sufIrredToAddr raddr = Nothing
   | otherwise = do
       let parentAddr = fromJust $ initSufIrred raddr
-      -- We should not add the ancestors that are above the starting address of the notification.
-      -- The new parent should not be a starting address either.
-      if isPrefix (sufIrredToAddr parentAddr) startAddr
-        then Nothing
-        else Just (GrpAddr (parentAddr, False))
+      return (GrpAddr (parentAddr, False))

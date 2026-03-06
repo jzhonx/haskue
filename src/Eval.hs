@@ -14,12 +14,11 @@ module Eval (
 )
 where
 
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.RWS.Strict (MonadState (get), runRWST)
+import Control.Monad.RWS.Strict (runRWST)
 import Control.Monad.Reader (MonadReader (..))
-import Cursor
 import Data.Aeson (Value)
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as B
@@ -33,12 +32,13 @@ import qualified Data.ByteString.Lazy as LB
 import Data.List.Split (splitOn)
 import qualified Data.Set as Set
 import qualified Data.Yaml as Yaml
-import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter, stTracePrintTree)
+import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter)
 import qualified Env
-import Feature (rootFeature)
+import Feature (rootValAddr)
 import Reduce (finalize, reduce)
 import Reduce.Monad
-import Semant.Resolver (ResolveState (..), initResolveState, resolve)
+import Reduce.Recalc (recalc)
+import Reduce.Store (fetchValMust, storeAllSubVals)
 import Semant.Semant (TM, TransState (..), emptyTransState, transExpr, transSourceFile)
 import StringIndex (TextIndexer, emptyTextIndexer)
 import Syntax.AST
@@ -47,14 +47,13 @@ import Syntax.Scanner (scanTokens, scanTokensFromFile)
 import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (treeToFullRepString)
+import Value.Export.Debug (valToFullRepString)
 import Value.Export.JSON (buildJSON)
 
 data Config = Config
   { outputFormat :: String
   , ecDebugMode :: Bool
   , ecTraceExec :: Bool
-  , ecTracePrintTree :: Bool
   , ecTraceExtraInfo :: Bool
   , ecTraceFilter :: String
   , ecTraceHandle :: Handle
@@ -68,7 +67,6 @@ emptyConfig =
     { outputFormat = ""
     , ecDebugMode = False
     , ecTraceExec = False
-    , ecTracePrintTree = False
     , ecTraceExtraInfo = False
     , ecTraceFilter = ""
     , ecTraceHandle = stdout
@@ -133,9 +131,12 @@ strToCUEVal s conf = do
           Left errTk -> Left (show errTk)
           Right ts -> Right ts
       )
-  e <- liftEither $ do
-    parseExpr tokens
-  mapErrToString $ evalVal (transExpr e) conf
+  -- -- Print the tokens for debugging.
+  -- do
+  --   let tokenReps = map show tokens
+  --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
+  e <- liftEither $ parseExpr tokens
+  evalVal (transExpr e rootValAddr) conf
 
 evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
 evalStrToVal s conf = do
@@ -145,76 +146,63 @@ evalStrToVal s conf = do
           Left errTk -> Left (show errTk)
           Right ts -> Right ts
       )
-  liftEither (parseSourceFile tokens) >>= flip evalFile conf
-
-mapErrToString :: ExceptT Error IO a -> ExceptT String IO a
-mapErrToString =
-  mapExceptT
-    ( \x -> do
-        e <- x
-        return $ case e of
-          Left err -> Left $ show err
-          Right v -> Right v
-    )
-
-mapStringToErr :: (Monad m) => ExceptT String m a -> ExceptT Error m a
-mapStringToErr =
-  mapExceptT
-    ( \x -> do
-        e <- x
-        return $ case e of
-          Left err -> Left $ FatalErr err
-          Right v -> Right v
-    )
+  -- do
+  --   let tokenReps = map show tokens
+  --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
+  e <- liftEither (parseSourceFile tokens)
+  evalFile e conf
 
 evalFile :: SourceFile -> Config -> ExceptT String IO (Val, TextIndexer)
-evalFile sf conf = mapErrToString $ evalVal (transSourceFile sf) conf
+evalFile sf conf = evalVal (transSourceFile sf rootValAddr) conf
 
-evalVal :: TM Val -> Config -> ExceptT Error IO (Val, TextIndexer)
+evalVal :: TM Val -> Config -> ExceptT String IO (Val, TextIndexer)
 evalVal f conf =
   do
-    (raw, transState, _) <- mapStringToErr (runRWST f () (emptyTransState emptyTextIndexer))
-    (rootVC, resolverState, _) <-
-      mapStringToErr (runRWST (resolve (VCur raw [(rootFeature, mkNewVal VNTop)])) () (initResolveState transState.tIndexer))
-
+    (raw, transState, _) <- runRWST f () (emptyTransState emptyTextIndexer)
     let config =
           Env.Config
             { stTraceEnable = ecTraceExec conf
-            , stTracePrintTree = ecTracePrintTree conf
             , stTraceExtraInfo = ecTraceExtraInfo conf
             , stTraceFilter =
                 let s = ecTraceFilter conf
                  in if null s then Set.empty else Set.fromList $ splitOn "," s
             , stMaxTreeDepth = ecMaxTreeDepth conf
             }
-    (_, finalized, _) <-
+
+    (reducedRoot, finalized, _) <-
       runRWST
         ( do
             when (ecDebugMode conf) $ do
-              rawRep <- treeToFullRepString raw
+              rawRep <- valToFullRepString raw
               liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
-              resolvedRep <- treeToFullRepString rootVC.focus
+              resolvedRep <- valToFullRepString raw
               liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
 
-            putTMCursor rootVC
-            local (mapParams (\p -> p{createCnstr = True})) reduce
-            local (mapParams (\p -> p{createCnstr = False})) finalize
+            storeAllSubVals rootValAddr raw
+            root <-
+              local
+                (mapParams (\p -> p{createCnstr = True}))
+                ( do
+                    void $ reduce rootValAddr raw
+                    recalc
+                    fetchValMust "eval" rootValAddr
+                )
+            reducedRoot <- local (mapParams (\p -> p{createCnstr = False})) (finalize rootValAddr root)
 
-            finalized <- get
-            let finalTC = finalized.rtsTC
             when (ecDebugMode conf) $ do
-              rep <- treeToFullRepString (focus finalTC)
+              rep <- valToFullRepString reducedRoot
               liftIO $
                 hPutStr stderr $
                   "Final eval result: " ++ rep ++ "\n"
+
+            return reducedRoot
         )
-        (ReduceConfig config (emptyReduceParams{createCnstr = True}))
-        ( RTCState
-            (VCur (mkNewVal VNTop) [])
-            (emptyContext (LB.hPut conf.ecTraceHandle)){Reduce.Monad.tIndexer = resolverState.tIndexer}
-        )
+        (ReduceConfig{baseConfig = config, params = (emptyReduceParams{createCnstr = True})})
+        (emptyContext (LB.hPut conf.ecTraceHandle))
+          { Reduce.Monad.tIndexer = transState.tIndexer
+          }
 
     return
-      ( finalized.rtsTC.focus
-      , finalized.rtsCtx.tIndexer
+      ( reducedRoot
+      , finalized.tIndexer
       )

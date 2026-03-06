@@ -9,6 +9,7 @@ module Value.Export.Debug where
 import Control.Monad (foldM)
 import Data.Aeson (ToJSON, object, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
+import qualified Data.DList as DList
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
@@ -20,10 +21,13 @@ import qualified Data.Text as T
 import Feature (
   mkDisjFeature,
   mkDynFieldFeature,
+  mkLetFeature,
   mkListIdxFeature,
   mkListStoreIdxFeature,
   mkMutArgFeature,
   mkPatternFeature,
+  mkStringFeature,
+  mkStubFieldFeature,
  )
 import StringIndex (ShowWTIndexer (..), TextIndexerMonad)
 import Text.Printf (printf)
@@ -72,13 +76,13 @@ mergeInfo info = intercalate "," (filter (not . null) info)
 mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas = intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
-treeToRepString :: (TextIndexerMonad s m) => Val -> m String
-treeToRepString t = do
+valToRepString :: (TextIndexerMonad s m) => Val -> m String
+valToRepString t = do
   v <- buildRepVal t defaultValRepBuildOption
   return $ repToString 0 v
 
-treeToFullRepString :: (TextIndexerMonad s m) => Val -> m String
-treeToFullRepString t = do
+valToFullRepString :: (TextIndexerMonad s m) => Val -> m String
+valToFullRepString t = do
   v <- buildRepVal t (defaultValRepBuildOption{trboRepSubFields = True})
   return $ repToString 0 v
 
@@ -160,20 +164,11 @@ buildRepVal t opt = do
 
 buildCommonInfo :: (TextIndexerMonad s m) => Val -> m [String]
 buildCommonInfo t = do
-  tStr <- case t of
-    IsFix r -> do
-      addrsStr <- mapM tshow r.conjs
-      valRep <- showSimpleVal (mkNewVal r.val)
-      return $ printf "inner:%s,addrs:%s" valRep (show addrsStr)
-    _ -> showSimpleVal t
+  tStr <- showSimpleVal t
   return
     [ tStr
-    , case t.wrappedBy of
-        VNNoVal -> ""
-        _ -> "wrappedby:" ++ showValSymbol (mkNewVal t.wrappedBy)
     , if isRecurClosed t then "%#" else ""
     , if isJust (origExpr t) then "" else "N"
-    , if isRootOfSubVal t then "R" else ""
     , case t.op of
         Just _ -> "TO"
         _ -> ""
@@ -206,6 +201,10 @@ buildRepValVN Val{valNode = tn} opt = case tn of
         opt
     return $ consRep ([], [], fields)
   VNBottom b -> return $ consRep ([show b], [], [])
+  VNFix f -> do
+    addrsT <- mapM tshow f.conjs
+    fields <- consFields [("body", mempty, mkNewVal f.val)] opt
+    return $ consRep ([printf "addrs:%s, unknowns:%s" (show addrsT) (show f.unknownExists)], [], fields)
   _ -> return $ consRep ([], [], [])
 
 buildRepValMutable :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
@@ -229,7 +228,6 @@ buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
                       Nothing -> return ""
                     return $ ",for," ++ T.unpack pT ++ (if T.null qT then "" else "," ++ T.unpack qT)
                   ComprehArgTmpl _ -> return "tmpl"
-                  ComprehArgIterVal _ -> return "iterval"
                 _ -> return ""
               return
                 ( T.unpack fT
@@ -242,7 +240,7 @@ buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
               (toList $ getSOpArgs mut)
           )
       else return []
-  let metas = [("tgen", showOpType op)]
+  let metas = [("func", showOpType op)]
   case op of
     RegOp rop -> do
       fields <- consFields args opt
@@ -252,7 +250,8 @@ buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
       ra <- do
         sStr <- tshow ref.ident
         return $ T.unpack sStr
-      return $ consTGenRep (("ref", ra) : metas, fields)
+      resolvedIdentAddrStr <- T.unpack <$> tshow ref.resolvedIdentAddr
+      return $ consTGenRep ([("ref", ra), ("resolved", resolvedIdentAddrStr)] ++ metas, fields)
     Compreh c -> do
       fields <- consFields args opt
       bindings <-
@@ -280,6 +279,9 @@ buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
         do
           fields <- consFields terms opt
           return $ consTGenRep (metas, fields)
+    VSelect idx -> do
+      fields <- consFields (("indexVal", "", idx.base) : args) opt
+      return $ consTGenRep (metas, fields)
     _ -> do
       fields <- consFields args opt
       return $ consTGenRep (metas, fields)
@@ -294,11 +296,23 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (j, dsf) -> do
               tfv <- buildFieldRepValue (dsfLabel dsf) opt
-              dsfValRep <- showSimpleVal (dsfValue dsf)
               return $
                 ValRepField
                   (show (mkDynFieldFeature j 0))
-                  (dlabelAttr dsf <> ",dynf_val:" ++ dsfValRep)
+                  ""
+                  tfv
+                  : acc
+          )
+          []
+          (IntMap.toList $ stcDynFields struct)
+      as2 <-
+        foldM
+          ( \acc (j, dsf) -> do
+              tfv <- buildFieldRepValue (dsfValue dsf) opt
+              return $
+                ValRepField
+                  (show (mkDynFieldFeature j 1))
+                  ""
                   tfv
                   : acc
           )
@@ -308,18 +322,28 @@ buildRepValStruct struct opt =
         mapM
           ( \(j, k) -> do
               tfv <- buildFieldRepValue (scsPattern k) opt
-              scsValRep <- showSimpleVal (scsValue k)
               return $
                 ValRepField
                   (show (mkPatternFeature j 0))
-                  (",cns_val:" ++ scsValRep)
+                  ""
+                  tfv
+          )
+          (IntMap.toList $ stcCnstrs struct)
+      bs2 <-
+        mapM
+          ( \(j, k) -> do
+              tfv <- buildFieldRepValue (scsValue k) opt
+              return $
+                ValRepField
+                  (show (mkPatternFeature j 1))
+                  ""
                   tfv
           )
           (IntMap.toList $ stcCnstrs struct)
       cs <-
         foldM
           ( \acc (l, ssf) -> do
-              lstr <- tshow l
+              lstr <- tshow (mkStubFieldFeature l)
               tfv <- buildFieldRepValue (ssfValue ssf) opt
               return $
                 ValRepField
@@ -333,7 +357,7 @@ buildRepValStruct struct opt =
       ds <-
         foldM
           ( \acc (l, ssf) -> do
-              lstr <- tshow l
+              lstr <- tshow (mkStringFeature l)
               tfv <- buildFieldRepValue (ssfValue ssf) opt
               return $
                 ValRepField
@@ -347,7 +371,7 @@ buildRepValStruct struct opt =
       es <-
         foldM
           ( \acc (l, v) -> do
-              lstr <- tshow l
+              lstr <- tshow (mkLetFeature l)
               tfv <- buildFieldRepValue v opt
               return $
                 ValRepField
@@ -358,7 +382,7 @@ buildRepValStruct struct opt =
           )
           []
           (Map.toList $ stcBindings struct)
-      return $ as ++ bs ++ cs ++ ds ++ es
+      return $ as ++ as2 ++ bs ++ bs2 ++ cs ++ ds ++ es
 
     buildMetas :: (TextIndexerMonad s m) => Struct -> m [(String, String)]
     buildMetas s =
@@ -380,7 +404,7 @@ buildRepValStruct struct opt =
                       return $ T.unpack x
                   )
                   $ stcOrdLabels s
-              return $ T.pack $ intercalate ", " xs
+              return $ T.pack $ intercalate ", " (DList.toList xs)
           )
         , ("orig_fs", tshow $ Map.keys $ stcStaticFieldBases s)
         , ("lets", tshow $ Map.keys $ stcBindings s)
@@ -445,7 +469,7 @@ buildFieldRepValue fv opt@ValRepBuildOption{trboRepSubFields = recurOnSub} =
 showSimpleVal :: (TextIndexerMonad s m) => Val -> m String
 showSimpleVal t = case t of
   IsAtom a -> return $ show a
-  _ -> return $ showValSymbol t
+  _ -> return $ showValType t
 
 showOrigVal :: (TextIndexerMonad s m) => Val -> m String
 showOrigVal t = case t of
@@ -453,4 +477,4 @@ showOrigVal t = case t of
     sStr <- tshow ref.ident
     return $ T.unpack sStr
   IsValMutable (SOp mutop _) -> return $ showOpType mutop
-  _ -> return $ showValSymbol t
+  _ -> return $ showValType t

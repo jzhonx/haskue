@@ -104,7 +104,7 @@ traceSpanStart name args = do
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
     st =
       encode
-        ( ChromeStartTrace name timeInMicros args
+        ( ChromeStartTrace{cstrName = name, cstrTime = timeInMicros, cstrArgs = args}
         )
 
   dumpTrace tr.tPut st
@@ -120,7 +120,7 @@ traceSpanExec name args = do
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace tr.tPut $
     encode
-      ( ChromeEndTrace name timeInMicros args
+      ( ChromeEndTrace{cetrName = name, cetrTime = timeInMicros, cetrArgs = args}
       )
 
 debugInstant :: (TraceM s m) => T.Text -> Value -> m ()
@@ -129,7 +129,7 @@ debugInstant name args = do
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace tr.tPut $
     encode
-      ( ChromeInstantTrace name timeInMicros args
+      ( ChromeInstantTrace{ctiName = name, ctiStart = timeInMicros, ctiArgs = args}
       )
 
 dumpTrace :: (MonadIO m) => (LB.ByteString -> IO ()) -> LB.ByteString -> m ()

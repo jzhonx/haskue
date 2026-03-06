@@ -21,7 +21,7 @@ data Interpolation = Interpolation
 
 -- | Interpolation segments can be either expressions or string literals.
 data IplSeg
-  = -- | Index of the expression in `itpExprs`
+  = -- | VSelect of the expression in `itpExprs`
     IplSegExpr !Int
   | IplSegStr T.Text
   deriving (Eq, Show, Generic, NFData)

@@ -31,7 +31,7 @@ intMap: {
 	t2: 2.4 // error: 2.4 is not an integer
 }
 -- exp --
-error: bounds "int" and "2.4" conflict
+error: bounds int and 2.4 conflict
 
 -- pat4 --
 x: {
@@ -41,7 +41,7 @@ x: {
 }
 y: d: =~"a"
 -- exp --
-error: bounds "int" and "true" conflict
+error: bounds int and true conflict
 
 -- pat5 --
 intMap: [X=string]: {a: X}

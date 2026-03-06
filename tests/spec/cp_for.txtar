@@ -59,3 +59,19 @@ x: {
 }
 a: _
 b: _
+-- cp_for5 --
+// This tests if referencing fields of iter val is correct.
+data: {a: {b: 1}}
+for k, v in data 
+let isNil = v.b != _|_
+{
+	(k): isNil
+}
+-- exp --
+data: {
+    a: {
+        b: 1
+    }
+}
+a: true
+

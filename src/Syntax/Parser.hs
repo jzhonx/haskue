@@ -196,12 +196,17 @@ decls = manyEndByComma decl rbrace "}"
 list :: Parser ListLit
 list = do
   l <- lsquare
-  el <-
+  (el, r) <-
     ( do
-        e <- ellipsisExpr
-        _ <- optional comma
-        return $ EllipsisList e
+        r <- rsquare
+        return (EmbeddingList [] Nothing, r)
       )
+      <|> ( do
+              e <- ellipsisExpr
+              _ <- optional comma
+              r <- rsquare
+              return (EllipsisList e, r)
+          )
       <|> ( do
               fstEmb <- embedding
               revL <- manyCommaElem []
@@ -212,9 +217,9 @@ list = do
                     [e] -> Just e
                     _ -> error "multiple ellipsis in list literal should have been rejected by parser"
 
-              return $ EmbeddingList (fstEmb : embeds) ellM
+              r <- rsquare
+              return (EmbeddingList (fstEmb : embeds) ellM, r)
           )
-  r <- rsquare
   return $ ListLit l.tkLoc el r.tkLoc
  where
   -- manyCommaElem is used to parse the ",<elem>" structure.

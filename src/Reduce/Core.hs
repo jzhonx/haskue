@@ -1,216 +1,196 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Reduce.Core where
 
-import Control.Monad (foldM, unless, when)
-import Cursor
+import Control.Monad (unless)
 import Data.Foldable (toList)
-import Data.Maybe (catMaybes, fromJust, isJust)
+import Data.Maybe (fromJust, isJust)
+import Feature (ValAddr, emptyValAddr)
 import Reduce.Comprehension (reduceCompreh)
 import Reduce.Disjunction (reduceDisj, resolveDisjOp)
 import Reduce.Monad (
   Context (..),
   RM,
-  getIsReducingRC,
   getRMContext,
-  getTMCursor,
-  getTMVal,
-  inSubTM,
-  modifyRMContext,
-  setTMVN,
   throwFatal,
   treeDepthCheck,
  )
 import Reduce.Primitives (reduceList, resolveCloseFunc, resolveInterpolation)
 import qualified Reduce.Primitives as Primitives
-import Reduce.Recalc (pushCurValToQ, recalc)
+import Reduce.Recalc (sendToRootRecalcQ)
 import Reduce.Reference (
-  CycleDetection (..),
   DerefResult (..),
-  resolveRefOrIndex,
+  deref,
+  select,
  )
+import Reduce.Store (storeVal)
 import Reduce.Struct (
-  handleSObjChange,
   reduceStruct,
  )
 import Reduce.TraceSpan (
-  debugInstantTM,
-  traceSpanTM,
+  debugInstJV,
+  traceSpanValTM,
  )
 import Reduce.Unification (ResolvedPConjuncts (..), partialReduceUnifyOp, reduceFix)
+import StringIndex (ToJSONWTIndexer (..))
 import Text.Printf (printf)
-import Util.Format (msprintf)
 import Value
 
 -- | Reduce the tree to the lowest form.
-reduce :: RM ()
-reduce = do
-  traceSpanTM "reduce" reducePureFocus
+reduce :: ValAddr -> Val -> RM Val
+reduce addr v = traceSpanValTM "reduce" addr v $ do
+  debugInstJV
+    "pre reduce"
+    addr
+    ( do
+        store <- vStore <$> getRMContext
+        ttoJSON store
+    )
+
+  v' <- reducePure addr v
+  storeVal addr v'
+
+  debugInstJV
+    "post reduce"
+    addr
+    ( do
+        store <- vStore <$> getRMContext
+        ttoJSON store
+    )
+
   ctx <- getRMContext
-  unless ctx.noRecalc recalc
+  unless ctx.noSignalReduced $ signalReduced addr
+  return v'
 
-  handleSObjChange
+withValDepthLimit :: ValAddr -> RM a -> RM a
+withValDepthLimit addr f = do
+  treeDepthCheck addr
+  f
 
-withValDepthLimit :: RM a -> RM a
-withValDepthLimit f = do
-  vc <- getTMCursor
-  let addr = vcAddr vc
-  treeDepthCheck vc
-  push addr
-  r <- f
-  pop
-
-  return r
- where
-  push addr = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = addr : stack}
-  pop = modifyRMContext $ \ctx@(Context{ctxReduceStack = stack}) -> ctx{ctxReduceStack = tail stack}
-
-reducePureFocus :: RM ()
-reducePureFocus = withValDepthLimit $ do
-  t <- getTMVal
-  case t of
-    -- When the node has TGen, we reduce it anyway, ignoring the tree node.
-    IsValMutable mut -> reduceMutable mut
-    _ -> reducePureVN
+reducePure :: ValAddr -> Val -> RM Val
+reducePure addr v = withValDepthLimit addr $ do
+  case v of
+    IsValMutable mut -> reduceMutable mut True addr v
+    _ -> reducePureVN addr v
 
 -- | Force re-reduce a mutable.
-forceReduceMut :: RM ()
-forceReduceMut = do
-  t <- getTMVal
-  case t of
-    IsValMutable mut -> reduceMutable mut
-    _ -> return ()
+forceReduceMut :: Bool -> ValAddr -> Val -> RM Val
+forceReduceMut furtherReduce addr v = do
+  case v of
+    IsValMutable mut -> reduceMutable mut furtherReduce addr v
+    _ -> return v
 
-reduceMutable :: SOp -> RM ()
-reduceMutable (SOp mop _) = case mop of
-  Ref _ -> do
-    (_, isReady) <- reduceArgs reduce rtrVal
-    vc <- getTMCursor
-    isReducingRCs <- getIsReducingRC
-    if
-      | not isReady -> return ()
-      | isReducingRCs -> do
-          -- Since the value of the reference was populated without reducing it, we need to reduce it if there is a
-          -- mutval populated.
-          -- TODO: set NoValRef
-          resolveRefOrIndex vc >>= handleRefRes
-      | otherwise -> do
-          dr <- resolveRefOrIndex vc
-          case dr.cycleDetection of
-            NoCycleDetected -> handleRefRes dr
-            RCDetected -> do
-              debugInstantTM "reduceMutable" (msprintf "detected ref cycle" [])
-              -- If we are not in the reducing reference cycles, this contains two cases:
-              -- 1. No oldDesp
-              -- 2. OldDesp has been added but in the unfinished expression evaluation, we find a new reference cycle.
-              --    But this new reference cycle should not contain new info about the SCC as they are the same SCC.
-              -- we should treat the reference cycle as an incomplete result.
-              handleRefRes dr{targetValue = Nothing}
-  Index _ -> do
-    (_, isReady) <- reduceArgs reduce rtrVal
-    when isReady do
-      vc <- getTMCursor
-      dr <- resolveRefOrIndex vc
-      case dr.cycleDetection of
-        -- For the index operation, the operand has been fully reduced. There is no need to further reduce the result.
-        NoCycleDetected -> handleMutRes dr.targetValue False
-        _ -> throwFatal "reduceMutable: unexpected cycle detection in index"
+reduceMutable :: SOp -> Bool -> ValAddr -> Val -> RM Val
+reduceMutable sop@(SOp op _) furtherReduce addr v = case op of
+  UOp uop -> do
+    (udpuop, rtype) <- partialReduceUnifyOp uop addr v
+    let updsop = setOpInSOp (UOp udpuop) sop
+    case rtype of
+      IncompleteConjuncts -> return $ v{valNode = VNNoVal, op = Just updsop}
+      AtomCnstrConj r -> return $ v{valNode = valNode r, op = Just updsop}
+      CompletelyResolved r -> handleMutRes (Just r) furtherReduce updsop addr v
+  Compreh compreh -> do
+    r <- reduceCompreh compreh addr v
+    handleMutRes (Just r) furtherReduce sop addr v
+  RegOp rop | ropOpType rop == CloseFunc -> do
+    r <- resolveCloseFunc (toList $ ropArgs rop) v addr
+    handleMutRes (Just r) furtherReduce sop addr v
+  VSelect _ -> do
+    updop <- vtmapM reduce addr op
+    let updsop = setOpInSOp updop sop
+    reduceNoUnify updsop addr (setTOp updsop v)
+  _ -> do
+    updop <- vtmapM (forceReduceMut False) addr op
+    let updsop = setOpInSOp updop sop
+    reduceNoUnify updsop addr (setTOp updsop v)
+
+reduceNoUnify :: SOp -> ValAddr -> Val -> RM Val
+reduceNoUnify sop@(SOp op _) addr v = case op of
+  Ref ref -> do
+    let (_, isReady) = retrieveArgs rtrVal sop
+    if not isReady
+      then return v
+      else do
+        dr <- deref ref addr v
+        handleRefRes dr addr v
+  VSelect slct -> do
+    let (_, isReady) = retrieveArgs rtrVal sop
+        valIsReady = isJust $ rtrVal slct.base
+    if isReady && valIsReady
+      then do
+        tar <- select slct addr v
+        handleMutRes tar False sop addr v
+      else return v
   RegOp rop -> do
+    let (as, _) = retrieveArgs rtrVal sop
     r <-
       case ropOpType rop of
         InvalidOpType -> throwFatal "invalid op type"
-        UnaryOpType op -> do
-          (as, _) <- reduceArgs reduce rtrVal
-          Primitives.resolveUnaryOp op (head as)
+        UnaryOpType opType -> Primitives.resolveUnaryOp opType (head as)
         -- Operands of the binary operation can be incomplete.
-        BinOpType op -> do
-          (as, _) <- reduceArgs reduce rtrVal
-          getTMCursor >>= Primitives.resolveRegBinOp op (head as) (as !! 1)
-        CloseFunc -> do
-          (as, _) <- reduceArgs forceReduceMut rtrVal
-          getTMCursor >>= resolveCloseFunc (catMaybes as)
-    handleMutRes r False
+        BinOpType opType -> Primitives.resolveRegBinOp opType (head as) (as !! 1) addr
+        CloseFunc -> throwFatal "should not reach here"
+    handleMutRes r False sop addr v
   Itp itp -> do
-    (xs, isReady) <- reduceArgs reduce rtrVal
+    let (xs, isReady) = retrieveArgs rtrVal sop
     r <-
       if isReady
         then resolveInterpolation itp (fromJust $ sequence xs)
         else return Nothing
-    handleMutRes r False
-  Compreh compreh -> reduceCompreh compreh
-  DisjOp _ -> do
+    handleMutRes r False sop addr v
+  DisjOp djop -> do
     -- Disjunction operation can have incomplete arguments.
-    (_, _) <- reduceArgs reduce rtrVal
-    r <- getTMCursor >>= resolveDisjOp
-    handleMutRes r True
-  UOp _ -> partialReduceUnifyOp >>= handleResolvedPConjsForUnifyMut
+    r <- resolveDisjOp djop addr v
+    handleMutRes r True sop addr v
+  _ -> throwFatal "reduceMutable: unsupported mutable op"
 
--- | Handle the resolved pending conjuncts for mutable trees.
-handleResolvedPConjsForUnifyMut :: ResolvedPConjuncts -> RM ()
-handleResolvedPConjsForUnifyMut IncompleteConjuncts = setTMVN VNNoVal
-handleResolvedPConjsForUnifyMut (AtomCnstrConj ac) = setTMVN (VNAtomCnstr ac)
-handleResolvedPConjsForUnifyMut (CompletelyResolved t) = handleMutRes (Just t) True
-
-handleRefRes :: DerefResult -> RM ()
-handleRefRes DerefResult{targetValue = Nothing} = return ()
-handleRefRes DerefResult{targetValue = Just result} = do
-  vc <- getTMCursor
-  case vc of
-    VCFocus (IsRef _ _) -> do
-      setTMVN (valNode result)
+handleRefRes :: DerefResult -> ValAddr -> Val -> RM Val
+handleRefRes DerefResult{targetValue = Nothing} _ v = case v of
+  -- The result is not found
+  IsRef _ _ -> return $ setVN VNNoVal v
+  _ -> throwFatal $ printf "handleRefRes: not a reference tree, got %s" (show v)
+handleRefRes DerefResult{targetValue = Just result, isIdentIterVal} addr v = do
+  case v of
+    (IsRef _ _) -> do
+      let nv = if isIdentIterVal then result else setVN (valNode result) v
       -- If the result is Fix, we need to reduce it further since the target of the reference cycles might point to
       -- self.
       case result of
-        IsFix f -> reduceFix f
-        _ -> return ()
-    _ -> throwFatal $ printf "handleRefRes: not a reference tree cursor, got %s" (show vc)
+        IsFix f -> reduceFix f addr nv
+        _ -> return nv
+    _ -> throwFatal $ printf "handleRefRes: not a reference tree, got %s" (show v)
 
-handleMutRes :: Maybe Val -> Bool -> RM ()
-handleMutRes Nothing _ = return ()
-handleMutRes (Just result) furtherReduce = traceSpanTM "handleMutRes" $ do
-  vc <- getTMCursor
-  case vc of
-    (VCFocus (IsRef _ _)) -> throwFatal "handleMutRes: tree cursor can not be a reference"
-    (VCFocus (IsValMutable _)) -> do
-      setTMVN (valNode result)
-      when furtherReduce reducePureVN
+handleMutRes :: Maybe Val -> Bool -> SOp -> ValAddr -> Val -> RM Val
+handleMutRes Nothing _ sop _ v = return $ v{valNode = VNNoVal, op = Just sop}
+handleMutRes (Just result) furtherReduce sop addr v = traceSpanValTM "handleMutRes" addr v $ do
+  case v of
+    IsRef _ _ -> throwFatal "handleMutRes: tree cursor can not be a reference"
+    IsValMutable _ -> do
+      let nv = v{valNode = valNode result, op = Just sop}
+      if furtherReduce
+        then do
+          r <- reducePureVN addr nv
+          return $ setTOp sop r
+        else return nv
     _ -> throwFatal "handleMutRes: not a mutable tree"
 
-reducePureVN :: RM ()
-reducePureVN = do
-  t <- getTMVal
-  case t of
-    IsStruct _ -> reduceStruct
-    IsList l -> reduceList l
-    IsDisj d -> reduceDisj d
-    IsFix f -> reduceFix f
-    _ -> return ()
+reducePureVN :: ValAddr -> Val -> RM Val
+reducePureVN addr v = do
+  case v of
+    IsStruct _ -> reduceStruct addr v
+    IsList l -> reduceList l addr v
+    IsDisj d -> reduceDisj d addr v
+    IsFix f -> reduceFix f addr v
+    _ -> return v
 
-{- | Reduce the arguments of a mutable tree.
+retrieveArgs :: (Val -> Maybe Val) -> SOp -> ([Maybe Val], Bool)
+retrieveArgs rtr op = let args = vtmapQ (\_ v -> rtr v) emptyValAddr op in (args, isJust $ sequence args)
 
-It writes the reduced arguments back to the mutable tree and returns the reduced tree cursor.
-It also returns the reduced arguments and whether the arguments are all reduced.
--}
-reduceArgs :: RM () -> (Val -> Maybe Val) -> RM ([Maybe Val], Bool)
-reduceArgs reduceFunc rtr = traceSpanTM "reduceArgs" $ do
-  vc <- getTMCursor
-  case focus vc of
-    IsValMutable mut@(SOp _ _) -> do
-      reducedArgs <-
-        foldM
-          ( \accArgs (f, _) -> do
-              r <- inSubTM f $ reduceFunc >> rtr <$> getTMVal
-              return (r : accArgs)
-          )
-          []
-          (toList $ getSOpArgs mut)
+signalReduced :: ValAddr -> RM ()
+signalReduced = sendToRootRecalcQ True
 
-      return (reverse reducedArgs, isJust $ sequence reducedArgs)
-    _ -> throwFatal "reduceArgs: not a mutable tree"
-
-pushCurValToRootQ :: RM ()
-pushCurValToRootQ = pushCurValToQ
+signalNeedRecalc :: ValAddr -> RM ()
+signalNeedRecalc = sendToRootRecalcQ False

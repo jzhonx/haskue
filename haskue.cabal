@@ -30,10 +30,10 @@ library
         Reduce.Primitives,
         Reduce.Recalc,
         Reduce.Reference,
+        Reduce.Store,
         Reduce.Struct,
         Reduce.TraceSpan,
         Reduce.Unification,
-        Semant.Resolver,
         Semant.Semant,
         StringIndex,
         Syntax.AST,
@@ -66,7 +66,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -113,6 +113,7 @@ library
       directory,
       filepath,
       ansi-terminal,
+      dlist,
 
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -134,7 +135,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -rtsopts 
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
@@ -200,6 +201,10 @@ benchmark memory
       containers >= 0.6.7 && < 0.7,
       haskue,
       vector,
+      bytestring,
+      mtl,
+      transformers,
+      deepseq,
      
   default-language: Haskell2010
 

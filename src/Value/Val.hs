@@ -11,6 +11,7 @@
 module Value.Val where
 
 import Control.Monad.Except (runExcept)
+import Control.Monad.Identity
 import Control.Monad.State.Strict (gets, modify')
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
@@ -37,6 +38,7 @@ import Value.Bounds
 import Value.Comprehension
 import Value.Constraint
 import Value.Disj
+import Value.DisjoinOp (DisjoinOp)
 import {-# SOURCE #-} Value.Export.AST (buildExprDebug)
 import Value.Fix
 import Value.List
@@ -44,6 +46,12 @@ import Value.Op
 import Value.Reference
 import Value.Struct
 import Value.UnifyOp (UnifyOp (..))
+
+class VTerm a where
+  vtmapT :: (ValAddr -> Val -> Val) -> ValAddr -> a -> a
+  vtmapT f p v = runIdentity $ vtmapM (\np nv -> return $ f np nv) p v
+  vtmapQ :: (ValAddr -> Val -> r) -> ValAddr -> a -> [r]
+  vtmapM :: (Monad m) => (ValAddr -> Val -> m Val) -> ValAddr -> a -> m a
 
 -- | ValNode represents a tree structure that contains values.
 data ValNode
@@ -64,10 +72,6 @@ data ValNode
 
 data Val = Val
   { valNode :: ValNode
-  , wrappedBy :: ValNode
-  -- ^ wrappedBy is used to indicate which tree node wraps this tree node.
-  -- This is used by preserving wrapping information when going into a wrapped node.
-  -- By default, it is noval.
   , origExpr :: Maybe AST.Expression
   -- ^ origExpr is the parsed expression.
   -- If the op is not Nothing, then origExpr represents the op expression.
@@ -75,16 +79,11 @@ data Val = Val
   , op :: Maybe SOp
   , isRecurClosed :: !Bool
   -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
-  , isRootOfSubVal :: !Bool
-  -- ^ isRootOfSubVal is used to indicate whether the tree is the root of a sub-tree formed by parentheses.
   }
   deriving (Generic)
 
 pattern VN :: ValNode -> Val
 pattern VN tn <- Val{valNode = tn}
-
-pattern WrappedBy :: ValNode -> Val
-pattern WrappedBy w <- Val{wrappedBy = w}
 
 pattern IsAtom :: Atom -> Val
 pattern IsAtom a <- VN (VNAtom a)
@@ -131,8 +130,8 @@ pattern IsValImmutable <- Val{op = Nothing}
 pattern IsRef :: SOp -> Reference -> Val
 pattern IsRef mut ref <- IsValMutable mut@(Op (Ref ref))
 
-pattern IsIndex :: SOp -> InplaceIndex -> Val
-pattern IsIndex mut idx <- IsValMutable mut@(Op (Index idx))
+pattern IsVSelect :: SOp -> ValueSelect -> Val
+pattern IsVSelect mut idx <- IsValMutable mut@(Op (VSelect idx))
 
 pattern IsRegOp :: SOp -> RegularOp -> Val
 pattern IsRegOp mut rop <- IsValMutable mut@(Op (RegOp rop))
@@ -146,6 +145,9 @@ pattern IsEmbedUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify
 pattern IsRegularUnifyOp :: SOp -> UnifyOp -> Val
 pattern IsRegularUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify = False}))
 
+pattern IsDisjoinOp :: SOp -> DisjoinOp -> Val
+pattern IsDisjoinOp sop d <- IsValMutable sop@(Op (DisjOp d))
+
 -- = ValNode getters and setters =
 
 setVN :: ValNode -> Val -> Val
@@ -156,12 +158,6 @@ setExpr eM v = v{origExpr = eM}
 
 setTOp :: SOp -> Val -> Val
 setTOp f t = t{op = Just f}
-
-supersedeVN :: ValNode -> Val -> Val
-supersedeVN tn t = t{valNode = tn, wrappedBy = valNode t}
-
-unwrapVN :: (Val -> ValNode) -> Val -> Val
-unwrapVN f t = t{valNode = f t, wrappedBy = VNNoVal}
 
 setValImmutable :: Val -> Val
 setValImmutable t = t{op = Nothing}
@@ -276,11 +272,9 @@ emptyVal :: Val
 emptyVal =
   Val
     { valNode = VNTop
-    , wrappedBy = VNNoVal
     , op = Nothing
     , origExpr = Nothing
     , isRecurClosed = False
-    , isRootOfSubVal = False
     }
 
 mkNewVal :: ValNode -> Val
@@ -321,15 +315,6 @@ mkStructVal s = mkNewVal (VNStruct s)
 
 singletonNoVal :: Val
 singletonNoVal = mkNewVal VNNoVal
-
--- | Create an index or reference to select val from an operand.
-selectValFromVal :: Val -> Val -> Val
-selectValFromVal oprnd selArg = case oprnd of
-  IsValMutable sop@(Op (Ref ref)) ->
-    mkMutableVal $ setOpInSOp (Ref $ appendRefArg selArg ref) sop
-  IsValMutable sop@(Op (Index index)) ->
-    mkMutableVal $ setOpInSOp (Index $ appendInplaceIndexArg selArg index) sop
-  _ -> mkMutableVal $ withEmptyOpFrame $ Index $ InplaceIndex (Seq.fromList [oprnd, selArg])
 
 valsToFieldPath :: (TextIndexerMonad s m) => [Val] -> m (Maybe Selectors)
 valsToFieldPath ts = do
@@ -390,13 +375,13 @@ oneLinerStringOfVal t = do
       modify' $ setTextIndexer newTier
       return $ T.pack $ exprToOneLinerStr expr
 
-showValSymbol :: Val -> String
-showValSymbol t = case valNode t of
+showValType :: Val -> String
+showValType t = case valNode t of
   VNAtom _ -> "atom"
   VNBounds _ -> "bds"
-  VNStruct{} -> "{}"
-  VNList{} -> "[]"
-  VNDisj{} -> "dj"
+  VNStruct{} -> "struct"
+  VNList{} -> "list"
+  VNDisj{} -> "disj"
   VNAtomCnstr{} -> "Cnstr"
   VNFix{} -> "Fix"
   VNBottom _ -> "_|_"
@@ -416,7 +401,7 @@ showValueType t = case valNode t of
   VNStruct _ -> return "struct"
   VNList _ -> return "list"
   VNTop -> return "_"
-  _ -> throwErrSt $ "not a value type: " ++ showValSymbol t
+  _ -> throwErrSt $ "not a value type: " ++ showValType t
 
 {- | Check whether tree t1 subsumes tree t2.
 

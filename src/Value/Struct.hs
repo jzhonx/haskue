@@ -6,6 +6,7 @@ module Value.Struct where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
+import qualified Data.DList as DList
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -28,7 +29,7 @@ data Struct = Struct
   , stcCnstrs :: IntMap.IntMap StructCnstr
   , stcStaticFieldBases :: Map.Map TextIndex Field
   -- ^ The un-evaluated fields that defined in this block. They shold be copied to the struct when building the struct.
-  , stcOrdLabels :: [StructFieldLabel]
+  , stcOrdLabels :: DList.DList StructFieldLabel
   , stcIsConcrete :: !Bool
   , stcEmbedVal :: Maybe Val
   , stcPermErr :: Maybe Val
@@ -164,7 +165,7 @@ emptyStruct =
     , stcDynFields = IntMap.empty
     , stcCnstrs = IntMap.empty
     , stcClosed = False
-    , stcOrdLabels = []
+    , stcOrdLabels = DList.empty
     , stcIsConcrete = False
     , stcEmbedVal = Nothing
     , stcPermErr = Nothing
@@ -345,7 +346,7 @@ insertNewStubAndField :: TextIndex -> Field -> Struct -> Struct
 insertNewStubAndField name field struct =
   struct
     { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
-    , stcOrdLabels = stcOrdLabels struct ++ [StructStaticFieldLabel name]
+    , stcOrdLabels = DList.snoc (stcOrdLabels struct) (StructStaticFieldLabel name)
     , stcFields = Map.insert name field (stcFields struct)
     }
 
@@ -354,7 +355,7 @@ insertStructNewDynField :: Int -> DynamicField -> Struct -> Struct
 insertStructNewDynField oid df struct =
   struct
     { stcDynFields = IntMap.insert oid df (stcDynFields struct)
-    , stcOrdLabels = stcOrdLabels struct ++ [StructDynFieldOID oid]
+    , stcOrdLabels = DList.snoc (stcOrdLabels struct) (StructDynFieldOID oid)
     }
 
 -- | Insert a new constraint into the block stub struct.

@@ -12,15 +12,23 @@ import Control.Monad.Except (ExceptT (..), throwError)
 import Control.Monad.RWS.Strict (RWST)
 import Control.Monad.State.Strict (gets, modify')
 import qualified Data.ByteString.Char8 as BC
-import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import Debug.Trace (trace)
-import Feature (modifyTISuffix)
+import Feature
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
-import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndex, TextIndexer, bsToTextIndex, textToTextIndex)
+import StringIndex (
+  HasTextIndexer (..),
+  ShowWTIndexer (..),
+  TextIndex,
+  TextIndexer,
+  bsToTextIndex,
+  textToTextIndex,
+ )
 import Syntax.AST
 import qualified Syntax.AST as AST
 import Syntax.Token (
@@ -36,7 +44,7 @@ import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
 
-transSourceFile :: SourceFile -> TM Val
+transSourceFile :: SourceFile -> ValAddr -> TM Val
 transSourceFile (SourceFile decls) = transStructLit (StructLit emptyLoc decls emptyLoc)
 
 {- | transExpr and all trans* should return the same level tree cursor.
@@ -47,26 +55,26 @@ Every trans* function should return a tree cursor that is at the same level as t
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-transExpr :: Expression -> TM Val
-transExpr e = do
-  t <- case e of
-    (Unary ue) -> transUnaryExpr ue
-    (Binary op e1 e2) -> transBinary op.tkType e1 e2
-  return $ setExpr (Just e) t
+transExpr :: Expression -> ValAddr -> TM Val
+transExpr e addr = do
+  v <- case e of
+    (Unary ue) -> transUnaryExpr ue addr
+    (Binary op e1 e2) -> transBinary op.tkType e1 e2 addr
+  return $ setExpr (Just e) v
 
-transLiteral :: Literal -> TM Val
-transLiteral (LitStruct s) = transStructLit s
-transLiteral (LitList (ListLit _ l _)) = transListLit l
-transLiteral (LitBasic a)
+transLiteral :: Literal -> ValAddr -> TM Val
+transLiteral (LitStruct s) addr = transStructLit s addr
+transLiteral (LitList (ListLit _ l _)) addr = transListLit l addr
+transLiteral (LitBasic a) addr
   | (StringLit (SimpleStringL (SimpleStringLit _ segs))) <- a = segsToStrAtom segs
   | (StringLit (MultiLineStringL (MultiLineStringLit _ segs))) <- a = segsToStrAtom segs
  where
   segsToStrAtom segs = do
-    rE <- strLitSegsToStr segs
+    rE <- strLitSegsToStr segs addr
     return $ case rE of
       Left t -> t
       Right str -> mkAtomVal $ String str
-transLiteral (LitBasic a) = case a of
+transLiteral (LitBasic a) _ = case a of
   IntLit i -> do
     let v = read (BC.unpack (tkLiteral i)) :: Integer
     return $ mkAtomVal $ Int v
@@ -82,10 +90,23 @@ transLiteral (LitBasic a) = case a of
   NullLit _ -> return $ mkAtomVal Null
   BottomLit _ -> return $ mkBottomVal ""
 
-transStructLit :: StructLit -> TM Val
-transStructLit (StructLit _ decls _) = inStructScope decls $ do
+data DeclWithEmbedIndex
+  = RegDecl Declaration
+  | -- | The index should start from 1 because the first is reserved for the struct literal itself.
+    EmbedDecl Int Embedding
+
+transStructLit :: StructLit -> ValAddr -> TM Val
+transStructLit (StructLit _ decls _) addr = inStructScope decls addr $ do
   sid <- getEnvID
-  elems <- mapM transDecl decls
+  let (revRes, embedCnt) =
+        foldl
+          ( \(acc, accEmbedCnt) decl -> case decl of
+              Embedding emb -> (EmbedDecl (accEmbedCnt + 1) emb : acc, accEmbedCnt + 1)
+              _ -> (RegDecl decl : acc, accEmbedCnt)
+          )
+          ([], 0)
+          decls
+  elems <- mapM (\x -> transDecl x (embedCnt > 0) addr) (reverse revRes)
   res <-
     foldM
       ( \acc elm -> do
@@ -104,20 +125,16 @@ transStructLit (StructLit _ decls _) = inStructScope decls $ do
           return $ mkMutableVal (mkEmbedUnifyOp (res : embeds))
     _ -> return res
 
-strLitSegsToStr :: [StringLitSeg] -> TM (Either Val T.Text)
-strLitSegsToStr segs = do
+strLitSegsToStr :: [StringLitSeg] -> ValAddr -> TM (Either Val T.Text)
+strLitSegsToStr segs addr = do
   -- TODO: efficiency
   (asM, aSegs, aExprs) <-
     foldM
       ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
           UnicodeChars x ->
-            return
-              ( Just x
-              , accItpSegs
-              , accItpExprs
-              )
+            return (Just x, accItpSegs, accItpExprs)
           AST.Interpolation _ e -> do
-            t <- transExpr e
+            t <- transExpr e (addr `appendSeg` mkMutArgFeature (length accItpExprs) False)
             -- First append the current string segment to the accumulator if the current string segment exists, then
             -- append the interpolation segment. Finally reset the current string segment to Nothing.
             return
@@ -137,147 +154,167 @@ strLitSegsToStr segs = do
     | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
 -- | Evaluates a declaration.
-transDecl :: Declaration -> TM StructElemAdder
-transDecl decl = case decl of
-  Embedding ed -> do
-    v <- transEmbedding False ed
+transDecl :: DeclWithEmbedIndex -> Bool -> ValAddr -> TM StructElemAdder
+transDecl decli hasEmbeds structAddr = case decli of
+  EmbedDecl idx ed -> do
+    v <- transEmbedding False ed (structAddr `appendSeg` mkMutArgFeature idx True)
     return $ EmbedSAdder v
-  EllipsisExpr (Ellipsis _ cM) ->
-    maybe
-      (return EmptyAdder) -- TODO: implement real ellipsis handling
-      (\_ -> throwFatal "default constraints are not implemented yet")
-      cM
-  FieldDecl (AST.Field ls e) ->
-    transFDeclLabels ls e
-  DeclLet (LetClause _ ident binde) -> do
-    idIdx <- identTokenToTextIndex ident
-    val <- transExpr binde
-    envid <- getEnvID
-    idIdxUpdated <- modifyTISuffix envid idIdx
-    return $ LetSAdder idIdxUpdated val
+  RegDecl decl -> case decl of
+    EllipsisExpr (Ellipsis _ cM) ->
+      maybe
+        (return EmptyAdder) -- TODO: implement real ellipsis handling
+        (\_ -> throwFatal "default constraints are not implemented yet")
+        cM
+    FieldDecl (AST.Field ls e) ->
+      let declAddr = if hasEmbeds then structAddr `appendSeg` mkMutArgFeature 0 True else structAddr
+       in transFDeclLabels ls e declAddr
+    DeclLet (LetClause _ ident binde) -> do
+      idIdx <- identTokenToTextIndex ident
+      res <- fromJust <$> lookupIdentCurEnv idIdx
+      val <- transExpr binde res.identAddr
+      let featIdx = getTextIndexFromFeature res.identFeat
+      return $ LetSAdder featIdx val
+    _ -> throwFatal $ printf "impossible declaration: %s" (show decl)
 
 identTokenToTextIndex :: Token -> TM TextIndex
 identTokenToTextIndex tk = case tk.tkType of
   Token.Identifier -> bsToTextIndex tk.tkLiteral
   _ -> throwFatal $ printf "expected identifier token, got %s" (show tk)
 
-transEmbedding :: Bool -> Embedding -> TM Val
-transEmbedding _ (EmbeddingAlias (AliasExpr _ e)) = transExpr e
+transEmbedding :: Bool -> Embedding -> ValAddr -> TM Val
+transEmbedding _ (EmbeddingAlias (AliasExpr _ e)) addr = transExpr e addr
 transEmbedding
   isListCompreh
-  (EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit)) = do
-    clsvE <- mapM transClause cls
-    case sequence clsvE of
+  (EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit))
+  addr = do
+    argsE <- mapM (\(j, c) -> transClause c (addr `appendSeg` mkMutArgFeature j False)) (zip [1 ..] cls)
+    case sequence argsE of
       Left errVal -> return errVal
-      Right clsv -> do
-        gev <- transExpr ge
-        sv <- transStructLit lit
+      Right args -> do
+        gev <- transExpr ge (addr `appendSeg` mkMutArgFeature 0 False)
+        let vs = ComprehArgIf gev : args
+        sv <- transStructLit lit (addr `appendSeg` mkMutArgFeature (length vs) False)
         return $
           mkMutableVal $
             withEmptyOpFrame $
               Compreh $
-                mkComprehension isListCompreh (ComprehArgIf gev : clsv) sv
+                mkComprehension isListCompreh vs sv
 transEmbedding
   isListCompreh
-  (EmbedComprehension (AST.Comprehension (Clauses (ForClause _ i jM fe) cls) lit)) = do
+  (EmbedComprehension (AST.Comprehension (Clauses (ForClause _ i jM fe) cls) lit))
+  addr = do
+    let forClsAddr = addr `appendSeg` mkMutArgFeature 0 False
     iIdx <- identTokenToTextIndex i
     jIdxM <- case jM of
       Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
-    res <- inClauseScope iIdx jIdxM $ do
-      -- EnvID must be fetched early because transClause does not pop child envs.
-      cid <- getEnvID
-      clsvE <- mapM transClause cls
-      case sequence clsvE of
+    res <- inClauseScope iIdx jIdxM forClsAddr $ do
+      argsE <-
+        mapM
+          (\(j, c) -> transClause c (addr `appendSeg` mkMutArgFeature j False))
+          (zip [1 ..] cls)
+      case sequence argsE of
         Left errVal -> return errVal
-        Right clsv -> do
-          fev <- transExpr fe
-          iIdxUpdated <- modifyTISuffix cid iIdx
-          jIdxMUpdated <- case jIdxM of
-            Just jIdx -> Just <$> modifyTISuffix cid jIdx
-            Nothing -> return Nothing
-          let vs = ComprehArgFor iIdxUpdated jIdxMUpdated fev : clsv
-          sv <- transStructLit lit
+        Right args -> do
+          fev <- transExpr fe forClsAddr
+          let vs = ComprehArgFor iIdx jIdxM fev : args
+          sv <- transStructLit lit (addr `appendSeg` mkMutArgFeature (length vs) False)
           return $ mkMutableVal $ withEmptyOpFrame $ Compreh $ mkComprehension isListCompreh vs sv
     case res of
       Left errVal -> return errVal
       Right v -> return v
 
-transClause :: Clause -> TM (Either Val ComprehArg)
-transClause c = case c of
+transClause :: Clause -> ValAddr -> TM (Either Val ComprehArg)
+transClause c clAddr = case c of
   ClauseStart (GuardClause _ e) -> do
-    t <- transExpr e
+    t <- transExpr e clAddr
     return $ Right $ ComprehArgIf t
   ClauseStart (ForClause _ i jM e) -> do
     iIdx <- identTokenToTextIndex i
     jIdxM <- case jM of
       Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
-    inSubClauseScope iIdx jIdxM $ do
-      cid <- getEnvID
-      t <- transExpr e
-      iIdxUpdated <- modifyTISuffix cid iIdx
-      jIdxMUpdated <- case jIdxM of
-        Just jIdx -> Just <$> modifyTISuffix cid jIdx
-        Nothing -> return Nothing
-      return $ ComprehArgFor iIdxUpdated jIdxMUpdated t
+    inSubClauseScope iIdx jIdxM clAddr $ do
+      t <- transExpr e clAddr
+      return $ ComprehArgFor iIdx jIdxM t
   ClauseLet (LetClause _ ident le) -> do
     idIdx <- identTokenToTextIndex ident
-    inSubClauseScope idIdx Nothing $ do
-      cid <- getEnvID
-      lt <- transExpr le
-      idIdxUpdated <- modifyTISuffix cid idIdx
-      return $ ComprehArgLet idIdxUpdated lt
+    inSubClauseScope idIdx Nothing clAddr $ do
+      lt <- transExpr le clAddr
+      return $ ComprehArgLet idIdx lt
 
-transFDeclLabels :: [Label] -> AliasExpr -> TM StructElemAdder
-transFDeclLabels lbls ae@(AST.AliasExpr _ e) =
+transFDeclLabels :: [Label] -> AliasExpr -> ValAddr -> TM StructElemAdder
+transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
   case lbls of
     [] -> throwFatal "empty labels"
     -- The adder is created before translating the expression because the label might have alias that can be
     -- referred to in the expression, and the alias needs to be in scope when translating the expression.
     [l1] -> mkAdderWithValGen l1 $ transExpr e
-    l1 : l2 : rs -> mkAdderWithValGen l1 $ do
-      sf2 <- transFDeclLabels (l2 : rs) ae
+    l1 : l2 : rs -> mkAdderWithValGen l1 $ \fAddr -> do
+      sf2 <- transFDeclLabels (l2 : rs) ae fAddr
       sid <- allocObjID
       insertElemToStruct sf2 (emptyStruct{stcID = sid})
  where
-  mkAdderWithValGen :: Label -> TM Val -> TM StructElemAdder
+  mkAdderWithValGen :: Label -> (ValAddr -> TM Val) -> TM StructElemAdder
   mkAdderWithValGen (Label le) vgen = case le of
     LabelName ln c -> do
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
-      val <- vgen
       case ln of
         (toIDentLabel -> Just key) -> do
           keyIdx <- identTokenToTextIndex key
+          val <- vgen (structAddr `appendSeg` mkStringFeature keyIdx)
           return $ StaticSAdder keyIdx (staticFieldMker val attr)
         (toDynLabel -> Just se) -> do
-          selTree <- transExpr se
           oid <- allocObjID
-          return $ DynamicSAdder oid (DynamicField oid attr selTree False val)
+          selTree <- transExpr se (structAddr `appendSeg` mkDynFieldFeature oid 0)
+          val <- vgen (structAddr `appendSeg` mkDynFieldFeature oid 1)
+          return $
+            DynamicSAdder
+              oid
+              (DynamicField{dsfID = oid, dsfAttr = attr, dsfLabel = selTree, dsfLabelIsInterp = False, dsfValue = val})
         (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
-          rE <- strLitSegsToStr segs
+          oid <- allocObjID
+          rE <- strLitSegsToStr segs (structAddr `appendSeg` mkDynFieldFeature oid 0)
           case rE of
             Right str -> do
               strIdx <- textToTextIndex str
+              val <- vgen (structAddr `appendSeg` mkStringFeature strIdx)
               return $ StaticSAdder strIdx (staticFieldMker val attr)
             Left t -> do
-              oid <- allocObjID
-              return $ DynamicSAdder oid (DynamicField oid attr t True val)
+              val <- vgen (structAddr `appendSeg` mkDynFieldFeature oid 1)
+              return $
+                DynamicSAdder
+                  oid
+                  ( DynamicField
+                      { dsfID = oid
+                      , dsfAttr = attr
+                      , dsfLabel = t
+                      , dsfLabelIsInterp = True
+                      , dsfValue = val
+                      }
+                  )
         _ -> throwFatal "invalid label"
     LabelExpr _ (AliasExpr aliasM pe) _ -> do
-      pat <- transExpr pe
       aliasIdxM <- case aliasM of
         Just tk -> Just <$> identTokenToTextIndex tk
         Nothing -> return Nothing
+      cnstrid <- getEnvID
+      let cnstrValAddr = structAddr `appendSeg` mkPatternFeature cnstrid 1
       -- We use the original alias identifier without the suffix here so that the alias can be looked up in the scope.
       -- However, for the adder we need to use the suffixed alias identifier.
-      inCnstrScope aliasIdxM $ do
-        oid <- getEnvID
-        val <- vgen
+      -- {
+      -- [string]: cnstrval
+      -- \^---------------^ -- the whole pattern value is a constraint scope
+      --           ^-----^ -- This is the cnstrval scope. The alias is defined for this scope.
+      ---}
+      inCnstrValScope aliasIdxM cnstrValAddr $ do
+        pat <- transExpr pe (structAddr `appendSeg` mkPatternFeature cnstrid 0)
+        val <- vgen cnstrValAddr
+        cnstrvid <- getEnvID
         updatedAliasIdxM <- case aliasIdxM of
-          Just origIdx -> Just <$> modifyTISuffix oid origIdx
+          Just origIdx -> Just <$> modifyTISuffix cnstrvid origIdx
           Nothing -> return Nothing
-        return $ CnstrSAdder oid pat updatedAliasIdxM val
+        return $ CnstrSAdder cnstrid pat updatedAliasIdxM val
 
   -- Returns the label identifier and the whether the label is static.
 
@@ -342,17 +379,17 @@ insertElemToStruct adder struct = case adder of
  where
   retSt = return . mkStructVal
 
-transListLit :: ElementList -> TM Val
-transListLit (EllipsisList _) = return $ mkListVal [] []
-transListLit (EmbeddingList es _) = do
-  xs <- mapM (transEmbedding True) es
+transListLit :: ElementList -> ValAddr -> TM Val
+transListLit (EllipsisList _) _ = return $ mkListVal [] []
+transListLit (EmbeddingList es _) addr = do
+  xs <- mapM (\(i, e) -> transEmbedding True e (addr `appendSeg` mkListStoreIdxFeature i)) (zip [0 ..] es)
   return $ mkListVal xs []
 
-transUnaryExpr :: UnaryExpr -> TM Val
-transUnaryExpr ue = do
+transUnaryExpr :: UnaryExpr -> ValAddr -> TM Val
+transUnaryExpr ue addr = do
   t <- case ue of
-    Primary primExpr -> transPrimExpr primExpr
-    UnaryOp op e -> transUnaryOp op.tkType e
+    Primary primExpr -> transPrimExpr primExpr addr
+    UnaryOp op e -> transUnaryOp op.tkType e addr
   return $ setExpr (Just (Unary ue)) t
 
 builtinOpNameTable :: [(String, Val)]
@@ -366,10 +403,10 @@ builtinOpNameTable =
     -- We use the function to distinguish the identifier from the string literal.
     ++ builtinFuncTable
 
-transPrimExpr :: PrimaryExpr -> TM Val
-transPrimExpr e = case e of
+transPrimExpr :: PrimaryExpr -> ValAddr -> TM Val
+transPrimExpr e addr = case e of
   (PrimExprOperand op) -> case op of
-    OpLiteral lit -> transLiteral lit
+    OpLiteral lit -> transLiteral lit addr
     OpName (OperandName ident) -> case lookup (T.unpack (tkLiteralToText ident)) builtinOpNameTable of
       Just v -> return v
       Nothing -> do
@@ -377,24 +414,33 @@ transPrimExpr e = case e of
         res <- lookupIdentInScopes idIdx ident.tkLoc
         case res of
           Left errVal -> return errVal
-          Right (_, identEnvID, identType) -> do
-            idIdxUpdated <- case identType of
-              ITField -> return idIdx
-              _ -> modifyTISuffix identEnvID idIdx
-            return $ mkMutableVal $ withEmptyOpFrame $ Ref $ singletonIdentRef idIdxUpdated
-    OpExpression _ expr _ -> do
-      x <- transExpr expr
-      return $ x{isRootOfSubVal = True}
-  (PrimExprSelector primExpr _ sel) -> do
-    p <- transPrimExpr primExpr
-    transSelector e sel p
-  (PrimExprIndex primExpr _ idx _) -> do
-    p <- transPrimExpr primExpr
-    transIndex e idx p
+          Right (IdentLookupResult{identType, identFeat, identAddr}) -> do
+            return $
+              mkMutableVal $
+                withEmptyOpFrame $
+                  Ref $
+                    singletonIdentRef
+                      (getTextIndexFromFeature identFeat)
+                      identType
+                      (getResolvedIdentAddr identAddr identType)
+    OpExpression _ expr _ -> transExpr expr addr
+  (PrimExprSelector primExpr _ sel) -> transSelector primExpr sel addr
+  (PrimExprIndex primExpr _ idx _) -> transIndex primExpr idx addr
   (PrimExprArguments primExpr _ aes _) -> do
-    p <- transPrimExpr primExpr
-    args <- mapM transExpr aes
+    p <- transPrimExpr primExpr addr
+    args <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkMutArgFeature i False)) (zip [0 ..] aes)
     replaceFuncArgs p args
+
+getResolvedIdentAddr :: ValAddr -> RefIdentType -> ValAddr
+-- If the ident is an iteration variable, it is transient so its immediate features should be kept.
+getResolvedIdentAddr addr ITIterBinding = addr
+getResolvedIdentAddr addr _ =
+  let xs = vFeatures addr
+      isStubFeature f = case fetchLabelType f of
+        PatternLabelType -> True
+        DynFieldLabelType -> True
+        _ -> False
+   in ValAddr $ V.filter (\f -> isFeatureReferable f || isStubFeature f) xs
 
 -- | Creates a new function tree for the original function with the arguments applied.
 replaceFuncArgs :: Val -> [Val] -> TM Val
@@ -418,29 +464,71 @@ Parameters:
 For example, { a: b: x.y }
 If the field is "y", and the addr is "a.b", expr is "x.y", the structValAddr is "x".
 -}
-transSelector :: PrimaryExpr -> Selector -> Val -> TM Val
-transSelector _ astSel oprnd = do
-  let f sel = selectValFromVal oprnd (mkAtomVal (String sel))
+transSelector :: PrimaryExpr -> Syntax.AST.Selector -> ValAddr -> TM Val
+transSelector pe astSel addr = do
+  let oprdAddr = case pe of
+        PrimExprIndex{} -> addr
+        PrimExprSelector{} -> addr
+        _ -> addr `appendSeg` valueSelectFeature
+  oprnd <- transPrimExpr pe oprdAddr
+  (selAddr, selVGen) <- getSelCons addr oprnd
+  let f sel = selVGen (mkAtomVal (String sel))
   case astSel of
     IDSelector ident -> return $ f (tkLiteralToText ident)
     StringSelector (SimpleStringLit _ segs) -> do
-      rE <- strLitSegsToStr segs
+      rE <- strLitSegsToStr segs selAddr
       case rE of
         Left _ -> return $ mkBottomVal $ printf "selector should not have interpolation"
         Right str -> return $ f str
 
-transIndex :: PrimaryExpr -> Expression -> Val -> TM Val
-transIndex _ e oprnd = do
-  sel <- transExpr e
-  return $ selectValFromVal oprnd sel
+transIndex :: PrimaryExpr -> Expression -> ValAddr -> TM Val
+transIndex pe e addr = do
+  let oprdAddr = case pe of
+        PrimExprIndex{} -> addr
+        PrimExprSelector{} -> addr
+        _ -> addr `appendSeg` valueSelectFeature
+  oprnd <- transPrimExpr pe oprdAddr
+  (selAddr, selVGen) <- getSelCons addr oprnd
+  sel <- transExpr e selAddr
+  return $ selVGen sel
+
+getSelCons :: ValAddr -> Val -> TM (ValAddr, Val -> Val)
+getSelCons addr oprnd = case oprnd of
+  IsValMutable sop@(Op (Ref ref)) -> do
+    let n = length ref.selectors
+    return
+      ( appendSeg addr (mkMutArgFeature n False)
+      , \sel -> mkMutableVal $ setOpInSOp (Ref $ appendRefArg sel ref) sop
+      )
+  IsValMutable sop@(Op (VSelect index@(ValueSelect _ indexes))) -> do
+    let n = length indexes
+    return
+      ( appendSeg addr (mkMutArgFeature n False)
+      , \sel -> mkMutableVal $ setOpInSOp (VSelect $ appendValueSelectArg sel index) sop
+      )
+  _ -> do
+    let selAddr = appendSeg addr (mkMutArgFeature 0 False)
+    return
+      ( selAddr
+      , \sel -> mkMutableVal $ withEmptyOpFrame $ VSelect $ ValueSelect oprnd (Seq.fromList [sel])
+      )
+
+-- | Create an index or reference to select val from an operand.
+selectValFromVal :: Val -> Val -> Val
+selectValFromVal oprnd selArg = case oprnd of
+  IsValMutable sop@(Op (Ref ref)) ->
+    mkMutableVal $ setOpInSOp (Ref $ appendRefArg selArg ref) sop
+  IsValMutable sop@(Op (VSelect index)) ->
+    mkMutableVal $ setOpInSOp (VSelect $ appendValueSelectArg selArg index) sop
+  _ -> mkMutableVal $ withEmptyOpFrame $ VSelect $ ValueSelect oprnd (Seq.fromList [selArg])
 
 {- | Evaluates the unary operator.
 
 unary operator should only be applied to atoms.
 -}
-transUnaryOp :: TokenType -> UnaryExpr -> TM Val
-transUnaryOp op e = do
-  t <- transUnaryExpr e
+transUnaryOp :: TokenType -> UnaryExpr -> ValAddr -> TM Val
+transUnaryOp op e addr = do
+  t <- transUnaryExpr e (addr `appendSeg` mkMutArgFeature 0 False)
   let tWithE = setExpr (Just (Unary e)) t
   return $ mkMutableVal (mkUnaryOp op tWithE)
 
@@ -448,78 +536,67 @@ transUnaryOp op e = do
 
 left is always before right.
 -}
-transBinary :: TokenType -> Expression -> Expression -> TM Val
+transBinary :: TokenType -> Expression -> Expression -> ValAddr -> TM Val
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
-transBinary Disjoin e1 e2 = transDisj e1 e2
-transBinary op e1 e2 = do
-  lt <- transExpr e1
-  rt <- transExpr e2
-  case op of
-    Unify -> return $ flattenUnify lt rt
-    _ -> return $ mkMutableVal (mkBinaryOp op lt rt)
+transBinary Disjoin e1 e2 addr = transDisj e1 e2 addr
+transBinary Unify e1 e2 addr = do
+  -- Peek the left operand to determine the address for both operands.
+  -- If the left operand is not a regular unify op, then the leftmost node is the first conjunct.
+  -- The next node is always on the right side of the unify op.
+  let laddr = case e1 of
+        Binary (tkType -> Unify) _ _ -> addr
+        _ -> addr `appendSeg` mkMutArgFeature 0 True
+  lv <- transExpr e1 laddr
 
-flattenUnify :: Val -> Val -> Val
-flattenUnify l r = case getLeftAcc of
-  Just acc -> mkMutableVal $ mkUnifyOp (toList acc ++ [r])
-  Nothing -> mkMutableVal $ mkUnifyOp [l, r]
- where
-  getLeftAcc = case l of
-    -- The left tree is an accumulator only if it is a unify op.
-    IsRegularUnifyOp _ u -> Just u.conjs
-    -- If the left tree is an embed unify op, we also treat its whole as an accumulator.
-    _ -> Nothing
+  -- If the left operand is a regular unify op, then we just need to append the new conjunct to the unify op. Otherwise,
+  -- the right node is the second conjunct.
+  let raddr = case lv of
+        IsRegularUnifyOp _ u -> addr `appendSeg` mkMutArgFeature (length u.conjs) True
+        _ -> addr `appendSeg` mkMutArgFeature 1 True
+  rv <- transExpr e2 raddr
+  let res = case lv of
+        IsRegularUnifyOp mut u -> mkMutableVal (setOpInSOp (UOp (appendUnifyConj rv u)) mut)
+        _ -> mkMutableVal $ mkUnifyOp [lv, rv]
+  return res
+transBinary op e1 e2 addr = do
+  lv <- transExpr e1 (appendSeg addr (mkMutArgFeature 0 False))
+  rv <- transExpr e2 (appendSeg addr (mkMutArgFeature 1 False))
+  return $ mkMutableVal (mkBinaryOp op lv rv)
 
-transDisj :: Expression -> Expression -> TM Val
-transDisj e1 e2 = do
-  ((isLStar, lt), (isRStar, rt)) <- case (e1, e2) of
-    ( Unary (UnaryOp (tkType -> Token.Multiply) se1)
-      , Unary (UnaryOp (tkType -> Token.Multiply) se2)
-      ) -> do
-        l <- transUnaryExpr se1
-        r <- transUnaryExpr se2
-        return ((,) True l, (,) True r)
-    (Unary (UnaryOp (tkType -> Token.Multiply) se1), _) -> do
-      l <- transUnaryExpr se1
-      r <- transExpr e2
-      return ((,) True l, (,) False r)
-    (_, Unary (UnaryOp (tkType -> Token.Multiply) se2)) -> do
-      l <- transExpr e1
-      r <- transUnaryExpr se2
-      return ((,) False l, (,) True r)
-    (_, _) -> do
-      l <- transExpr e1
-      r <- transExpr e2
-      return ((,) False l, (,) False r)
-  let r = flattenDisj (DisjTerm isLStar lt) (DisjTerm isRStar rt)
-  return r
+{- | Translates a disjunction expression.
 
-{- | Flatten the disjoin op tree.
-
-Since the leftmost term is in the deepest left and the next term is always on the right, either at this
-level or the next level, we can append the right term to accumulating disjunction terms.
-
-For example, a | b | c is parsed as
-     |
-   /   \
-   |    c
- /   \
- a   b
-
-We start with the a, where a is one of a root disj, a marked term or a regular non-disjunction value. Then append b to
-it, and then append c to the accumulator.
-We never need to go deeper into the right nodes.
+Since the leftmost node is the first term and the next term is always on the right, either at this
+level or the next level, we can peek the left operand to determine the address for both operands and whether we treat
+the current disjOp as an accumulator, which means we apply the right operand to the accumulating disjunction operator
+that is on the left side.
 -}
-flattenDisj :: DisjTerm -> DisjTerm -> Val
-flattenDisj l r = case getLeftAcc of
-  Just acc -> mkMutableVal $ mkDisjoinOp (acc Seq.|> r)
-  Nothing -> mkMutableVal $ mkDisjoinOp (Seq.fromList [l, r])
- where
-  getLeftAcc = case dstValue l of
-    IsValMutable (Op (DisjOp dj))
-      -- The left term is an accumulator only if it is a disjoin op and not marked nor the root.
-      -- If the left term is a marked term, it implies that it is a root.
-      | not (dstMarked l) && not (isRootOfSubVal (dstValue l)) -> Just (djoTerms dj)
-    _ -> Nothing
+transDisj :: Expression -> Expression -> ValAddr -> TM Val
+transDisj e1 e2 addr = do
+  let parseE e eAddr = case e of
+        Unary (UnaryOp (tkType -> Token.Multiply) se) -> do
+          v <- transUnaryExpr se eAddr
+          return (v, True)
+        _ -> do
+          v <- transExpr e eAddr
+          return (v, False)
+
+  let (laddr, leftIsDisjOp) = case e1 of
+        Binary (tkType -> Disjoin) _ _ -> (addr, True)
+        _ -> (addr `appendSeg` mkMutArgFeature 0 False, False)
+  (lv, isLStar) <- parseE e1 laddr
+
+  let raddr = case lv of
+        IsDisjoinOp _ d -> addr `appendSeg` mkMutArgFeature (length d.djoTerms) False
+        _ -> addr `appendSeg` mkMutArgFeature 1 False
+  (rv, isRStar) <- parseE e2 raddr
+  let res = case lv of
+        -- The left expression must be a disjOp too. Otherwise expressions like OpExpression that can be parsed as
+        -- disjunction will be incorrectly flattened.
+        -- For example, (*a | b) | c should only yield a disjunction with two terms, not a disjunction with three terms.
+        -- The same applies to (a | b) | c.
+        IsDisjoinOp mut d | leftIsDisjOp -> mkMutableVal (setOpInSOp (DisjOp (appendDisjTerm isRStar rv d)) mut)
+        _ -> mkMutableVal $ mkDisjoinOpFromList [DisjTerm isLStar lv, DisjTerm isRStar rv]
+  return res
 
 data TransState = TransState
   { objID :: !Int
@@ -554,14 +631,8 @@ getEnvID = do
     [] -> throwFatal "no environment"
     (env : _) -> return env.envid
 
-data RefIdentType
-  = ITField
-  | ITLetBinding
-  | ITIterBinding
-  deriving (Eq, Show)
-
 -- | Lookup the identifier in the scopes. If not found, return an error value.
-lookupIdentInScopes :: TextIndex -> Location -> TM (Either Val (Bool, Int, RefIdentType))
+lookupIdentInScopes :: TextIndex -> Location -> TM (Either Val IdentLookupResult)
 lookupIdentInScopes identTI loc = do
   res <- lookupIdentInEnvs identTI
   case res of
@@ -577,11 +648,36 @@ notFoundMsg ident locM = do
     Nothing -> return $ printf "reference %s is not found" (show idStr)
     Just loc -> do return $ printf "reference %s is not found:\n\t%s" (show idStr) (show loc)
 
-{- | Lookup the identifier in the environments.
+data IdentLookupResult = IdentLookupResult
+  { isInTopEnv :: Bool
+  , envid :: Int
+  , identType :: RefIdentType
+  , identFeat :: Feature
+  , identAddr :: ValAddr
+  }
 
-Returns (isInTopEnv, EnvID, identType) if found.
--}
-lookupIdentInEnvs :: TextIndex -> TM (Maybe (Bool, Int, RefIdentType))
+lookupIdentCurEnv :: TextIndex -> TM (Maybe IdentLookupResult)
+lookupIdentCurEnv name = do
+  (Environments envs) <- gets envs
+  case envs of
+    [] -> throwFatal "no environment"
+    (env : _) -> return $ lookupIdentInEnv name env.envid env
+
+lookupIdentInEnv :: TextIndex -> Int -> Environment -> Maybe IdentLookupResult
+lookupIdentInEnv name topEnvID env = do
+  (t, _) <- Map.lookup name env.names
+  let identFeat = fromJust $ Map.lookup name env.nameFeatMap
+  return
+    IdentLookupResult
+      { isInTopEnv = topEnvID == env.envid
+      , envid = env.envid
+      , identType = t
+      , identFeat = identFeat
+      , identAddr = env.envAddr `appendSeg` identFeat
+      }
+
+-- | Lookup the identifier in the environments.
+lookupIdentInEnvs :: TextIndex -> TM (Maybe IdentLookupResult)
 lookupIdentInEnvs name = do
   (Environments envs) <- gets envs
   let (res, updatedEnvs) = lookupInStack (topEnvID envs) [] envs
@@ -594,31 +690,47 @@ lookupIdentInEnvs name = do
 
   lookupInStack _ acc [] = (Nothing, reverse acc)
   lookupInStack tenvid acc (env : rest) =
-    case Map.lookup name env.names of
-      Just (t, _) ->
-        ( Just (env.envid == tenvid, env.envid, t)
+    case lookupIdentInEnv name tenvid env of
+      Just res ->
+        ( Just res
         , reverse acc ++ markNameAsReferenced name env : rest
         )
       Nothing -> lookupInStack tenvid (env : acc) rest
 
 addNameToCurrentEnv :: TextIndex -> RefIdentType -> TM (Either Val ())
-addNameToCurrentEnv ti identType = do
-  checked <- checkIdentInEnvs ti identType
+addNameToCurrentEnv name identType = do
+  checked <- checkIdentInEnvs name identType
   case checked of
     Left errVal -> return $ Left errVal
     Right _ -> do
-      modify' $ mapEnvs $ addName ti
+      envid <- getEnvID
+      feat <- case identType of
+        ITField -> return $ mkStringFeature name
+        ITLetBinding -> do
+          tiWSuf <- modifyTISuffix envid name
+          return $ mkLetFeature tiWSuf
+        -- For the temporary iteration variable, we do not need to modify the text index with the env id suffix because
+        -- the iteration is transient and in the reference we will fetch the value and make the reference a concrete
+        -- value.
+        ITIterBinding -> return $ mkLetFeature name
+      modify' $ mapEnvs $ addName feat
       return $ Right ()
  where
-  addName name (Environments envs) = case envs of
+  addName feat (Environments envs) = case envs of
     [] -> Environments []
-    (env : rest) -> Environments $ env{names = Map.insert name (identType, False) env.names} : rest
+    (env : rest) ->
+      Environments $
+        env
+          { names = Map.insert name (identType, False) env.names
+          , nameFeatMap = Map.insert name feat env.nameFeatMap
+          }
+          : rest
 
 checkIdentInEnvs :: TextIndex -> RefIdentType -> TM (Either Val ())
 checkIdentInEnvs key identType = do
   res <- lookupIdentInEnvs key
   case res of
-    Just (isInTopEnv, _, targetIdentType)
+    Just (IdentLookupResult{isInTopEnv, identType = targetIdentType})
       -- If the identifier exists and the types conflict, return an error.
       | isInTopEnv
       , targetIdentType `elem` [ITLetBinding, ITIterBinding]
@@ -639,9 +751,9 @@ lbRedeclErr name = do
   nameStr <- tshow name
   return $ mkBottomVal $ printf "%s redeclared in same scope" (show nameStr)
 
-inStructScope :: [Declaration] -> TM Val -> TM Val
-inStructScope decls action = do
-  enterRes <- enterStructScope decls
+inStructScope :: [Declaration] -> ValAddr -> TM Val -> TM Val
+inStructScope decls addr action = do
+  enterRes <- enterStructScope decls addr
   case enterRes of
     Left errVal -> return errVal
     Right () -> do
@@ -651,10 +763,10 @@ inStructScope decls action = do
         Left errVal -> return errVal
         Right () -> return result
 
-enterStructScope :: [Declaration] -> TM (Either Val ())
-enterStructScope decls = do
+enterStructScope :: [Declaration] -> ValAddr -> TM (Either Val ())
+enterStructScope decls addr = do
   sid <- allocObjID
-  modify' $ mapEnvs (pushBlock sid EnvTypeStruct)
+  modify' $ mapEnvs (pushBlock sid EnvTypeStruct addr)
   -- First add all the immediate field and let binding identifiers to the current scope.
   -- This is to allow the references in the sub tree to refer to the identifiers that have not been translated yet.
   -- Unlike other languages, the order of field declarations does not matter.
@@ -708,39 +820,41 @@ leaveStructScope = do
       firstNameT <- tshow firstName
       return $ Left $ mkBottomVal $ printf "unreferenced let clause let %s" (show firstNameT)
 
-{- | Enter a constraint scope for evaluating a constraint body.
+{- | Enter a constraint value scope for evaluating a constraint body.
 
 The alias identifier of the constraint, if exists, is added to the scope.
 For example, [X=constraint]: value, a new environment is created for evaluating "value" with just X in the scope.
+            ^---------------------^
+              scope for evaluating "value"
 -}
-inCnstrScope :: Maybe TextIndex -> TM StructElemAdder -> TM StructElemAdder
-inCnstrScope aliasIdxM action = do
-  enterRes <- enterCnstrScope aliasIdxM
+inCnstrValScope :: Maybe TextIndex -> ValAddr -> TM StructElemAdder -> TM StructElemAdder
+inCnstrValScope aliasIdxM addr action = do
+  enterRes <- enterCnstrValScope aliasIdxM addr
   case enterRes of
     Left errVal -> return (ErrorAdder errVal)
     Right () -> do
       result <- action
-      leaveCnstrScope
+      leaveCnstrValScope
       return result
 
-enterCnstrScope :: Maybe TextIndex -> TM (Either Val ())
-enterCnstrScope aliasIdxM = do
+enterCnstrValScope :: Maybe TextIndex -> ValAddr -> TM (Either Val ())
+enterCnstrValScope aliasIdxM addr = do
   fid <- allocObjID
-  modify' $ mapEnvs (pushBlock fid EnvTypeCnstr)
+  modify' $ mapEnvs (pushBlock fid EnvTypeCnstr addr)
   case aliasIdxM of
     Just aliasIdx -> addNameToCurrentEnv aliasIdx ITLetBinding
     Nothing -> return $ Right ()
 
-leaveCnstrScope :: TM ()
-leaveCnstrScope = do
+leaveCnstrValScope :: TM ()
+leaveCnstrValScope = do
   envs <- gets envs
   let (_, restEnvs) = popBlock envs
   modify' $ mapEnvs (const restEnvs)
 
-enterClauseScope :: TextIndex -> Maybe TextIndex -> TM (Either Val ())
-enterClauseScope iIdx jIdxM = do
+enterClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM (Either Val ())
+enterClauseScope iIdx jIdxM addr = do
   fid <- allocObjID
-  modify' $ mapEnvs (pushBlock fid EnvTypeClause)
+  modify' $ mapEnvs (pushBlock fid EnvTypeClause addr)
   res1 <- addNameToCurrentEnv iIdx ITIterBinding
   case res1 of
     Left errVal -> return $ Left errVal
@@ -754,9 +868,9 @@ leaveClauseScope = do
   let (_, restEnvs) = popBlock envs
   modify' $ mapEnvs (const restEnvs)
 
-inClauseScope :: TextIndex -> Maybe TextIndex -> TM a -> TM (Either Val a)
-inClauseScope iIdx jIdxM action = do
-  enterRes <- enterClauseScope iIdx jIdxM
+inClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM a -> TM (Either Val a)
+inClauseScope iIdx jIdxM addr action = do
+  enterRes <- enterClauseScope iIdx jIdxM addr
   cid <- getEnvID
   res <- action
   leaveUntil cid
@@ -773,9 +887,9 @@ inClauseScope iIdx jIdxM action = do
 
 The reason is that clause arguments can be nested, and we want to keep the outer clause scope active.
 -}
-inSubClauseScope :: TextIndex -> Maybe TextIndex -> TM a -> TM (Either Val a)
-inSubClauseScope iIdx jIdxM action = do
-  enterRes <- enterClauseScope iIdx jIdxM
+inSubClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM a -> TM (Either Val a)
+inSubClauseScope iIdx jIdxM addr action = do
+  enterRes <- enterClauseScope iIdx jIdxM addr
   res <- action
   case enterRes of
     Left errVal -> return $ Left errVal
@@ -807,17 +921,21 @@ data EnvType = EnvTypeStruct | EnvTypeClause | EnvTypeCnstr
 data Environment = Environment
   { envid :: !Int
   , envType :: EnvType
+  , envAddr :: ValAddr
   , names :: Map.Map TextIndex (RefIdentType, Bool)
   -- ^ names maps identifiers to
   --  (1) their addresses,
   --  (2) their types (field, let binding, or iter binding),
   --  (3) a boolean indicating whether it is referenced.
-  -- Notice the identifiers should not have suffix for let bindings.
+  -- Notice the identifiers should not have suffix for let bindings so that the references in the sub tree can refer to
+  -- them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
+  , nameFeatMap :: Map.Map TextIndex Feature
+  -- ^ nameFeatMap is used to store the mapping from identifier to its corresponding feature.
   }
   deriving (Eq)
 
 instance Show Environment where
-  show (Environment envid typ names) = printf "Env(id=%d, type=%s names=[%s])" envid (show typ) nameStr
+  show (Environment envid typ addr names _) = printf "Env(id=%d, type=%s addr=[%s] names=[%s])" envid (show typ) (show addr) nameStr
    where
     nameStr :: String
     nameStr =
@@ -828,7 +946,8 @@ instance Show Environment where
         (Map.toList names)
 
 instance ShowWTIndexer Environment where
-  tshow (Environment envid typ names) = do
+  tshow (Environment envid typ addr names _) = do
+    addrT <- tshow addr
     nameStrs <-
       mapM
         ( \(k, (t, r)) -> do
@@ -836,7 +955,9 @@ instance ShowWTIndexer Environment where
             return $ T.pack $ printf "%s->(%s,%s); " (T.unpack kT) (show t) (show r)
         )
         (Map.toList names)
-    return $ T.pack $ printf "Env(id=%d, type=%s, names=[%s])" envid (show typ) (T.unpack $ T.concat nameStrs)
+    return $
+      T.pack $
+        printf "Env(id=%d, type=%s, addr=%s, names=[%s])" envid (show typ) addrT (T.unpack $ T.concat nameStrs)
 
 emptyEnvironments :: Environments
 emptyEnvironments = Environments []
@@ -846,9 +967,17 @@ markNameAsReferenced key env = env{names = Map.adjust markRef key env.names}
  where
   markRef (identType, _) = (identType, True)
 
-pushBlock :: Int -> EnvType -> Environments -> Environments
-pushBlock envid typ (Environments envs) =
-  Environments $ Environment{names = Map.empty, envType = typ, envid = envid} : envs
+pushBlock :: Int -> EnvType -> ValAddr -> Environments -> Environments
+pushBlock envid typ addr (Environments envs) =
+  Environments $
+    Environment
+      { names = Map.empty
+      , envType = typ
+      , envid = envid
+      , envAddr = addr
+      , nameFeatMap = Map.empty
+      }
+      : envs
 
 popBlock :: Environments -> (Environment, Environments)
 popBlock (Environments envs) = case envs of

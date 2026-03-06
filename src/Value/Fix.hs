@@ -18,5 +18,7 @@ data Fix = Fix
   }
   deriving (Generic)
 
-data FixConj = FixSelect ValAddr | FixCompreh ValAddr
+data FixConj
+  = FixSelect ValAddr
+  | FixCompreh ValAddr Val
   deriving (Generic)

@@ -21,3 +21,6 @@ data DisjTerm = DisjTerm
   , dstValue :: Val
   }
   deriving (Generic)
+
+appendDisjTerm :: Bool -> Val -> DisjoinOp -> DisjoinOp
+appendDisjTerm marked v (DisjoinOp terms) = DisjoinOp (terms Seq.|> DisjTerm marked v)

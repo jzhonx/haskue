@@ -11,16 +11,15 @@
 module Reduce.Monad where
 
 import Control.DeepSeq (NFData)
-import Control.Monad (foldM, unless, when)
-import Control.Monad.Except (ExceptT (..), MonadError, throwError)
-import Control.Monad.RWS.Strict (RWST, lift)
+import Control.Monad (when)
+import Control.Monad.Except (ExceptT (..), throwError)
+import Control.Monad.RWS.Strict (RWST)
 import Control.Monad.Reader (asks)
-import Control.Monad.State.Strict (gets, modify')
-import Cursor
+import Control.Monad.State.Strict (get, gets, modify')
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
+import qualified Data.Text as T
 import DepGraph
 import Env (
   Config (..),
@@ -34,34 +33,16 @@ import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndexer, emptyT
 import Text.Printf (printf)
 import Util.Trace (HasTrace (..), Trace, emptyTrace)
 import Value
-import Value.Export.Debug
 
-data RecalcRCResult
-  = -- | During RC recalculation, RsDirty indicates that the value needs to be put into the stack.
-    RsDirty
-  | RsCyclic
-  | RsNormal
-  deriving (Eq, Show)
-
-type RecalcRCFetch = SuffixIrredAddr -> RecalcRCResult
-
-data ReduceParams = ReduceParams
-  { createCnstr :: Bool
-  , fetch :: RecalcRCFetch
-  -- ^ Custom fetch function that fetches the tree at the suffix irreducible address.
-  }
+newtype ReduceParams = ReduceParams {createCnstr :: Bool}
 
 instance Show ReduceParams where
   show c = "ReduceParams {createCnstr = " ++ show c.createCnstr ++ " }"
 
 emptyReduceParams :: ReduceParams
-emptyReduceParams =
-  ReduceParams
-    { createCnstr = False
-    , fetch = const RsNormal
-    }
+emptyReduceParams = ReduceParams{createCnstr = False}
 
-type RM = RWST ReduceConfig () RTCState (ExceptT Error IO)
+type RM = RWST ReduceConfig () Context (ExceptT String IO)
 
 data ReduceConfig = ReduceConfig
   { baseConfig :: Config
@@ -79,17 +60,35 @@ emptyReduceConfig =
     , params = emptyReduceParams
     }
 
+data RCResolver = RCResolver
+  { stack :: [SuffixIrredAddr]
+  -- ^ The current stack of RC addresses being recalculated.
+  , doneRCAddrs :: [SuffixIrredAddr]
+  , resolving :: !Bool
+  }
+  deriving (Show, Generic, NFData)
+
+emptyRCResolver :: RCResolver
+emptyRCResolver =
+  RCResolver
+    { stack = []
+    , doneRCAddrs = []
+    , resolving = False
+    }
+
 data Context = Context
   { ctxObjID :: !Int
-  , ctxReduceStack :: [ValAddr]
-  , isRecalcing :: !Bool
-  , recalcRootQ :: Seq.Seq RecalcQItem
+  , recalcRootQ :: Seq.Seq RecalcItem
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
-  , lastValueMap :: Map.Map SuffixIrredAddr Val
-  , rcdIsReducingRCs :: !Bool
-  , noRecalc :: !Bool
-  -- ^ If true, do not perform recalculation when reducing struct objects.
+  , lastDerefs :: Map.Map SuffixIrredAddr (Map.Map ReferableAddr Val)
+  -- ^ It stores the last dereferenced value of the reference with the suffix irreducible address.
+  -- We use the suffix irreducible address because when reducing all the mutable arguments, they are reduced at the same
+  -- time, so if any of them references to the same referable address, they will have the same value.
+  , vStore :: Map.Map SuffixIrredAddr Val
+  , rcResolver :: !RCResolver
+  , noSignalReduced :: !Bool
+  -- ^ If true, do not signal ready after reducing.
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
   }
@@ -106,84 +105,53 @@ instance HasTextIndexer Context where
 mapDepGraph :: (DepGraph -> DepGraph) -> Context -> Context
 mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
 
-data RecalcQItem = RecalcQItem
+data RecalcItem = RecalcItem
   { addr :: ValAddr
   , rfbAddr :: ReferableAddr
   , grpAddr :: GrpAddr
-  , value :: Val
+  , isReduced :: !Bool
   }
   deriving (Show, Generic, NFData)
+
+instance ShowWTIndexer RecalcItem where
+  tshow RecalcItem{addr, grpAddr, isReduced} = do
+    addrT <- tshow addr
+    grpAddrT <- tshow grpAddr
+    return $ T.pack $ printf "RecalcItem {addr:%s,grpAddr:%s,isReduced:%s}" addrT grpAddrT (show isReduced)
 
 emptyContext :: (LB.ByteString -> IO ()) -> Context
 emptyContext tPut =
   Context
     { ctxObjID = 0
-    , ctxReduceStack = []
-    , isRecalcing = False
     , recalcRootQ = Seq.empty
     , depGraph = emptyPropGraph
-    , lastValueMap = Map.empty
-    , rcdIsReducingRCs = False
-    , noRecalc = False
+    , lastDerefs = Map.empty
+    , vStore = Map.empty
+    , rcResolver = emptyRCResolver
+    , noSignalReduced = False
     , ctxTrace = emptyTrace tPut
     , tIndexer = emptyTextIndexer
     }
 
-data Error
-  = FatalErr String
-  | DirtyDep SuffixIrredAddr
-
-instance Show Error where
-  show (FatalErr msg) = msg
-  show (DirtyDep siAddr) = printf "dependency %s is dirty" (show siAddr)
-
-liftEitherRM :: Either String a -> RM a
-liftEitherRM e = lift $ ExceptT $ return $ case e of
-  Left msg -> Left $ FatalErr msg
-  Right r -> Right r
-
 throwFatal :: (HasCallStack) => String -> RM a
-throwFatal msg = throwError $ FatalErr $ msg ++ "\n" ++ prettyCallStack callStack
-
-throwDirty :: (MonadError Error m) => SuffixIrredAddr -> m a
-throwDirty siAddr = throwError $ DirtyDep siAddr
-
-data RTCState = RTCState
-  { rtsTC :: !VCur
-  , rtsCtx :: Context
-  }
-  deriving (Show, Generic, NFData)
-
-mapTC :: (VCur -> VCur) -> RTCState -> RTCState
-mapTC f s = s{rtsTC = f (rtsTC s)}
-
-mapCtx :: (Context -> Context) -> RTCState -> RTCState
-mapCtx f s = s{rtsCtx = f (rtsCtx s)}
-
-instance HasTrace RTCState where
-  getTrace = ctxTrace . rtsCtx
-  setTrace s trace = s{rtsCtx = setTrace (rtsCtx s) trace}
-
-instance HasTextIndexer RTCState where
-  getTextIndexer = getTextIndexer . rtsCtx
-  setTextIndexer ti s = s{rtsCtx = setTextIndexer ti (rtsCtx s)}
+throwFatal msg = throwError $ msg ++ "\n" ++ prettyCallStack callStack
 
 -- Context
 
 {-# INLINE getRMContext #-}
 getRMContext :: RM Context
-getRMContext = gets rtsCtx
+getRMContext = get
 
 putRMContext :: Context -> RM ()
-putRMContext ctx = modify' $ \s -> s{rtsCtx = ctx}
+putRMContext ctx = modifyRMContext $ const ctx
 
 modifyRMContext :: (Context -> Context) -> RM ()
-modifyRMContext f = modify' $ \s -> s{rtsCtx = f (rtsCtx s)}
+modifyRMContext f = modify' $ \s -> f s
 
 -- DepGraph
 
 getRMDepGraph :: RM DepGraph
-getRMDepGraph = gets (depGraph . rtsCtx)
+getRMDepGraph = gets depGraph
 
 -- ObjID
 
@@ -195,330 +163,38 @@ allocRMObjID = do
   return newOID
 
 getRMObjID :: RM Int
-getRMObjID = gets (ctxObjID . rtsCtx)
+getRMObjID = gets ctxObjID
 
 setRMObjID :: Int -> RM ()
-setRMObjID newID = modify' $ mapCtx $ \ctx -> ctx{ctxObjID = newID}
+setRMObjID newID = modify' $ \ctx -> ctx{ctxObjID = newID}
 
--- Cursor
+-- Notify ready
 
-{-# INLINE getTMCursor #-}
-getTMCursor :: RM VCur
-getTMCursor = gets rtsTC
+getNoSignalReduced :: RM Bool
+getNoSignalReduced = noSignalReduced <$> getRMContext
 
-modifyTMCursor :: (VCur -> VCur) -> RM ()
-modifyTMCursor f = modify' $ \s -> s{rtsTC = f (rtsTC s)}
+setNoSignalReduced :: Bool -> RM ()
+setNoSignalReduced b = modifyRMContext $ \ctx -> ctx{noSignalReduced = b}
 
-putTMCursor :: VCur -> RM ()
-putTMCursor vc = modifyTMCursor $ const vc
-
-{-
-====== ValAddr ======
--}
-
-getTMAbsAddr :: RM ValAddr
-getTMAbsAddr = vcAddr <$> getTMCursor
-
-getTMTASeg :: RM Feature
-getTMTASeg = do
-  vc <- getTMCursor
-  liftEitherRM (vcFocusSegMust vc)
-
--- Crumbs
-
-getTMCrumbs :: RM [(Feature, Val)]
-getTMCrumbs = crumbs <$> getTMCursor
-
--- Val
-
-{-# INLINE getTMVal #-}
-getTMVal :: RM Val
-getTMVal = focus <$> getTMCursor
-
-modifyTMVal :: (Val -> Val) -> RM ()
-modifyTMVal f = modifyTMCursor $ \vc -> f (focus vc) `setVCFocus` vc
-
-putTMVal :: Val -> RM ()
-putTMVal t = modifyTMVal $ const t
-
-supersedeTMVN :: ValNode -> RM ()
-supersedeTMVN tn = modifyTMVal (supersedeVN tn)
-
-unwrapTMVN :: (Val -> ValNode) -> RM ()
-unwrapTMVN f = modifyTMVal (unwrapVN f)
-
-withVal :: (Val -> RM a) -> RM a
-withVal f = getTMVal >>= f
-
-withAddrAndFocus :: (ValAddr -> Val -> RM a) -> RM a
-withAddrAndFocus f = do
-  addr <- getTMAbsAddr
-  withVal (f addr)
-
-{- | Get the parent of the current focus.
-
-This does not propagate the value up.
--}
-getTMParent :: RM Val
-getTMParent = do
-  crumbs <- getTMCrumbs
-  case crumbs of
-    [] -> throwFatal "already at the top"
-    (_, t) : _ -> return t
-
--- ValNode
-
-withVN :: (ValNode -> RM a) -> RM a
-withVN f = withVal (f . valNode)
-
-setTMVN :: ValNode -> RM ()
-setTMVN vn = modifyTMVal $ \t -> setVN vn t
-
--- ReduceMonad operations
-
--- PropUp operations
-
--- | Propagate the value up.
-propUpTM :: RM ()
-propUpTM = do
-  vc <- getTMCursor
-  liftEitherRM (propUpVC vc) >>= putTMCursor
-
-runTMTCAction :: (forall n. (Monad n) => VCur -> n Val) -> RM ()
-runTMTCAction f = do
-  vc <- getTMCursor
-  r <- f vc
-  putTMCursor (r `setVCFocus` vc)
-
--- Propagate the value up until the lowest segment is matched.
-propUpTMUntilSeg :: Feature -> RM ()
-propUpTMUntilSeg seg = do
-  vc <- getTMCursor
-  unless (isMatched vc) $ do
-    propUpTM
-    propUpTMUntilSeg seg
- where
-  isMatched :: VCur -> Bool
-  isMatched (VCur _ []) = False -- propUpTM would panic.
-  isMatched (VCur _ ((s, _) : _)) = s == seg
-
--- Move down operations
-
-descendTM :: ValAddr -> RM Bool
-descendTM dst = go (addrToList dst)
- where
-  go :: [Feature] -> RM Bool
-  go [] = return True
-  go (x : xs) = do
-    r <- descendTMSeg x
-    if r
-      then go xs
-      else return False
-
-{- | Descend the tree cursor to the segment.
-
-It closes the sub tree based on the parent tree.
--}
-descendTMSeg :: Feature -> RM Bool
-descendTMSeg seg = do
-  vc <- getTMCursor
-  maybe
-    (return False)
-    (\r -> putTMCursor r >> return True)
-    (goDownVCSeg seg vc)
-
-descendTMSegMust :: Feature -> RM ()
-descendTMSegMust seg = do
-  ok <- descendTMSeg seg
-  unless ok $ do
-    t <- getTMVal
-    rep <- treeToRepString t
-    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) rep
-
--- Push down operations
-
--- | Push down the segment with the new value.
-_pushTMSub :: Feature -> Val -> RM ()
-_pushTMSub seg sub = do
-  (VCur p crumbs) <- getTMCursor
-  putTMCursor $ VCur sub ((seg, p) : crumbs)
-
--- Push and pop operations
-
-{- | Run the action in the sub tree.
-
-The sub tree must exist.
--}
-inSubTM :: Feature -> RM a -> RM a
-inSubTM seg f = do
-  ok <- descendTMSeg seg
-  unless ok $ do
-    t <- getTMVal
-    rep <- treeToRepString t
-    throwFatal $ printf "descend to %s failed, cur tree: %s" (show seg) rep
+withNoSignalReduced :: Bool -> RM a -> RM a
+withNoSignalReduced b f = do
+  oldB <- getNoSignalReduced
+  setNoSignalReduced b
   r <- f
-  propUpTM
-  return r
-
--- Remote operations
-
-goTMAbsAddr :: ValAddr -> RM Bool
-goTMAbsAddr addr = do
-  when (headSeg addr /= Just rootFeature) $ do
-    addrStr <- tshow addr
-    throwFatal (printf "the addr %s should start with the root segment" (show addrStr))
-  propUpTMUntilSeg rootFeature
-  let dstWoRoot = fromJust $ tailValAddr addr
-  rM <- goDownVCAddr dstWoRoot <$> getTMCursor
-  maybe (return False) (\r -> putTMCursor r >> return True) rM
-
-goTMAbsAddrMust :: (HasCallStack) => ValAddr -> RM ()
-goTMAbsAddrMust addr = do
-  origAddr <- getTMAbsAddr
-  ok <- goTMAbsAddr addr
-  unless ok $ do
-    addrStr <- tshow addr
-    origAddrStr <- tshow origAddr
-    throwFatal $ printf "cannot go to addr (%s) tree from %s" (show addrStr) (show origAddrStr)
-
--- | TODO: some functions do not require going back to the original address.
-inRemoteTM :: ValAddr -> RM a -> RM a
-inRemoteTM addr f = do
-  origAddr <- getTMAbsAddr
-  goTMAbsAddrMust addr
-  r <- f
-  goTMAbsAddrMust origAddr
-  return r
-
--- SOp operations
-
--- Locate the immediate parent mutable of a reference.
-locateImMutableTM :: RM ()
-locateImMutableTM = do
-  addr <- getTMAbsAddr
-  when (isLastSegMutableArg addr) $ do
-    propUpTM
-    locateImMutableTM
- where
-  -- Check if the last segment is a mutable argument segment.
-  isLastSegMutableArg addr
-    | Just (FeatureType MutArgLabelType) <- lastSeg addr = True
-    | otherwise = False
-
--- Ref Cycle
-
-getIsReducingRC :: RM Bool
-getIsReducingRC = rcdIsReducingRCs <$> getRMContext
-
-setIsReducingRC :: Bool -> RM ()
-setIsReducingRC b = modifyRMContext $ \ctx -> ctx{rcdIsReducingRCs = b}
-
--- NoRecalc
-
-getNoRecalc :: RM Bool
-getNoRecalc = noRecalc <$> getRMContext
-
-setNoRecalc :: Bool -> RM ()
-setNoRecalc b = modifyRMContext $ \ctx -> ctx{noRecalc = b}
-
-withNoRecalcFlag :: Bool -> RM a -> RM a
-withNoRecalcFlag b f = do
-  oldB <- getNoRecalc
-  setNoRecalc b
-  r <- f
-  setNoRecalc oldB
+  setNoSignalReduced oldB
   return r
 
 -- Val depth check
 
-treeDepthCheck :: VCur -> RM ()
+treeDepthCheck :: ValAddr -> RM ()
 treeDepthCheck vc = do
-  let depth = length vc.crumbs
+  let depth = length $ addrToList vc
   Config{stMaxTreeDepth = maxDepth} <- asks baseConfig
   let maxDepthVal = if maxDepth <= 0 then 1000 else maxDepth
   when (depth > maxDepthVal) $ throwFatal $ printf "tree depth exceeds max depth (%d)" maxDepthVal
 
-unlessFocusBottom :: a -> RM a -> RM a
-unlessFocusBottom a f = do
-  t <- getTMVal
-  case valNode t of
-    VNBottom _ -> return a
-    _ -> f
+getRCResolver :: RM RCResolver
+getRCResolver = rcResolver <$> getRMContext
 
-{- | Visit every node in the tree in pre-order and apply the function.
-
-It does not re-constrain struct fields.
--}
-preVisitVal ::
-  (VCur -> [Feature]) ->
-  ((VCur, a) -> RM (VCur, a)) ->
-  (VCur, a) ->
-  RM (VCur, a)
-preVisitVal subs f x = do
-  y <- f x
-  foldM
-    ( \acc subSeg -> do
-        (seg, pre, post) <- return (subSeg, return, return)
-        subTC <- liftEitherRM (pre (fst acc) >>= goDownVCSegMust seg)
-        z <- preVisitVal subs f (subTC, snd acc)
-        nextTC <- liftEitherRM (propUpVC (fst z) >>= post)
-        return (nextTC, snd z)
-    )
-    y
-    (subs $ fst y)
-
--- | A simple version of the preVisitVal function that does not return a custom value.
-preVisitValSimple ::
-  (VCur -> [Feature]) ->
-  (VCur -> RM VCur) ->
-  VCur ->
-  RM VCur
-preVisitValSimple subs f vc = do
-  (r, _) <-
-    preVisitVal
-      subs
-      ( \(x, _) -> do
-          r <- f x
-          return (r, ())
-      )
-      (vc, ())
-  return r
-
-{- | Visit every node in the tree in post-order and apply the function.
-
-It does not re-constrain struct fields.
--}
-postVisitVal ::
-  (VCur -> [Feature]) ->
-  ((VCur, a) -> RM (VCur, a)) ->
-  (VCur, a) ->
-  RM (VCur, a)
-postVisitVal subs f x = do
-  y <-
-    foldM
-      ( \acc subSeg -> do
-          (seg, pre, post) <- return (subSeg, return, return)
-          subTC <- liftEitherRM (pre (fst acc) >>= goDownVCSegMust seg)
-          z <- postVisitVal subs f (subTC, snd acc)
-          nextTC <- liftEitherRM (propUpVC (fst z) >>= post)
-          return (nextTC, snd z)
-      )
-      x
-      (subs $ fst x)
-  f y
-
-postVisitValSimple ::
-  (VCur -> [Feature]) ->
-  (VCur -> RM VCur) ->
-  VCur ->
-  RM VCur
-postVisitValSimple subs f vc = do
-  (r, _) <-
-    postVisitVal
-      subs
-      ( \(x, _) -> do
-          r <- f x
-          return (r, ())
-      )
-      (vc, ())
-  return r
+mapRCResolver :: (RCResolver -> RCResolver) -> RM ()
+mapRCResolver f = modifyRMContext $ \ctx -> ctx{rcResolver = f (rcResolver ctx)}

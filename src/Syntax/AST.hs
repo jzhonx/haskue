@@ -10,6 +10,7 @@ import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify')
 import qualified Data.ByteString as BS
 import Data.ByteString.Builder (Builder, byteString, char7, string7, toLazyByteString, word8)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
@@ -263,10 +264,10 @@ idToPrimExpr x = PrimExprOperand $ OpName $ OperandName $ Token Identifier empty
 -- == Below are functions for pretty printing the AST ==
 
 exprToStr :: Expression -> String
-exprToStr e = show $ toLazyByteString $ exprToBuilder False e
+exprToStr e = BC.unpack $ BS.toStrict $ toLazyByteString $ exprToBuilder False e
 
 exprToOneLinerStr :: Expression -> String
-exprToOneLinerStr e = show $ toLazyByteString $ exprToBuilder True e
+exprToOneLinerStr e = BC.unpack $ BS.toStrict $ toLazyByteString $ exprToBuilder True e
 
 exprToBuilder :: Bool -> Expression -> Builder
 exprToBuilder oneLiner e = evalState (exprBld e) (ASTBuilderState 0 oneLiner)
@@ -481,7 +482,7 @@ fieldDeclBld e = case e of
 
 embeddingBld :: (M m) => Embedding -> m Builder
 embeddingBld e = case e of
-  EmbedComprehension _ -> return $ string7 "<undefined>"
+  EmbedComprehension _ -> return $ string7 "<comprehension>"
   EmbeddingAlias ex -> aliasExprBld ex
 
 aliasExprBld :: (M m) => AliasExpr -> m Builder

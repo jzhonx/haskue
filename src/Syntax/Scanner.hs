@@ -72,8 +72,12 @@ advance :: Scanner (Maybe Char)
 advance = do
   inputBytes <- getSource
   cur <- gets current
-  case BC.indexMaybe inputBytes cur of
+  let nextChar = BC.indexMaybe inputBytes cur
+  case nextChar of
+    Nothing -> return ()
     Just c -> do
+      -- We only insert comma when there is a next character. EOF is handled separately in scanAll.
+      insertComma nextChar
       -- Update location and current position.
       -- Also handle automatic comma insertion at line breaks.
       modify $ \s ->
@@ -81,20 +85,29 @@ advance = do
             newLoc = case c of
               '\n' -> l{line = line l + 1, column = 1}
               _ -> l{column = column l + 1}
-            newTokens =
-              if c == '\n' && shouldInsertComma s
-                then
-                  tokens s
-                    Seq.|> Token
-                      { tkType = Comma
-                      , -- Comma is added after the last token on the line, which is non-existent in source.
-                        tkLoc = (loc s){line = line l, column = column l + 1}
-                      , tkLiteral = BC.pack ","
-                      }
-                else tokens s
-         in s{loc = newLoc, current = current s + 1, tokens = newTokens}
-      return (Just c)
-    Nothing -> return Nothing
+         in s{loc = newLoc, current = current s + 1}
+  return nextChar
+
+insertComma :: Maybe Char -> Scanner ()
+insertComma cM = do
+  let isNextCharNewline = case cM of
+        Just '\n' -> True
+        -- EOF, handles the automatic comma insertion at the end of file if needed.
+        Nothing -> True
+        _ -> False
+  s <- get
+  let l = loc s
+      shouldInsert = isNextCharNewline && endLineInsertCond s
+  when shouldInsert $
+    let newTokens =
+          tokens s
+            Seq.|> Token
+              { tkType = Comma
+              , -- Comma is added after the last token on the line, which is non-existent in source.
+                tkLoc = (loc s){line = line l, column = column l + 1}
+              , tkLiteral = BC.pack ","
+              }
+     in put s{tokens = newTokens}
  where
   -- According to spec The formal grammar uses commas , as terminators in a number of productions. CUE programs may omit
   -- most of these commas using the following rules:
@@ -107,8 +120,11 @@ advance = do
   -- one of the characters ), ], }, or ?
   -- an ellipsis ...
   -- Although commas are automatically inserted, the parser will require explicit commas between two list elements.
-  shouldInsertComma :: ScannerState -> Bool
-  shouldInsertComma s = do
+  --
+  -- Another case is that
+  -- > Also, a newline or end of file may trigger the insertion of a comma.
+  endLineInsertCond :: ScannerState -> Bool
+  endLineInsertCond s = do
     case Seq.viewr (tokens s) of
       Seq.EmptyR -> False
       _ Seq.:> lastToken -> case tkType lastToken of
@@ -200,7 +216,9 @@ scanAll = go
     resetCurPosLoc
     isEnd <- gets (BC.null . source)
     if isEnd
-      then addToken EOF
+      then do
+        insertComma Nothing -- Handle automatic comma insertion at the end of file if needed.
+        addToken EOF
       else scanToken >> go
 
 -- | Scan a single token from the input.

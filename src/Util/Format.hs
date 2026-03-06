@@ -18,6 +18,9 @@ instance ShowWTIndexer MSPrintfArg where
 packFmtA :: (ShowWTIndexer a) => a -> MSPrintfArg
 packFmtA = MSPrintfArg
 
+msprintfS :: (TextIndexerMonad s m) => String -> [MSPrintfArg] -> m String
+msprintfS fmt as = T.unpack <$> msprintf fmt as
+
 msprintf :: (TextIndexerMonad s m) => String -> [MSPrintfArg] -> m T.Text
 msprintf fmt as = do
   ts <- mapM tshow as

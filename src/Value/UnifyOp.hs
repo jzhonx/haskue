@@ -20,3 +20,6 @@ data UnifyOp = UnifyOp
   , conjs :: Seq.Seq Val
   }
   deriving (Generic)
+
+appendUnifyConj :: Val -> UnifyOp -> UnifyOp
+appendUnifyConj v u = u{conjs = conjs u Seq.|> v}

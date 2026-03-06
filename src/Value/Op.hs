@@ -28,10 +28,13 @@ data SOp = SOp Op OpFrame
 setOpInSOp :: Op -> SOp -> SOp
 setOpInSOp op (SOp _ frame) = SOp op frame
 
+getOpFromSOp :: SOp -> Op
+getOpFromSOp (SOp op _) = op
+
 data Op
   = RegOp RegularOp
   | Ref Reference
-  | Index InplaceIndex
+  | VSelect ValueSelect
   | Compreh Comprehension
   | DisjOp DisjoinOp
   | UOp UnifyOp
@@ -57,8 +60,8 @@ getSOpArgs (SOp op _) =
 
 getOpArgs :: Op -> (Seq.Seq Val, Bool)
 getOpArgs (RegOp rop) = (ropArgs rop, False)
-getOpArgs (Ref ref) = (getRefSels ref, False)
-getOpArgs (Index (InplaceIndex xs)) = (xs, False)
+getOpArgs (Ref ref) = (selectors ref, False)
+getOpArgs (VSelect (ValueSelect _ xs)) = (xs, False)
 getOpArgs (Compreh c) = (fmap getValFromIterClause c.args, False)
 getOpArgs (DisjOp d) = (fmap dstValue (djoTerms d), False)
 getOpArgs (UOp u) = (conjs u, True)
@@ -70,7 +73,7 @@ updateSOpArg i t (SOp op frame) = SOp (updateOpArg i t op) frame
 updateOpArg :: Int -> Val -> Op -> Op
 updateOpArg i t (RegOp r) = RegOp $ r{ropArgs = Seq.update i t (ropArgs r)}
 updateOpArg i t (Ref ref) = Ref $ mapRefSels (Seq.update i t) ref
-updateOpArg i t (Index (InplaceIndex xs)) = Index $ InplaceIndex $ Seq.update i t xs
+updateOpArg i t (VSelect (ValueSelect b xs)) = VSelect $ ValueSelect b $ Seq.update i t xs
 updateOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
 updateOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
 updateOpArg i t (UOp u) = UOp $ u{conjs = Seq.update i t (conjs u)}
@@ -147,7 +150,7 @@ showOpType :: Op -> String
 showOpType op = case op of
   RegOp _ -> "fn"
   Ref _ -> "ref"
-  Index _ -> "index"
+  VSelect _ -> "index"
   Compreh _ -> "compreh"
   DisjOp _ -> "disjoin"
   UOp u -> if isEmbedUnify u then "embedUnify" else "unify"

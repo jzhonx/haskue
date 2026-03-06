@@ -34,3 +34,10 @@ x: """
 s1: "\\"
 -- exp --
 s1: "\\"
+
+-- string6 --
+x: "\(a)"
+-- exp --
+error: reference "a" is not found:
+	-:1:1
+

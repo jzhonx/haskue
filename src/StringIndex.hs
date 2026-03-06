@@ -6,7 +6,8 @@ module StringIndex where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState, gets, modify')
-import Data.Aeson (ToJSON, ToJSONKey, Value, toJSON)
+import Data.Aeson (KeyValue (..), ToJSON, ToJSONKey, Value, object, toJSON)
+import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -34,6 +35,9 @@ instance {-# OVERLAPPABLE #-} (ShowWTIndexer a) => ShowWTIndexer [a] where
 instance ShowWTIndexer String where
   tshow = return . T.pack
 
+instance ShowWTIndexer T.Text where
+  tshow = return
+
 instance (ShowWTIndexer k, ShowWTIndexer v) => ShowWTIndexer (Map.Map k v) where
   tshow xs = do
     kvs <- mapM go (Map.toList xs)
@@ -47,8 +51,13 @@ instance (ShowWTIndexer k, ShowWTIndexer v) => ShowWTIndexer (Map.Map k v) where
 instance ShowWTIndexer Int
 instance ShowWTIndexer Bool
 instance ShowWTIndexer Char
-instance ShowWTIndexer T.Text
-instance (ShowWTIndexer a) => ShowWTIndexer (Maybe a)
+
+instance (ShowWTIndexer a) => ShowWTIndexer (Maybe a) where
+  tshow (Just x) = do
+    xt <- tshow x
+    return $ "Just " <> xt
+  tshow Nothing = return "Nothing"
+
 instance (ShowWTIndexer a, ShowWTIndexer b) => ShowWTIndexer (a, b)
 
 class (ToJSON a) => ToJSONWTIndexer a where
@@ -71,12 +80,12 @@ instance (ToJSONWTIndexer a) => ToJSONWTIndexer (Maybe a) where
 instance (ShowWTIndexer k, ToJSONKey k, ToJSONWTIndexer v) => ToJSONWTIndexer (Map.Map k v) where
   ttoJSON m = do
     kvs <- mapM go (Map.toList m)
-    return $ toJSON kvs
+    return $ object [Key.fromString k .= v | (k, v) <- kvs]
    where
     go (k, v) = do
       kt <- tshow k
       vt <- ttoJSON v
-      return (toJSON kt, vt)
+      return (T.unpack kt, vt)
 
 data TextIndexer = TextIndexer
   { labels :: V.Vector T.Text

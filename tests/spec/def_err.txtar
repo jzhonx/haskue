@@ -29,3 +29,20 @@ x: d: 3 // not allowed, as closed by embedded #A
 -- exp_def_err3 --
 error: "d" is not allowed
 
+-- def_err4 --
+#S: {
+	a: string
+}
+m: #S & {
+	b: 2 // error, feild not defined in #S
+}
+-- exp --
+error: "b" is not allowed
+
+-- def_err5 --
+#S: {}
+m: #S & {
+	b: 2 // error, feild not defined in #S
+}
+-- exp --
+error: "b" is not allowed

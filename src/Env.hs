@@ -16,7 +16,6 @@ type ErrorEnv m =
 data Config = Config
   { stTraceEnable :: Bool
   , stTraceExtraInfo :: Bool
-  , stTracePrintTree :: Bool
   , stTraceFilter :: Set.Set String
   , stMaxTreeDepth :: Int
   }
@@ -27,7 +26,6 @@ emptyConfig =
   Config
     { stTraceEnable = False
     , stTraceExtraInfo = False
-    , stTracePrintTree = False
     , stTraceFilter = Set.empty
     , stMaxTreeDepth = 0
     }

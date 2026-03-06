@@ -7,26 +7,22 @@
 module Reduce.Primitives where
 
 import Control.Monad (foldM)
-import Cursor
 import Data.Foldable (toList)
-import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce)
+import {-# SOURCE #-} Reduce.Core (forceReduceMut, reduce)
 import Reduce.Monad (
   RM,
-  getTMVal,
-  inSubTM,
-  setTMVN,
   throwFatal,
  )
-import Reduce.TraceSpan (traceSpanArgsTM)
-import StringIndex (ShowWTIndexer (..))
+import Reduce.Store (storeAllSubVals)
+import Reduce.TraceSpan (debugInstText, traceSpanValTM, valDebugRep)
 import Syntax.Token (TokenType)
 import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
+import Value.Instances (vtmapVectorM, vtmapVectorQ)
 
 -- * Regular Unary Ops
 
@@ -80,16 +76,8 @@ resolveUnaryOp op tM = do
 
 -- * Regular Binary Ops
 
-resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> VCur -> RM (Maybe Val)
-resolveRegBinOp op t1M t2M _ =
-  traceSpanArgsTM
-    "resolveRegBinOp"
-    ( const $ do
-        t1MT <- mapM tshow t1M
-        t2MT <- mapM tshow t2M
-        return $ printf "op: %s, t1: %s, t2: %s" (show op) (show t1MT) (show t2MT)
-    )
-    $ resolveRegBinDir op (L, t1M) (R, t2M)
+resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> ValAddr -> RM (Maybe Val)
+resolveRegBinOp op t1M t2M _ = resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
   TokenType ->
@@ -176,50 +164,60 @@ calc op x@(R, _) y = calc op y x
 mismatch :: (Show a, Show b) => TokenType -> a -> b -> Val
 mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
-reduceList :: List -> RM ()
-reduceList l = do
-  r <-
-    foldM
-      ( \acc (i, origElem) -> do
-          r <- inSubTM (mkListStoreIdxFeature i) (reduce >> getTMVal)
-          case origElem of
+reduceList :: List -> ValAddr -> Val -> RM Val
+reduceList l addr v = traceSpanValTM "reduceList" addr v do
+  updstore <- vtmapVectorM reduce mkListStoreIdxFeature addr (store l)
+  revR <-
+    V.foldM
+      ( \acc sub -> do
+          debugInstText "reduceList finalize" addr (T.pack <$> valDebugRep addr sub)
+          case sub of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
             IsValMutable (Op (Compreh cph))
               | cph.isListCompreh
-              , Just rList <- rtrList r ->
-                  return $ acc ++ toList rList.final
-            _ -> return $ acc ++ [r]
+              , Just rList <- rtrList sub ->
+                  return $ (reverse . toList $ rList.final) ++ acc
+            _ -> return $ sub : acc
       )
       []
-      (zip [0 ..] (toList l.store))
-  t <- getTMVal
-  case t of
-    IsList lst -> do
-      let newList = lst{final = V.fromList r}
-      setTMVN (VNList newList)
-    _ -> return ()
+      updstore
+  let
+    r = reverse revR
+    finalV = V.fromList r
+
+  -- The values of the final list are not stored in the store yet.
+  sequence_ $ vtmapVectorQ storeAllSubVals mkListIdxFeature addr finalV
+  return $
+    setVN
+      ( VNList $
+          l
+            { store = updstore
+            , final = finalV
+            }
+      )
+      v
 
 -- | Closes a struct when the tree has struct.
-resolveCloseFunc :: [Val] -> VCur -> RM (Maybe Val)
-resolveCloseFunc args _
-  | length args /= 1 = throwFatal $ printf "expected 1 argument, got %d" (length args)
+resolveCloseFunc :: [Val] -> Val -> ValAddr -> RM Val
+resolveCloseFunc args _ addr
+  | length args /= 1 = return $ mkBottomVal $ printf "close function expects exactly 1 argument, got %d" (length args)
   | otherwise = do
       let arg = head args
-      return $ Just $ closeTree arg
+      v <- forceReduceMut False addr arg
+      return $ closeConcrete v
 
--- | Close a struct when the tree has struct.
-closeTree :: Val -> Val
-closeTree a =
-  case valNode a of
-    VNStruct s -> setVN (VNStruct $ s{stcClosed = True}) a
-    VNDisj dj ->
-      let
-        ds = Seq.mapWithIndex (\_ t -> closeTree t) (dsjDisjuncts dj)
-       in
-        setVN (VNDisj (dj{dsjDisjuncts = ds})) a
-    -- TODO: SOp should be closed.
-    -- TNMutable _ -> throwFatal "TODO"
+-- | Close a concrete value.
+closeConcrete :: Val -> Val
+closeConcrete a =
+  case a of
+    IsNoVal -> a
+    IsStruct s -> setVN (VNStruct $ s{stcClosed = True}) a
+    -- This is the current behavior of close for non-struct values.
+    -- If the value is a disjunction, we do not close the disjunction itself.
+    IsDisj dj -> case defDisjunctsFromDisj dj of
+      [x] -> setVN (valNode x) a
+      _ -> setVN VNNoVal a
     _ -> mkBottomVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
 resolveInterpolation :: Interpolation -> [Val] -> RM (Maybe Val)
@@ -238,13 +236,14 @@ resolveInterpolation l args = do
                   return $
                     Left $
                       mkBottomVal $
-                        printf "can not use struct in interpolation: %s" (showValSymbol r)
+                        printf "can not use struct in interpolation: %s" (showValType r)
               | Just _ <- rtrList r ->
                   return $
                     Left $
                       mkBottomVal $
-                        printf "can not use list in interpolation: %s" (showValSymbol r)
-              | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValSymbol r)
+                        printf "can not use list in interpolation: %s" (showValType r)
+              | Just _ <- rtrBottom r -> return $ Left r
+              | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
           IplSegStr s -> return $ (`T.append` s) <$> accRes
       )
       (Right T.empty)

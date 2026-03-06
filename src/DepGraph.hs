@@ -105,22 +105,10 @@ delVGEdgeByUseMatch useMatch g =
     { vEdges = HashMap.map (filter (not . useMatch)) (vEdges g)
     }
 
-queryVGUsesByDepMatch :: (RefVertex -> Bool) -> VGraph -> [ExprVertex]
-queryVGUsesByDepMatch depMatch g = concatMap snd $ filter (depMatch . fst) (HashMap.toList $ vEdges g)
-
--- delVGVertexes :: (Int -> Bool) -> VGraph -> VGraph
--- delVGVertexes keep g =
---   g
---     { vEdges =
---         HashMap.map
---           -- Then filter the values.
---           (filter (\v -> keep (getExprVertex v)))
---           $ HashMap.filterWithKey (\k _ -> keep (getRefVertex k)) (vEdges g)
---     , vVertexes =
---         Set.filter
---           (\v -> (keep (getExprVertex v)))
---           (vVertexes g)
---     }
+queryVGUsesByDepMatch :: (RefVertex -> Bool) -> VGraph -> [(RefVertex, ExprVertex)]
+queryVGUsesByDepMatch depMatch g =
+  let x = filter (depMatch . fst) (HashMap.toList $ vEdges g)
+   in concatMap (\(dep, uses) -> map (\use -> (dep, use)) uses) x
 
 data CGraph = CGraph
   { pDAG :: HashMap.HashMap ExprVertex [ExprVertex]
@@ -391,12 +379,14 @@ For example, if we have a selection dependency `a.b.c`, we add notification edge
 addSelDepToG :: (HasCallStack) => ReferableAddr -> ReferableAddr -> State DepGraph ()
 addSelDepToG depIdent dep
   | depIdent == dep = return ()
-  | otherwise = do
-      let depPar = fromJust $ initRfbAddr dep
-      dParID <- liftGetVIDForG (rfbAddrToAddr depPar)
-      did <- liftGetVIDForG (rfbAddrToAddr dep)
-      modify' $ mapVGraph $ insertVGraphSelEdge (RefVertex dParID) (ExprVertex did)
-      addSelDepToG depIdent depPar
+  | otherwise = case initRfbAddr dep of
+      -- we are already at the root
+      Nothing -> return ()
+      Just parentDep -> do
+        dParID <- liftGetVIDForG (rfbAddrToAddr parentDep)
+        did <- liftGetVIDForG (rfbAddrToAddr dep)
+        modify' $ mapVGraph $ insertVGraphSelEdge (RefVertex dParID) (ExprVertex did)
+        addSelDepToG depIdent parentDep
 
 {- | Check if there is a path from one vertex to another in the component graph.
 
@@ -445,43 +435,29 @@ delDGEdgesByUseMatch useMatch =
   useMatchAdapt :: VIDMapping -> ExprVertex -> Bool
   useMatchAdapt m x = useMatch (getAddrFromVIDMust (getExprVertex x) m)
 
--- | Query the dependents by matching the use vertex with the given predicate.
-queryUsesByDepMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> [ValAddr]
+{- | Query the dependents by matching the use vertex with the given predicate.
+
+It returns a list of (dependency, use) pairs that match the predicate.
+-}
+queryUsesByDepMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> [(ValAddr, ValAddr)]
 queryUsesByDepMatch depMatch =
   evalState
     ( do
         m <- gets vidMapping
         g <- gets vgraph
         let l = queryVGUsesByDepMatch (depMatchAdapt m) g
-        return $ map (\x -> getAddrFromVIDMust (getExprVertex x) m) l
+        return $
+          map
+            ( \(dep, use) ->
+                ( getAddrFromVIDMust (getRefVertex dep) m
+                , getAddrFromVIDMust (getExprVertex use) m
+                )
+            )
+            l
     )
  where
   depMatchAdapt :: VIDMapping -> RefVertex -> Bool
   depMatchAdapt m x = depMatch (getAddrFromVIDMust (getRefVertex x) m)
-
--- -- | Remove all vertexes from the dependency graph that match the given predicate.
--- delDGVertexes :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> DepGraph
--- delDGVertexes match =
---   execState
---     ( do
---         m <- gets vidMapping
---         modify' $ \g -> updateCGraph (mapVGraph (delVGVertexes (keep m)) g)
---         modify' $ \g ->
---           g
---             { nodesByUseFunc =
---                 Map.map
---                   -- Then filter the values.
---                   (filter (not . match))
---                   -- First filter the keys.
---                   ( Map.filterWithKey
---                       (\k _ -> not (match (sufIrredToAddr k)))
---                       (nodesByUseFunc g)
---                   )
---             }
---     )
---  where
---   keep :: VIDMapping -> Int -> Bool
---   keep m x = not (match (getAddrFromVIDMust x m))
 
 -- | Update the component graph based on the current propagation graph.
 updateCGraph :: (HasCallStack) => DepGraph -> DepGraph

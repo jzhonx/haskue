@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Value.Export.AST (
@@ -88,8 +89,8 @@ buildBottom = return $ AST.litCons (AST.LitBasic $ AST.BottomLit $ mkTypeToken T
 
 throwExprNotFound :: Val -> EM a
 throwExprNotFound t = do
-  rep <- treeToRepString t
-  throwError $ printf "expression not found for %s, tree rep: %s" (showValSymbol t) rep
+  rep <- valToRepString t
+  throwError $ printf "expression not found for %s, tree rep: %s" (showValType t) rep
 
 buildMutableASTExpr :: SOp -> Val -> EM AST.Expression
 buildMutableASTExpr mut t = do
@@ -113,7 +114,7 @@ buildMutableASTExprForce :: SOp -> Val -> EM AST.Expression
 buildMutableASTExprForce (SOp mop _) t = case mop of
   RegOp op -> buildRegOpASTExpr op
   Ref ref -> buildRefASTExpr ref
-  Index idx -> buildIndexASTExpr idx
+  VSelect idx -> buildIndexASTExpr idx
   Compreh cph -> do
     ce <- buildComprehASTExpr cph
     return $
@@ -127,7 +128,21 @@ buildFixASTExpr :: Fix -> Val -> EM AST.Expression
 buildFixASTExpr r t = do
   isDebug <- asks isDebug
   if isDebug
-    then return (AST.idCons "Fix")
+    then do
+      typeT <- textToTextIndex "type"
+      bodyT <- textToTextIndex "body"
+      unknownExistsT <- textToTextIndex "unknownExists"
+      buildStructASTExprDebug
+        ( emptyStruct
+            { stcFields =
+                Map.fromList
+                  [ (typeT, staticFieldMker (mkAtomVal (Atom.String "FIx")) defaultLabelAttr)
+                  , (bodyT, staticFieldMker (mkNewVal r.val) defaultLabelAttr)
+                  , (unknownExistsT, staticFieldMker (mkAtomVal (Atom.Bool r.unknownExists)) defaultLabelAttr)
+                  ]
+            }
+        )
+        t
     else do
       if r.unknownExists
         then maybe (throwExprNotFound t) return (origExpr t)
@@ -201,6 +216,11 @@ buildStructASTExpr struct t = do
     else buildStructASTExprNormal struct t
 
 buildStructASTExprDebug :: Struct -> Val -> EM AST.Expression
+buildStructASTExprDebug (stcEmbedVal -> Just ev) _ = do
+  evE <- buildExprExt ev
+  return $
+    AST.litCons $
+      AST.LitStruct (AST.StructLit emptyLoc [AST.Embedding (AST.EmbeddingAlias (AST.AliasExpr Nothing evE))] emptyLoc)
 buildStructASTExprDebug s _ = do
   statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
   dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
@@ -387,24 +407,21 @@ buildRefASTExpr ref = do
       ref.selectors
   return $ AST.Unary (AST.Primary r)
 
-buildIndexASTExpr :: InplaceIndex -> EM AST.Expression
-buildIndexASTExpr (InplaceIndex xs) = do
-  case xs of
-    (x Seq.:<| rest) -> do
-      xe <- buildExprExt x
-      v <- case xe of
-        AST.Unary (AST.Primary v) -> return v
-        _ -> throwErrSt "the first element of InplaceIndex should be a primary expression"
-      r <-
-        foldM
-          ( \acc y -> do
-              ye <- buildExprExt y
-              return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
-          )
-          v
-          rest
-      return $ AST.Unary (AST.Primary r)
-    _ -> throwErrSt "InplaceIndex should have at least one element"
+buildIndexASTExpr :: ValueSelect -> EM AST.Expression
+buildIndexASTExpr (ValueSelect b xs) = do
+  be <- buildExprExt b
+  v <- case be of
+    AST.Unary (AST.Primary v) -> return v
+    _ -> throwErrSt "the index value of ValueSelect should be a primary expression"
+  r <-
+    foldM
+      ( \acc y -> do
+          ye <- buildExprExt y
+          return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
+      )
+      v
+      xs
+  return $ AST.Unary (AST.Primary r)
 
 buildRegOpASTExpr :: RegularOp -> EM AST.Expression
 buildRegOpASTExpr op = case ropOpType op of
