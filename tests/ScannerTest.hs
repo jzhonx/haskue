@@ -24,15 +24,23 @@ tests =
 
 -- Helper to create tokens for comparison
 mkT :: TokenType -> BC.ByteString -> Token
-mkT t lit = Token t (Location 1 1 Nothing) lit
+mkT t lit = Token{tkType = t, tkLoc = (Location{line = 1, column = 1, filePath = Nothing}), tkLiteral = lit}
 
 -- Helper to compare tokens ignoring location
 assertTokensEqual :: String -> [Token] -> [Token] -> Assertion
 assertTokensEqual msg actual expected =
   let
     -- Only compare type and literal, ignore location
-    actual' = map (\t -> Token (tkType t) (Location 0 0 Nothing) (tkLiteral t)) actual
-    expected' = map (\t -> Token (tkType t) (Location 0 0 Nothing) (tkLiteral t)) expected
+    actual' =
+      map
+        ( \t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t}
+        )
+        actual
+    expected' =
+      map
+        ( \t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t}
+        )
+        expected
    in
     assertEqual msg expected' actual'
 
@@ -177,7 +185,7 @@ stringLiteralTests =
     , testCase "String with escapes" $
         let actual = getTokens (BC.pack "\"hello\\nworld\"")
             expected =
-              [ mkT String "hello\\nworld"
+              [ mkT String "hello\nworld"
               , mkT Comma ","
               , mkT EOF ""
               ]

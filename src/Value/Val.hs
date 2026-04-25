@@ -13,6 +13,7 @@ module Value.Val where
 import Control.Monad.Except (runExcept)
 import Control.Monad.Identity
 import Control.Monad.State.Strict (gets, modify')
+import qualified Data.ByteString.Char8 as BC
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
@@ -203,7 +204,7 @@ rtrAtom t = do
     IsAtom a -> Just a
     _ -> Nothing
 
-rtrString :: Val -> Maybe T.Text
+rtrString :: Val -> Maybe BC.ByteString
 rtrString (rtrAtom -> Just (String s)) = Just s
 rtrString _ = Nothing
 

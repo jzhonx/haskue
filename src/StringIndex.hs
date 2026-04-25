@@ -88,8 +88,8 @@ instance (ShowWTIndexer k, ToJSONKey k, ToJSONWTIndexer v) => ToJSONWTIndexer (M
       return (T.unpack kt, vt)
 
 data TextIndexer = TextIndexer
-  { labels :: V.Vector T.Text
-  , labelToIndex :: Map.Map T.Text Int
+  { labels :: V.Vector BC.ByteString
+  , labelToIndex :: Map.Map BC.ByteString Int
   }
   deriving (Eq, Show, Generic, NFData)
 
@@ -100,7 +100,7 @@ instance HasTextIndexer TextIndexer where
 emptyTextIndexer :: TextIndexer
 emptyTextIndexer = TextIndexer V.empty Map.empty
 
-fetchTextIndex :: T.Text -> TextIndexer -> (Int, TextIndexer)
+fetchTextIndex :: BC.ByteString -> TextIndexer -> (Int, TextIndexer)
 fetchTextIndex t indexer =
   case Map.lookup t indexer.labelToIndex of
     Just i -> (i, indexer)
@@ -124,15 +124,14 @@ instance Show TextIndex where
 
 instance ShowWTIndexer TextIndex where
   tshow (TextIndex i) = do
-    indexer <- gets getTextIndexer
-    -- It must exist.
-    return $ indexer.labels V.! i
+    b <- textIndexToBS (TextIndex i)
+    return $ TE.decodeUtf8 b
 
 instance ToJSON TextIndex where
   toJSON (TextIndex i) = toJSON i
 instance ToJSONWTIndexer TextIndex
 
-textToTextIndex :: (TextIndexerMonad s m) => T.Text -> m TextIndex
+textToTextIndex :: (TextIndexerMonad s m) => BC.ByteString -> m TextIndex
 textToTextIndex t = do
   indexer <- gets getTextIndexer
   let (i, newIndexer) = fetchTextIndex t indexer
@@ -140,7 +139,12 @@ textToTextIndex t = do
   return $ TextIndex i
 
 strToTextIndex :: (TextIndexerMonad s m) => String -> m TextIndex
-strToTextIndex s = textToTextIndex (T.pack s)
+strToTextIndex s = textToTextIndex (BC.pack s)
 
-bsToTextIndex :: (TextIndexerMonad s m) => BC.ByteString -> m TextIndex
-bsToTextIndex bs = textToTextIndex (TE.decodeUtf8 bs)
+textIndexToBS :: (TextIndexerMonad s m) => TextIndex -> m BC.ByteString
+textIndexToBS (TextIndex i) = do
+  indexer <- gets getTextIndexer
+  return $ indexer.labels V.! i
+
+-- bsToTextIndex :: (TextIndexerMonad s m) => BC.ByteString -> m TextIndex
+-- bsToTextIndex bs = textToTextIndex (TE.decodeUtf8 bs)

@@ -9,6 +9,7 @@ module Reduce.Comprehension where
 
 import Control.Monad (foldM)
 import Data.Aeson (KeyValue (..), ToJSON (..), object)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.DList as DList
 import Data.Foldable (toList)
 import qualified Data.IntMap as IntMap
@@ -31,7 +32,7 @@ import Reduce.TraceSpan (
   traceSpanValTM,
  )
 import Reduce.Unification (unifyVals)
-import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
+import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..), textIndexToBS)
 import Text.Printf (printf)
 import Util.Format (msprintf, packFmtA)
 import Value
@@ -146,7 +147,7 @@ comprehend cph topAddr = comprhArg 0 cph.args emptyIterCtx
                     if acc.incomplete
                       then return acc
                       else do
-                        label <- tshow labelIdx
+                        label <- textIndexToBS labelIdx
                         case vM of
                           Nothing -> storeVal (addr `appendSeg` mkLetFeature k) (ssfValue field)
                           Just x -> do
@@ -329,34 +330,3 @@ tshowBindings binds = do
       )
       (Map.toList binds)
   return $ T.pack $ "{" ++ intercalate ", " pairs ++ "}"
-
-resolveInterpolation :: Interpolation -> [Val] -> RM (Maybe Val)
-resolveInterpolation l args = do
-  r <-
-    foldM
-      ( \accRes seg -> case seg of
-          IplSegExpr j -> do
-            let r = args !! j
-            if
-              | Just s <- rtrString r -> return $ (`T.append` s) <$> accRes
-              | Just i <- rtrInt r -> return $ (`T.append` (T.pack $ show i)) <$> accRes
-              | Just b <- rtrBool r -> return $ (`T.append` (T.pack $ show b)) <$> accRes
-              | Just f <- rtrFloat r -> return $ (`T.append` (T.pack $ show f)) <$> accRes
-              | Just _ <- rtrStruct r ->
-                  return $
-                    Left $
-                      mkBottomVal $
-                        printf "can not use struct in interpolation: %s" (showValType r)
-              | Just _ <- rtrList r ->
-                  return $
-                    Left $
-                      mkBottomVal $
-                        printf "can not use list in interpolation: %s" (showValType r)
-              | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
-          IplSegStr s -> return $ (`T.append` s) <$> accRes
-      )
-      (Right T.empty)
-      (itpSegs l)
-  case r of
-    Left err -> return $ Just err
-    Right res -> return $ Just $ mkAtomVal (String res)

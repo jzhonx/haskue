@@ -142,7 +142,7 @@ instance ASTNode MultiLineStringLit where
   getNodeLoc (MultiLineStringLit loc _) = loc
 
 data StringLitSeg
-  = UnicodeChars T.Text
+  = UnicodeChars BC.ByteString
   | Interpolation Location Expression
   deriving (Eq, Show, Generic, NFData)
 
@@ -242,14 +242,14 @@ binaryOpPrec Match = 4
 binaryOpPrec NotMatch = 4
 binaryOpPrec _ = 0
 
-textToSimpleStrLiteral :: T.Text -> Literal
+textToSimpleStrLiteral :: BC.ByteString -> Literal
 textToSimpleStrLiteral s = LitBasic $ Syntax.AST.StringLit $ SimpleStringL $ textToSimpleStrLit s
 
-textToMultiLineLiteral :: T.Text -> Literal
+textToMultiLineLiteral :: BC.ByteString -> Literal
 textToMultiLineLiteral s =
   LitBasic $ Syntax.AST.StringLit $ MultiLineStringL $ MultiLineStringLit emptyLoc [UnicodeChars s]
 
-textToSimpleStrLit :: T.Text -> SimpleStringLit
+textToSimpleStrLit :: BC.ByteString -> SimpleStringLit
 textToSimpleStrLit s = SimpleStringLit emptyLoc [UnicodeChars s]
 
 litCons :: Literal -> Expression
@@ -405,7 +405,7 @@ multilineStrLitBld (Syntax.AST.MultiLineStringLit _ segs) =
     segs
 
 strLitSegBld :: (M m) => StringLitSeg -> m Builder
-strLitSegBld (UnicodeChars chs) = return $ escapeBS $ TE.encodeUtf8 chs
+strLitSegBld (UnicodeChars chs) = return $ escapeBS chs
 strLitSegBld (Syntax.AST.Interpolation _ e) = do
   b <- exprBld e
   return $ string7 "\\(" <> b <> char7 ')'

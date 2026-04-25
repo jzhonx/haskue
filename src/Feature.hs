@@ -11,6 +11,7 @@ import Control.Monad.State (MonadState)
 import Data.Aeson (ToJSON, toJSON)
 import Data.Aeson.Types (ToJSONKey)
 import Data.Bits (Bits (..))
+import qualified Data.ByteString.Char8 as BC
 import Data.Hashable (Hashable (..))
 import Data.List (intercalate)
 import qualified Data.Text as T
@@ -175,17 +176,17 @@ modifyLetFeature oid f = do
 
 modifyTISuffix :: (TextIndexerMonad s m) => Int -> TextIndex -> m TextIndex
 modifyTISuffix oid ti = do
-  t <- tshow ti
+  b <- textIndexToBS ti
   -- "." is not a valid character in identifier, so we use it to separate the let name and the index.
-  case T.findIndex (== '.') t of
+  case BC.findIndex (== '.') b of
     Just dotIdx ->
-      let prefix = T.take dotIdx t
+      let prefix = BC.take dotIdx b
        in append prefix
-    Nothing -> append t
+    Nothing -> append b
  where
   append prefix = do
-    let str = T.unpack prefix ++ "." ++ show oid
-    textToTextIndex (T.pack str)
+    let str = BC.unpack prefix ++ "." ++ show oid
+    strToTextIndex str
 
 mkStubFieldFeature :: TextIndex -> Feature
 mkStubFieldFeature (TextIndex i) = mkFeature i StubFieldLabelType
@@ -196,11 +197,11 @@ mkEmbedValueFeature = mkFeature 0 EmbedValueLabelType
 valueSelectFeature :: Feature
 valueSelectFeature = mkFeature 0 VSelectBaseLabelType
 
-getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m T.Text
+getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m BC.ByteString
 getTextFromFeature f = case fetchLabelType f of
-  StringLabelType -> tshow (TextIndex (fetchIndex f))
-  LetLabelType -> tshow (TextIndex (fetchIndex f))
-  StubFieldLabelType -> tshow (TextIndex (fetchIndex f))
+  StringLabelType -> textIndexToBS (TextIndex (fetchIndex f))
+  LetLabelType -> textIndexToBS (TextIndex (fetchIndex f))
+  StubFieldLabelType -> textIndexToBS (TextIndex (fetchIndex f))
   _ -> error $ "Feature does not have a text: " ++ show f
 
 getTextIndexFromFeature :: (HasCallStack) => Feature -> TextIndex
@@ -257,11 +258,11 @@ isFeatureReferable f = case fetchLabelType f of
   VSelectBaseLabelType -> True -- The index value feature is used to store the index value. It can be referred by its sub fields.
   _ -> False
 
-textToStringFeature :: (MonadState s m, HasTextIndexer s) => T.Text -> m Feature
-textToStringFeature s = mkStringFeature <$> textToTextIndex s
+bsToStringFeature :: (MonadState s m, HasTextIndexer s) => BC.ByteString -> m Feature
+bsToStringFeature s = mkStringFeature <$> textToTextIndex s
 
 strToStringFeature :: (MonadState s m, HasTextIndexer s) => String -> m Feature
-strToStringFeature s = textToStringFeature (T.pack s)
+strToStringFeature s = bsToStringFeature (BC.pack s)
 
 -- | Unary operation can not be a unify operation.
 unaryOpTASeg :: Feature

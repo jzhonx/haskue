@@ -17,13 +17,14 @@ import Control.Monad (foldM)
 import Control.Monad.Except (Except, MonadError (..))
 import Control.Monad.RWS.Strict (RWST, runRWST)
 import Control.Monad.Reader (asks)
+import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexer, textToTextIndex)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexer, textIndexToBS, textToTextIndex)
 import qualified Syntax.AST as AST
 import Syntax.Token as Token
 import Text.Printf (printf)
@@ -150,7 +151,7 @@ buildFixASTExpr r t = do
 
 buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
-  sel <- tshow sIdx
+  sel <- textIndexToBS sIdx
   e <- buildExprExt (ssfValue sf)
   let decl =
         AST.FieldDecl
@@ -187,7 +188,7 @@ buildPatternExpr pat = do
 
 buildLetExpr :: (TextIndex, Val) -> EM AST.Declaration
 buildLetExpr (ident, v) = do
-  s <- tshow ident
+  s <- textIndexToBS ident
   ve <- buildExprExt v
   let
     letClause :: AST.LetClause
@@ -280,9 +281,9 @@ buildComprehASTExpr cph = do
       ve <- buildExprExt val
       return (AST.GuardClause emptyLoc ve)
     ComprehArgFor varNameIdx secVarIdxM val -> do
-      varName <- tshow varNameIdx
+      varName <- textIndexToBS varNameIdx
       secVarM <- case secVarIdxM of
-        Just sIdx -> Just <$> tshow sIdx
+        Just sIdx -> Just <$> textIndexToBS sIdx
         Nothing -> return Nothing
       ve <- buildExprExt val
       return (AST.ForClause emptyLoc (textIdentToken varName) (textIdentToken <$> secVarM) ve)
@@ -290,7 +291,7 @@ buildComprehASTExpr cph = do
 
   buildIterClause clause = case clause of
     ComprehArgLet varNameIdx val -> do
-      varName <- tshow varNameIdx
+      varName <- textIndexToBS varNameIdx
       ve <- buildExprExt val
       return $ AST.ClauseLet (AST.LetClause emptyLoc (textIdentToken varName) ve)
     _ -> do
@@ -395,7 +396,7 @@ buildDisjoinOpASTExpr op t = do
 
 buildRefASTExpr :: Reference -> EM AST.Expression
 buildRefASTExpr ref = do
-  varS <- tshow ref.ident
+  varS <- textIndexToBS ref.ident
   let varE = AST.PrimExprOperand $ AST.OpName $ AST.OperandName (textIdentToken varS)
   r <-
     foldM
@@ -429,7 +430,7 @@ buildRegOpASTExpr op = case ropOpType op of
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
   BinOpType bop
     | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-  CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (T.pack "close func"))
+  CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (BC.pack "close func"))
   _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
 buildUnaryExpr :: TokenType -> Val -> EM AST.Expression

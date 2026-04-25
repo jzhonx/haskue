@@ -7,6 +7,7 @@
 module Reduce.Primitives where
 
 import Control.Monad (foldM)
+import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -228,10 +229,10 @@ resolveInterpolation l args = do
           IplSegExpr j -> do
             let r = args !! j
             if
-              | Just s <- rtrString r -> return $ (`T.append` s) <$> accRes
-              | Just i <- rtrInt r -> return $ (`T.append` (T.pack $ show i)) <$> accRes
-              | Just b <- rtrBool r -> return $ (`T.append` (T.pack $ show b)) <$> accRes
-              | Just f <- rtrFloat r -> return $ (`T.append` (T.pack $ show f)) <$> accRes
+              | Just s <- rtrString r -> return $ (`BC.append` s) <$> accRes
+              | Just i <- rtrInt r -> return $ (`BC.append` (BC.pack $ show i)) <$> accRes
+              | Just b <- rtrBool r -> return $ (`BC.append` (BC.pack $ show b)) <$> accRes
+              | Just f <- rtrFloat r -> return $ (`BC.append` (BC.pack $ show f)) <$> accRes
               | Just _ <- rtrStruct r ->
                   return $
                     Left $
@@ -244,9 +245,9 @@ resolveInterpolation l args = do
                         printf "can not use list in interpolation: %s" (showValType r)
               | Just _ <- rtrBottom r -> return $ Left r
               | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
-          IplSegStr s -> return $ (`T.append` s) <$> accRes
+          IplSegStr s -> return $ (`BC.append` s) <$> accRes
       )
-      (Right T.empty)
+      (Right BC.empty)
       (itpSegs l)
   case r of
     Left err -> return $ Just err

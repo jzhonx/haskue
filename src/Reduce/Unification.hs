@@ -12,6 +12,7 @@ import Control.Monad (foldM, forM, when)
 import Control.Monad.Reader (asks, local)
 import Cursor (getSubValByAddr)
 import Data.Aeson (ToJSON (..), toJSON)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.DList as DList
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (sort)
@@ -40,7 +41,7 @@ import Reduce.TraceSpan (
   traceSpanTM,
   valDebugRepJSON,
  )
-import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
+import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..), textIndexToBS)
 import qualified Syntax.AST as AST
 import Text.Printf (printf)
 import Value
@@ -528,12 +529,12 @@ mergeAtomBounds (d1, a1) (d2, bs) =
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
-reMatch :: T.Text -> T.Text -> Bool
+reMatch :: BC.ByteString -> BC.ByteString -> Bool
 reMatch = (==)
 
 -- TODO: regex implementation
 -- Second argument is the pattern.
-reNotMatch :: T.Text -> T.Text -> Bool
+reNotMatch :: BC.ByteString -> BC.ByteString -> Bool
 reNotMatch = (/=)
 
 mergeBoundList :: (BinOpDirect, [Bound]) -> (BinOpDirect, [Bound]) -> Either String [Bound]
@@ -1018,7 +1019,7 @@ patMatchLabel pat tidx addr = traceSpanAdaptTM "patMatchLabel" addr emptySpanVal
  where
   match :: Val -> RM Bool
   match v = do
-    name <- tshow tidx
+    name <- textIndexToBS tidx
     let f =
           mergeBinUTrees
             (ConjOpd{dir = L, coVal = v, coAddr = addr, embType = ETNone})

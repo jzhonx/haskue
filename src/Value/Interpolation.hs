@@ -4,8 +4,8 @@
 module Value.Interpolation where
 
 import Control.DeepSeq (NFData (..))
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.Sequence as Seq
-import qualified Data.Text as T
 import GHC.Generics (Generic)
 import {-# SOURCE #-} Value.Val
 
@@ -23,7 +23,7 @@ data Interpolation = Interpolation
 data IplSeg
   = -- | VSelect of the expression in `itpExprs`
     IplSegExpr !Int
-  | IplSegStr T.Text
+  | IplSegStr BC.ByteString
   deriving (Eq, Show, Generic, NFData)
 
 emptyInterpolation :: Interpolation

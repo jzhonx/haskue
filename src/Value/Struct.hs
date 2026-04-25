@@ -6,13 +6,14 @@ module Value.Struct where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.DList as DList
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
-import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad)
+import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, textIndexToBS)
 import Text.Printf (printf)
 import {-# SOURCE #-} Value.Val
 
@@ -303,7 +304,7 @@ updateStructStaticFieldBase name sub struct =
 
 If not all dynamic field labels can be resolved to strings, return Nothing.
 -}
-buildStructOrdLabels :: (TextIndexerMonad s m) => (Val -> Maybe T.Text) -> Struct -> m (Maybe [T.Text])
+buildStructOrdLabels :: (TextIndexerMonad s m) => (Val -> Maybe BC.ByteString) -> Struct -> m (Maybe [BC.ByteString])
 buildStructOrdLabels rtrString struct = do
   r <-
     foldM
@@ -311,7 +312,7 @@ buildStructOrdLabels rtrString struct = do
           Nothing -> return Nothing
           Just (revAcc, seen) -> do
             newLabelM <- case blkLabel of
-              StructStaticFieldLabel n -> Just <$> tshow n
+              StructStaticFieldLabel n -> Just <$> textIndexToBS n
               StructDynFieldOID i -> return $ do
                 dsf <- lookupStructDynField i struct
                 rtrString (dsfLabel dsf)

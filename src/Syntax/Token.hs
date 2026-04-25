@@ -6,8 +6,6 @@ module Syntax.Token where
 import Control.DeepSeq (NFData)
 import qualified Data.ByteString.Char8 as BC
 import Data.Maybe (fromJust, isNothing)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
 import Text.Printf (printf)
 
@@ -19,7 +17,7 @@ data Token = Token
   deriving (Eq, Generic, NFData)
 
 instance Show Token where
-  show (Token t _ _) = show t
+  show (Token t _ l) = show t ++ " \"" ++ BC.unpack l ++ "\""
 
 detailedShowToken :: Token -> String
 detailedShowToken (Token t loc lit) = printf "Token(%s, %s, \"%s\")" (show t) (show loc) (BC.unpack lit)
@@ -33,11 +31,11 @@ mkTypeToken tt = Token tt emptyLoc (toByteString tt)
 mkToken :: TokenType -> BC.ByteString -> Token
 mkToken tt = Token tt emptyLoc
 
-textIdentToken :: T.Text -> Token
-textIdentToken t = Token Identifier emptyLoc (TE.encodeUtf8 t)
+textIdentToken :: BC.ByteString -> Token
+textIdentToken t = Token{tkType = Identifier, tkLoc = emptyLoc, tkLiteral = t}
 
-tkLiteralToText :: Token -> T.Text
-tkLiteralToText = TE.decodeUtf8 . tkLiteral
+-- tkLiteralToText :: Token -> T.Text
+-- tkLiteralToText = TE.decodeUtf8 . tkLiteral
 
 prettyPrintTokens :: [Token] -> String
 prettyPrintTokens tokens = unlines $ map show tokens
@@ -75,12 +73,13 @@ data TokenType
   | -- Literals
     String -- "hello"
   | MultiLineString -- """hello\nworld"""
+  | Interpolation -- "abc\(", the end of an interpolation is always "\("
+  | InterpolationEnd -- ")..."
   | Int -- 42
   | Float -- 3.14
   | Bool -- true or false
   | Null -- null
   | Bottom -- _|_
-  | Interpolation -- \(...). Interpolation will only be produced by individual string literal scanner.
   | -- Keywords
     Package -- package
   | Import -- import

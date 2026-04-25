@@ -26,7 +26,6 @@ import StringIndex (
   ShowWTIndexer (..),
   TextIndex,
   TextIndexer,
-  bsToTextIndex,
   textToTextIndex,
  )
 import Syntax.AST
@@ -37,7 +36,6 @@ import Syntax.Token (
   TokenType (Disjoin, Exclamation, QuestionMark, Unify),
   emptyLoc,
   tkLiteral,
-  tkLiteralToText,
   tkType,
  )
 import qualified Syntax.Token as Token
@@ -125,7 +123,7 @@ transStructLit (StructLit _ decls _) addr = inStructScope decls addr $ do
           return $ mkMutableVal (mkEmbedUnifyOp (res : embeds))
     _ -> return res
 
-strLitSegsToStr :: [StringLitSeg] -> ValAddr -> TM (Either Val T.Text)
+strLitSegsToStr :: [StringLitSeg] -> ValAddr -> TM (Either Val BC.ByteString)
 strLitSegsToStr segs addr = do
   -- TODO: efficiency
   (asM, aSegs, aExprs) <-
@@ -147,7 +145,7 @@ strLitSegsToStr segs addr = do
       segs
   let rSegs = maybe aSegs (\x -> aSegs ++ [IplSegStr x]) asM
   if
-    | null rSegs -> return $ Right T.empty
+    | null rSegs -> return $ Right BC.empty
     | not (null aExprs) ->
         return $ Left $ mkMutableVal $ mkItpSOp rSegs aExprs
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
@@ -178,7 +176,7 @@ transDecl decli hasEmbeds structAddr = case decli of
 
 identTokenToTextIndex :: Token -> TM TextIndex
 identTokenToTextIndex tk = case tk.tkType of
-  Token.Identifier -> bsToTextIndex tk.tkLiteral
+  Token.Identifier -> textToTextIndex tk.tkLiteral
   _ -> throwFatal $ printf "expected identifier token, got %s" (show tk)
 
 transEmbedding :: Bool -> Embedding -> ValAddr -> TM Val
@@ -407,7 +405,7 @@ transPrimExpr :: PrimaryExpr -> ValAddr -> TM Val
 transPrimExpr e addr = case e of
   (PrimExprOperand op) -> case op of
     OpLiteral lit -> transLiteral lit addr
-    OpName (OperandName ident) -> case lookup (T.unpack (tkLiteralToText ident)) builtinOpNameTable of
+    OpName (OperandName ident) -> case lookup (BC.unpack (tkLiteral ident)) builtinOpNameTable of
       Just v -> return v
       Nothing -> do
         idIdx <- identTokenToTextIndex ident
@@ -474,7 +472,7 @@ transSelector pe astSel addr = do
   (selAddr, selVGen) <- getSelCons addr oprnd
   let f sel = selVGen (mkAtomVal (String sel))
   case astSel of
-    IDSelector ident -> return $ f (tkLiteralToText ident)
+    IDSelector ident -> return $ f (tkLiteral ident)
     StringSelector (SimpleStringLit _ segs) -> do
       rE <- strLitSegsToStr segs selAddr
       case rE of

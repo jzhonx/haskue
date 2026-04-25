@@ -39,5 +39,18 @@ s1: "\\"
 x: "\(a)"
 -- exp --
 error: reference "a" is not found:
-	-:1:1
+	-:1:7
+
+-- string7 --
+x: "\(  (a))"
+-- exp --
+error: reference "a" is not found:
+	-:1:10
+
+-- string8 --
+x: "a\( "c \(d)")"
+d: 42
+-- exp --
+x: "ac 42"
+d: 42
 

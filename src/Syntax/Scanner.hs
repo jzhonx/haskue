@@ -32,6 +32,7 @@ data ScannerState = ScannerState
   -- ^ Accumulated tokens.
   , invalids :: Seq.Seq Token
   -- ^ Accumulated invalid tokens.
+  , lparens :: [Location]
   }
   deriving (Show)
 
@@ -46,6 +47,7 @@ initialState fname dataInput =
         , current = 0
         , tokens = Seq.empty
         , invalids = Seq.empty
+        , lparens = []
         }
 
 -- | Peek the next character without consuming it.
@@ -66,6 +68,19 @@ peek2 = do
   first <- peek
   second <- peekNext
   return (first, second)
+
+getLastScannedToken :: Scanner (Maybe Token)
+getLastScannedToken = do
+  ts <- gets tokens
+  return $ case Seq.viewr ts of
+    Seq.EmptyR -> Nothing
+    _ Seq.:> lastToken -> Just lastToken
+
+popLastScannedToken :: Scanner ()
+popLastScannedToken = modify $ \s ->
+  case Seq.viewr (tokens s) of
+    Seq.EmptyR -> s
+    ts Seq.:> _ -> s{tokens = ts}
 
 -- | Advance the source by one character.
 advance :: Scanner (Maybe Char)
@@ -136,6 +151,7 @@ insertComma cM = do
         Float -> True
         String -> True
         MultiLineString -> True
+        InterpolationEnd -> True -- Interpolation end is part of string literals.
         RParen -> True
         RBrace -> True
         RSquare -> True
@@ -160,19 +176,32 @@ addToken tokenType = addTokenWith (const tokenType)
 addTokenWith :: (BC.ByteString -> TokenType) -> Scanner ()
 addTokenWith f = addTokenTransLit f id
 
--- | Create a token with a function to determine its type and a function to transform its literal.
+{- | Create a token with a function to determine its type and a function to transform its literal.
+
+It also tracks left parentheses. Both left parenthesis and interpolation will increase the left parenthesis count.
+-}
 addTokenTransLit :: (BC.ByteString -> TokenType) -> (BC.ByteString -> BC.ByteString) -> Scanner ()
 addTokenTransLit f g = modify $ \s ->
   let
     literal = BC.take (current s) (source s)
+    tType = f literal
     tk =
       Token
-        { tkType = f literal
+        { tkType = tType
         , tkLoc = startLoc s
         , tkLiteral = g literal
         }
    in
-    s{tokens = tokens s Seq.|> tk}
+    s
+      { tokens = tokens s Seq.|> tk
+      , lparens = case tType of
+          LParen -> tk.tkLoc : lparens s
+          Interpolation -> tk.tkLoc : lparens s
+          RParen -> case lparens s of
+            [] -> lparens s -- We will report the missing left parenthesis in the parser.
+            (_ : ls) -> ls
+          _ -> lparens s
+      }
 
 addInvalidToken :: (BC.ByteString -> BC.ByteString) -> Scanner ()
 addInvalidToken msgF = modify $ \s ->
@@ -212,14 +241,11 @@ scanAll :: Scanner ()
 scanAll = go
  where
   go = do
-    -- Before scanning the next token, reset the current offset.
-    resetCurPosLoc
+    scanToken
     isEnd <- gets (BC.null . source)
     if isEnd
-      then do
-        insertComma Nothing -- Handle automatic comma insertion at the end of file if needed.
-        addToken EOF
-      else scanToken >> go
+      then return ()
+      else go
 
 -- | Scan a single token from the input.
 scanToken :: Scanner ()
@@ -230,7 +256,9 @@ scanToken = do
 
   charM <- advance
   case charM of
-    Nothing -> return ()
+    Nothing -> do
+      insertComma Nothing -- Handle automatic comma insertion at the end of file if needed.
+      addToken EOF
     Just c -> case c of
       '(' -> addToken LParen
       ')' -> addToken RParen
@@ -361,126 +389,41 @@ scanStringLit = do
 
 -- | Scan string content.
 scanString :: Scanner ()
-scanString = do
-  pc <- peekChar
-  case pc of
-    EOFPC -> addInvalidToken (const "Unterminated string literal")
-    NormalPC c
-      | c == '\n' -> addInvalidToken (const "Unterminated string literal")
-      | c == '"' -> advance >> addTokenTransLit (const String) (BC.tail . BC.init) -- remove the surrounding quotes
-      | otherwise -> advance >> scanString
-    -- From spec, unicode_char: /* an arbitrary Unicode code point except newline */ .
-    EscapePC _ -> advance >> advance >> scanString
-    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
-    InterpolationStartPC -> scanInterEnd >> scanString
+scanString = scanStrContent tryClose String mempty
+ where
+  tryClose closeType c b
+    | c == '\n' = addInvalidToken (const "Unterminated string literal") >> return True
+    | c == '"' = addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b) >> return True
+    | otherwise = return False
 
 -- | Scan multiline string content.
 scanMultiline :: Scanner ()
-scanMultiline = do
-  pc <- peekChar
-  case pc of
-    EOFPC -> addInvalidToken (const "Unterminated multiline string literal")
-    NormalPC c
-      | c == '"' -> advance >> tryClose
-      | otherwise -> advance >> scanMultiline
-    EscapePC _ -> advance >> advance >> scanMultiline
-    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
-    InterpolationStartPC -> scanInterEnd >> scanMultiline
+scanMultiline = scanStrContent tryClose MultiLineString mempty
  where
-  tryClose = do
-    (first, second) <- peek2
-    case (first, second) of
-      (Just '"', Just '"') ->
-        advance
-          >> advance
-          >>
-          -- Remove the first newline plus the triple quotes in the beginning.
-          addTokenTransLit (const MultiLineString) (BC.drop 4 . BC.dropEnd 3)
-      _ -> scanMultiline
+  tryClose closeType c b
+    | c == '"' = do
+        (first, second) <- peek2
+        case (first, second) of
+          (Just '"', Just '"') ->
+            advance
+              >> advance
+              >>
+              -- Remove the first newline plus the triple quotes in the beginning.
+              addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b)
+              >> return True
+          _ -> return False
+    | otherwise = return False
 
-partitionUnquotedStr :: Token -> Either Token [Token]
-partitionUnquotedStr tk = do
-  let final =
-        execState
-          (runScanner $ scanPartitions mempty)
-          ( ScannerState
-              { source = tk.tkLiteral
-              , startLoc = tk.tkLoc
-              , loc = tk.tkLoc
-              , current = 0
-              , tokens = Seq.empty
-              , invalids = Seq.empty
-              }
-          )
-  case toList (invalids final) of
-    [] -> Right (toList (tokens final))
-    (errToken : _) -> Left errToken
-
-{- | Scan string partitions inside an unquoted string.
-
-The discovered token list might be a list of tokens including the string token and the interpolation token.
-
-It also handles escaped characters like \n, \t, etc.
--}
-scanPartitions :: Builder -> Scanner ()
-scanPartitions b = do
-  cc <- peekChar
-  case cc of
-    EOFPC -> addNonEmptyChars
-    InvalidPC -> void advance -- We have already added an invalid token for the error, just stop scanning.
-    NormalPC c -> advance >> scanPartitions (b <> char7 c)
-    EscapePC c ->
-      advance -- consume the backslash
-        >> advance -- consume the escaped character
-        >> scanPartitions (b <> char7 c)
-    InterpolationStartPC -> do
-      -- We have detected an interpolation. There might be some non-empty string characters before it.
-      addNonEmptyChars
-      advance -- consume the backslash before '('
-        >> advance -- consume the '('
-        >> scanInterEnd
-        >>
-        -- Remove the surrounding \(...).
-        addTokenTransLit (const Interpolation) (BC.drop 2 . BC.init)
-      scanPartitions mempty
- where
-  -- Add string token if there are non-empty characters consumed.
-  addNonEmptyChars = do
-    cur <- gets current
-    when (cur > 0) $
-      addTokenTransLit (const String) (const $ let x = toStrict $ toLazyByteString b in x)
-        >> resetCurPosLoc
-
-scanInterEnd :: Scanner ()
-scanInterEnd = do
-  ch <- advance
-  case ch of
-    Nothing -> addInvalidToken (const "Unterminated interpolation")
-    Just c -> case c of
-      ')' -> return ()
-      '\n' -> addInvalidToken (const "Unterminated interpolation")
-      _ -> scanInterEnd
-
-data PeekedChar
-  = NormalPC Char
-  | EscapePC Char
-  | InterpolationStartPC
-  | EOFPC
-  | InvalidPC
-
-{- | Peek the next character and determine if it's a normal character, an escape sequence, or the start of an
-interpolation.
--}
-peekChar :: Scanner PeekedChar
-peekChar = do
+scanStrContent :: (TokenType -> Char -> Builder -> Scanner Bool) -> TokenType -> Builder -> Scanner ()
+scanStrContent tryClose closeTkType b = do
   ch <- peek
   case ch of
     -- EOF, there might be some non-empty string characters to add.
-    Nothing -> return EOFPC
+    Nothing -> addInvalidToken (const "Unterminated string literal")
     Just c | c == '\\' -> do
       nextCh <- peekNext
       case nextCh of
-        Nothing -> addInvalidToken (const "Unterminated escape sequence") >> return InvalidPC
+        Nothing -> addInvalidToken (const "Unterminated escape sequence")
         Just nextC -> case nextC of
           'a' -> escape '\a'
           'b' -> escape '\b'
@@ -493,11 +436,42 @@ peekChar = do
           '\\' -> escape '\\'
           '\'' -> escape '\''
           '"' -> escape '"'
-          '(' -> return InterpolationStartPC
-          _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC) >> return InvalidPC
-    Just c -> return (NormalPC c)
+          '(' -> do
+            void $ advance >> advance
+            addTokenTransLit (const Interpolation) (const $ toStrict $ toLazyByteString b)
+            curLParens <- gets lparens
+            scanItplEnd (length curLParens)
+            -- After finishing the interpolation, we need to start a new partition.
+            scanStrContent tryClose InterpolationEnd mempty
+          _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC)
+    Just c -> do
+      void advance
+      -- The char is not appended to the builder.
+      shouldStop <- tryClose closeTkType c b
+      if shouldStop
+        then return ()
+        else scanStrContent tryClose closeTkType (b <> char7 c)
  where
-  escape = return . EscapePC
+  escape c = advance >> advance >> scanStrContent tryClose closeTkType (b <> char7 c)
+
+scanItplEnd :: Int -> Scanner ()
+scanItplEnd lparenDepth = do
+  next <- peek
+  case next of
+    Nothing -> addInvalidToken (const "Unterminated interpolation")
+    Just _ -> do
+      scanToken
+      lastTk <- getLastScannedToken
+      case lastTk of
+        Just tk | tk.tkType == RParen -> do
+          curLParens <- gets lparens
+          -- The last token is a right paren, which just matches the left paren of the interpolation.
+          if length curLParens == lparenDepth - 1
+            -- Pop the last scanned right parenthesis token because the interpolation end token will be added later to
+            -- have the same semantic meaning as the right parenthesis.
+            then popLastScannedToken
+            else scanItplEnd lparenDepth
+        _ -> scanItplEnd lparenDepth
 
 -- | Scan number literal (int or float).
 scanNumber :: Scanner ()

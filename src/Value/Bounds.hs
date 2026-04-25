@@ -4,7 +4,7 @@
 module Value.Bounds where
 
 import Control.DeepSeq (NFData (..))
-import qualified Data.Text as T
+import qualified Data.ByteString.Char8 as BC
 import GHC.Generics (Generic)
 import Syntax.Token
 import Value.Atom (Atom)
@@ -47,8 +47,8 @@ data BdNumCmp = BdNumCmpCons BdNumCmpOp Number
   deriving (Show, Eq, Generic, NFData)
 
 data BdStrMatch
-  = BdReMatch T.Text
-  | BdReNotMatch T.Text
+  = BdReMatch BC.ByteString
+  | BdReNotMatch BC.ByteString
   deriving (Show, Eq, Generic, NFData)
 
 data BdType

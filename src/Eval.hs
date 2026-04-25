@@ -15,7 +15,7 @@ module Eval (
 where
 
 import Control.Monad (void, when)
-import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
+import Control.Monad.Except (ExceptT, liftEither, runExcept)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (runRWST)
 import Control.Monad.Reader (MonadReader (..))

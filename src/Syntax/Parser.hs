@@ -8,7 +8,6 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import Syntax.AST
 import qualified Syntax.AST as AST
-import Syntax.Scanner (partitionUnquotedStr, scanTokens)
 import Syntax.Token
 import qualified Syntax.Token as Token
 import Text.Parsec (
@@ -378,34 +377,42 @@ labelNameExpr = do
   return $ LabelNameExpr st.tkLoc e r.tkLoc
 
 simpleStringLit :: Parser SimpleStringLit
-simpleStringLit = do
-  st <- accept Token.String <?> "failed to parse string literal"
-  segs <- stringSegments st
-  return $ SimpleStringLit st.tkLoc segs
+simpleStringLit =
+  ( do
+      st <- accept Token.String <?> "failed to parse string literal"
+      let segs = [AST.UnicodeChars (tkLiteral st)]
+      return $ SimpleStringLit st.tkLoc segs
+  )
+    <|> ( do
+            (startST, segs) <- interpolation
+            return $ SimpleStringLit startST.tkLoc segs
+        )
 
 multiLineStringLit :: Parser MultiLineStringLit
-multiLineStringLit = do
-  st <- accept Token.MultiLineString <?> "failed to parse multi-line string literal"
-  segs <- stringSegments st
-  return $ MultiLineStringLit st.tkLoc segs
+multiLineStringLit =
+  ( do
+      st <- accept Token.MultiLineString <?> "failed to parse string literal"
+      let segs = [AST.UnicodeChars (tkLiteral st)]
+      return $ MultiLineStringLit st.tkLoc segs
+  )
+    <|> ( do
+            (startST, segs) <- interpolation
+            return $ MultiLineStringLit startST.tkLoc segs
+        )
 
-stringSegments :: Token -> Parser [StringLitSeg]
-stringSegments tk = case partitionUnquotedStr tk of
-  Left err -> fail (BC.unpack $ tkLiteral err)
-  Right partitions -> do
-    mapM
-      ( \x -> case x.tkType of
-          Token.String -> return $ AST.UnicodeChars (T.pack $ BC.unpack $ tkLiteral x)
-          Token.Interpolation -> do
-            e <- case scanTokens (tkLiteral x) of
-              Left err -> fail (BC.unpack $ tkLiteral err)
-              Right tks -> case parseExpr tks of
-                Left err -> fail err
-                Right e -> return e
-            return $ AST.Interpolation x.tkLoc e
-          _ -> error (printf "unexpected token type in string literal: %s" (show x.tkType))
-      )
-      partitions
+interpolation :: Parser (Token, [StringLitSeg])
+interpolation = do
+  startST <- accept Token.Interpolation <?> "failed to parse string interpolation"
+  startE <- expr
+  let segs = [AST.UnicodeChars (tkLiteral startST), AST.Interpolation startST.tkLoc startE]
+  rest <- many $ do
+    st <- accept Token.Interpolation <?> "failed to parse string interpolation after interpolation segment"
+    e <- expr
+    return [AST.UnicodeChars (tkLiteral st), AST.Interpolation st.tkLoc e]
+  end <- do
+    endSt <- accept Token.InterpolationEnd <?> "failed to parse end of string interpolation"
+    return $ AST.UnicodeChars (tkLiteral endSt)
+  return (startST, segs ++ concat rest ++ [end])
 
 {- | Match the grammar p ","
 

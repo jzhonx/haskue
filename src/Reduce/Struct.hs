@@ -7,6 +7,7 @@ module Reduce.Struct where
 
 import Control.Monad (foldM, unless)
 import Cursor
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
@@ -31,7 +32,14 @@ import Reduce.TraceSpan (
   traceSpanValTM,
  )
 import Reduce.Unification (patMatchLabel)
-import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, ToJSONWTIndexer (..), textToTextIndex)
+import StringIndex (
+  ShowWTIndexer (..),
+  TextIndex,
+  TextIndexerMonad,
+  ToJSONWTIndexer (..),
+  textIndexToBS,
+  textToTextIndex,
+ )
 import Text.Printf (printf)
 import Util.Format (msprintf, packFmtA)
 import Value
@@ -383,7 +391,7 @@ dynFieldToStatic fields df addr
         addr
         ( msprintf
             "converted dynamic field to static field, name: %s, old field: %s, new field: %s"
-            [packFmtA name, packFmtA (show res), packFmtA (show newSF)]
+            [packFmtA (BC.unpack name), packFmtA (show res), packFmtA (show newSF)]
         )
       return $ Right (Just (nidx, newSF))
   | Just _ <- rtrBottom label = return $ Left label
@@ -445,7 +453,7 @@ forkCnstrVal fieldName cnstr structAddr = do
   case scsPatAlias cnstr of
     Nothing -> copyVal cnstrValAddr fieldAddr (scsValue cnstr)
     Just aliasIdx -> do
-      fielaNameT <- tshow fieldName
+      fielaNameT <- textIndexToBS fieldName
       let realNameV = mkAtomVal $ String fielaNameT
           aliasAddr = appendSeg cnstrValAddr (mkLetFeature aliasIdx)
       debugInstText
