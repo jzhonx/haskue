@@ -18,7 +18,6 @@ data Command
 data CommonConfig = CommonConfig
   { ccDebug :: Bool
   , ccTrace :: Bool
-  , ccTracePrintVal :: Bool
   , ccTraceExtraInfo :: Bool
   , ccTraceFilter :: String
   , ccTraceOutput :: String
@@ -48,10 +47,6 @@ commonOptions =
     <*> switch
       ( long "trace"
           <> help "trace execution"
-      )
-    <*> switch
-      ( long "trace-print-val"
-          <> help "Print the value in trace output"
       )
     <*> switch
       ( long "trace-print-extra-info"
@@ -89,7 +84,6 @@ toEvalConfig exportConfig = do
       { outputFormat = exportFormat exportConfig
       , ecDebugMode = ccDebug (exportCommon exportConfig)
       , ecTraceExec = ccTrace (exportCommon exportConfig)
-      , ecTracePrintTree = ccTracePrintVal (exportCommon exportConfig)
       , ecTraceExtraInfo = ccTraceExtraInfo (exportCommon exportConfig)
       , ecTraceFilter = ccTraceFilter (exportCommon exportConfig)
       , ecTraceHandle = tHandle
@@ -106,7 +100,6 @@ toEvalConfigEval evalConfig = do
       { outputFormat = "cue"
       , ecDebugMode = ccDebug (evalCommon evalConfig)
       , ecTraceExec = ccTrace (evalCommon evalConfig)
-      , ecTracePrintTree = ccTracePrintVal (evalCommon evalConfig)
       , ecTraceExtraInfo = ccTraceExtraInfo (evalCommon evalConfig)
       , ecTraceFilter = ccTraceFilter (evalCommon evalConfig)
       , ecTraceHandle = tHandle
