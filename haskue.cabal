@@ -48,17 +48,14 @@ library
         Value.Bottom,
         Value.Bounds,
         Value.Comprehension,
-        Value.Constraint,
         Value.Disj,
         Value.DisjoinOp,
-        Value.Fix,
         Value.Instances,
         Value.Interpolation,
         Value.List,
         Value.Reference,
         Value.Struct,
         Value.Op,
-        Value.UnifyOp,
         Value.Export.AST,
         Value.Export.Debug,
         Value.Export.JSON,
@@ -66,7 +63,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-auto
     -- Modules included in this library but not exported.
     -- other-modules:
 

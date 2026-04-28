@@ -12,11 +12,11 @@ import Feature
 import Reduce.Core (reduce)
 import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (RM)
-import Reduce.TraceSpan (traceSpanValTM)
+import Reduce.TraceSpan (traceSpanTermsRepTM)
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Value
-import Value.Instances (vtmapVectorM)
+import Value.Instances (mapMVectorWAddr)
 
 {- | Finalize the reduced value.
 
@@ -25,37 +25,48 @@ After the value is reduced to the fixpoint, we need to do some finalization work
 1. Validate all constraints.
 2. Pop up bottoms.
 -}
-finalize :: ValAddr -> Val -> RM Val
-finalize addr root = traceSpanValTM "finalize" addr root $ finalizeInner addr root
+finalize :: ValAddr -> VNode -> RM VNode
+finalize addr root = traceSpanTermsRepTM "finalize" addr root $ finalizeInner addr root
 
 -- | Finalize the value by traversing the val tree in a post-order way.
-finalizeInner :: ValAddr -> Val -> RM Val
-finalizeInner addr topV = traceSpanValTM "finalizeInner" addr topV $ do
+finalizeInner :: ValAddr -> VNode -> RM VNode
+finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
+  -- First traverse the sub values.
+  -- We do not traverse the constraints.
   v' <- case topV of
-    -- If the value is mutable, we do not simplify the ops.
-    IsValMutable _ -> do
-      vn <- vtmapM finalizeInner addr (valNode topV)
-      return (setVN vn topV)
     IsStruct s -> do
+      -- we only need to finalize the fields of the struct.
       stcFields' <-
-        Map.traverseWithKey (\k v -> vtmapM finalizeInner (appendSeg addr $ mkStringFeature k) v) (stcFields s)
+        Map.traverseWithKey
+          (\k v -> vtmapM (applyAddrFOnVal finalizeInner) (appendSeg addr $ mkStringFeature k) v)
+          (stcFields s)
       let s' = s{stcFields = stcFields'}
-      return $ setVN (VNStruct s') topV
+      return $ setVNodeValue (VStruct s') topV
     IsList l -> do
-      final' <- vtmapVectorM f mkListIdxFeature addr (final l)
+      -- We only need to finalize the final part of the list.
+      final' <- mapMVectorWAddr finalizeInner mkListIdxFeature addr (final l)
       let l' = l{final = final'}
-      return $ setVN (VNList l') topV
-    _ -> vtmapM finalizeInner addr topV
-  f addr v'
+      return $ setVNodeValue (VList l') topV
+    IsDisj _ -> do
+      vtmapM
+        ( \p vt -> case vt of
+            VTVNode v -> VTVNode <$> finalizeInner p v
+            -- If the vtnode is not a value, we traverse its children and apply the function on the children.
+            _ -> vtmapM (applyAddrFOnVal finalizeInner) p vt
+        )
+        addr
+        topV
+    _ -> return topV
+  simplify addr v'
  where
-  f p x = traceSpanValTM "finalize_node" p x $ do
+  simplify p x = traceSpanTermsRepTM "simplify" p x $ do
     case x of
-      IsAtomCnstr c -> validateCnstr c p x
-      -- Keep the mutable if the value is no val.
-      IsNoVal | IsValMutable _ <- x -> return x
+      IsAtom _ | not x.constraints.allResolved -> validateCnstr p x
+      -- Keep the constraints if the value is no val.
+      IsNoVal -> return x
       IsDisj d -> do
         r <- normalizeDisj d p
-        return $ setVN (valNode r) x
+        return $ setVNodeValue r (removeConstraints x)
       IsStruct struct -> do
         let subErrM =
               foldl
@@ -67,31 +78,31 @@ finalizeInner addr topV = traceSpanValTM "finalizeInner" addr topV $ do
                 )
                 Nothing
                 (stcFields struct)
-            embErrM = mkNewVal . VNBottom <$> rtrBottom x
+            embErrM = mkValVN . VBottom <$> rtrBottom (value x)
         maybe
-          (return $ setValImmutable x)
+          (return $ removeConstraints x)
           return
           (listToMaybe $ catMaybes [subErrM, embErrM])
-      -- Make the tree immutable.
-      _ -> return $ setValImmutable x
+      _ -> return $ removeConstraints x
 
 {- | Validate the constraint.
 
 It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: AtomCnstr -> ValAddr -> Val -> RM Val
-validateCnstr c addr v = traceSpanValTM "validateCnstr" addr v $ do
+validateCnstr :: ValAddr -> VNode -> RM VNode
+validateCnstr addr v = traceSpanTermsRepTM "validateCnstr" addr v $ do
   -- Run the validator in a forced reduce args mode.
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
   -- get an incomplete value if the RC node did not yield a concrete value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
-  res <- reduce addr (cnsValidator c)
+  res <- reduce addr v
+  let rv = if res.constraints.allResolved then res else res{value = VNoVal}
   if
-    | IsNoVal <- res -> return v
-    | Just _ <- rtrBottom res -> return res
-    | Just a <- rtrAtom res -> return $ mkAtomVal a
-    | IsEmbedVal ev <- res, Just a <- rtrAtom ev -> return $ mkAtomVal a
+    | IsNoVal <- rv -> return rv
+    | Just _ <- rtrBottom (value rv) -> return rv
+    | Just a <- rtrAtom (value rv) -> return $ mkAtomVN a
+    | IsEmbedVal ev <- (value rv), Just a <- rtrAtom ev -> return $ mkAtomVN a
     | otherwise -> do
-        resStr <- tshow res
-        return $ mkBottomVal $ printf "constraint not satisfied, %s" resStr
+        rvnStr <- tshow rv
+        return $ mkBottomVal $ printf "constraint not satisfied, %s" rvnStr

@@ -14,13 +14,14 @@ import {-# SOURCE #-} Value.Val
 -- | Reference denotes a reference starting with an identifier.
 data Reference = Reference
   { ident :: TextIndex
-  , selectors :: Seq.Seq Val
+  , selectors :: Seq.Seq VNode
   , resolvedIdentType :: RefIdentType
   , resolvedIdentAddr :: ValAddr
   -- ^ The resolved address of the identifier.
   -- Resolved identifier can be resolved in a field, a stub dyanmic field.
-  , resolvedFullAddr :: Maybe ReferableAddr
+  , resolvedFullAddr :: Maybe ValAddr
   -- ^ The resolved full address of the reference.
+  , isRefCycle :: !Bool
   }
   deriving (Generic)
 
@@ -30,7 +31,7 @@ data RefIdentType
   | ITIterBinding
   deriving (Eq, Show, Generic, NFData)
 
-mapRefSels :: (Seq.Seq Val -> Seq.Seq Val) -> Reference -> Reference
+mapRefSels :: (Seq.Seq VNode -> Seq.Seq VNode) -> Reference -> Reference
 mapRefSels f ref = ref{selectors = f (selectors ref)}
 
 singletonIdentRef :: TextIndex -> RefIdentType -> ValAddr -> Reference
@@ -41,9 +42,10 @@ singletonIdentRef ident typ addr =
     , resolvedIdentType = typ
     , resolvedIdentAddr = addr
     , resolvedFullAddr = Nothing
+    , isRefCycle = False
     }
 
-appendRefArg :: Val -> Reference -> Reference
+appendRefArg :: VNode -> Reference -> Reference
 appendRefArg v ref = ref{selectors = selectors ref Seq.|> v}
 
 {- | ValueSelect denotes a select operation with a base and multiple selectors.
@@ -51,10 +53,11 @@ appendRefArg v ref = ref{selectors = selectors ref Seq.|> v}
 The base (receiver) is a value instead of an identifier.
 -}
 data ValueSelect = ValueSelect
-  { base :: Val
-  , iSelectors :: Seq.Seq Val
+  { bvID :: !Int
+  , base :: VNode
+  , iSelectors :: Seq.Seq VNode
   }
   deriving (Generic)
 
-appendValueSelectArg :: Val -> ValueSelect -> ValueSelect
-appendValueSelectArg y (ValueSelect b xs) = ValueSelect b (xs Seq.|> y)
+appendValueSelectArg :: VNode -> ValueSelect -> ValueSelect
+appendValueSelectArg y vs@(ValueSelect _ _ xs) = vs{iSelectors = xs Seq.|> y}

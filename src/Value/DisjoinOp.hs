@@ -18,9 +18,9 @@ newtype DisjoinOp = DisjoinOp
 
 data DisjTerm = DisjTerm
   { dstMarked :: Bool
-  , dstValue :: Val
+  , dstValue :: VNode
   }
   deriving (Generic)
 
-appendDisjTerm :: Bool -> Val -> DisjoinOp -> DisjoinOp
+appendDisjTerm :: Bool -> VNode -> DisjoinOp -> DisjoinOp
 appendDisjTerm marked v (DisjoinOp terms) = DisjoinOp (terms Seq.|> DisjTerm marked v)

@@ -7,7 +7,7 @@
 module Value.Export.Debug where
 
 import Control.Monad (foldM)
-import Data.Aeson (ToJSON, object, toJSON, (.=))
+import Data.Aeson (ToJSON, Value, object, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.DList as DList
 import Data.Foldable (toList)
@@ -16,26 +16,25 @@ import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Sequence as Seq
-import qualified Data.Set as Set
 import qualified Data.Text as T
 import Feature (
+  ValAddr,
   mkDisjFeature,
   mkDynFieldFeature,
   mkLetFeature,
   mkListIdxFeature,
   mkListStoreIdxFeature,
-  mkMutArgFeature,
+  mkOpArgFeature,
   mkPatternFeature,
+  mkRegCnstrFeature,
   mkStringFeature,
-  mkStubFieldFeature,
+  rootValAddr,
  )
 import StringIndex (ShowWTIndexer (..), TextIndexerMonad)
 import Text.Printf (printf)
 import Value.Comprehension
-import Value.Constraint
 import Value.Disj
 import Value.DisjoinOp
-import Value.Fix
 import Value.Instances
 import Value.List
 import Value.Op
@@ -43,32 +42,84 @@ import Value.Reference
 import Value.Struct
 import Value.Val
 
-{- | A representation of a Val for debugging and visualization purposes.
+class TermsRepShow a where
+  toTermsRep :: (TextIndexerMonad s m) => a -> TermsRepOption -> m TermsRep
+
+instance TermsRepShow VNode where
+  toTermsRep = valToTermsRep
+
+instance TermsRepShow Val where
+  toTermsRep = vnToTermsRep
+
+instance TermsRepShow Op where
+  toTermsRep = opToTermsRep
+
+instance TermsRepShow () where
+  toTermsRep _ _ = return emptyTermsRep
+
+instance TermsRepShow Constraint where
+  toTermsRep = cnstrToTermsRep
+
+instance TermsRepShow ConstraintSeq where
+  toTermsRep cs = cnstrsToTermsRep (toList cs)
+
+newtype TermsRepOption = TermsRepOption
+  { troptRecur :: Bool
+  }
+
+defaultTermsRepOption :: TermsRepOption
+defaultTermsRepOption = TermsRepOption{troptRecur = False}
+
+recurShowTermsRepOption :: TermsRepOption
+recurShowTermsRepOption = TermsRepOption{troptRecur = True}
+
+toTermsRepWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m TermsRep
+toTermsRepWithAddr addr a = do
+  let isRoot = addr == rootValAddr
+  toTermsRep a (defaultTermsRepOption{troptRecur = isRoot})
+
+termsRepToJSONWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m Value
+termsRepToJSONWithAddr addr a = do
+  rep <- toTermsRepWithAddr addr a
+  return $ toJSON rep
+
+termsRepToFullJSON :: (TextIndexerMonad s m, TermsRepShow a) => a -> m Value
+termsRepToFullJSON a = do
+  rep <- toTermsRep a recurShowTermsRepOption
+  return $ toJSON rep
+
+{- | A representation of a VNode for debugging and visualization purposes.
 
 TextIndexes have been resolved to their string labels.
 -}
-data ValRep = ValRep
+data TermsRep = TermsRep
   { trInfo :: [String]
   -- ^ General info about the tree node.
   , trExtraMetas :: [(String, String)]
   -- ^ Extra metadata about the tree node.
-  , trFields :: [ValRepField]
+  , trTerms :: [TermRep]
   -- ^ Fields of the tree node.
   }
 
-instance ToJSON ValRep where
-  toJSON (ValRep info [] []) = toJSON $ mergeInfo info
-  toJSON (ValRep info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
-  toJSON (ValRep info em fields) =
+instance ToJSON TermsRep where
+  toJSON (TermsRep info [] []) = toJSON $ mergeInfo info
+  toJSON (TermsRep info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
+  toJSON (TermsRep info em fields) =
     object
       ( ["__t" .= mergeInfo info]
           ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
-          ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfValue f of
-              ValRepFieldValueSimple s -> toJSON s
-              ValRepFieldValueRegular r -> toJSON r
+          ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfContent f of
+              TermRepContentScalar s -> toJSON s
+              TermRepContentRegular r -> toJSON r
              | f <- fields
              ]
       )
+
+instance Show TermsRep where
+  show = termsRepToStringWIdent 0
+
+emptyTermsRep :: TermsRep
+emptyTermsRep = TermsRep{trInfo = [], trExtraMetas = [], trTerms = []}
 
 mergeInfo :: [String] -> String
 mergeInfo info = intercalate "," (filter (not . null) info)
@@ -76,18 +127,23 @@ mergeInfo info = intercalate "," (filter (not . null) info)
 mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas = intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
-valToRepString :: (TextIndexerMonad s m) => Val -> m String
-valToRepString t = do
-  v <- buildRepVal t defaultValRepBuildOption
-  return $ repToString 0 v
+valToStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
+valToStringTermsRep t = do
+  v <- valToTermsRep t defaultTermsRepOption
+  return $ show v
 
-valToFullRepString :: (TextIndexerMonad s m) => Val -> m String
-valToFullRepString t = do
-  v <- buildRepVal t (defaultValRepBuildOption{trboRepSubFields = True})
-  return $ repToString 0 v
+vnToStringTermsRep :: (TextIndexerMonad s m) => Val -> m String
+vnToStringTermsRep t = do
+  v <- vnToTermsRep t defaultTermsRepOption
+  return $ show v
 
-repToString :: Int -> ValRep -> String
-repToString toff (ValRep info extraMetas fields) =
+valToFullStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
+valToFullStringTermsRep t = do
+  v <- valToTermsRep t (defaultTermsRepOption{troptRecur = True})
+  return $ show v
+
+termsRepToStringWIdent :: Int -> TermsRep -> String
+termsRepToStringWIdent toff (TermsRep info extraMetas fields) =
   "("
     <> mergeInfo info
     <> ( if null fields
@@ -96,14 +152,14 @@ repToString toff (ValRep info extraMetas fields) =
             -- we need to add a newline for the fields block.
             "\n"
               <> foldl
-                ( \acc (ValRepField label a sub) ->
+                ( \acc (TermRep label a sub) ->
                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
                      in acc
                           <> pre
                           <> ( case sub of
-                                ValRepFieldValueSimple s -> s
-                                ValRepFieldValueRegular r ->
-                                  repToString
+                                TermRepContentScalar s -> s
+                                TermRepContentRegular r ->
+                                  termsRepToStringWIdent
                                     (length pre)
                                     r
                              )
@@ -134,196 +190,168 @@ repToString toff (ValRep info extraMetas fields) =
        )
     <> ")"
 
-data ValRepField = ValRepField
+data TermRep = TermRep
   { trfLabel :: String
   , trfAttr :: String
-  , trfValue :: ValRepFieldValue
+  , trfContent :: TermRepContent
   }
 
-data ValRepFieldValue = ValRepFieldValueRegular ValRep | ValRepFieldValueSimple String
+data TermRepContent = TermRepContentRegular TermsRep | TermRepContentScalar String
 
-data ValRepBuildOption = ValRepBuildOption
-  { trboShowMutArgs :: Bool
-  , trboRepSubFields :: Bool
-  }
-
-defaultValRepBuildOption :: ValRepBuildOption
-defaultValRepBuildOption = ValRepBuildOption{trboShowMutArgs = True, trboRepSubFields = False}
-
-buildRepVal :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
-buildRepVal t opt = do
-  commonInfo <- buildCommonInfo t
-  trf <- buildRepValVN t opt
-  mutRF <- buildRepValMutable t opt
+valToTermsRep :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermsRep
+valToTermsRep v@VNode{constraints} opt = do
+  commonInfo <- buildCommonInfo v
+  cnstrs <- cnstrsToTermsRep (toList constraints.static) opt
+  vntr <- vnToTermsRep (value v) opt
   return $
-    trf
-      { trInfo = commonInfo ++ trInfo trf
-      , trExtraMetas = trExtraMetas trf ++ trExtraMetas mutRF -- ++ trExtraMetas blkRF
-      , trFields = trFields trf ++ trFields mutRF -- ++ trFields blkRF
+    vntr
+      { trInfo = commonInfo ++ trInfo vntr
+      , trExtraMetas = trExtraMetas vntr
+      , trTerms = cnstrs.trTerms ++ trTerms vntr
       }
 
-buildCommonInfo :: (TextIndexerMonad s m) => Val -> m [String]
+buildCommonInfo :: (TextIndexerMonad s m) => VNode -> m [String]
 buildCommonInfo t = do
   tStr <- showSimpleVal t
   return
     [ tStr
-    , if isRecurClosed t then "%#" else ""
     , if isJust (origExpr t) then "" else "N"
-    , case t.op of
-        Just _ -> "TO"
-        _ -> ""
+    , if t.constraints.allResolved then "" else "U"
     ]
 
-buildRepValVN :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
-buildRepValVN Val{valNode = tn} opt = case tn of
-  VNAtom _ -> return $ consRep ([], [], [])
-  VNBounds b -> return $ consRep ([show b], [], [])
-  VNStruct struct -> buildRepValStruct struct opt
-  VNList vs ->
+vnToTermsRep :: (TextIndexerMonad s m) => Val -> TermsRepOption -> m TermsRep
+vnToTermsRep vn opt = case vn of
+  VAtom a -> return $ consRep ([show a], [], [])
+  VBounds b -> return $ consRep ([show b], [], [])
+  VStruct struct -> buildRepValStruct struct opt
+  VList vs ->
     let
       sfields = zipWith (\j v -> (show (mkListStoreIdxFeature j), mempty, v)) [0 ..] (toList vs.store)
       ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, v)) [0 ..] (toList vs.final)
      in
       do
-        fields <- consFields (sfields ++ ffields) opt
+        fields <- valPairsToTermRepList (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
-  VNDisj d ->
-    let djFields = zipWith (\j v -> (show $ mkDisjFeature j, mempty, v)) [0 ..] (toList $ dsjDisjuncts d)
+  VDisj d ->
+    let djFields = zipWith (\j x -> (show $ mkDisjFeature j, mempty, x)) [0 ..] (toList $ dsjDisjuncts d)
      in do
-          fields <- consFields djFields opt
+          fields <- valPairsToTermRepList djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
-  VNAtomCnstr c -> do
-    fields <-
-      consFields
-        [ ("atom", mempty, mkAtomVal c.value)
-        , ("validator", mempty, c.cnsValidator)
-        ]
-        opt
-    return $ consRep ([], [], fields)
-  VNBottom b -> return $ consRep ([show b], [], [])
-  VNFix f -> do
-    addrsT <- mapM tshow f.conjs
-    fields <- consFields [("body", mempty, mkNewVal f.val)] opt
-    return $ consRep ([printf "addrs:%s, unknowns:%s" (show addrsT) (show f.unknownExists)], [], fields)
+  VBottom b -> return $ consRep ([show b], [], [])
   _ -> return $ consRep ([], [], [])
 
-buildRepValMutable :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRep
-buildRepValMutable (IsValMutable mut@(SOp op _)) opt = do
+cnstrToTermsRep :: (TextIndexerMonad s m) => Constraint -> TermsRepOption -> m TermsRep
+cnstrToTermsRep c opt = case c of
+  ValCnstr vn -> vnToTermsRep vn opt
+  OpCnstr op -> opToTermsRep op opt
+  StructEmbedCnstr xs -> cnstrsToTermsRep (toList xs) opt
+
+cnstrsToTermsRep :: (TextIndexerMonad s m) => [Constraint] -> TermsRepOption -> m TermsRep
+cnstrsToTermsRep constraints opt = do
+  l <-
+    mapM
+      ( \(i, c) -> do
+          fT <- T.unpack <$> tshow (mkRegCnstrFeature i)
+          cont <- cnstrToTermsRep c opt
+          case c of
+            ValCnstr _ ->
+              return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
+            OpCnstr _ ->
+              return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
+            StructEmbedCnstr _ ->
+              return $ TermRep{trfLabel = fT, trfAttr = ",stremb", trfContent = TermRepContentRegular cont}
+      )
+      (zip [0 ..] constraints)
+  return $ TermsRep{trInfo = [], trExtraMetas = [], trTerms = l}
+
+cnstrsToFullTermsRep :: (TextIndexerMonad s m) => Seq.Seq Constraint -> m TermsRep
+cnstrsToFullTermsRep constraints = cnstrsToTermsRep (toList constraints) (defaultTermsRepOption{troptRecur = True})
+
+opToTermsRep :: (TextIndexerMonad s m) => Op -> TermsRepOption -> m TermsRep
+opToTermsRep op opt = do
   args <-
-    if trboShowMutArgs opt
-      then
-        mapM
-          ( \(i, (f, v)) -> do
-              fT <- tshow f
-              meta <- case op of
-                Compreh c -> case c.args `Seq.index` i of
-                  ComprehArgLet j _ -> do
-                    jT <- tshow j
-                    return $ ",let," ++ T.unpack jT
-                  ComprehArgIf _ -> return ",if"
-                  ComprehArgFor p q _ -> do
-                    pT <- tshow p
-                    qT <- case q of
-                      Just qIdx -> tshow qIdx
-                      Nothing -> return ""
-                    return $ ",for," ++ T.unpack pT ++ (if T.null qT then "" else "," ++ T.unpack qT)
-                  ComprehArgTmpl _ -> return "tmpl"
-                _ -> return ""
-              return
-                ( T.unpack fT
-                , meta
-                , v
-                )
-          )
-          ( zip
-              [0 ..]
-              (toList $ getSOpArgs mut)
-          )
-      else return []
+    mapM
+      ( \(i, (f, v)) -> do
+          fT <- tshow f
+          meta <- case op of
+            Compreh c -> case c.args `Seq.index` i of
+              ComprehArgLet j _ -> do
+                jT <- tshow j
+                return $ ",let," ++ T.unpack jT
+              ComprehArgIf _ -> return ",if"
+              ComprehArgFor p q _ -> do
+                pT <- tshow p
+                qT <- case q of
+                  Just qIdx -> tshow qIdx
+                  Nothing -> return ""
+                return $ ",for," ++ T.unpack pT ++ (if T.null qT then "" else "," ++ T.unpack qT)
+              ComprehArgTmpl _ -> return "tmpl"
+            _ -> return ""
+          return (T.unpack fT, meta, v)
+      )
+      (zip [0 ..] (toList $ getOpFArgs op))
   let metas = [("func", showOpType op)]
   case op of
     RegOp rop -> do
-      fields <- consFields args opt
+      fields <- valPairsToTermRepList args opt
       return $ consTGenRep (("op", ropName rop) : metas, fields)
     Ref ref -> do
-      fields <- consFields args opt
+      fields <- valPairsToTermRepList args opt
       ra <- do
         sStr <- tshow ref.ident
         return $ T.unpack sStr
       resolvedIdentAddrStr <- T.unpack <$> tshow ref.resolvedIdentAddr
       return $ consTGenRep ([("ref", ra), ("resolved", resolvedIdentAddrStr)] ++ metas, fields)
-    Compreh c -> do
-      fields <- consFields args opt
-      bindings <-
-        mapM
-          ( \(k, v) -> do
-              kstr <- tshow k
-              vstr <- tshow v
-              return $ T.unpack kstr ++ ":" ++ T.unpack vstr
-          )
-          (Map.toList c.iterBindings)
-      return $ consTGenRep (metas ++ [("bindings", show bindings)], fields)
+    Compreh _ -> do
+      fields <- valPairsToTermRepList args opt
+      return $ consTGenRep (metas, fields)
     DisjOp d ->
       let
         terms =
-          if trboShowMutArgs opt
-            then
-              zipWith
-                ( \j v ->
-                    (show (mkMutArgFeature j False), if dstMarked v then ",*" else "", dstValue v)
-                )
-                [0 ..]
-                (toList $ djoTerms d)
-            else []
+          zipWith
+            ( \j v ->
+                (show (mkOpArgFeature j), if dstMarked v then ",*" else "", dstValue v)
+            )
+            [0 ..]
+            (toList $ djoTerms d)
        in
         do
-          fields <- consFields terms opt
+          fields <- valPairsToTermRepList terms opt
           return $ consTGenRep (metas, fields)
     VSelect idx -> do
-      fields <- consFields (("indexVal", "", idx.base) : args) opt
+      fields <- valPairsToTermRepList (("indexVal", "", idx.base) : args) opt
       return $ consTGenRep (metas, fields)
     _ -> do
-      fields <- consFields args opt
+      fields <- valPairsToTermRepList args opt
       return $ consTGenRep (metas, fields)
-buildRepValMutable _ _ = return $ consTGenRep ([], [])
 
-buildRepValStruct :: (TextIndexerMonad s m) => Struct -> ValRepBuildOption -> m ValRep
+buildRepValStruct :: (TextIndexerMonad s m) => Struct -> TermsRepOption -> m TermsRep
 buildRepValStruct struct opt =
   let
-    buildPHFields :: (TextIndexerMonad s m) => m [ValRepField]
+    buildPHFields :: (TextIndexerMonad s m) => m [TermRep]
     buildPHFields = do
       as <-
         foldM
           ( \acc (j, dsf) -> do
-              tfv <- buildFieldRepValue (dsfLabel dsf) opt
-              return $
-                ValRepField
-                  (show (mkDynFieldFeature j 0))
-                  ""
-                  tfv
-                  : acc
+              tfv <- buildValueTermRepNodeContent (dsfLabel dsf) opt
+              return $ TermRep{trfLabel = show (mkDynFieldFeature j 0), trfAttr = "", trfContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
       as2 <-
         foldM
           ( \acc (j, dsf) -> do
-              tfv <- buildFieldRepValue (dsfValue dsf) opt
-              return $
-                ValRepField
-                  (show (mkDynFieldFeature j 1))
-                  ""
-                  tfv
-                  : acc
+              tfv <- buildCnstrSeqTermRepNodeContent (dsfValue dsf) opt
+              return $ TermRep{trfLabel = show (mkDynFieldFeature j 1), trfAttr = "", trfContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
       bs <-
         mapM
           ( \(j, k) -> do
-              tfv <- buildFieldRepValue (scsPattern k) opt
+              tfv <- buildValueTermRepNodeContent (scsPattern k) opt
               return $
-                ValRepField
+                TermRep
                   (show (mkPatternFeature j 0))
                   ""
                   tfv
@@ -332,35 +360,21 @@ buildRepValStruct struct opt =
       bs2 <-
         mapM
           ( \(j, k) -> do
-              tfv <- buildFieldRepValue (scsValue k) opt
+              tfv <- buildCnstrSeqTermRepNodeContent (scsValue k) opt
               return $
-                ValRepField
+                TermRep
                   (show (mkPatternFeature j 1))
                   ""
                   tfv
           )
           (IntMap.toList $ stcCnstrs struct)
-      cs <-
-        foldM
-          ( \acc (l, ssf) -> do
-              lstr <- tshow (mkStubFieldFeature l)
-              tfv <- buildFieldRepValue (ssfValue ssf) opt
-              return $
-                ValRepField
-                  (T.unpack lstr)
-                  (staticlFieldAttr ssf)
-                  tfv
-                  : acc
-          )
-          []
-          (Map.toList $ stcStaticFieldBases struct)
       ds <-
         foldM
           ( \acc (l, ssf) -> do
               lstr <- tshow (mkStringFeature l)
-              tfv <- buildFieldRepValue (ssfValue ssf) opt
+              tfv <- buildValueTermRepNodeContent (ssfValue ssf) opt
               return $
-                ValRepField
+                TermRep
                   (T.unpack lstr)
                   (staticlFieldAttr ssf)
                   tfv
@@ -372,9 +386,9 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (l, v) -> do
               lstr <- tshow (mkLetFeature l)
-              tfv <- buildFieldRepValue v opt
+              tfv <- buildValueTermRepNodeContent v opt
               return $
-                ValRepField
+                TermRep
                   (T.unpack lstr)
                   mempty
                   tfv
@@ -382,7 +396,7 @@ buildRepValStruct struct opt =
           )
           []
           (Map.toList $ stcBindings struct)
-      return $ as ++ as2 ++ bs ++ bs2 ++ cs ++ ds ++ es
+      return $ as ++ as2 ++ bs ++ bs2 ++ ds ++ es
 
     buildMetas :: (TextIndexerMonad s m) => Struct -> m [(String, String)]
     buildMetas s =
@@ -406,11 +420,15 @@ buildRepValStruct struct opt =
                   $ stcOrdLabels s
               return $ T.pack $ intercalate ", " (DList.toList xs)
           )
-        , ("orig_fs", tshow $ Map.keys $ stcStaticFieldBases s)
         , ("lets", tshow $ Map.keys $ stcBindings s)
         , ("perms", tshow $ stcPerms s)
-        , ("ev", fromMaybe "Nothing" <$> mapM tshow (stcEmbedVal s))
-        , ("perm", tshow $ stcPermErr s)
+        , ("ev", fromMaybe "Nothing" <$> mapM tshow (mkValVN <$> stcEmbedVal s))
+        ,
+          ( "perm"
+          , tshow $ case stcPermErr s of
+              Just err -> Just $ VBottom err
+              Nothing -> Nothing
+          )
         ]
    in
     do
@@ -418,18 +436,18 @@ buildRepValStruct struct opt =
       phFields <- buildPHFields
       return $ consRep ([], metas, phFields)
 
-consRep :: ([String], [(String, String)], [ValRepField]) -> ValRep
-consRep (m, em, f) = ValRep m em f
+consRep :: ([String], [(String, String)], [TermRep]) -> TermsRep
+consRep (info, em, f) = TermsRep{trInfo = info, trExtraMetas = em, trTerms = f}
 
-consTGenRep :: ([(String, String)], [ValRepField]) -> ValRep
-consTGenRep (em, f) = ValRep [] em f
+consTGenRep :: ([(String, String)], [TermRep]) -> TermsRep
+consTGenRep (em, f) = TermsRep{trInfo = [], trExtraMetas = em, trTerms = f}
 
-consFields :: (TextIndexerMonad s m) => [(String, String, Val)] -> ValRepBuildOption -> m [ValRepField]
-consFields xs opt =
+valPairsToTermRepList :: (TextIndexerMonad s m) => [(String, String, VNode)] -> TermsRepOption -> m [TermRep]
+valPairsToTermRepList xs opt =
   mapM
     ( \(l, a, v) -> do
-        tfv <- buildFieldRepValue v opt
-        return $ ValRepField l a tfv
+        tfv <- buildValueTermRepNodeContent v opt
+        return $ TermRep{trfLabel = l, trfAttr = a, trfContent = tfv}
     )
     xs
 
@@ -449,32 +467,34 @@ staticlFieldAttr :: Field -> String
 staticlFieldAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
 
 staticFieldMeta :: Field -> String
-staticFieldMeta sf =
-  staticlFieldAttr sf
-    <> ",objs:"
-    <> show (Set.toList $ ssfObjects sf)
+staticFieldMeta = staticlFieldAttr
 
 dlabelAttr :: DynamicField -> String
 dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 
-buildFieldRepValue :: (TextIndexerMonad s m) => Val -> ValRepBuildOption -> m ValRepFieldValue
-buildFieldRepValue fv opt@ValRepBuildOption{trboRepSubFields = recurOnSub} =
+buildValueTermRepNodeContent :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermRepContent
+buildValueTermRepNodeContent fv opt@TermsRepOption{troptRecur = recurOnSub} =
   if recurOnSub
-    then ValRepFieldValueRegular <$> buildRepVal fv opt
+    then TermRepContentRegular <$> valToTermsRep fv opt
     else do
       origVal <- showOrigVal fv
-      curVal <- showSimpleVal fv
-      return $ ValRepFieldValueSimple (printf "orig:%s, v: %s" origVal curVal)
+      valT <- oneLinerStringOfVNode fv
+      return $ TermRepContentScalar (printf "orig:%s, v: %s" origVal valT)
 
-showSimpleVal :: (TextIndexerMonad s m) => Val -> m String
-showSimpleVal t = case t of
-  IsAtom a -> return $ show a
-  _ -> return $ showValType t
+buildCnstrSeqTermRepNodeContent :: (TextIndexerMonad s m) => Seq.Seq Constraint -> TermsRepOption -> m TermRepContent
+buildCnstrSeqTermRepNodeContent sq opt@TermsRepOption{troptRecur = recurOnSub} =
+  if recurOnSub
+    then TermRepContentRegular <$> cnstrsToTermsRep (toList sq) opt
+    else do
+      return $ TermRepContentScalar ""
 
-showOrigVal :: (TextIndexerMonad s m) => Val -> m String
+showSimpleVal :: (TextIndexerMonad s m) => VNode -> m String
+showSimpleVal t = return $ showValType (value t)
+
+showOrigVal :: (TextIndexerMonad s m) => VNode -> m String
 showOrigVal t = case t of
-  IsRef _ ref -> do
-    sStr <- tshow ref.ident
-    return $ T.unpack sStr
-  IsValMutable (SOp mutop _) -> return $ showOpType mutop
-  _ -> return $ showValType t
+  -- IsRef _ ref -> do
+  --   sStr <- tshow ref.ident
+  --   return $ T.unpack sStr
+  IsValSoleOp op -> return $ showOpType op
+  _ -> return $ showValType (value t)

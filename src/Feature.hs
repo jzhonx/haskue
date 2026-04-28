@@ -76,14 +76,16 @@ data LabelType
   | ListStoreIdxLabelType
   | ListIdxLabelType
   | DisjLabelType
-  | MutArgLabelType
+  | OpArgLabelType
   | StringLabelType
   | LetLabelType
   | PatternLabelType
   | DynFieldLabelType
-  | StubFieldLabelType
   | EmbedValueLabelType
-  | VSelectBaseLabelType
+  | ObjectLabelType -- ObjectLabelType indicates an object value that is in the sub structure of a value.
+  | ConstraintLabelType
+  | DynCnstrLabelType
+  | ComprehClausesLabelType
   deriving (Eq, Ord, Generic, NFData, Enum)
 
 instance Show Feature where
@@ -92,23 +94,22 @@ instance Show Feature where
     ListStoreIdxLabelType -> "lsi" ++ show (fetchIndex f)
     ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
-    MutArgLabelType -> "fa" ++ showSub (getMutArgInfoFromFeature f) (\case True -> "u"; False -> "")
+    OpArgLabelType -> "fa" ++ show (fetchIndex f)
     StringLabelType -> "str_" ++ show (fetchIndex f)
     LetLabelType -> "let_" ++ show (fetchIndex f)
     PatternLabelType -> "cns_" ++ showSub (getPatternIndexesFromFeature f) show
     DynFieldLabelType -> "dyn_" ++ showSub (getDynFieldIndexesFromFeature f) show
-    StubFieldLabelType -> "__" ++ show (fetchIndex f)
-    EmbedValueLabelType -> "embed_" ++ show (fetchIndex f)
-    VSelectBaseLabelType -> "base_val"
+    EmbedValueLabelType -> "embedv"
+    ObjectLabelType -> "o_" ++ show (fetchIndex f)
+    ConstraintLabelType -> "c_" ++ show (fetchIndex f)
+    DynCnstrLabelType -> "dc_" ++ show (fetchIndex f)
+    ComprehClausesLabelType -> "cc" ++ show (fetchIndex f)
    where
     showSub :: (Int, a) -> (a -> String) -> String
     showSub (x, y) g = show x ++ "_" ++ g y
 
 instance ShowWTIndexer Feature where
   tshow f = case fetchLabelType f of
-    StubFieldLabelType -> do
-      str <- tshow (TextIndex (fetchIndex f))
-      return $ T.pack $ printf "__%s" str
     StringLabelType -> tshow (TextIndex (fetchIndex f))
     LetLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))
@@ -144,11 +145,30 @@ mkDisjFeature :: Int -> Feature
 mkDisjFeature i = mkFeature i DisjLabelType
 
 -- | The second argument indicates whether it is a unify operator or not.
-mkMutArgFeature :: Int -> Bool -> Feature
-mkMutArgFeature index selector = mkFeature combined MutArgLabelType
+mkOpArgFeature :: Int -> Feature
+mkOpArgFeature index = mkFeature index OpArgLabelType
+
+data CnstrType
+  = RegCnstrT
+  | PatternCnstrT
+  deriving (Eq, Ord, Enum)
+
+mkConstraintFeature :: Int -> CnstrType -> Int -> Feature
+mkConstraintFeature i cnstrType selector = mkFeature combined ConstraintLabelType
  where
-  shiftedSelector = (if selector then 1 else 0) `shiftL` 23
-  combined = index .|. shiftedSelector
+  -- The bitmap:
+  --  0-18: index
+  --  19-21: cnstrType
+  --  22-23: selector
+  -- The constrType has 8 possible values, so we can use 3 bits to store it.
+  cnstrTypeBits = fromEnum cnstrType `shiftL` 19
+  -- Selector has maximum 4 possible values, so we can use 2 bits to store it.
+  selectorBits = selector .&. 0x00000003 `shiftL` 22
+  shiftedSelector = selectorBits .|. cnstrTypeBits
+  combined = i .|. shiftedSelector
+
+mkRegCnstrFeature :: Int -> Feature
+mkRegCnstrFeature i = mkConstraintFeature i RegCnstrT 0
 
 {- | The first is the ObjectID, the second indicates the i-th in the dynamic field.
 
@@ -188,37 +208,29 @@ modifyTISuffix oid ti = do
     let str = BC.unpack prefix ++ "." ++ show oid
     strToTextIndex str
 
-mkStubFieldFeature :: TextIndex -> Feature
-mkStubFieldFeature (TextIndex i) = mkFeature i StubFieldLabelType
-
 mkEmbedValueFeature :: Feature
 mkEmbedValueFeature = mkFeature 0 EmbedValueLabelType
 
-valueSelectFeature :: Feature
-valueSelectFeature = mkFeature 0 VSelectBaseLabelType
+mkDynCnstrFeature :: Int -> Feature
+mkDynCnstrFeature i = mkFeature i DynCnstrLabelType
+
+mkObjectFeature :: Int -> Feature
+mkObjectFeature i = mkFeature i ObjectLabelType
+
+mkComprehClausesFeature :: Int -> Feature
+mkComprehClausesFeature i = mkFeature i ComprehClausesLabelType
 
 getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m BC.ByteString
 getTextFromFeature f = case fetchLabelType f of
   StringLabelType -> textIndexToBS (TextIndex (fetchIndex f))
   LetLabelType -> textIndexToBS (TextIndex (fetchIndex f))
-  StubFieldLabelType -> textIndexToBS (TextIndex (fetchIndex f))
   _ -> error $ "Feature does not have a text: " ++ show f
 
 getTextIndexFromFeature :: (HasCallStack) => Feature -> TextIndex
 getTextIndexFromFeature f = case fetchLabelType f of
   StringLabelType -> TextIndex (fetchIndex f)
   LetLabelType -> TextIndex (fetchIndex f)
-  StubFieldLabelType -> TextIndex (fetchIndex f)
   _ -> error $ printf "Feature %s does not have a TextIndex" (show f)
-
-getMutArgInfoFromFeature :: Feature -> (Int, Bool)
-getMutArgInfoFromFeature f = case fetchLabelType f of
-  MutArgLabelType ->
-    let combined = fetchIndex f
-        index = combined .&. 0x007FFFFF -- lower 23 bits
-        selector = (combined `shiftR` 23) .&. 1 -- next bit
-     in (index, selector == 1)
-  _ -> error $ "Feature is not a MutArgLabelType: " ++ show f
 
 getPatternIndexesFromFeature :: Feature -> (Int, Int)
 getPatternIndexesFromFeature f = case fetchLabelType f of
@@ -238,25 +250,13 @@ getDynFieldIndexesFromFeature f = case fetchLabelType f of
      in (objID, selector)
   _ -> error $ "Feature is not a DynFieldLabelType: " ++ show f
 
-isFeatureReducible :: Feature -> Bool
-isFeatureReducible f = case fetchLabelType f of
-  MutArgLabelType -> True
-  -- TODO: document why DisjLabelType is considered reducible.
-  DisjLabelType -> True
-  ListStoreIdxLabelType -> True
+isFeatureConstraint :: Feature -> Bool
+isFeatureConstraint f = case fetchLabelType f of
+  ConstraintLabelType -> True
   _ -> False
 
 isFeatureIrreducible :: Feature -> Bool
-isFeatureIrreducible f = not $ isFeatureReducible f
-
-isFeatureReferable :: Feature -> Bool
-isFeatureReferable f = case fetchLabelType f of
-  StringLabelType -> True
-  LetLabelType -> True
-  ListIdxLabelType -> True
-  RootLabelType -> True
-  VSelectBaseLabelType -> True -- The index value feature is used to store the index value. It can be referred by its sub fields.
-  _ -> False
+isFeatureIrreducible f = not $ isFeatureNonCanonical f
 
 bsToStringFeature :: (MonadState s m, HasTextIndexer s) => BC.ByteString -> m Feature
 bsToStringFeature s = mkStringFeature <$> textToTextIndex s
@@ -266,15 +266,15 @@ strToStringFeature s = bsToStringFeature (BC.pack s)
 
 -- | Unary operation can not be a unify operation.
 unaryOpTASeg :: Feature
-unaryOpTASeg = mkMutArgFeature 0 False
+unaryOpTASeg = mkOpArgFeature 0
 
-binOpLeftTASeg :: Bool -> Feature
-binOpLeftTASeg = mkMutArgFeature 0
+binOpLeftTASeg :: Feature
+binOpLeftTASeg = mkOpArgFeature 0
 
-binOpRightTASeg :: Bool -> Feature
-binOpRightTASeg = mkMutArgFeature 1
+binOpRightTASeg :: Feature
+binOpRightTASeg = mkOpArgFeature 1
 
-toBinOpTASeg :: BinOpDirect -> Bool -> Feature
+toBinOpTASeg :: BinOpDirect -> Feature
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
 
@@ -399,7 +399,7 @@ trimPrefixAddr pre@(ValAddr pa) x@(ValAddr xa)
   | not (isPrefix pre x) = x
   | otherwise = mkValAddr (V.drop (V.length pa) xa)
 
-{- | SuffixIrredAddr is an addr that ends with an irreducible segment.
+{- | CanonicalAddr is an addr that ends with an irreducible segment.
 
 Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
 
@@ -409,54 +409,49 @@ For example,
 
 The addr of the b is /x/fa0/fa0/b, which is not all irreducible.
 -}
-newtype SuffixIrredAddr = SuffixIrredAddr {getSuffixIrredAddr :: V.Vector Feature}
+newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: V.Vector Feature}
   deriving (Show, Eq, Ord, Generic, NFData)
 
-instance ShowWTIndexer SuffixIrredAddr where
-  tshow a = tshow $ sufIrredToAddr a
+-- | A feature is not reducible if it can be called by the reducer to reduce the value.
+isFeatureNonCanonical :: Feature -> Bool
+isFeatureNonCanonical f = case fetchLabelType f of
+  OpArgLabelType -> True
+  ConstraintLabelType -> True
+  DynCnstrLabelType -> True
+  DisjLabelType -> True
+  ListStoreIdxLabelType -> True
+  _ -> False
 
-instance ToJSON SuffixIrredAddr where
+instance ShowWTIndexer CanonicalAddr where
+  tshow a = tshow $ canonicalToAddr a
+
+instance ToJSON CanonicalAddr where
   toJSON a = toJSON (show a)
 
-instance ToJSONWTIndexer SuffixIrredAddr where
+instance ToJSONWTIndexer CanonicalAddr where
   ttoJSON a = do
     s <- tshow a
     return $ toJSON s
 
-instance ToJSONKey SuffixIrredAddr
+instance ToJSONKey CanonicalAddr
 
-addrIsSufIrred :: ValAddr -> Maybe SuffixIrredAddr
-addrIsSufIrred (ValAddr xs)
-  | V.null xs = Just $ SuffixIrredAddr V.empty
-  | isFeatureIrreducible (V.last xs) = Just $ SuffixIrredAddr xs
-  | otherwise = Nothing
+addrIsCanonical :: ValAddr -> Maybe CanonicalAddr
+addrIsCanonical (ValAddr xs) =
+  let hasReducible = V.any isFeatureNonCanonical xs
+   in if hasReducible
+        then Nothing
+        else Just $ CanonicalAddr xs
 
-addMustBeSufIrred :: (HasCallStack) => ValAddr -> SuffixIrredAddr
-addMustBeSufIrred addr = case addrIsSufIrred addr of
-  Just sufIrred -> sufIrred
-  Nothing -> error $ printf "Addr %s is not suffix irreducible" (show addr)
+trimAddrToCanonical :: ValAddr -> CanonicalAddr
+trimAddrToCanonical (ValAddr xs) = CanonicalAddr (V.filter (not . isFeatureNonCanonical) xs)
 
-trimAddrToSufIrred :: ValAddr -> SuffixIrredAddr
-trimAddrToSufIrred (ValAddr xs) =
-  let
-    revXs = V.reverse xs
-    revNonMutArgs = V.dropWhile isFeatureReducible revXs
-   in
-    SuffixIrredAddr $ V.reverse revNonMutArgs
+canonicalToAddr :: CanonicalAddr -> ValAddr
+canonicalToAddr (CanonicalAddr xs) = mkValAddr xs
 
-sufIrredToAddr :: SuffixIrredAddr -> ValAddr
-sufIrredToAddr (SuffixIrredAddr xs) = mkValAddr xs
-
-sufIrredIsRfb :: SuffixIrredAddr -> Maybe ReferableAddr
-sufIrredIsRfb (SuffixIrredAddr xs)
-  | V.null xs = Just $ ReferableAddr V.empty
-  | isFeatureReferable (V.last xs) = Just $ ReferableAddr xs
-  | otherwise = Nothing
-
-initSufIrred :: SuffixIrredAddr -> Maybe SuffixIrredAddr
-initSufIrred (SuffixIrredAddr xs)
+initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
+initCanonical (CanonicalAddr xs)
   | V.null xs = Nothing
-  | otherwise = Just $ SuffixIrredAddr (V.init xs)
+  | otherwise = Just $ CanonicalAddr (V.init xs)
 
 {- | ReferableAddr is a referrable address.
 
@@ -484,11 +479,20 @@ instance ToJSONWTIndexer ReferableAddr where
     s <- tshow a
     return $ toJSON s
 
+isFeatureReferable :: Feature -> Bool
+isFeatureReferable f = case fetchLabelType f of
+  StringLabelType -> True
+  LetLabelType -> True
+  ListIdxLabelType -> True
+  RootLabelType -> True
+  ObjectLabelType -> True -- The index value feature is used to store the index value. It can be referred by its sub fields.
+  _ -> False
+
 rfbAddrToAddr :: ReferableAddr -> ValAddr
 rfbAddrToAddr (ReferableAddr xs) = mkValAddr xs
 
-rfbAddrToSufIrred :: ReferableAddr -> SuffixIrredAddr
-rfbAddrToSufIrred (ReferableAddr xs) = SuffixIrredAddr xs
+rfbAddrToCanonical :: ReferableAddr -> CanonicalAddr
+rfbAddrToCanonical (ReferableAddr xs) = CanonicalAddr xs
 
 addrIsRfbAddr :: ValAddr -> Maybe ReferableAddr
 addrIsRfbAddr (ValAddr xs)
@@ -501,22 +505,7 @@ addrIsRfbAddr (ValAddr xs)
 It first trims the suffix that is not referable, then removes unify operator mut args in all features.
 -}
 trimAddrToRfb :: ValAddr -> ReferableAddr
-trimAddrToRfb (ValAddr xs) =
-  let len = V.length xs
-      trimmedLen = go (len - 1)
-       where
-        go i
-          | i < 0 = 0
-          | isFeatureReferable (xs V.! i) = i + 1
-          | otherwise = go (i - 1)
-   in ReferableAddr
-        ( V.filter
-            ( \f -> case fetchLabelType f of
-                MutArgLabelType | (_, isUnifyOp) <- getMutArgInfoFromFeature f, isUnifyOp -> False
-                _ -> True
-            )
-            $ V.slice 0 trimmedLen xs
-        )
+trimAddrToRfb (ValAddr xs) = ReferableAddr (V.filter isFeatureReferable xs)
 
 -- | Get the parent referable addr by removing the last referable segment.
 initRfbAddr :: ReferableAddr -> Maybe ReferableAddr

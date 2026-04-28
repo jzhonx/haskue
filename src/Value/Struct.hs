@@ -15,6 +15,7 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, textIndexToBS)
 import Text.Printf (printf)
+import Value.Bottom (Bottom)
 import {-# SOURCE #-} Value.Val
 
 -- | A struct has concrete field labels and constraints that have no mutable patterns.
@@ -25,15 +26,13 @@ data Struct = Struct
   -- referenced. Should be directly copied from the block.
   , stcFields :: Map.Map TextIndex Field
   -- ^ It is the fields.
-  , stcBindings :: Map.Map TextIndex Val
+  , stcBindings :: Map.Map TextIndex VNode
   , stcDynFields :: IntMap.IntMap DynamicField
   , stcCnstrs :: IntMap.IntMap StructCnstr
-  , stcStaticFieldBases :: Map.Map TextIndex Field
-  -- ^ The un-evaluated fields that defined in this block. They shold be copied to the struct when building the struct.
   , stcOrdLabels :: DList.DList StructFieldLabel
   , stcIsConcrete :: !Bool
   , stcEmbedVal :: Maybe Val
-  , stcPermErr :: Maybe Val
+  , stcPermErr :: Maybe Bottom
   , stcPerms :: [PermItem]
   }
   deriving (Generic)
@@ -67,20 +66,24 @@ data StructFieldType = SFTRegular | SFTHidden | SFTDefinition
   deriving (Eq, Ord, Show)
 
 data Field = Field
-  { ssfValue :: Val
+  { ssfValue :: VNode
   , ssfAttr :: LabelAttr
-  , ssfObjects :: Set.Set Int
   -- ^ A set of object IDs that have been unified with base raw value.
   }
   deriving (Generic)
 
-mkdefaultField :: Val -> Field
+mkdefaultField :: VNode -> Field
 mkdefaultField t =
   Field
     { ssfValue = t
     , ssfAttr = defaultLabelAttr
-    , ssfObjects = Set.empty
     }
+
+updateFieldValue :: VNode -> Field -> Field
+updateFieldValue t field = field{ssfValue = t}
+
+mapFieldValue :: (VNode -> VNode) -> Field -> Field
+mapFieldValue f field = field{ssfValue = f (ssfValue field)}
 
 {- | DynamicField would only be evaluated into a field. Definitions (#field) or hidden (_field) fields are not
 possible.
@@ -88,10 +91,10 @@ possible.
 data DynamicField = DynamicField
   { dsfID :: !Int
   , dsfAttr :: LabelAttr
-  , dsfLabel :: Val
+  , dsfLabel :: VNode
   , dsfLabelIsInterp :: !Bool
   -- ^ Whether the label is an interpolated label.
-  , dsfValue :: Val
+  , dsfValue :: ConstraintSeq
   -- ^ The value is only for the storage purpose. It will not be reduced during reducing dynamic fields.
   }
   deriving (Generic)
@@ -104,10 +107,10 @@ According to sepc,
 -}
 data StructCnstr = StructCnstr
   { scsID :: !Int
-  , scsPattern :: Val
+  , scsPattern :: VNode
   , scsPatAlias :: Maybe TextIndex
   -- ^ The alias for the matched.
-  , scsValue :: Val
+  , scsValue :: ConstraintSeq
   }
   deriving (Generic)
 
@@ -162,7 +165,6 @@ emptyStruct =
     { stcID = 0
     , stcFields = Map.empty
     , stcBindings = Map.empty
-    , stcStaticFieldBases = Map.empty
     , stcDynFields = IntMap.empty
     , stcCnstrs = IntMap.empty
     , stcClosed = False
@@ -173,55 +175,32 @@ emptyStruct =
     , stcPerms = []
     }
 
-updateFieldValue :: Val -> Field -> Field
-updateFieldValue t field = field{ssfValue = t}
-
-staticFieldMker :: Val -> LabelAttr -> Field
+staticFieldMker :: VNode -> LabelAttr -> Field
 staticFieldMker t a =
   Field
     { ssfValue = t
     , ssfAttr = a
-    , ssfObjects = Set.empty
+    -- , ssfObjects = Set.empty
     }
 
-dynToField :: DynamicField -> Maybe Field -> (Val -> Val -> Val) -> Field
-dynToField df sfM unifier = case sfM of
-  -- Only when the field of the identifier exists, we merge the dynamic field with the existing field.
-  -- If the identifier is a let binding, then no need to merge. The limit that there should only be one identifier
-  -- in a scope can be ignored.
-  Just sf ->
-    -- If the dynamic field is already applied to the field, then we do not apply it again.
-    if dsfID df `Set.member` ssfObjects sf
-      then sf
-      else
-        sf
-          { ssfValue = unifier (ssfValue sf) (dsfValue df)
-          , ssfAttr = mergeAttrs (ssfAttr sf) (dsfAttr df)
-          , ssfObjects = Set.insert (dsfID df) (ssfObjects sf)
-          }
-  -- No existing field, so we just turn the dynamic field into a field.
-  _ ->
-    Field
-      { ssfValue = dsfValue df
-      , ssfAttr = dsfAttr df
-      , ssfObjects = Set.fromList [dsfID df]
-      }
-
-lookupStructLet :: TextIndex -> Struct -> Maybe Val
+lookupStructLet :: TextIndex -> Struct -> Maybe VNode
 lookupStructLet name s = Map.lookup name (stcBindings s)
 
 {- | Insert a new let binding into the block.
 
 Caller should ensure that the name is not already in the block.
 -}
-insertStructLet :: TextIndex -> Val -> Struct -> Struct
+insertStructLet :: TextIndex -> VNode -> Struct -> Struct
 insertStructLet s v struct = struct{stcBindings = Map.insert s v (stcBindings struct)}
+
+mapStructLet :: TextIndex -> (VNode -> VNode) -> Struct -> Struct
+mapStructLet s f struct = struct{stcBindings = Map.adjust f s (stcBindings struct)}
 
 {- | Determines whether the block has empty fields, including both static and dynamic fields.
 TODO: exclude definitions and hidden fields.
 -}
 hasEmptyFields :: Struct -> Bool
-hasEmptyFields struct = Map.null (stcStaticFieldBases struct) && null (stcDynFields struct)
+hasEmptyFields struct = Map.null (stcFields struct) && null (stcDynFields struct)
 
 getFieldType :: String -> Maybe StructFieldType
 getFieldType [] = Nothing
@@ -235,9 +214,6 @@ lookupStructDynField oid struct = IntMap.lookup oid (stcDynFields struct)
 
 lookupStructField :: TextIndex -> Struct -> Maybe Field
 lookupStructField name struct = Map.lookup name (stcFields struct)
-
-lookupStructStaticFieldBase :: TextIndex -> Struct -> Maybe Field
-lookupStructStaticFieldBase name struct = Map.lookup name (stcStaticFieldBases struct)
 
 lookupStructIdentField :: TextIndex -> Struct -> Maybe Field
 lookupStructIdentField name struct =
@@ -260,51 +236,35 @@ removeStructFieldsByNames :: [TextIndex] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}
 
 -- | Mark fields deleted by names from the struct.
-markDeletedStructFieldsByNames :: [TextIndex] -> Val -> Struct -> Struct
+markDeletedStructFieldsByNames :: [TextIndex] -> VNode -> Struct -> Struct
 markDeletedStructFieldsByNames names deletedMarker struct =
   struct{stcFields = foldr (Map.adjust (\f -> f{ssfValue = deletedMarker})) (stcFields struct) names}
 
-updateStructCnstrByID :: Int -> Bool -> Val -> Struct -> Struct
-updateStructCnstrByID cid isPattern sub struct =
+mapStructCnstrByID :: Int -> (VNode -> VNode) -> Struct -> Struct
+mapStructCnstrByID cid f struct =
   struct
     { stcCnstrs =
         IntMap.update
-          ( \sc ->
-              Just
-                ( if isPattern
-                    then sc{scsPattern = sub}
-                    else sc{scsValue = sub}
-                )
-          )
+          (\sc -> Just (sc{scsPattern = f (scsPattern sc)}))
           cid
           (stcCnstrs struct)
     }
 
-updateStructDynFieldByID :: Int -> Bool -> Val -> Struct -> Struct
-updateStructDynFieldByID oid isLabel sub struct =
+mapStructDynFieldByID :: Int -> (VNode -> VNode) -> Struct -> Struct
+mapStructDynFieldByID oid f struct =
   struct
     { stcDynFields =
         IntMap.update
-          ( \df ->
-              Just
-                ( if isLabel
-                    then df{dsfLabel = sub}
-                    else df{dsfValue = sub}
-                )
-          )
+          (\df -> Just (df{dsfLabel = f (dsfLabel df)}))
           oid
           (stcDynFields struct)
     }
-
-updateStructStaticFieldBase :: TextIndex -> Val -> Struct -> Struct
-updateStructStaticFieldBase name sub struct =
-  struct{stcStaticFieldBases = Map.update (\sf -> Just sf{ssfValue = sub}) name (stcStaticFieldBases struct)}
 
 {- | Build the ordered list of labels in the struct.
 
 If not all dynamic field labels can be resolved to strings, return Nothing.
 -}
-buildStructOrdLabels :: (TextIndexerMonad s m) => (Val -> Maybe BC.ByteString) -> Struct -> m (Maybe [BC.ByteString])
+buildStructOrdLabels :: (TextIndexerMonad s m) => (VNode -> Maybe BC.ByteString) -> Struct -> m (Maybe [BC.ByteString])
 buildStructOrdLabels rtrString struct = do
   r <-
     foldM
@@ -338,16 +298,14 @@ It is used in parsing the AST to a struct.
 updateStubAndField :: TextIndex -> Field -> Struct -> Struct
 updateStubAndField name field struct =
   struct
-    { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
-    , stcFields = Map.insert name field (stcFields struct)
+    { stcFields = Map.insert name field (stcFields struct)
     }
 
 -- | Insert a new static field into the stub struct.
 insertNewStubAndField :: TextIndex -> Field -> Struct -> Struct
 insertNewStubAndField name field struct =
   struct
-    { stcStaticFieldBases = Map.insert name field (stcStaticFieldBases struct)
-    , stcOrdLabels = DList.snoc (stcOrdLabels struct) (StructStaticFieldLabel name)
+    { stcOrdLabels = DList.snoc (stcOrdLabels struct) (StructStaticFieldLabel name)
     , stcFields = Map.insert name field (stcFields struct)
     }
 
@@ -360,8 +318,8 @@ insertStructNewDynField oid df struct =
     }
 
 -- | Insert a new constraint into the block stub struct.
-insertStructNewCnstr :: Int -> Val -> Maybe TextIndex -> Val -> Struct -> Struct
-insertStructNewCnstr cid pat alias val struct =
+insertStructNewCnstr :: Int -> VNode -> Maybe TextIndex -> ConstraintSeq -> Struct -> Struct
+insertStructNewCnstr cid pat alias cs struct =
   struct
     { stcCnstrs =
         IntMap.insert
@@ -370,7 +328,7 @@ insertStructNewCnstr cid pat alias val struct =
               { scsID = cid
               , scsPattern = pat
               , scsPatAlias = alias
-              , scsValue = val
+              , scsValue = cs
               }
           )
           (stcCnstrs struct)
@@ -380,7 +338,7 @@ insertStructNewCnstr cid pat alias val struct =
 the same label.
 -}
 dedupStructFieldLabels ::
-  (Val -> Maybe TextIndex) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
+  (VNode -> Maybe TextIndex) -> IntMap.IntMap DynamicField -> [StructFieldLabel] -> [StructFieldLabel]
 dedupStructFieldLabels rtrString dynFields labels =
   reverse . fst $ foldl go ([], Set.empty) labels
  where

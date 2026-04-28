@@ -7,4 +7,4 @@ import StringIndex (TextIndexer)
 import qualified Syntax.AST as AST
 import {-# SOURCE #-} Value.Val
 
-buildExprDebug :: Val -> TextIndexer -> (Except String) (AST.Expression, TextIndexer)
+buildExprDebug :: VNode -> TextIndexer -> (Except String) (AST.Expression, TextIndexer)

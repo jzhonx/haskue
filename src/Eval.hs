@@ -15,7 +15,7 @@ module Eval (
 where
 
 import Control.Monad (void, when)
-import Control.Monad.Except (ExceptT, liftEither, runExcept)
+import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (runRWST)
 import Control.Monad.Reader (MonadReader (..))
@@ -38,8 +38,8 @@ import Feature (rootValAddr)
 import Reduce (finalize, reduce)
 import Reduce.Monad
 import Reduce.Recalc (recalc)
-import Reduce.Store (fetchValMust, storeAllSubVals)
-import Semant.Semant (TM, TransState (..), emptyTransState, transExpr, transSourceFile)
+import Reduce.Store (fetchValMust)
+import Semant.Semant (TM, TransErr (..), TransState (..), emptyTransState, transExprToVal, transSourceFile)
 import StringIndex (TextIndexer, emptyTextIndexer)
 import Syntax.AST
 import Syntax.Parser (parseExpr, parseSourceFile)
@@ -47,7 +47,7 @@ import Syntax.Scanner (scanTokens, scanTokensFromFile)
 import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (valToFullRepString)
+import Value.Export.Debug (valToFullStringTermsRep)
 import Value.Export.JSON (buildJSON)
 
 data Config = Config
@@ -102,9 +102,9 @@ evalStr eStr conf
 evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String Expression)
 evalStrToAST s conf = do
   (t, cs) <- evalStrToVal s conf
-  case valNode t of
+  case value t of
     -- print the error message to the console.
-    VNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+    VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ ->
       let e = runExcept $ buildExpr t cs
        in case e of
@@ -114,16 +114,16 @@ evalStrToAST s conf = do
 evalStrToJSON :: B.ByteString -> Config -> ExceptT String IO (Either String Value)
 evalStrToJSON s conf = do
   (t, cs) <- evalStrToVal s conf
-  case valNode t of
+  case value t of
     -- print the error message to the console.
-    VNBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+    VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
     _ ->
       let e = runExcept $ buildJSON t cs
        in case e of
             Left err -> return $ Left err
             Right (expr, _) -> return $ Right expr
 
-strToCUEVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
+strToCUEVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
 strToCUEVal s conf = do
   tokens <-
     liftEither
@@ -136,9 +136,9 @@ strToCUEVal s conf = do
   --   let tokenReps = map show tokens
   --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
   e <- liftEither $ parseExpr tokens
-  evalVal (transExpr e rootValAddr) conf
+  evalVal (transExprToVal e rootValAddr) conf
 
-evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Val, TextIndexer)
+evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalStrToVal s conf = do
   tokens <-
     liftEither
@@ -152,57 +152,75 @@ evalStrToVal s conf = do
   e <- liftEither (parseSourceFile tokens)
   evalFile e conf
 
-evalFile :: SourceFile -> Config -> ExceptT String IO (Val, TextIndexer)
+evalFile :: SourceFile -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalFile sf conf = evalVal (transSourceFile sf rootValAddr) conf
 
-evalVal :: TM Val -> Config -> ExceptT String IO (Val, TextIndexer)
+evalVal :: TM VNode -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalVal f conf =
-  do
-    (raw, transState, _) <- runRWST f () (emptyTransState emptyTextIndexer)
-    let config =
-          Env.Config
-            { stTraceEnable = ecTraceExec conf
-            , stTraceExtraInfo = ecTraceExtraInfo conf
-            , stTraceFilter =
-                let s = ecTraceFilter conf
-                 in if null s then Set.empty else Set.fromList $ splitOn "," s
-            , stMaxTreeDepth = ecMaxTreeDepth conf
-            }
+  let
+    initTransState = emptyTransState emptyTextIndexer
+    transRes = runRWST f () initTransState
+   in
+    do
+      (raw, tIndexer, isValid) <-
+        mapExceptT
+          ( \m -> do
+              r <- m
+              case r of
+                Left (SemantErr msg) -> return $ Right (mkBottomVal msg, emptyTextIndexer, False)
+                Left (FatalErr msg) -> return $ Left msg
+                Right (val, s, _) -> return $ Right (val, s.tIndexer, True)
+          )
+          transRes
+      if isValid
+        then evalValInner conf tIndexer raw
+        else return (raw, tIndexer)
 
-    (reducedRoot, finalized, _) <-
-      runRWST
-        ( do
-            when (ecDebugMode conf) $ do
-              rawRep <- valToFullRepString raw
-              liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
-              resolvedRep <- valToFullRepString raw
-              liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
-
-            storeAllSubVals rootValAddr raw
-            root <-
-              local
-                (mapParams (\p -> p{createCnstr = True}))
-                ( do
-                    void $ reduce rootValAddr raw
-                    recalc
-                    fetchValMust "eval" rootValAddr
-                )
-            reducedRoot <- local (mapParams (\p -> p{createCnstr = False})) (finalize rootValAddr root)
-
-            when (ecDebugMode conf) $ do
-              rep <- valToFullRepString reducedRoot
-              liftIO $
-                hPutStr stderr $
-                  "Final eval result: " ++ rep ++ "\n"
-
-            return reducedRoot
-        )
-        (ReduceConfig{baseConfig = config, params = (emptyReduceParams{createCnstr = True})})
-        (emptyContext (LB.hPut conf.ecTraceHandle))
-          { Reduce.Monad.tIndexer = transState.tIndexer
+evalValInner :: Config -> TextIndexer -> VNode -> ExceptT String IO (VNode, TextIndexer)
+evalValInner conf textIndexer raw = do
+  let config =
+        Env.Config
+          { stTraceEnable = ecTraceExec conf
+          , stTraceExtraInfo = ecTraceExtraInfo conf
+          , stTraceFilter =
+              let s = ecTraceFilter conf
+               in if null s then Set.empty else Set.fromList $ splitOn "," s
+          , stMaxTreeDepth = ecMaxTreeDepth conf
           }
 
-    return
-      ( reducedRoot
-      , finalized.tIndexer
+  (reducedRoot, finalized, _) <-
+    runRWST
+      ( do
+          when (ecDebugMode conf) $ do
+            rawRep <- valToFullStringTermsRep raw
+            liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
+            resolvedRep <- valToFullStringTermsRep raw
+            liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
+
+          root <-
+            local
+              (mapParams (\p -> p{createCnstr = True}))
+              ( do
+                  void $ reduce rootValAddr raw
+                  recalc
+                  fetchValMust "eval" rootValAddr
+              )
+          reducedRoot <- local (mapParams (\p -> p{createCnstr = False})) (finalize rootValAddr root)
+
+          when (ecDebugMode conf) $ do
+            rep <- valToFullStringTermsRep reducedRoot
+            liftIO $
+              hPutStr stderr $
+                "Final eval result: " ++ rep ++ "\n"
+
+          return reducedRoot
       )
+      (ReduceConfig{baseConfig = config, params = (emptyReduceParams{createCnstr = True})})
+      (emptyContext (LB.hPut conf.ecTraceHandle))
+        { Reduce.Monad.tIndexer = textIndexer
+        }
+
+  return
+    ( reducedRoot
+    , finalized.tIndexer
+    )

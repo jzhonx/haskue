@@ -70,16 +70,19 @@ runServer path originUrl = do
         let pathInfo = B8.unpack $ B8.tail (B8.concat (map (\s -> B8.cons '/' (encodeUtf8 s)) (Network.Wai.pathInfo req)))
         if pathInfo == fileName
           then do
-            content <- LB.readFile absPath
+            traceContent <- LB.readFile absPath
+            let traceJSONContent = transformTraceFile traceContent
+            r <-
+              respond $
+                responseLBS
+                  status200
+                  [ ("Content-Type", "application/json; charset=utf-8")
+                  , ("Cache-Control", "no-cache")
+                  ]
+                  traceJSONContent
             -- File found and served
-            void $ putMVar doneSignal ()
-            respond $
-              responseLBS
-                status200
-                [ ("Content-Type", "application/octet-stream")
-                , ("Cache-Control", "no-cache")
-                ]
-                (transformTraceFile content)
+            putMVar doneSignal ()
+            return r
           else
             respond $ responseLBS status404 [] "File not found"
 

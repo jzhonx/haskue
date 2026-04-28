@@ -24,13 +24,13 @@ x: x.z & {
 x: x.f & {f: f: {a:1}}
 -- exp_cycles_sub_ref3 --
 x: {
+    a: 1
     f: {
+        a: 1
         f: {
             a: 1
         }
-        a: 1
     }
-    a: 1
 }
 
 -- cycles_sub_ref4 --
@@ -40,20 +40,20 @@ x: x.f & x.g & {
 }
 -- exp_cycles_sub_ref4 --
 x: {
-    f: {
-        g: {
-            a: 1
-        }
-        b: 2
-    }
+    b: 2
     g: {
+        a: 1
         f: {
             b: 2
         }
-        a: 1
     }
-    b: 2
     a: 1
+    f: {
+        b: 2
+        g: {
+            a: 1
+        }
+    }
 }
 
 -- cycles_sub_ref5 --

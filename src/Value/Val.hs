@@ -14,6 +14,7 @@ import Control.Monad.Except (runExcept)
 import Control.Monad.Identity
 import Control.Monad.State.Strict (gets, modify')
 import qualified Data.ByteString.Char8 as BC
+import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
@@ -22,7 +23,6 @@ import Exception (throwErrSt)
 import Feature (
   LabelType (..),
   Selector (..),
-  Selectors (Selectors),
   ValAddr,
   addrToList,
   fetchIndex,
@@ -36,136 +36,169 @@ import qualified Syntax.AST as AST
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
-import Value.Comprehension
-import Value.Constraint
 import Value.Disj
-import Value.DisjoinOp (DisjoinOp)
 import {-# SOURCE #-} Value.Export.AST (buildExprDebug)
-import Value.Fix
 import Value.List
 import Value.Op
 import Value.Reference
 import Value.Struct
-import Value.UnifyOp (UnifyOp (..))
 
 class VTerm a where
-  vtmapT :: (ValAddr -> Val -> Val) -> ValAddr -> a -> a
+  vtmapT :: (ValAddr -> VTermNode -> VTermNode) -> ValAddr -> a -> a
   vtmapT f p v = runIdentity $ vtmapM (\np nv -> return $ f np nv) p v
-  vtmapQ :: (ValAddr -> Val -> r) -> ValAddr -> a -> [r]
-  vtmapM :: (Monad m) => (ValAddr -> Val -> m Val) -> ValAddr -> a -> m a
+  vtmapQ :: (ValAddr -> VTermNode -> r) -> ValAddr -> a -> [r]
 
--- | ValNode represents a tree structure that contains values.
-data ValNode
-  = -- | VNAtom contains an atom value.
-    VNAtom Atom
-  | VNBottom Bottom
-  | VNBounds Bounds
-  | VNTop
-  | VNStruct Struct
-  | VNList List
-  | VNDisj Disj
-  | VNAtomCnstr AtomCnstr
-  | VNFix Fix
-  | -- | VNNoVal is used to represent a reference that is copied from another expression but has no value
-    -- yet.
-    VNNoVal
+  -- It does mapM on the immediate children of the term.
+  -- If there is no child, no mapping is performed and the original term is returned.
+  vtmapM :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> a -> m a
+
+data VTermNode
+  = VTVal Val
+  | VTOp Op
+  | VTVNode VNode
   deriving (Generic)
 
-data Val = Val
-  { valNode :: ValNode
+pattern IsRef :: Op -> Reference -> VTermNode
+pattern IsRef op ref <- VTOp op@(Ref ref)
+
+vtValOr :: (Val -> a) -> a -> VTermNode -> a
+vtValOr f _ (VTVal vn) = f vn
+vtValOr _ a _ = a
+
+vtOpOr :: (Op -> a) -> a -> VTermNode -> a
+vtOpOr f _ (VTOp op) = f op
+vtOpOr _ a _ = a
+
+vtVNodeOr :: (VNode -> a) -> a -> VTermNode -> a
+vtVNodeOr f _ (VTVNode v) = f v
+vtVNodeOr _ a _ = a
+
+applyAddrFOnVal :: (Applicative f) => (ValAddr -> VNode -> f VNode) -> ValAddr -> VTermNode -> f VTermNode
+applyAddrFOnVal f p (VTVNode v) = VTVNode <$> f p v
+applyAddrFOnVal _ _ x = pure x
+
+-- | Val represents a tree structure that contains values.
+data Val
+  = -- | VAtom contains an atom value.
+    VAtom Atom
+  | VBottom Bottom
+  | VBounds Bounds
+  | VTop
+  | VStruct Struct
+  | VList List
+  | VDisj Disj
+  | -- | VNoVal is used to represent a reference that is copied from another expression but has no value
+    -- yet.
+    VNoVal
+  deriving (Generic)
+
+data Constraint
+  = ValCnstr Val
+  | OpCnstr Op
+  | StructEmbedCnstr ConstraintSeq
+  deriving (Generic)
+
+type ConstraintSeq = Seq.Seq Constraint
+
+data ConstraintsSet = ConstraintsSet
+  { static :: Seq.Seq Constraint
+  , dynamic :: IntMap.IntMap ConstraintSeq
+  , allResolved :: !Bool
+  }
+  deriving (Generic)
+
+emptyConstraintsSet :: ConstraintsSet
+emptyConstraintsSet = ConstraintsSet{static = Seq.empty, dynamic = IntMap.empty, allResolved = False}
+
+mergeConstraintsSet :: ConstraintsSet -> ConstraintsSet -> ConstraintsSet
+mergeConstraintsSet c1 c2 =
+  ConstraintsSet
+    { static = static c1 Seq.>< static c2
+    , dynamic = IntMap.union (dynamic c1) (dynamic c2)
+    , allResolved = allResolved c1 && allResolved c2
+    }
+
+hasEmptyCnstrs :: ConstraintsSet -> Bool
+hasEmptyCnstrs c = Seq.null (static c) && IntMap.null (dynamic c)
+
+removeDynCnstr :: Int -> ConstraintsSet -> ConstraintsSet
+removeDynCnstr idx c = c{dynamic = IntMap.delete idx (dynamic c)}
+
+insertDynCnstr :: Int -> ConstraintSeq -> ConstraintsSet -> ConstraintsSet
+insertDynCnstr idx v c = c{dynamic = IntMap.insert idx v (dynamic c)}
+
+memberDynCnstr :: Int -> ConstraintsSet -> Bool
+memberDynCnstr idx c = IntMap.member idx (dynamic c)
+
+data VNode = VNode
+  { value :: Val
   , origExpr :: Maybe AST.Expression
   -- ^ origExpr is the parsed expression.
   -- If the op is not Nothing, then origExpr represents the op expression.
   -- If the op is Nothing, then origExpr represents the value expression.
-  , op :: Maybe SOp
-  , isRecurClosed :: !Bool
-  -- ^ isRecurClosed is used to indicate whether the sub-tree including itself is closed.
+  , constraints :: ConstraintsSet
+  -- TODO: Feature
   }
   deriving (Generic)
 
-pattern VN :: ValNode -> Val
-pattern VN tn <- Val{valNode = tn}
+pattern VNVal :: Val -> VNode
+pattern VNVal tn <- VNode{value = tn}
 
-pattern IsAtom :: Atom -> Val
-pattern IsAtom a <- VN (VNAtom a)
+pattern IsAtom :: Atom -> VNode
+pattern IsAtom a <- VNVal (VAtom a)
 
-pattern IsBottom :: Bottom -> Val
-pattern IsBottom b <- VN (VNBottom b)
+pattern IsBottom :: Bottom -> VNode
+pattern IsBottom b <- VNVal (VBottom b)
 
-pattern IsBounds :: Bounds -> Val
-pattern IsBounds b <- VN (VNBounds b)
+pattern IsBounds :: Bounds -> VNode
+pattern IsBounds b <- VNVal (VBounds b)
 
-pattern IsTop :: Val
-pattern IsTop <- VN VNTop
+pattern IsTop :: VNode
+pattern IsTop <- VNVal VTop
 
-pattern IsStruct :: Struct -> Val
-pattern IsStruct struct <- VN (VNStruct struct)
+pattern IsStruct :: Struct -> VNode
+pattern IsStruct struct <- VNVal (VStruct struct)
 
-pattern IsFullStruct :: Struct -> Val
-pattern IsFullStruct struct <- VN (VNStruct struct@Struct{stcEmbedVal = Nothing})
+pattern IsFullStruct :: Struct -> VNode
+pattern IsFullStruct struct <- VNVal (VStruct struct@Struct{stcEmbedVal = Nothing})
 
 pattern IsEmbedVal :: Val -> Val
-pattern IsEmbedVal v <- VN (VNStruct Struct{stcEmbedVal = Just v})
+pattern IsEmbedVal v <- (VStruct Struct{stcEmbedVal = Just v})
 
-pattern IsList :: List -> Val
-pattern IsList lst <- VN (VNList lst)
+pattern IsList :: List -> VNode
+pattern IsList lst <- VNVal (VList lst)
 
-pattern IsDisj :: Disj -> Val
-pattern IsDisj d <- VN (VNDisj d)
+pattern IsDisj :: Disj -> VNode
+pattern IsDisj d <- VNVal (VDisj d)
 
-pattern IsAtomCnstr :: AtomCnstr -> Val
-pattern IsAtomCnstr c <- VN (VNAtomCnstr c)
+pattern IsNoVal :: VNode
+pattern IsNoVal <- VNVal VNoVal
 
-pattern IsFix :: Fix -> Val
-pattern IsFix r <- VN (VNFix r)
+pattern StaticConstraints :: Seq.Seq Constraint -> VNode
+pattern StaticConstraints cs <- VNode{constraints = ConstraintsSet{static = cs}}
 
-pattern IsNoVal :: Val
-pattern IsNoVal <- VN VNNoVal
+pattern IsValSoleOp :: Op -> VNode
+pattern IsValSoleOp op <- StaticConstraints (OpCnstr op Seq.:<| Seq.Empty)
 
-pattern IsValMutable :: SOp -> Val
-pattern IsValMutable op <- Val{op = Just op}
+pattern IsValImmutable :: VNode
+pattern IsValImmutable <- VNode{constraints = ConstraintsSet{static = Seq.Empty}}
 
-pattern IsValImmutable :: Val
-pattern IsValImmutable <- Val{op = Nothing}
+-- = Val getters and setters =
 
-pattern IsRef :: SOp -> Reference -> Val
-pattern IsRef mut ref <- IsValMutable mut@(Op (Ref ref))
+setVNodeValue :: Val -> VNode -> VNode
+setVNodeValue n v = v{value = n}
 
-pattern IsVSelect :: SOp -> ValueSelect -> Val
-pattern IsVSelect mut idx <- IsValMutable mut@(Op (VSelect idx))
-
-pattern IsRegOp :: SOp -> RegularOp -> Val
-pattern IsRegOp mut rop <- IsValMutable mut@(Op (RegOp rop))
-
-pattern IsCompreh :: SOp -> Comprehension -> Val
-pattern IsCompreh mut comp <- IsValMutable mut@(Op (Compreh comp))
-
-pattern IsEmbedUnifyOp :: SOp -> UnifyOp -> Val
-pattern IsEmbedUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify = True}))
-
-pattern IsRegularUnifyOp :: SOp -> UnifyOp -> Val
-pattern IsRegularUnifyOp sop u <- IsValMutable sop@(Op (UOp u@UnifyOp{isEmbedUnify = False}))
-
-pattern IsDisjoinOp :: SOp -> DisjoinOp -> Val
-pattern IsDisjoinOp sop d <- IsValMutable sop@(Op (DisjOp d))
-
--- = ValNode getters and setters =
-
-setVN :: ValNode -> Val -> Val
-setVN n v = v{valNode = n}
-
-setExpr :: Maybe AST.Expression -> Val -> Val
+setExpr :: Maybe AST.Expression -> VNode -> VNode
 setExpr eM v = v{origExpr = eM}
 
-setTOp :: SOp -> Val -> Val
-setTOp f t = t{op = Just f}
+mapConstraints :: (ConstraintsSet -> ConstraintsSet) -> VNode -> VNode
+mapConstraints f v = v{constraints = f (constraints v)}
 
-setValImmutable :: Val -> Val
-setValImmutable t = t{op = Nothing}
+removeConstraints :: VNode -> VNode
+removeConstraints t = t{constraints = emptyConstraintsSet}
 
-invalidateMutable :: Val -> Val
-invalidateMutable t@(IsValMutable _) = t{valNode = VNNoVal}
-invalidateMutable t = t
+appendStaticCnstrs :: Seq.Seq Constraint -> VNode -> VNode
+appendStaticCnstrs c v = v{constraints = (constraints v){static = static (constraints v) Seq.>< c}}
 
 {- | Retrieve the value of non-union type.
 
@@ -173,14 +206,13 @@ Union type represents an incomplete value, such as a disjunction or bounds.
 -}
 rtrNonUnion :: Val -> Maybe Val
 rtrNonUnion v = do
-  case valNode v of
-    VNAtom _ -> Just v
-    VNBottom _ -> Just v
-    VNTop -> Just v
-    VNList _ -> Just v
-    VNStruct _ -> Just v
-    VNFix{} -> Just v
-    VNDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
+  case v of
+    VAtom _ -> Just v
+    VBottom _ -> Just v
+    VTop -> Just v
+    VList _ -> Just v
+    VStruct _ -> Just v
+    VDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
     _ -> Nothing
 
 -- | Retrieve the concrete value from the tree.
@@ -188,20 +220,20 @@ rtrConcrete :: Val -> Maybe Val
 rtrConcrete t = do
   v <- rtrNonUnion t
   case v of
-    IsAtom _ -> Just v
+    VAtom _ -> Just v
     -- There is only struct value after retrieving concrete value.
-    IsStruct s -> if stcIsConcrete s then Just v else Nothing
+    VStruct s -> if stcIsConcrete s then Just v else Nothing
     _ -> Nothing
 
-rtrVal :: Val -> Maybe Val
-rtrVal IsNoVal = Nothing
-rtrVal t = return t
+rtrValue :: Val -> Maybe Val
+rtrValue VNoVal = Nothing
+rtrValue t = return t
 
 rtrAtom :: Val -> Maybe Atom
 rtrAtom t = do
   v <- rtrNonUnion t
   case v of
-    IsAtom a -> Just a
+    VAtom a -> Just a
     _ -> Nothing
 
 rtrString :: Val -> Maybe BC.ByteString
@@ -224,13 +256,13 @@ rtrBottom :: Val -> Maybe Bottom
 rtrBottom t = do
   v <- rtrNonUnion t
   case v of
-    IsBottom b -> Just b
-    IsStruct s
+    VBottom b -> Just b
+    VStruct s
       | Just ev <- stcEmbedVal s -> rtrBottom ev
-      | Just err <- stcPermErr s -> rtrBottom err
+      | Just err <- stcPermErr s -> Just err
     _ -> Nothing
 
-rtrBounds :: Val -> Maybe Bounds
+rtrBounds :: VNode -> Maybe Bounds
 rtrBounds v = case v of
   IsBounds b -> Just b
   _ -> Nothing
@@ -241,21 +273,21 @@ It stops at the first disjunction found. It does not go deeper to the default va
 -}
 rtrDisj :: Val -> Maybe Disj
 rtrDisj v = case v of
-  IsDisj d -> Just d
+  VDisj d -> Just d
   _ -> Nothing
 
 rtrList :: Val -> Maybe List
 rtrList t = do
   v <- rtrNonUnion t
   case v of
-    IsList l -> Just l
+    VList l -> Just l
     _ -> Nothing
 
 rtrStruct :: Val -> Maybe Struct
 rtrStruct t = do
   v <- rtrNonUnion t
   case v of
-    IsStruct s -> Just s
+    VStruct s -> Just s
     _ -> Nothing
 
 -- | Convert the default disjuncts to a tree.
@@ -264,109 +296,106 @@ rtrDisjDefVal d =
   let dfs = defDisjunctsFromDisj d
    in if
         | null dfs -> Nothing
-        | length dfs == 1 -> Just (head dfs)
-        | otherwise -> Just $ mkDisjVal $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
+        | length dfs == 1 -> Just (value $ head dfs)
+        | otherwise -> Just $ VDisj $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
 
 -- = Helpers =
 
-emptyVal :: Val
-emptyVal =
-  Val
-    { valNode = VNTop
-    , op = Nothing
+emptyVNode :: VNode
+emptyVNode =
+  VNode
+    { value = VNoVal
     , origExpr = Nothing
-    , isRecurClosed = False
+    , constraints = emptyConstraintsSet
     }
 
-mkNewVal :: ValNode -> Val
-mkNewVal n = emptyVal{valNode = n}
+mkValVN :: Val -> VNode
+mkValVN n = emptyVNode{value = n}
 
-mkNewValWithOp :: ValNode -> SOp -> Val
-mkNewValWithOp n g = (mkNewVal n){op = Just g}
+mkAtomVN :: Atom -> VNode
+mkAtomVN a = mkValVN (VAtom a)
 
-mkAtomVal :: Atom -> Val
-mkAtomVal a = mkNewVal (VNAtom a)
+mkBottomVal :: String -> VNode
+mkBottomVal msg = mkValVN (VBottom $ Bottom{btmMsg = msg})
 
-mkAtomCnstrVal :: AtomCnstr -> Val
-mkAtomCnstrVal c = mkNewVal (VNAtomCnstr c)
+mkBoundsVal :: String -> Val
+mkBoundsVal msg = VBottom $ Bottom{btmMsg = msg}
 
-mkBottomVal :: String -> Val
-mkBottomVal msg = mkNewVal (VNBottom $ Bottom{btmMsg = msg})
+mkBoundsVN :: Bounds -> VNode
+mkBoundsVN bs = mkValVN (VBounds bs)
 
-mkBoundsVal :: Bounds -> Val
-mkBoundsVal bs = mkNewVal (VNBounds bs)
+mkBoundsVNFromList :: [Bound] -> VNode
+mkBoundsVNFromList bs = mkBoundsVN (Bounds{bdsList = bs})
 
-mkBoundsValFromList :: [Bound] -> Val
-mkBoundsValFromList bs = mkBoundsVal (Bounds{bdsList = bs})
+mkBoundsValueFromList :: [Bound] -> Val
+mkBoundsValueFromList bs = VBounds (Bounds{bdsList = bs})
 
-mkCnstrVal :: Atom -> Val -> Val
-mkCnstrVal a e = mkNewVal . VNAtomCnstr $ AtomCnstr a e
+mkDisjVN :: Disj -> VNode
+mkDisjVN d = mkValVN (VDisj d)
 
-mkDisjVal :: Disj -> Val
-mkDisjVal d = mkNewVal (VNDisj d)
+mkOpVN :: Op -> VNode
+mkOpVN fn = emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (OpCnstr fn)}}
 
-mkMutableVal :: SOp -> Val
-mkMutableVal fn = (mkNewVal VNNoVal){op = Just fn}
+mkListVN :: [VNode] -> [VNode] -> VNode
+mkListVN x y = mkValVN (VList $ mkList x y)
 
-mkListVal :: [Val] -> [Val] -> Val
-mkListVal x y = mkNewVal (VNList $ mkList x y)
+mkStructVN :: Struct -> VNode
+mkStructVN s = mkValVN (VStruct s)
 
-mkStructVal :: Struct -> Val
-mkStructVal s = mkNewVal (VNStruct s)
+mkValCnstrVN :: Val -> VNode
+mkValCnstrVN n = emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (ValCnstr n)}}
 
-singletonNoVal :: Val
-singletonNoVal = mkNewVal VNNoVal
+mergeValCnstrs :: [VNode] -> VNode
+mergeValCnstrs vs =
+  let
+    mergedStatic = foldl (\acc v -> acc Seq.>< v.constraints.static) Seq.empty vs
+    mergedDynamic = foldl (\acc v -> IntMap.union acc (dynamic $ constraints v)) IntMap.empty vs
+   in
+    emptyVNode{constraints = emptyConstraintsSet{static = mergedStatic, dynamic = mergedDynamic}}
 
-valsToFieldPath :: (TextIndexerMonad s m) => [Val] -> m (Maybe Selectors)
-valsToFieldPath ts = do
-  xs <- mapM valToSel ts
-  return $ Selectors <$> sequence xs
-
-valToSel :: (TextIndexerMonad s m) => Val -> m (Maybe Selector)
-valToSel t = case valNode t of
-  VNAtom a
+vnToSel :: (TextIndexerMonad s m) => VNode -> m (Maybe Selector)
+vnToSel t = case value t of
+  VAtom a
     | (String s) <- a -> do
         tIdx <- textToTextIndex s
         return $ Just (StringSel tIdx)
     | (Int j) <- a -> return $ Just (IntSel $ fromIntegral j)
   -- If a disjunct has a default, then we should try to use the default.
-  VNDisj dj | isJust (rtrDisjDefVal dj) -> valToSel (fromJust $ rtrDisjDefVal dj)
+  VDisj dj | isJust (rtrDisjDefVal dj) -> vnToSel (mkValVN $ fromJust $ rtrDisjDefVal dj)
   _ -> return Nothing
 
-addrToVals :: (TextIndexerMonad s m) => ValAddr -> m (Maybe [Val])
-addrToVals p = do
+addrToVNodes :: (TextIndexerMonad s m) => ValAddr -> m (Maybe [VNode])
+addrToVNodes p = do
   xs <- mapM selToVal (addrToList p)
   return $ sequence xs
  where
   selToVal sel = case fetchLabelType sel of
     StringLabelType -> do
       str <- getTextFromFeature sel
-      return $ Just $ mkAtomVal (String str)
+      return $ Just $ mkAtomVN (String str)
     ListStoreIdxLabelType -> do
       let j = fetchIndex sel
-      return $ Just $ mkAtomVal (Int (fromIntegral j))
+      return $ Just $ mkAtomVN (Int (fromIntegral j))
     _ -> return Nothing
 
 -- built-in functions
-builtinFuncTable :: [(String, Val)]
+builtinFuncTable :: [(String, Op)]
 builtinFuncTable =
   [
     ( "close"
-    , mkMutableVal $
-        withEmptyOpFrame $
-          RegOp $
-            -- built-in close does not recursively close the struct.
-            emptyRegularOp
-              { ropName = "close"
-              , ropArgs = Seq.fromList [mkNewVal VNTop]
-              , ropOpType = CloseFunc
-              }
+    , RegOp $
+        -- built-in close does not recursively close the struct.
+        emptyRegularOp
+          { ropName = "close"
+          , ropArgs = Seq.fromList [mkValVN VTop]
+          , ropOpType = CloseFunc
+          }
     )
   ]
 
 -- | Create a one-liner string representation of the snapshot of the tree.
-oneLinerStringOfVal :: (TextIndexerMonad s m) => Val -> m T.Text
-oneLinerStringOfVal t = do
+oneLinerStringOfVNode :: (TextIndexerMonad s m) => VNode -> m T.Text
+oneLinerStringOfVNode t = do
   tier <- gets getTextIndexer
   let m = buildExprDebug t tier
       e = runExcept m
@@ -377,31 +406,29 @@ oneLinerStringOfVal t = do
       return $ T.pack $ exprToOneLinerStr expr
 
 showValType :: Val -> String
-showValType t = case valNode t of
-  VNAtom _ -> "atom"
-  VNBounds _ -> "bds"
-  VNStruct{} -> "struct"
-  VNList{} -> "list"
-  VNDisj{} -> "disj"
-  VNAtomCnstr{} -> "Cnstr"
-  VNFix{} -> "Fix"
-  VNBottom _ -> "_|_"
-  VNTop -> "_"
-  VNNoVal -> "noval"
+showValType t = case t of
+  VAtom _ -> "atom"
+  VBounds _ -> "bds"
+  VStruct{} -> "struct"
+  VList{} -> "list"
+  VDisj{} -> "disj"
+  VBottom _ -> "_|_"
+  VTop -> "_"
+  VNoVal -> "noval"
 
 showValueType :: (ErrorEnv m) => Val -> m String
-showValueType t = case valNode t of
-  VNAtom a -> case a of
+showValueType t = case t of
+  VAtom a -> case a of
     String _ -> return "string"
     Int _ -> return "int"
     Float _ -> return "float"
     Bool _ -> return "bool"
     Null -> return "null"
-  VNBounds b -> return $ show b
-  VNBottom _ -> return "_|_"
-  VNStruct _ -> return "struct"
-  VNList _ -> return "list"
-  VNTop -> return "_"
+  VBounds b -> return $ show b
+  VBottom _ -> return "_|_"
+  VStruct _ -> return "struct"
+  VList _ -> return "list"
+  VTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ showValType t
 
 {- | Check whether tree t1 subsumes tree t2.
@@ -411,5 +438,5 @@ A value a is an instance of a value b, denoted a ⊑ b, if b == a or b is more g
 b in the partial order (⊑ is not a CUE operator). We also say that b subsumes a in this case. In graphical terms, b is
 “above” a in the lattice.
 -}
-subsume :: Val -> Val -> Val
+subsume :: VNode -> VNode -> VNode
 subsume t1 t2 = undefined

@@ -3,7 +3,7 @@
 	a: b: string
 }
 m: #S & {
-	a: c: 2 // error, feild not defined in #S
+	a: c: 2 // error, field not defined in #S
 }
 -- exp_def_err1 --
 error: "c" is not allowed
@@ -34,7 +34,7 @@ error: "d" is not allowed
 	a: string
 }
 m: #S & {
-	b: 2 // error, feild not defined in #S
+	b: 2 // error, field not defined in #S
 }
 -- exp --
 error: "b" is not allowed
@@ -42,7 +42,7 @@ error: "b" is not allowed
 -- def_err5 --
 #S: {}
 m: #S & {
-	b: 2 // error, feild not defined in #S
+	b: 2 // error, field not defined in #S
 }
 -- exp --
 error: "b" is not allowed

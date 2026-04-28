@@ -1,9 +1,8 @@
 module Value.Val where
 
-data ValNode
-data Val
+import qualified Data.Sequence as Seq
 
--- class VTerm a where
---   vtmapT :: (Val -> Val) -> a -> a
---   vtmapQ :: (Val -> r) -> a -> [r]
---   vtmapM :: (Monad m) => (Val -> m Val) -> a -> m a
+data VNode
+data Val
+data Constraint
+type ConstraintSeq = Seq.Seq Constraint

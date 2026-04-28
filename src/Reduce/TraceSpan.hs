@@ -72,37 +72,54 @@ whenTraceEnabled name f traced = do
     then traced
     else f
 
-valDebugRepJSON :: ValAddr -> Val -> RM Value
-valDebugRepJSON addr v = do
-  let isRoot = addr == rootValAddr
-  rep <- buildRepVal v (defaultValRepBuildOption{trboRepSubFields = isRoot})
-  return $ toJSON rep
+-- valDebugRepJSON :: ValAddr -> VNode -> RM Value
+-- valDebugRepJSON addr v = do
+--   let isRoot = addr == rootValAddr
+--   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = isRoot})
+--   return $ toJSON rep
 
-valDebugRep :: ValAddr -> Val -> RM String
-valDebugRep addr v = do
-  let isRoot = addr == rootValAddr
-  rep <- buildRepVal v (defaultValRepBuildOption{trboRepSubFields = isRoot})
-  return $ repToString 0 rep
+-- vnDebugRepJSON :: ValAddr -> Val -> RM Value
+-- vnDebugRepJSON addr vn = do
+--   let isRoot = addr == rootValAddr
+--   rep <- vnToTermsRep vn (defaultTermsRepOption{troptRecur = isRoot})
+--   return $ toJSON rep
+
+-- valDebugFullRepJSON :: VNode -> RM Value
+-- valDebugFullRepJSON v = do
+--   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = True})
+--   return $ toJSON rep
+
+-- valDebugRep :: ValAddr -> VNode -> RM String
+-- valDebugRep addr v = do
+--   let isRoot = addr == rootValAddr
+--   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = isRoot})
+--   return $ show rep
 
 traceSpanTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> RM a -> RM a
-traceSpanTM name addr beforeM = traceAction name addr beforeM (const $ return Nothing) ttoJSON
+traceSpanTM name addr beforeM = traceAction name addr beforeM (return Nothing) ttoJSON
 
-traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> (() -> RM String) -> RM a -> RM a
-traceSpanArgsTM name addr beforeM args = traceAction name addr beforeM ((Just <$>) <$> args) ttoJSON
+traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> RM String -> RM a -> RM a
+traceSpanArgsTM name addr beforeM args = traceAction name addr beforeM (Just <$> args) ttoJSON
 
 traceSpanAdaptTM :: String -> ValAddr -> RM Value -> (a -> RM Value) -> RM a -> RM a
-traceSpanAdaptTM name addr beforeM = traceAction name addr beforeM (const $ return Nothing)
+traceSpanAdaptTM name addr beforeM = traceAction name addr beforeM (return Nothing)
 
-traceSpanArgsAdaptTM :: String -> ValAddr -> RM Value -> (() -> RM String) -> (a -> RM Value) -> RM a -> RM a
-traceSpanArgsAdaptTM name addr beforeM args = traceAction name addr beforeM ((Just <$>) <$> args)
+traceSpanArgsAdaptTM :: String -> ValAddr -> RM Value -> RM String -> (a -> RM Value) -> RM a -> RM a
+traceSpanArgsAdaptTM name addr beforeM args = traceAction name addr beforeM (Just <$> args)
 
-traceSpanValTM :: String -> ValAddr -> Val -> RM Val -> RM Val
-traceSpanValTM name addr v = traceAction name addr (valDebugRepJSON addr v) (const $ return Nothing) (valDebugRepJSON addr)
+traceSpanTermsRepTM :: (TermsRepShow a, TermsRepShow b) => String -> ValAddr -> a -> RM b -> RM b
+traceSpanTermsRepTM name addr a =
+  traceAction
+    name
+    addr
+    (termsRepToJSONWithAddr addr a)
+    (return Nothing)
+    (termsRepToJSONWithAddr addr)
 
-traceSpanValAnyTM :: (ToJSONWTIndexer a) => String -> ValAddr -> Val -> RM a -> RM a
-traceSpanValAnyTM name addr v = traceAction name addr (valDebugRepJSON addr v) (const $ return Nothing) ttoJSON
+traceSpanTermsRepAnyTM :: (ToJSONWTIndexer b, TermsRepShow a) => String -> ValAddr -> a -> RM b -> RM b
+traceSpanTermsRepAnyTM name addr v = traceAction name addr (termsRepToJSONWithAddr addr v) (return Nothing) ttoJSON
 
-traceAction :: String -> ValAddr -> RM Value -> (() -> RM (Maybe String)) -> (b -> RM Value) -> RM b -> RM b
+traceAction :: String -> ValAddr -> RM Value -> RM (Maybe String) -> (b -> RM Value) -> RM b -> RM b
 traceAction name addr beforeM argsMGen jsonfyb f = whenTraceEnabled name f do
   extraInfo <- asks (stTraceExtraInfo . baseConfig)
   addrS <- tshow addr
@@ -111,7 +128,7 @@ traceAction name addr beforeM argsMGen jsonfyb f = whenTraceEnabled name f do
     header = T.pack $ printf "%s, at:%s" name addrS
 
   cstaBefore <- optValRM extraInfo beforeM
-  cstaCustomVal <- optValRM extraInfo (toJSON <$> argsMGen ())
+  cstaCustomVal <- optValRM extraInfo (toJSON <$> argsMGen)
   traceSpanStart
     header
     ( toJSON $
@@ -136,29 +153,15 @@ emptySpanValue = return $ toJSON ()
 
 -- === Debug instant traces ===
 
-debugInstStr :: String -> ValAddr -> (() -> RM String) -> RM ()
-debugInstStr name addr f =
-  debugInst
-    name
-    addr
-    ( const $ do
-        s <- f ()
-        return $ toJSON s
-    )
+debugInstStr :: String -> ValAddr -> RM String -> RM ()
+debugInstStr name addr f = debugInst name addr (toJSON <$> f)
 
-debugInstText :: String -> ValAddr -> RM T.Text -> RM ()
-debugInstText name addr margs =
-  debugInst name addr (const $ toJSON <$> margs)
-
-debugInstJV :: String -> ValAddr -> RM Value -> RM ()
-debugInstJV name addr margs = debugInst name addr (const margs)
-
-debugInst :: String -> ValAddr -> (() -> RM Value) -> RM ()
+debugInst :: String -> ValAddr -> RM Value -> RM ()
 debugInst name addr argsGen = whenTraceEnabled name (return ()) $ do
   addrS <- tshow addr
   trID <- getTraceID
   extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  ctiCustomVal <- optValRM extraInfo (toJSON <$> argsGen ())
+  ctiCustomVal <- optValRM extraInfo (toJSON <$> argsGen)
   debugInstant
     (T.pack name)
     ( toJSON $

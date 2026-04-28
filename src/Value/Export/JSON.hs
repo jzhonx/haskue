@@ -17,30 +17,30 @@ newtype BuildConfig = BuildConfig {isDebug :: Bool}
 
 type JM = RWST BuildConfig () TextIndexer (Except String)
 
-buildJSON :: Val -> TextIndexer -> Except String (Value, TextIndexer)
+buildJSON :: VNode -> TextIndexer -> Except String (Value, TextIndexer)
 buildJSON t tier = do
   (a, s, _) <- runRWST (buildJSONExt t) (BuildConfig False) tier
   return (a, s)
 
-buildJSONExt :: Val -> JM Value
-buildJSONExt v = case valNode v of
-  VNAtom atom -> return $ toJSON atom
-  VNBottom _ -> throwErrSt "bottom should be eliminated before JSON export"
-  VNBounds _ -> incompleteErr v
-  VNTop -> incompleteErr v
-  VNStruct stc -> buildJSONStruct stc
-  VNList l -> do
+buildJSONExt :: VNode -> JM Value
+buildJSONExt v = case value v of
+  VAtom atom -> return $ toJSON atom
+  VBottom _ -> throwErrSt "bottom should be eliminated before JSON export"
+  VBounds _ -> incompleteErr v
+  VTop -> incompleteErr v
+  VStruct stc -> buildJSONStruct stc
+  VList l -> do
     let elems = V.toList l.final
     jsonElems <- mapM buildJSONExt elems
     return $ toJSON jsonElems
-  VNDisj dj | Just df <- rtrDisjDefVal dj -> buildJSONExt df
+  VDisj dj | Just df <- rtrDisjDefVal dj -> buildJSONExt (mkValVN df)
   _ -> do
-    vType <- Value.Val.showValueType v
+    vType <- Value.Val.showValueType (value v)
     throwErrSt $ printf "unsupported value for JSON export %s" vType
 
 buildJSONStruct :: Struct -> JM Value
 -- Handle embedded values first.
-buildJSONStruct (Struct{stcEmbedVal = Just ev}) = buildJSONExt ev
+buildJSONStruct (Struct{stcEmbedVal = Just ev}) = buildJSONExt (mkValVN ev)
 buildJSONStruct stc = do
   let fields = stcFields stc
   objFields <- foldM buildField Map.empty (Map.toList fields)
@@ -51,7 +51,7 @@ buildJSONStruct stc = do
     valJSON <- buildJSONExt field.ssfValue
     return $ Map.insert key valJSON acc
 
-incompleteErr :: Val -> JM a
+incompleteErr :: VNode -> JM a
 incompleteErr v = do
-  t <- oneLinerStringOfVal v
+  t <- oneLinerStringOfVNode v
   throwErrSt $ printf "incomplete value %s" t

@@ -23,7 +23,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
 data DepGraph = DepGraph
-  { nodesByUseFunc :: Map.Map SuffixIrredAddr [ValAddr]
+  { nodesByUseFunc :: Map.Map CanonicalAddr [ValAddr]
   -- ^ Groups lists of dependent vertex IDs by their function addresses.
   -- If the function does not have an argument, it maps to itself.
   -- For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
@@ -111,7 +111,7 @@ queryVGUsesByDepMatch depMatch g =
    in concatMap (\(dep, uses) -> map (\use -> (dep, use)) uses) x
 
 data CGraph = CGraph
-  { pDAG :: HashMap.HashMap ExprVertex [ExprVertex]
+  { cgDAG :: HashMap.HashMap ExprVertex [ExprVertex]
   -- ^ Maps from an SCC rep address to a list of SCC rep addresses that represents the dependencies.
   , repToComps :: HashMap.HashMap ExprVertex (Set.Set ExprVertex, Bool)
   -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
@@ -124,7 +124,7 @@ data CGraph = CGraph
 emptyCGraph :: CGraph
 emptyCGraph =
   CGraph
-    { pDAG = HashMap.empty
+    { cgDAG = HashMap.empty
     , repToComps = HashMap.empty
     , compToRep = HashMap.empty
     }
@@ -149,7 +149,7 @@ getOrCreateRepVtx v g = case HashMap.lookup v (compToRep g) of
 
 The Bool indicates whether the SCC is cyclic.
 -}
-newtype GrpAddr = GrpAddr {getGrpAddr :: (SuffixIrredAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
+newtype GrpAddr = GrpAddr {getGrpAddr :: (CanonicalAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
 
 instance Show GrpAddr where
   show (GrpAddr (addr, isCyclic)) =
@@ -163,10 +163,10 @@ instance ShowWTIndexer GrpAddr where
     let cyclicText = if isCyclic then "Cyclic " else ""
     return $ cyclicText <> addrText
 
-pattern IsAcyclicGrpAddr :: SuffixIrredAddr -> GrpAddr
+pattern IsAcyclicGrpAddr :: CanonicalAddr -> GrpAddr
 pattern IsAcyclicGrpAddr addr <- GrpAddr (addr, False)
 
-pattern IsCyclicGrpAddr :: SuffixIrredAddr -> GrpAddr
+pattern IsCyclicGrpAddr :: CanonicalAddr -> GrpAddr
 pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
 
 emptyPropGraph :: DepGraph
@@ -222,12 +222,12 @@ getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
 
-getIrredAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> SuffixIrredAddr
-getIrredAddrFromVIDMust vid m = case getAddrFromVID vid m >>= addrIsSufIrred of
+getIrredAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> CanonicalAddr
+getIrredAddrFromVIDMust vid m = case getAddrFromVID vid m >>= addrIsCanonical of
   Just addr -> addr
   Nothing -> error $ printf "VID %s does not correspond to an irreducible address" (show vid)
 
-getIrredAddrFromIVMust :: (HasCallStack) => ExprVertex -> VIDMapping -> SuffixIrredAddr
+getIrredAddrFromIVMust :: (HasCallStack) => ExprVertex -> VIDMapping -> CanonicalAddr
 getIrredAddrFromIVMust iv = getIrredAddrFromVIDMust (getExprVertex iv)
 
 defaultVIDMapping :: VIDMapping
@@ -261,7 +261,7 @@ rootVID :: Int
 rootVID = 0
 
 -- | Get the component addresses of a given group address in the propagation graph.
-getElemAddrInGrp :: GrpAddr -> DepGraph -> [SuffixIrredAddr]
+getElemAddrInGrp :: GrpAddr -> DepGraph -> [CanonicalAddr]
 getElemAddrInGrp gaddr ng = case ( do
                                     (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
                                     HashMap.lookup baseID (repToComps ng.cgraph)
@@ -270,7 +270,7 @@ getElemAddrInGrp gaddr ng = case ( do
   Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
  where
   addr = fst $ getGrpAddr gaddr
-  (gaddrID, _) = getVID (sufIrredToAddr addr) ng.vidMapping
+  (gaddrID, _) = getVID (canonicalToAddr addr) ng.vidMapping
 
 -- | Get all node addresses of a given group address in the propagation graph.
 getNodeAddrsInGrp :: GrpAddr -> DepGraph -> [ValAddr]
@@ -285,12 +285,12 @@ getNodeAddrsInGrp gaddr ng =
           Set.empty
           irredAddrs
 
-getNodeAddrsByFunc :: SuffixIrredAddr -> DepGraph -> [ValAddr]
+getNodeAddrsByFunc :: CanonicalAddr -> DepGraph -> [ValAddr]
 getNodeAddrsByFunc funcAddr ng = Map.findWithDefault [] funcAddr ng.nodesByUseFunc
 
 -- | Get all use components of a given component address in the propagation graph.
 getUseGroups :: GrpAddr -> DepGraph -> [GrpAddr]
-getUseGroups gaddr ng = case HashMap.lookup (ExprVertex repAddrID) (pDAG ng.cgraph) of
+getUseGroups gaddr ng = case HashMap.lookup (ExprVertex repAddrID) (cgDAG ng.cgraph) of
   Nothing -> []
   Just uses ->
     map
@@ -303,10 +303,10 @@ getUseGroups gaddr ng = case HashMap.lookup (ExprVertex repAddrID) (pDAG ng.cgra
       uses
  where
   repAddr = fst $ getGrpAddr gaddr
-  (repAddrID, _) = getVID (sufIrredToAddr repAddr) ng.vidMapping
+  (repAddrID, _) = getVID (canonicalToAddr repAddr) ng.vidMapping
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the propagation graph.
-lookupGrpAddr :: SuffixIrredAddr -> DepGraph -> Maybe GrpAddr
+lookupGrpAddr :: CanonicalAddr -> DepGraph -> Maybe GrpAddr
 lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep ng.cgraph) of
   Nothing -> Nothing
   Just (baseID, isCyclic) ->
@@ -314,7 +314,7 @@ lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep
       -- The baseID must have its corresponding irreducible address.
       GrpAddr (getIrredAddrFromIVMust baseID ng.vidMapping, isCyclic)
  where
-  (rfbAddrID, _) = getVID (sufIrredToAddr rfbAddr) ng.vidMapping
+  (rfbAddrID, _) = getVID (canonicalToAddr rfbAddr) ng.vidMapping
 
 {- | Add a new dependency to the propagation graph and update the component graph.
 
@@ -328,13 +328,13 @@ Some cases:
 1. sub-field RC: x: x.f. Resolving "x.f.g" gets dependency relationships: /x/f/g -> /x/f, /x/f -> /x.
     From the x -> x.f.g we get /x -> /x/f/g. So we have a cycle, which contains /x, /x/f, /x/f/g.
 -}
-addNewDepToNG :: (HasCallStack) => ValAddr -> (ReferableAddr, ReferableAddr) -> DepGraph -> DepGraph
-addNewDepToNG use (depIdent, dep) =
+addNewDepToNG :: (HasCallStack) => ValAddr -> ReferableAddr -> DepGraph -> DepGraph
+addNewDepToNG use dep =
   execState
     ( do
         let
-          normDepAddr = sufIrredToAddr $ trimAddrToSufIrred (rfbAddrToAddr dep)
-          normUseAddr = sufIrredToAddr $ trimAddrToSufIrred use
+          normDepAddr = canonicalToAddr $ trimAddrToCanonical (rfbAddrToAddr dep)
+          normUseAddr = canonicalToAddr $ trimAddrToCanonical use
         irDepID <- liftGetVIDForG normDepAddr
         irUseID <- liftGetVIDForG normUseAddr
         let useVtx = ExprVertex irUseID
@@ -344,49 +344,24 @@ addNewDepToNG use (depIdent, dep) =
             insertVGraphEdge
               (RefVertex irDepID)
               useVtx
-        modify' $ \g -> g{nodesByUseFunc = insertMUnique (trimAddrToSufIrred use) use g.nodesByUseFunc}
-        addSelDepToG depIdent dep
+        modify' $ \g -> g{nodesByUseFunc = insertMUnique (trimAddrToCanonical use) use g.nodesByUseFunc}
         depRep <- state (liftGetRepVtx depVtx)
         useRep <- state (liftGetRepVtx useVtx)
 
         ng <- get
         if
-          -- If both addresses are in the same SCC and they are not the same, do nothing.
-          | depRep == useRep
-          , depVtx /= useVtx ->
-              return ()
+          -- If both addresses are in the same SCC, do nothing.
+          | depRep == useRep -> return ()
           -- If there is no edge from useRep to depRep in the component graph, meaning there is no cycle formed, we
           -- can simply add the depRep -> useRep edge to the component graph.
-          -- Notice that if depRep == useRep, there is still a path from useRep to depRep.
-          | not (hasPathInCG useRep depRep ng)
-          , -- Also make sure that the use is not referencing a child of itself, which would form a reference cycle.
-            not (isPrefix normUseAddr normDepAddr && normUseAddr /= normDepAddr) -> do
-              let newCDAG = insertHMUnique depRep useRep (pDAG ng.cgraph)
-              modify' $ mapCGraph (\cg -> cg{pDAG = newCDAG})
+          | not (hasPathInCG useRep depRep ng) -> do
+              let newCDAG = insertHMUnique depRep useRep (cgDAG ng.cgraph)
+              modify' $ mapCGraph (\cg -> cg{cgDAG = newCDAG})
           -- The new edge forms a cycle in the component graph, we need to recompute the component graph.
           | otherwise -> modify' updateCGraph
     )
  where
   liftGetRepVtx v g = let (rep, newCG) = getOrCreateRepVtx v g.cgraph in (rep, g{cgraph = newCG})
-
-{- | Add a selection dependency to the propagation graph.
-
-The selection dependency is represented as an edge from the parent to the child.
-
-For example, if we have a selection dependency `a.b.c`, we add notification edges from `a` to `a.b`, and from `a.b` to
-`a.b.c`.
--}
-addSelDepToG :: (HasCallStack) => ReferableAddr -> ReferableAddr -> State DepGraph ()
-addSelDepToG depIdent dep
-  | depIdent == dep = return ()
-  | otherwise = case initRfbAddr dep of
-      -- we are already at the root
-      Nothing -> return ()
-      Just parentDep -> do
-        dParID <- liftGetVIDForG (rfbAddrToAddr parentDep)
-        did <- liftGetVIDForG (rfbAddrToAddr dep)
-        modify' $ mapVGraph $ insertVGraphSelEdge (RefVertex dParID) (ExprVertex did)
-        addSelDepToG depIdent parentDep
 
 {- | Check if there is a path from one vertex to another in the component graph.
 
@@ -400,9 +375,13 @@ hasPathInCG from to ng = dfs from Set.empty
     | current == to = True
     | Set.member current visited = False
     | otherwise =
-        let neighbors = HashMap.findWithDefault [] current (pDAG ng.cgraph)
+        let neighbors = HashMap.findWithDefault [] current (cgDAG ng.cgraph)
             newVisited = Set.insert current visited
          in any (\neighbor -> dfs neighbor newVisited) neighbors
+
+-- | Update the component graph based on the current propagation graph.
+updateCGraph2 :: (HasCallStack) => DepGraph -> DepGraph
+updateCGraph2 g = undefined
 
 liftGetVIDForG :: ValAddr -> State DepGraph Int
 liftGetVIDForG addr = state $ \g ->
@@ -426,7 +405,7 @@ delDGEdgesByUseMatch useMatch =
         --           (filter (not . match))
         --           -- First filter the keys.
         --           ( Map.filterWithKey
-        --               (\k _ -> not (match (sufIrredToAddr k)))
+        --               (\k _ -> not (match (canonicalToAddr k)))
         --               (nodesByUseFunc g)
         --           )
         --     }
@@ -472,7 +451,7 @@ updateCGraph graph =
     y
       { cgraph =
           CGraph
-            { pDAG = newSCCDAG
+            { cgDAG = newSCCDAG
             , repToComps = newBaseToComps
             , compToRep = newVToSCCBase
             }
@@ -662,11 +641,11 @@ data NeighborType
 A parent address being a prefix of the child means that there must be at least one more referable segment in the
 child address after the parent address.
 -}
-isSufIrredParent :: SuffixIrredAddr -> SuffixIrredAddr -> Bool
+isSufIrredParent :: CanonicalAddr -> CanonicalAddr -> Bool
 isSufIrredParent parent child =
   let
-    parentAddr = sufIrredToAddr parent
-    childAddr = sufIrredToAddr child
+    parentAddr = canonicalToAddr parent
+    childAddr = canonicalToAddr child
     isParentPrefix = isPrefix parentAddr childAddr
    in
     isParentPrefix
@@ -697,7 +676,7 @@ lookupMust m k = case HashMap.lookup k m of
   Just v -> v
   Nothing -> error $ printf "key %s not found in map %s" (show k) (show m)
 
-removeChildSIAddrs :: [SuffixIrredAddr] -> [SuffixIrredAddr]
+removeChildSIAddrs :: [CanonicalAddr] -> [CanonicalAddr]
 removeChildSIAddrs addrs =
   -- If there is an address that is a child of another address, remove it.
   filter (\a -> not $ or [isSufIrredParent x a | x <- addrs]) addrs

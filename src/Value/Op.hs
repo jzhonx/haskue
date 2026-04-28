@@ -11,25 +11,14 @@ module Value.Op where
 import Control.DeepSeq (NFData (..))
 import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
-import Feature (Feature, mkMutArgFeature)
+import Feature (Feature, mkOpArgFeature)
 import GHC.Generics (Generic)
 import Syntax.Token as Token
 import Value.Comprehension
 import Value.DisjoinOp
 import Value.Interpolation
 import Value.Reference
-import Value.UnifyOp
 import {-# SOURCE #-} Value.Val
-
--- | SOp is an operation with stateful information.
-data SOp = SOp Op OpFrame
-  deriving (Generic)
-
-setOpInSOp :: Op -> SOp -> SOp
-setOpInSOp op (SOp _ frame) = SOp op frame
-
-getOpFromSOp :: SOp -> Op
-getOpFromSOp (SOp op _) = op
 
 data Op
   = RegOp RegularOp
@@ -37,57 +26,35 @@ data Op
   | VSelect ValueSelect
   | Compreh Comprehension
   | DisjOp DisjoinOp
-  | UOp UnifyOp
   | Itp Interpolation
   deriving (Generic)
 
-pattern Op :: Op -> SOp
-pattern Op op <- SOp op _
+getOpFArgs :: Op -> Seq.Seq (Feature, VNode)
+getOpFArgs op =
+  let xs = getOpArgs op
+   in Seq.fromList $ zip (map mkOpArgFeature [0 ..]) (toList xs)
 
-data OpFrame = OpFrame {}
-  deriving (Generic)
+getOpArgs :: Op -> Seq.Seq VNode
+getOpArgs (RegOp rop) = ropArgs rop
+getOpArgs (Ref ref) = selectors ref
+getOpArgs (VSelect (ValueSelect _ _ xs)) = xs
+getOpArgs (Compreh c) = fmap getValFromIterClause c.args
+getOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
+getOpArgs (Itp itp) = itpExprs itp
 
-emptyOpFrame :: OpFrame
-emptyOpFrame = OpFrame{}
-
-withEmptyOpFrame :: Op -> SOp
-withEmptyOpFrame op = SOp op emptyOpFrame
-
-getSOpArgs :: SOp -> Seq.Seq (Feature, Val)
-getSOpArgs (SOp op _) =
-  let (xs, isUnify) = getOpArgs op
-   in Seq.fromList $ zip (map (`mkMutArgFeature` isUnify) [0 ..]) (toList xs)
-
-getOpArgs :: Op -> (Seq.Seq Val, Bool)
-getOpArgs (RegOp rop) = (ropArgs rop, False)
-getOpArgs (Ref ref) = (selectors ref, False)
-getOpArgs (VSelect (ValueSelect _ xs)) = (xs, False)
-getOpArgs (Compreh c) = (fmap getValFromIterClause c.args, False)
-getOpArgs (DisjOp d) = (fmap dstValue (djoTerms d), False)
-getOpArgs (UOp u) = (conjs u, True)
-getOpArgs (Itp itp) = (itpExprs itp, False)
-
-updateSOpArg :: Int -> Val -> SOp -> SOp
-updateSOpArg i t (SOp op frame) = SOp (updateOpArg i t op) frame
-
-updateOpArg :: Int -> Val -> Op -> Op
-updateOpArg i t (RegOp r) = RegOp $ r{ropArgs = Seq.update i t (ropArgs r)}
-updateOpArg i t (Ref ref) = Ref $ mapRefSels (Seq.update i t) ref
-updateOpArg i t (VSelect (ValueSelect b xs)) = VSelect $ ValueSelect b $ Seq.update i t xs
-updateOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
-updateOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
-updateOpArg i t (UOp u) = UOp $ u{conjs = Seq.update i t (conjs u)}
-updateOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
-
-modifyRegSOp :: (RegularOp -> RegularOp) -> SOp -> SOp
-modifyRegSOp f (SOp (RegOp m) frame) = SOp (RegOp $ f m) frame
-modifyRegSOp _ r = r
+-- updateOpArg :: Int -> VNode -> Op -> Op
+-- updateOpArg i t (RegOp r) = RegOp $ r{ropArgs = Seq.update i t (ropArgs r)}
+-- updateOpArg i t (Ref ref) = Ref $ mapRefSels (Seq.update i t) ref
+-- updateOpArg i t (VSelect (ValueSelect bvid b xs)) = VSelect $ ValueSelect bvid b $ Seq.update i t xs
+-- updateOpArg i t (Compreh c) = Compreh $ c{args = Seq.adjust (setValInIterClause t) i c.args}
+-- updateOpArg i t (DisjOp d) = DisjOp $ d{djoTerms = Seq.adjust (\term -> term{dstValue = t}) i (djoTerms d)}
+-- updateOpArg i t (Itp itp) = Itp $ itp{itpExprs = Seq.update i t (itpExprs itp)}
 
 -- | RegularOp is a tree node that represents a function.
 data RegularOp = RegularOp
   { ropName :: String
   , ropOpType :: RegOpType
-  , ropArgs :: Seq.Seq Val
+  , ropArgs :: Seq.Seq VNode
   -- ^ Args stores the arguments that may or may not need to be evaluated.
   }
   deriving (Generic)
@@ -107,44 +74,36 @@ emptyRegularOp =
     , ropArgs = Seq.empty
     }
 
-mkUnaryOp :: TokenType -> Val -> SOp
+mkUnaryOp :: TokenType -> VNode -> Op
 mkUnaryOp op n =
-  withEmptyOpFrame $
-    RegOp $
-      RegularOp
-        { ropName = show op
-        , ropOpType = UnaryOpType op
-        , ropArgs = Seq.fromList [n]
-        }
+  RegOp $
+    RegularOp
+      { ropName = show op
+      , ropOpType = UnaryOpType op
+      , ropArgs = Seq.fromList [n]
+      }
 
-mkBinaryOp :: TokenType -> Val -> Val -> SOp
+mkBinaryOp :: TokenType -> VNode -> VNode -> Op
 mkBinaryOp op l r =
-  withEmptyOpFrame $
-    RegOp $
-      RegularOp
-        { ropName = show op
-        , ropOpType = BinOpType op
-        , ropArgs = Seq.fromList [l, r]
-        }
+  RegOp $
+    RegularOp
+      { ropName = show op
+      , ropOpType = BinOpType op
+      , ropArgs = Seq.fromList [l, r]
+      }
 
-mkDisjoinOp :: Seq.Seq DisjTerm -> SOp
-mkDisjoinOp ts = withEmptyOpFrame $ DisjOp $ DisjoinOp{djoTerms = ts}
+mkDisjoinOp :: Seq.Seq DisjTerm -> Op
+mkDisjoinOp ts = DisjOp $ DisjoinOp{djoTerms = ts}
 
-mkDisjoinOpFromList :: [DisjTerm] -> SOp
+mkDisjoinOpFromList :: [DisjTerm] -> Op
 mkDisjoinOpFromList ts = mkDisjoinOp (Seq.fromList ts)
 
-mkUnifyOp :: [Val] -> SOp
-mkUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, isEmbedUnify = False}
+mkItpSOp :: [IplSeg] -> [VNode] -> Op
+mkItpSOp segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
 
-mkEmbedUnifyOp :: [Val] -> SOp
-mkEmbedUnifyOp ts = withEmptyOpFrame $ UOp $ UnifyOp{conjs = Seq.fromList ts, isEmbedUnify = True}
-
-mkItpSOp :: [IplSeg] -> [Val] -> SOp
-mkItpSOp segs exprs = withEmptyOpFrame $ Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
-
-modifyRefInSOp :: (Reference -> Reference) -> SOp -> SOp
-modifyRefInSOp f (SOp (Ref r) frame) = SOp (Ref $ f r) frame
-modifyRefInSOp _ r = r
+-- modifyRefInSOp :: (Reference -> Reference) -> SOp -> SOp
+-- modifyRefInSOp f (SOp (Ref r) frame) = SOp (Ref $ f r) frame
+-- modifyRefInSOp _ r = r
 
 showOpType :: Op -> String
 showOpType op = case op of
@@ -153,5 +112,4 @@ showOpType op = case op of
   VSelect _ -> "index"
   Compreh _ -> "compreh"
   DisjOp _ -> "disjoin"
-  UOp u -> if isEmbedUnify u then "embedUnify" else "unify"
   Itp _ -> "inter"

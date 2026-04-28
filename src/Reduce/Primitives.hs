@@ -9,31 +9,28 @@ module Reduce.Primitives where
 import Control.Monad (foldM)
 import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
-import qualified Data.Text as T
+import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import Feature
-import {-# SOURCE #-} Reduce.Core (forceReduceMut, reduce)
+import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Monad (
   RM,
   throwFatal,
  )
-import Reduce.Store (storeAllSubVals)
-import Reduce.TraceSpan (debugInstText, traceSpanValTM, valDebugRep)
+import Reduce.TraceSpan (debugInstStr, emptySpanValue, traceSpanTM)
 import Syntax.Token (TokenType)
 import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
-import Value.Instances (vtmapVectorM, vtmapVectorQ)
+import Value.Export.Debug (toTermsRepWithAddr)
+import Value.Instances (mapMVectorWAddr)
 
 -- * Regular Unary Ops
 
-retVal :: (Monad m) => Val -> m (Maybe Val)
-retVal = return . Just
-
-resolveUnaryOp :: (Monad m) => TokenType -> Maybe Val -> m (Maybe Val)
+resolveUnaryOp :: (Monad m) => TokenType -> Maybe Val -> m Val
 resolveUnaryOp op tM = do
   case tM of
-    Just (IsBottom _) -> return tM
+    Just err@(VBottom _) -> return err
     Just t | Just a <- rtrAtom t -> case op of
       Token.Plus
         | Int i <- a -> ia i id
@@ -42,7 +39,7 @@ resolveUnaryOp op tM = do
         | Int i <- a -> ia i negate
         | Float f <- a -> fa f negate
       Token.Exclamation
-        | Bool b <- a -> retVal (mkAtomVal (Bool (not b)))
+        | Bool b <- a -> return (VAtom (Bool (not b)))
       Token.NotEqual -> mkb (BdNE a)
       Token.Less
         | Int i <- a -> mkib BdLT i
@@ -57,52 +54,50 @@ resolveUnaryOp op tM = do
         | Int i <- a -> mkib BdGE i
         | Float f <- a -> mkfb BdGE f
       Token.Match
-        | String p <- a -> retVal (mkBoundsValFromList [BdStrMatch $ BdReMatch p])
+        | String p <- a -> return (mkBoundsValueFromList [BdStrMatch $ BdReMatch p])
       Token.NotMatch
-        | String p <- a -> retVal (mkBoundsValFromList [BdStrMatch $ BdReNotMatch p])
+        | String p <- a -> return (mkBoundsValueFromList [BdStrMatch $ BdReNotMatch p])
       _ -> returnErr t
-    _ -> return Nothing
+    _ -> return VNoVal
  where
-  returnErr v = retVal $ mkBottomVal $ printf "%s cannot be used for %s" (show v) (show op)
+  returnErr v = return $ mkBoundsVal $ printf "%s cannot be used for %s" (show v) (show op)
 
-  ia a f = retVal (mkAtomVal (Int $ f a))
+  ia a f = return (VAtom (Int $ f a))
 
-  fa a f = retVal (mkAtomVal (Float $ f a))
+  fa a f = return (VAtom (Float $ f a))
 
-  mkb b = retVal (mkBoundsValFromList [b])
+  mkb b = return (mkBoundsValueFromList [b])
 
-  mkib uop i = retVal (mkBoundsValFromList [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
+  mkib uop i = return (mkBoundsValueFromList [BdNumCmp $ BdNumCmpCons uop (NumInt i)])
 
-  mkfb uop f = retVal (mkBoundsValFromList [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
+  mkfb uop f = return (mkBoundsValueFromList [BdNumCmp $ BdNumCmpCons uop (NumFloat f)])
 
 -- * Regular Binary Ops
 
-resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> ValAddr -> RM (Maybe Val)
+resolveRegBinOp :: TokenType -> Maybe Val -> Maybe Val -> ValAddr -> RM Val
 resolveRegBinOp op t1M t2M _ = resolveRegBinDir op (L, t1M) (R, t2M)
 
 resolveRegBinDir ::
   TokenType ->
   (BinOpDirect, Maybe Val) ->
   (BinOpDirect, Maybe Val) ->
-  RM (Maybe Val)
+  RM Val
 resolveRegBinDir op (d1, t1M) (d2, t2M) = do
   if
     | op `elem` cmpOps -> return $ cmp (op == Token.Equal) (d1, t1M) (d2, t2M)
     | op `elem` arithOps -> case (t1M, t2M) of
         -- First consider when either of the trees is bottom.
-        (Just (IsBottom _), _) -> return t1M
-        (_, Just (IsBottom _)) -> return t2M
+        (Just err@(VBottom _), _) -> return err
+        (_, Just err@(VBottom _)) -> return err
         (Just t1, Just t2)
           -- Tops are incomplete.
-          | IsTop <- t1 -> return Nothing
-          | IsTop <- t2 -> return Nothing
-          | IsFix{} <- t1 -> return Nothing
-          | IsFix{} <- t2 -> return Nothing
+          | VTop <- t1 -> return VNoVal
+          | VTop <- t2 -> return VNoVal
           -- When both trees are atoms.
-          | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ Just $ calc op (d1, a1) (d2, a2)
+          | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ calc op (d1, a1) (d2, a2)
           -- When both trees are non-union values.
-          | Just _ <- rtrNonUnion t1, Just _ <- rtrNonUnion t2 -> return $ Just $ mismatch op t1 t2
-        _ -> return Nothing
+          | Just _ <- rtrNonUnion t1, Just _ <- rtrNonUnion t2 -> return $ mismatch op t1 t2
+        _ -> return VNoVal
     | otherwise ->
         throwFatal $
           printf "regular binary op %s is not supported for %s and %s" (show op) (show t1M) (show t2M)
@@ -110,36 +105,36 @@ resolveRegBinDir op (d1, t1M) (d2, t2M) = do
   cmpOps = [Token.Equal, Token.NotEqual, Token.Less, Token.LessEqual, Token.Greater, Token.GreaterEqual]
   arithOps = [Token.Plus, Token.Minus, Token.Multiply, Token.Divide]
 
-cmp :: Bool -> (BinOpDirect, Maybe Val) -> (BinOpDirect, Maybe Val) -> Maybe Val
+cmp :: Bool -> (BinOpDirect, Maybe Val) -> (BinOpDirect, Maybe Val) -> Val
 cmp cmpEqu (d1, t1M) (d2, t2M) =
   case (t1M, t2M) of
     -- First consider when either of the trees is bottom.
-    (Just (IsBottom _), _)
+    (Just (VBottom _), _)
       -- Incomplete is treated as bottom.
-      | Nothing <- t2M -> Just $ mkAtomVal (Bool cmpEqu)
-      | Just (IsBottom _) <- t2M -> Just $ mkAtomVal (Bool cmpEqu)
-      | Just _ <- t2M -> Just $ mkAtomVal (Bool $ not cmpEqu)
-    (_, Just (IsBottom _)) -> cmp cmpEqu (d2, t2M) (d1, t1M)
+      | Nothing <- t2M -> VAtom (Bool cmpEqu)
+      | Just (VBottom _) <- t2M -> VAtom (Bool cmpEqu)
+      | Just _ <- t2M -> VAtom (Bool $ not cmpEqu)
+    (_, Just (VBottom _)) -> cmp cmpEqu (d2, t2M) (d1, t1M)
     -- When both trees are not bottom.
     (Just t1, Just t2)
-      | Just Null <- rtrAtom t1 -> Just $ cmpNull cmpEqu t2
-      | Just Null <- rtrAtom t2 -> Just $ cmpNull cmpEqu t1
+      | Just Null <- rtrAtom t1 -> cmpNull cmpEqu t2
+      | Just Null <- rtrAtom t2 -> cmpNull cmpEqu t1
       -- When both trees are non-null atoms.
       | Just a1 <- rtrAtom t1
       , Just a2 <- rtrAtom t2 ->
-          Just $ mkAtomVal (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
+          VAtom (Bool $ if cmpEqu then a1 == a2 else a1 /= a2)
       -- When both trees are Singular values.
       | Just _ <- rtrNonUnion t1
       , Just _ <- rtrNonUnion t2 ->
-          Just $ mkBottomVal $ printf "%s and %s are not comparable" (show t1) (show t2)
-    _ -> Nothing
+          mkBoundsVal $ printf "%s and %s are not comparable" (show t1) (show t2)
+    _ -> VNoVal
 
 cmpNull :: Bool -> Val -> Val
 cmpNull cmpEqu t =
   if
-    | Just a <- rtrAtom t -> mkAtomVal (Bool $ if cmpEqu then a == Null else a /= Null)
+    | Just a <- rtrAtom t -> VAtom (Bool $ if cmpEqu then a == Null else a /= Null)
     -- There is no way for a non-atom to be compared with a non-null atom.
-    | otherwise -> mkAtomVal (Bool $ not cmpEqu)
+    | otherwise -> VAtom (Bool $ not cmpEqu)
 
 calc :: TokenType -> (BinOpDirect, Atom) -> (BinOpDirect, Atom) -> Val
 calc op (L, a1) (_, a2) =
@@ -152,32 +147,32 @@ calc op (L, a1) (_, a2) =
       | Float f2 <- a2, Just f <- lookup op floatOps -> rf (f f1 f2)
       | Int i2 <- a2, Just f <- lookup op floatOps -> rf (f f1 (fromIntegral i2))
     String s1
-      | String s2 <- a2, op == Token.Plus -> mkAtomVal (String $ s1 <> s2)
+      | String s2 <- a2, op == Token.Plus -> VAtom (String $ s1 <> s2)
     _ -> mismatch op a1 a2
  where
-  ri = mkAtomVal . Int
-  rf = mkAtomVal . Float
+  ri = VAtom . Int
+  rf = VAtom . Float
 
   regIntOps = [(Token.Plus, (+)), (Token.Minus, (-)), (Token.Multiply, (*))]
   floatOps = [(Token.Plus, (+)), (Token.Minus, (-)), (Token.Multiply, (*)), (Token.Divide, (/))]
 calc op x@(R, _) y = calc op y x
 
 mismatch :: (Show a, Show b) => TokenType -> a -> b -> Val
-mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
+mismatch op x y = mkBoundsVal $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
 
-reduceList :: List -> ValAddr -> Val -> RM Val
-reduceList l addr v = traceSpanValTM "reduceList" addr v do
-  updstore <- vtmapVectorM reduce mkListStoreIdxFeature addr (store l)
+reduceList :: List -> ValAddr -> RM Val
+reduceList l addr = traceSpanTM "reduceList" addr emptySpanValue do
+  updstore <- mapMVectorWAddr reduce mkListStoreIdxFeature addr (store l)
   revR <-
     V.foldM
       ( \acc sub -> do
-          debugInstText "reduceList finalize" addr (T.pack <$> valDebugRep addr sub)
-          case sub of
+          debugInstStr "reduceList finalize" addr (show <$> toTermsRepWithAddr addr sub)
+          case static $ constraints sub of
             -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
             -- the elements of the list into the list at the current index.
-            IsValMutable (Op (Compreh cph))
+            OpCnstr (Compreh cph) Seq.:<| Seq.Empty
               | cph.isListCompreh
-              , Just rList <- rtrList sub ->
+              , Just rList <- rtrList (value sub) ->
                   return $ (reverse . toList $ rList.final) ++ acc
             _ -> return $ sub : acc
       )
@@ -187,41 +182,39 @@ reduceList l addr v = traceSpanValTM "reduceList" addr v do
     r = reverse revR
     finalV = V.fromList r
 
-  -- The values of the final list are not stored in the store yet.
-  sequence_ $ vtmapVectorQ storeAllSubVals mkListIdxFeature addr finalV
-  return $
-    setVN
-      ( VNList $
-          l
-            { store = updstore
-            , final = finalV
-            }
-      )
-      v
+  -- TODO: faster
+  finalV' <- mapMVectorWAddr reduce mkListIdxFeature addr finalV
+  return
+    ( VList $
+        l
+          { store = updstore
+          , final = finalV'
+          }
+    )
 
 -- | Closes a struct when the tree has struct.
-resolveCloseFunc :: [Val] -> Val -> ValAddr -> RM Val
-resolveCloseFunc args _ addr
-  | length args /= 1 = return $ mkBottomVal $ printf "close function expects exactly 1 argument, got %d" (length args)
+resolveCloseFunc :: [VNode] -> ValAddr -> RM Val
+resolveCloseFunc args addr
+  | length args /= 1 = return $ mkBoundsVal $ printf "close function expects exactly 1 argument, got %d" (length args)
   | otherwise = do
       let arg = head args
-      v <- forceReduceMut False addr arg
+      v <- reduce (appendSeg addr (mkOpArgFeature 0)) arg
       return $ closeConcrete v
 
 -- | Close a concrete value.
-closeConcrete :: Val -> Val
+closeConcrete :: VNode -> Val
 closeConcrete a =
   case a of
-    IsNoVal -> a
-    IsStruct s -> setVN (VNStruct $ s{stcClosed = True}) a
+    IsNoVal -> VNoVal
+    IsStruct s -> VStruct $ s{stcClosed = True}
     -- This is the current behavior of close for non-struct values.
     -- If the value is a disjunction, we do not close the disjunction itself.
     IsDisj dj -> case defDisjunctsFromDisj dj of
-      [x] -> setVN (valNode x) a
-      _ -> setVN VNNoVal a
-    _ -> mkBottomVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
+      [x] -> value x
+      _ -> VNoVal
+    _ -> mkBoundsVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-resolveInterpolation :: Interpolation -> [Val] -> RM (Maybe Val)
+resolveInterpolation :: Interpolation -> [Val] -> RM Val
 resolveInterpolation l args = do
   r <-
     foldM
@@ -236,12 +229,12 @@ resolveInterpolation l args = do
               | Just _ <- rtrStruct r ->
                   return $
                     Left $
-                      mkBottomVal $
+                      mkBoundsVal $
                         printf "can not use struct in interpolation: %s" (showValType r)
               | Just _ <- rtrList r ->
                   return $
                     Left $
-                      mkBottomVal $
+                      mkBoundsVal $
                         printf "can not use list in interpolation: %s" (showValType r)
               | Just _ <- rtrBottom r -> return $ Left r
               | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
@@ -250,5 +243,5 @@ resolveInterpolation l args = do
       (Right BC.empty)
       (itpSegs l)
   case r of
-    Left err -> return $ Just err
-    Right res -> return $ Just $ mkAtomVal (String res)
+    Left err -> return err
+    Right res -> return $ VAtom (String res)

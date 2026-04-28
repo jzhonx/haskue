@@ -61,9 +61,9 @@ emptyReduceConfig =
     }
 
 data RCResolver = RCResolver
-  { stack :: [SuffixIrredAddr]
+  { stack :: [CanonicalAddr]
   -- ^ The current stack of RC addresses being recalculated.
-  , doneRCAddrs :: [SuffixIrredAddr]
+  , doneRCAddrs :: [CanonicalAddr]
   , resolving :: !Bool
   }
   deriving (Show, Generic, NFData)
@@ -81,11 +81,11 @@ data Context = Context
   , recalcRootQ :: Seq.Seq RecalcItem
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
-  , lastDerefs :: Map.Map SuffixIrredAddr (Map.Map ReferableAddr Val)
+  , lastDerefs :: Map.Map CanonicalAddr (Map.Map ReferableAddr VNode)
   -- ^ It stores the last dereferenced value of the reference with the suffix irreducible address.
   -- We use the suffix irreducible address because when reducing all the mutable arguments, they are reduced at the same
   -- time, so if any of them references to the same referable address, they will have the same value.
-  , vStore :: Map.Map SuffixIrredAddr Val
+  , vStore :: Map.Map CanonicalAddr VNode
   , rcResolver :: !RCResolver
   , noSignalReduced :: !Bool
   -- ^ If true, do not signal ready after reducing.
@@ -184,7 +184,7 @@ withNoSignalReduced b f = do
   setNoSignalReduced oldB
   return r
 
--- Val depth check
+-- VNode depth check
 
 treeDepthCheck :: ValAddr -> RM ()
 treeDepthCheck vc = do

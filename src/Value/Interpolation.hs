@@ -15,7 +15,7 @@ For example, "hello, \(name)" is make up of the string segment "hello, " and the
 -}
 data Interpolation = Interpolation
   { itpSegs :: [IplSeg]
-  , itpExprs :: Seq.Seq Val
+  , itpExprs :: Seq.Seq VNode
   }
   deriving (Generic)
 
