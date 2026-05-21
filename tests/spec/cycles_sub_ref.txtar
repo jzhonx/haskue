@@ -14,8 +14,10 @@ x: {
 // TODO
 x: x.z & {z: a: 1} | {y: 1}
 -- exp_cycles_sub_ref2 --
-x: x.z & {
-    z: a: 1
+x: {
+    z: {
+        a: 1
+    }
 } | {
     y: 1
 }

@@ -14,13 +14,14 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import Feature (
   ValAddr (..),
+  addrIsCanonical,
   appendSeg,
   canonicalToAddr,
+  collapseToCanonical,
   emptyValAddr,
   mkObjectFeature,
   mkOpArgFeature,
   mkRegCnstrFeature,
-  trimAddrToCanonical,
  )
 import Reduce.Comprehension (reduceCompreh)
 import Reduce.Disjunction (reduceDisj, resolveDisjOp)
@@ -28,6 +29,7 @@ import Reduce.Monad (
   Context (..),
   RM,
   createCnstr,
+  getNoSignalReduced,
   getRMContext,
   params,
   throwFatal,
@@ -62,19 +64,11 @@ import Value.Export.Debug (
   termsRepToJSONWithAddr,
   vnToStringTermsRep,
  )
-import Value.Instances (mapMSeqWAddr)
+import Value.Instances (mapMSeqWAddr, pretravsVTQ)
 
 -- | Reduce the tree to the lowest form.
 reduce :: ValAddr -> VNode -> RM VNode
-reduce addr = reduceWithInitVN addr VNoVal
-
-withValDepthLimit :: ValAddr -> RM a -> RM a
-withValDepthLimit addr f = do
-  treeDepthCheck addr
-  f
-
-reduceWithInitVN :: ValAddr -> Val -> VNode -> RM VNode
-reduceWithInitVN addr vn v = traceSpanTermsRepTM "reduce" addr v $ do
+reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
   debugInst
     "pre reduce"
     addr
@@ -83,16 +77,16 @@ reduceWithInitVN addr vn v = traceSpanTermsRepTM "reduce" addr v $ do
         ttoJSON store
     )
 
-  v' <-
-    withValDepthLimit addr $
-      if hasEmptyCnstrs (constraints v)
-        then do
-          -- FIXME: Currently, the input vn is only used for reducing constraints. And it is actually not used.
-          vn' <- reduceVN addr (value v)
-          return v{value = vn', constraints = (constraints v){allResolved = True}}
-        else reduceConstraintsAdapt addr v vn False reduceConstraintsSetFix
+  vn' <- do
+    treeDepthCheck addr
+    if hasEmptyCnstrs (constraints vn)
+      then do
+        -- FIXME: Currently, the input vn is only used for reducing constraints. And it is actually not used.
+        v' <- reduceVN addr (value vn)
+        return vn{value = v', constraints = (constraints vn){allResolved = True}}
+      else reduceConstraints addr vn False
 
-  storeVal addr v'
+  storeVal addr vn'
 
   debugInst
     "post reduce"
@@ -102,32 +96,29 @@ reduceWithInitVN addr vn v = traceSpanTermsRepTM "reduce" addr v $ do
         ttoJSON store
     )
 
-  ctx <- getRMContext
-  unless ctx.noSignalReduced $ signalReduced addr
-  return v'
+  noSignal <- getNoSignalReduced
+  unless noSignal $ signalReduced addr
+  return vn'
 
 {- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.
 
 The initial Val is provided as an argument.
 -}
-reduceConstraintsAdapt ::
-  ValAddr ->
-  VNode ->
-  Val ->
-  Bool ->
-  (Bool -> Int -> ValAddr -> Val -> ConstraintsSet -> RM (Val, ConstraintsSet)) ->
-  RM VNode
-reduceConstraintsAdapt addr v initVN stopAfter f = do
-  (vn', cnstrs') <- f stopAfter 0 addr initVN v.constraints
+reduceConstraints :: ValAddr -> VNode -> Bool -> RM VNode
+reduceConstraints addr vn stopAfterOneIter = do
+  (v', cnstrs') <- reduceConstraintsSetFix stopAfterOneIter 0 addr VNoVal vn.constraints
   return
-    v
-      { value = vn'
+    vn
+      { value = v'
       , constraints = cnstrs'
       }
 
+reduceConstraintsInCnstrs :: ValAddr -> VNode -> RM VNode
+reduceConstraintsInCnstrs addr vn = reduceConstraints addr vn True
+
 reduceConstraintsSetFix ::
   Bool -> Int -> ValAddr -> Val -> ConstraintsSet -> RM (Val, ConstraintsSet)
-reduceConstraintsSetFix stopAfter count addr vn constraints = do
+reduceConstraintsSetFix stopAfterOneIter count addr vn constraints = do
   (vn', constraints', info) <- traceSpanAdaptTM
     (printf "reduceConstraintsSetFix %d" count)
     addr
@@ -138,28 +129,27 @@ reduceConstraintsSetFix stopAfter count addr vn constraints = do
         return $ toJSON (aT, bJ)
     )
     $ do
-      (res, staticCnstrs', dyn', info) <- reduceCnstrsInner count False addr vn constraints.static constraints.dynamic
-      res' <- reduceVN addr res
+      (res, staticCnstrs', dyn', info) <- reduceCnstrsInner count False addr constraints.static constraints.dynamic
       -- Update the knowledge base with the temporary result.
-      debugInstStr "reduceConstraintsSetFix" addr (return "storing intermediate result")
+      res' <- reduceVN addr res
       storeVal addr (mkValVN res')
       return (res', constraints{static = staticCnstrs', dynamic = dyn', allResolved = info.incompleteCnstrs == 0}, info)
+  let shouldHandleRC = not (null info.refCycles) && isJust (addrIsCanonical addr)
   createCnstr <- asks (createCnstr . params)
   if
-    | vn' == vn || stopAfter -> return (vn', constraints')
+    | vn' == vn || stopAfterOneIter || not shouldHandleRC -> return (vn', constraints')
     | createCnstr && not (null info.atomCnstrs) && info.incompleteCnstrs > 0 ->
         return (snd $ head info.atomCnstrs, constraints')
-    | otherwise -> reduceConstraintsSetFix stopAfter (count + 1) addr vn' constraints'
+    | otherwise -> reduceConstraintsSetFix stopAfterOneIter (count + 1) addr vn' constraints'
 
 reduceCnstrsInner ::
   Int ->
   Bool ->
   ValAddr ->
-  Val ->
   ConstraintSeq ->
   IntMap.IntMap ConstraintSeq ->
   RM (Val, ConstraintSeq, IntMap.IntMap ConstraintSeq, CnstrInfo)
-reduceCnstrsInner count isEmbed addr curVN staticCnstrs dynCnstrs = traceSpanAdaptTM
+reduceCnstrsInner count isEmbed addr staticCnstrs dynCnstrs = traceSpanAdaptTM
   (printf "reduceCnstrsInner %d" count)
   addr
   emptySpanValue
@@ -169,18 +159,17 @@ reduceCnstrsInner count isEmbed addr curVN staticCnstrs dynCnstrs = traceSpanAda
       return $ toJSON (aJ, bJ)
   )
   do
-    (staticCnstrs', revPairs, info) <- foldCnstrsSeqM (reduceConstraint count curVN) addr staticCnstrs
-    (dynCnstrs', revDynPairs, dynInfo) <- reduceDynCnstrs count addr curVN dynCnstrs
+    (staticCnstrs', revPairs, info) <- foldCnstrsSeqM (reduceConstraint count) addr staticCnstrs
+    (dynCnstrs', revDynPairs, dynInfo) <- reduceDynCnstrs count addr dynCnstrs
     vn' <- mergeReducedCnstrs (revDynPairs ++ revPairs) isEmbed addr
     return (vn', staticCnstrs', dynCnstrs', mergeCnstrInfo info dynInfo)
 
 reduceDynCnstrs ::
   Int ->
   ValAddr ->
-  Val ->
   IntMap.IntMap ConstraintSeq ->
   RM (IntMap.IntMap ConstraintSeq, [(ValAddr, Val)], CnstrInfo)
-reduceDynCnstrs count addr curVN dynCnstrs = traceSpanAdaptTM
+reduceDynCnstrs count addr dynCnstrs = traceSpanAdaptTM
   (printf "foldDynCnstrsM %d" count)
   addr
   emptySpanValue
@@ -190,7 +179,7 @@ reduceDynCnstrs count addr curVN dynCnstrs = traceSpanAdaptTM
       foldM
         ( \(acc, accL, accInfo) (i, cnstrs) -> do
             let p = addr `appendSeg` mkRegCnstrFeature i
-            (cnstrs', revPairs, info) <- foldCnstrsSeqM (reduceConstraint count curVN) p cnstrs
+            (cnstrs', revPairs, info) <- foldCnstrsSeqM (reduceConstraint count) p cnstrs
             return
               ( (i, cnstrs') : acc
               , revPairs ++ accL
@@ -205,11 +194,15 @@ reduceDynCnstrs count addr curVN dynCnstrs = traceSpanAdaptTM
 
 It reduces every conjunct node it finds.
 -}
-reduceConstraint :: Int -> Val -> ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)
-reduceConstraint count curVN addr constraint = traceSpanAdaptTM
+reduceConstraint :: Int -> ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)
+reduceConstraint count addr constraint = traceSpanAdaptTM
   (printf "reduceConstraint %d" count)
   addr
-  emptySpanValue
+  ( do
+      cnstrsRep <- cnstrsToTermsRep [constraint] defaultTermsRepOption
+      let aJ = toJSON cnstrsRep
+      return aJ
+  )
   ( \(a, b, _) -> do
       cnstrsRep <- cnstrsToTermsRep [a] defaultTermsRepOption
       let aJ = toJSON cnstrsRep
@@ -227,24 +220,37 @@ reduceConstraint count curVN addr constraint = traceSpanAdaptTM
             _ -> emptyCnstrInfo
         )
     OpCnstr op -> do
-      (r, c') <- reduceOp False addr curVN op
+      (r, c') <- reduceOp addr op
+      let subInfo = discoverRefCyclesForOp addr c'
       return
         ( c'
         , r
-        , case r of
-            -- IsRef _ (Reference{isRefCycle = True, resolvedFullAddr = Just a}) -> mkRefCycleCnstr a
+        , subInfo `mergeCnstrInfo` case r of
             VNoVal -> mkInCompleteCnstr
             VAtom a -> mkAtomCnstrInfo addr a
             _ -> emptyCnstrInfo
         )
     StructEmbedCnstr embedCnstrs -> case embedCnstrs of
       ValCnstr (VStruct _) Seq.:<| _ -> do
-        (evn', constraints', _, info) <- reduceCnstrsInner count True addr curVN embedCnstrs IntMap.empty
+        (evn', constraints', _, info) <- reduceCnstrsInner count True addr embedCnstrs IntMap.empty
         return (StructEmbedCnstr constraints', evn', info)
       _ -> do
         cnstrsRep <- cnstrsToTermsRep (toList embedCnstrs) defaultTermsRepOption
         let s = show cnstrsRep
         throwFatal $ printf "unexpected non-struct constraint in StructEmbedCnstr, constraints: %s" s
+
+discoverRefCyclesForOp :: ValAddr -> Constraint -> CnstrInfo
+discoverRefCyclesForOp addr (OpCnstr op) =
+  pretravsVTQ
+    mergeCnstrInfo
+    ( \_ vt -> do
+        case vt of
+          VTOp (Ref Reference{isRefCycle = True, resolvedFullAddr = Just a}) -> mkRefCycleCnstr a
+          _ -> emptyCnstrInfo
+    )
+    addr
+    (VTOp op)
+discoverRefCyclesForOp _ _ = emptyCnstrInfo
 
 mergeReducedCnstrs :: [(ValAddr, Val)] -> Bool -> ValAddr -> RM Val
 mergeReducedCnstrs revPairs isEmbed addr =
@@ -337,31 +343,23 @@ mergeCnstrInfo c1 c2 =
     , refCycles = refCycles c1 ++ refCycles c2
     }
 
--- | Force re-reduce a mutable.
-reduceOpOnce :: Bool -> Val -> ValAddr -> VNode -> RM VNode
-reduceOpOnce furtherReduce curVN addr v@VNode{constraints} = do
-  case v of
-    _
-      | not (hasEmptyCnstrs constraints) -> reduceConstraintsAdapt addr v curVN True reduceConstraintsSetFix
-      | otherwise -> return v
-
-reduceOp :: Bool -> ValAddr -> Val -> Op -> RM (Val, Constraint)
-reduceOp furtherReduce addr curVN op = case op of
+reduceOp :: ValAddr -> Op -> RM (Val, Constraint)
+reduceOp addr op = case op of
   Compreh compreh -> do
-    r <- reduceCompreh compreh (appendSeg addr (mkObjectFeature compreh.cid)) curVN
-    return (r, OpCnstr op)
+    (r, cph') <- reduceCompreh addr compreh
+    return (r, OpCnstr (Compreh cph'))
   RegOp rop | ropOpType rop == CloseFunc -> do
     r <- resolveCloseFunc (toList $ ropArgs rop) addr
     return (r, OpCnstr op)
   VSelect vs -> do
-    -- The base of the vselect should have a canonical address, so that we can fully reduce it.
-    let baseAddr = canonicalToAddr $ trimAddrToCanonical $ appendSeg addr (mkObjectFeature vs.bvID)
+    let baseAddr = canonicalToAddr $ collapseToCanonical $ appendSeg addr (mkObjectFeature vs.bvID)
+    -- The base of the vselect should be fully reduced so that we have full info about its sub fields.
     v' <- reduce baseAddr vs.base
-    xs' <- mapMSeqWAddr reduce mkOpArgFeature addr (iSelectors vs)
+    xs' <- mapMSeqWAddr reduceConstraintsInCnstrs mkOpArgFeature addr (iSelectors vs)
     let vs' = vs{base = v', iSelectors = xs'}
     reduceNoUnify addr (VSelect vs')
   _ -> do
-    op' <- vtmapM (applyAddrFOnVal $ reduceOpOnce False curVN) addr op
+    op' <- vtmapM (applyAddrFOnVN reduceConstraintsInCnstrs) addr op
     reduceNoUnify addr op'
 
 reduceNoUnify :: ValAddr -> Op -> RM (Val, Constraint)
@@ -409,10 +407,7 @@ handleRefRes DerefResult{targetValue, isIdentIterVal, targetAddr, isRefCycle} _ 
   let newRef = ref{resolvedFullAddr = targetAddr, isRefCycle}
   case targetValue of
     Nothing -> return (VNoVal, OpCnstr (Ref newRef))
-    Just result ->
-      if isIdentIterVal
-        then return (value result, ValCnstr $ value result)
-        else return (value result, OpCnstr (Ref newRef))
+    Just result -> return (value result, OpCnstr (Ref newRef))
 
 reduceVN :: ValAddr -> Val -> RM Val
 reduceVN addr v = do
@@ -437,7 +432,4 @@ retrieveArgs rtr op =
    in (args, isJust $ sequence args)
 
 signalReduced :: ValAddr -> RM ()
-signalReduced = sendToRootRecalcQ True
-
-signalNeedRecalc :: ValAddr -> RM ()
-signalNeedRecalc = sendToRootRecalcQ False
+signalReduced = sendToRootRecalcQ

@@ -22,65 +22,63 @@ import Value
 
 The sub tree should already exist in the parent tree.
 -}
-setSubVal :: (HasCallStack) => Feature -> Val -> VNode -> Maybe VNode
-setSubVal f subT parT = case (fetchLabelType f, parT) of
+setSubVN :: (HasCallStack) => Feature -> VNode -> VNode -> Maybe VNode
+setSubVN f subVN parVN = case (fetchLabelType f, parVN) of
   (StringLabelType, IsStruct parStruct)
     -- The label segment should already exist in the parent struct. Otherwise the description of the field will not be
     -- found.
     | Just field <- lookupStructField (getTextIndexFromFeature f) parStruct ->
         let
-          newField = mapFieldValue (setVNodeValue subT) field
+          newField = mapFieldValue (const subVN) field
           newStruct = updateStructField (getTextIndexFromFeature f) newField parStruct
          in
           ret $ VStruct newStruct
   (PatternLabelType, IsStruct parStruct) ->
     let (i, j) = getPatternIndexesFromFeature f
-     in ret $ VStruct (mapStructCnstrByID i (setVNodeValue subT) parStruct)
+     in ret $ VStruct (mapStructCnstrByID i (const subVN) parStruct)
   (DynFieldLabelType, IsStruct parStruct) ->
     let (i, j) = getDynFieldIndexesFromFeature f
-     in ret $ VStruct (mapStructDynFieldByID i (setVNodeValue subT) parStruct)
+     in ret $ VStruct (mapStructDynFieldByID i (const subVN) parStruct)
   (LetLabelType, IsStruct parStruct) ->
-    ret $ VStruct (mapStructLet (getTextIndexFromFeature f) (setVNodeValue subT) parStruct)
-  (EmbedValueLabelType, IsStruct parStruct) -> ret $ VStruct (parStruct{stcEmbedVal = Just subT})
+    ret $ VStruct (mapStructLet (getTextIndexFromFeature f) (const subVN) parStruct)
+  (EmbedValueLabelType, IsStruct parStruct) -> ret $ VStruct (parStruct{stcEmbedVal = Just subVN.value})
   (ListStoreIdxLabelType, IsList l) ->
-    let i = fetchIndex f in ret $ VList $ updateListStoreAt i (setVNodeValue subT) l
+    let i = fetchIndex f in ret $ VList $ updateListStoreAt i (const subVN) l
   (ListIdxLabelType, IsList l) ->
-    let i = fetchIndex f in ret $ VList $ updateListFinalAt i (setVNodeValue subT) l
+    let i = fetchIndex f in ret $ VList $ updateListFinalAt i (const subVN) l
   (DisjLabelType, IsDisj d) ->
     let i = fetchIndex f
-     in ret (VDisj $ d{dsjDisjuncts = Seq.update i (mkValVN subT) (dsjDisjuncts d)})
+     in ret (VDisj $ d{dsjDisjuncts = Seq.update i subVN (dsjDisjuncts d)})
   (RootLabelType, _) -> Nothing
   _ -> Nothing
  where
-  ret tn = Just $ parT{value = tn}
+  ret x = Just $ parVN{value = x}
 
-getSubVal :: (HasCallStack) => Feature -> VNode -> Maybe VNode
-getSubVal = go
- where
-  go f t = case (fetchLabelType f, t) of
-    -- Root segment always returns the same tree.
-    (RootLabelType, _) -> Just t
-    (StringLabelType, IsStruct struct)
-      | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
-    (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
-    (PatternLabelType, IsStruct struct) ->
-      let (i, j) = getPatternIndexesFromFeature f
-       in scsPattern <$> stcCnstrs struct IntMap.!? i
-    (DynFieldLabelType, IsStruct struct) ->
-      let (i, j) = getDynFieldIndexesFromFeature f
-       in dsfLabel <$> stcDynFields struct IntMap.!? i
-    (EmbedValueLabelType, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
-    (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
-    (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
-    (DisjLabelType, IsDisj d) -> dsjDisjuncts d Seq.!? fetchIndex f
-    _ -> Nothing
+getSubVN :: (HasCallStack) => Feature -> VNode -> Maybe VNode
+getSubVN f t = case (fetchLabelType f, t) of
+  -- Root segment always returns the same tree.
+  (RootLabelType, _) -> Just t
+  (StringLabelType, IsStruct struct)
+    | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
+  (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
+  (PatternLabelType, IsStruct struct) ->
+    let (i, j) = getPatternIndexesFromFeature f
+     in scsPattern <$> stcCnstrs struct IntMap.!? i
+  (DynFieldLabelType, IsStruct struct) ->
+    let (i, j) = getDynFieldIndexesFromFeature f
+     in dsfLabel <$> stcDynFields struct IntMap.!? i
+  (EmbedValueLabelType, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
+  (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
+  (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
+  (DisjLabelType, IsDisj d) -> dsjDisjuncts d Seq.!? fetchIndex f
+  _ -> Nothing
 
-getSubValByAddr :: ValAddr -> VNode -> Maybe VNode
-getSubValByAddr addr = go (addrToList addr)
+getSubVNByAddr :: ValAddr -> VNode -> Maybe VNode
+getSubVNByAddr addr = go (addrToList addr)
  where
   go [] v = Just v
   go (f : fs) v = do
-    subV <- getSubVal f v
+    subV <- getSubVN f v
     go fs subV
 
 {- | VCur is a pair of a value and a list of crumbs.
@@ -164,7 +162,7 @@ isVCRoot _ = False
 
 -- -- | Create a sub cursor with the given segment and tree, and the updated parent tree from the current cursor.
 -- mkSubVC :: VNode -> Feature -> VNode -> [(Feature, VNode)] -> VCur
--- mkSubVC t seg parT crumbs = VCur t ((seg, parT) : crumbs)
+-- mkSubVC t seg parVN crumbs = VCur t ((seg, parVN) : crumbs)
 
 -- modifyVCFocus :: (VNode -> VNode) -> VCur -> VCur
 -- modifyVCFocus f (VCur t cs) = VCur (f t) cs
@@ -193,7 +191,7 @@ isVCRoot _ = False
 --  where
 --   subVal s t = do
 --     sub <- getSubVal s t
---     updatedParT <- setSubVal s emptyVNode t
+--     updatedParT <- setSubVN s emptyVNode t
 --     return (sub, updatedParT)
 
 -- goDownVCSegMust :: Feature -> VCur -> VCur
@@ -206,10 +204,10 @@ isVCRoot _ = False
 -- propUpVC :: VCur -> VCur
 -- propUpVC (VCur _ []) = error "already on the top"
 -- propUpVC vc@(VCur _ [(IsRootFeature, _)]) = vc
--- propUpVC (VCur subT ((seg, parT) : cs)) = do
---   let tM = setSubVal seg subT parT
+-- propUpVC (VCur subVN ((seg, parVN) : cs)) = do
+--   let tM = setSubVN seg subVN parVN
 --   case tM of
---     Nothing -> error $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parT)
+--     Nothing -> error $ printf "cannot set sub tree (%s) to parent tree %s" (show seg) (show parVN)
 --     Just t -> VCur t cs
 
 -- data SubNodeSeg = SubNodeSegNormal Feature | SubNodeSegEmbed Feature deriving (Eq)
@@ -261,10 +259,10 @@ isVCRoot _ = False
 --     foldM
 --       ( \acc subSeg -> do
 --           (seg, pre, post) <- return (subSeg, return, return)
---           subTC <- do
+--           subVNC <- do
 --             cur' <- pre (fst acc)
 --             return $ goDownVCSegMust seg cur'
---           z <- postVisitVal subs f (subTC, snd acc)
+--           z <- postVisitVal subs f (subVNC, snd acc)
 --           nextTC <- post (propUpVC (fst z))
 --           return (nextTC, snd z)
 --       )

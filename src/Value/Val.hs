@@ -73,9 +73,9 @@ vtVNodeOr :: (VNode -> a) -> a -> VTermNode -> a
 vtVNodeOr f _ (VTVNode v) = f v
 vtVNodeOr _ a _ = a
 
-applyAddrFOnVal :: (Applicative f) => (ValAddr -> VNode -> f VNode) -> ValAddr -> VTermNode -> f VTermNode
-applyAddrFOnVal f p (VTVNode v) = VTVNode <$> f p v
-applyAddrFOnVal _ _ x = pure x
+applyAddrFOnVN :: (Applicative f) => (ValAddr -> VNode -> f VNode) -> ValAddr -> VTermNode -> f VTermNode
+applyAddrFOnVN f p (VTVNode v) = VTVNode <$> f p v
+applyAddrFOnVN _ _ x = pure x
 
 -- | Val represents a tree structure that contains values.
 data Val
@@ -137,7 +137,6 @@ data VNode = VNode
   -- If the op is not Nothing, then origExpr represents the op expression.
   -- If the op is Nothing, then origExpr represents the value expression.
   , constraints :: ConstraintsSet
-  -- TODO: Feature
   }
   deriving (Generic)
 

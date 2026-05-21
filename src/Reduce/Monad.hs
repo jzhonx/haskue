@@ -61,9 +61,9 @@ emptyReduceConfig =
     }
 
 data RCResolver = RCResolver
-  { stack :: [CanonicalAddr]
+  { stack :: [VertexAddr]
   -- ^ The current stack of RC addresses being recalculated.
-  , doneRCAddrs :: [CanonicalAddr]
+  , doneRCAddrs :: [VertexAddr]
   , resolving :: !Bool
   }
   deriving (Show, Generic, NFData)
@@ -78,14 +78,16 @@ emptyRCResolver =
 
 data Context = Context
   { ctxObjID :: !Int
-  , recalcRootQ :: Seq.Seq RecalcItem
+  , rootRecalcQ :: Seq.Seq ReducedSignal
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
-  , lastDerefs :: Map.Map CanonicalAddr (Map.Map ReferableAddr VNode)
-  -- ^ It stores the last dereferenced value of the reference with the suffix irreducible address.
-  -- We use the suffix irreducible address because when reducing all the mutable arguments, they are reduced at the same
+  , lastDerefs :: Map.Map VertexAddr (Map.Map ReferableAddr VNode)
+  -- ^ It stores the last dereferenced value of the reference with the canonical address.
+  -- We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
   -- time, so if any of them references to the same referable address, they will have the same value.
   , vStore :: Map.Map CanonicalAddr VNode
+  -- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
+  -- objects.
   , rcResolver :: !RCResolver
   , noSignalReduced :: !Bool
   -- ^ If true, do not signal ready after reducing.
@@ -105,25 +107,24 @@ instance HasTextIndexer Context where
 mapDepGraph :: (DepGraph -> DepGraph) -> Context -> Context
 mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
 
-data RecalcItem = RecalcItem
+data ReducedSignal = ReducedSignal
   { addr :: ValAddr
   , rfbAddr :: ReferableAddr
   , grpAddr :: GrpAddr
-  , isReduced :: !Bool
   }
   deriving (Show, Generic, NFData)
 
-instance ShowWTIndexer RecalcItem where
-  tshow RecalcItem{addr, grpAddr, isReduced} = do
+instance ShowWTIndexer ReducedSignal where
+  tshow ReducedSignal{addr, grpAddr} = do
     addrT <- tshow addr
     grpAddrT <- tshow grpAddr
-    return $ T.pack $ printf "RecalcItem {addr:%s,grpAddr:%s,isReduced:%s}" addrT grpAddrT (show isReduced)
+    return $ T.pack $ printf "ReducedSignal {addr:%s,grpAddr:%s}" addrT grpAddrT
 
 emptyContext :: (LB.ByteString -> IO ()) -> Context
 emptyContext tPut =
   Context
     { ctxObjID = 0
-    , recalcRootQ = Seq.empty
+    , rootRecalcQ = Seq.empty
     , depGraph = emptyPropGraph
     , lastDerefs = Map.empty
     , vStore = Map.empty

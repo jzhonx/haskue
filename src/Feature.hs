@@ -85,7 +85,7 @@ data LabelType
   | ObjectLabelType -- ObjectLabelType indicates an object value that is in the sub structure of a value.
   | ConstraintLabelType
   | DynCnstrLabelType
-  | ComprehClausesLabelType
+  | ComprehClauseStoreLabelType -- This is used to store the comprehension clauses in store.
   deriving (Eq, Ord, Generic, NFData, Enum)
 
 instance Show Feature where
@@ -103,7 +103,7 @@ instance Show Feature where
     ObjectLabelType -> "o_" ++ show (fetchIndex f)
     ConstraintLabelType -> "c_" ++ show (fetchIndex f)
     DynCnstrLabelType -> "dc_" ++ show (fetchIndex f)
-    ComprehClausesLabelType -> "cc" ++ show (fetchIndex f)
+    ComprehClauseStoreLabelType -> "ccs" ++ show (fetchIndex f)
    where
     showSub :: (Int, a) -> (a -> String) -> String
     showSub (x, y) g = show x ++ "_" ++ g y
@@ -218,7 +218,7 @@ mkObjectFeature :: Int -> Feature
 mkObjectFeature i = mkFeature i ObjectLabelType
 
 mkComprehClausesFeature :: Int -> Feature
-mkComprehClausesFeature i = mkFeature i ComprehClausesLabelType
+mkComprehClausesFeature i = mkFeature i ComprehClauseStoreLabelType
 
 getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m BC.ByteString
 getTextFromFeature f = case fetchLabelType f of
@@ -257,6 +257,11 @@ isFeatureConstraint f = case fetchLabelType f of
 
 isFeatureIrreducible :: Feature -> Bool
 isFeatureIrreducible f = not $ isFeatureNonCanonical f
+
+isFeatureObject :: Feature -> Bool
+isFeatureObject f = case fetchLabelType f of
+  ObjectLabelType -> True
+  _ -> False
 
 bsToStringFeature :: (MonadState s m, HasTextIndexer s) => BC.ByteString -> m Feature
 bsToStringFeature s = mkStringFeature <$> textToTextIndex s
@@ -379,6 +384,28 @@ headSeg (ValAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.head a
 
+-- | Trim all the features that are after the first matching feature, including the matching feature.
+trimFirstMatchToEnd :: (Feature -> Bool) -> ValAddr -> ValAddr
+trimFirstMatchToEnd f (ValAddr xs) =
+  let firstMatchIdx = V.findIndex f xs
+   in case firstMatchIdx of
+        Just idx -> ValAddr $ V.take idx xs
+        Nothing -> ValAddr xs
+
+-- | Trim all the features that are before the last matching feature, not including the matching feature.
+trimBeginToLastMatch :: (Feature -> Bool) -> ValAddr -> ValAddr
+trimBeginToLastMatch f (ValAddr xs) =
+  let lastMatchIdx = V.findIndexR f xs
+   in case lastMatchIdx of
+        Just idx -> ValAddr $ V.drop idx xs
+        Nothing -> ValAddr xs
+
+trimFirstObjToEnd :: ValAddr -> ValAddr
+trimFirstObjToEnd = trimFirstMatchToEnd isFeatureObject
+
+trimBeginToLastObj :: ValAddr -> ValAddr
+trimBeginToLastObj = trimBeginToLastMatch isFeatureObject
+
 {- | Check if addr x is a prefix of addr y.
 
 For example, isPrefix (a.b) (a.b.c.d) = True, isPrefix (a.b.c) (a.b) = False.
@@ -409,54 +436,52 @@ For example,
 
 The addr of the b is /x/fa0/fa0/b, which is not all irreducible.
 -}
-newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: V.Vector Feature}
-  deriving (Show, Eq, Ord, Generic, NFData)
+newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: ValAddr}
+  deriving (Show, Eq, Ord, Generic, NFData, ToJSON, ToJSONWTIndexer, ToJSONKey)
 
--- | A feature is not reducible if it can be called by the reducer to reduce the value.
+instance ShowWTIndexer CanonicalAddr where
+  tshow (CanonicalAddr c) = tshow c
+
+-- | A feature is canonical if it can be present in a fully reduced value.
 isFeatureNonCanonical :: Feature -> Bool
 isFeatureNonCanonical f = case fetchLabelType f of
   OpArgLabelType -> True
   ConstraintLabelType -> True
   DynCnstrLabelType -> True
-  DisjLabelType -> True
   ListStoreIdxLabelType -> True
   _ -> False
 
-instance ShowWTIndexer CanonicalAddr where
-  tshow a = tshow $ canonicalToAddr a
-
-instance ToJSON CanonicalAddr where
-  toJSON a = toJSON (show a)
-
-instance ToJSONWTIndexer CanonicalAddr where
-  ttoJSON a = do
-    s <- tshow a
-    return $ toJSON s
-
-instance ToJSONKey CanonicalAddr
+isFeatureCanonical :: Feature -> Bool
+isFeatureCanonical = not . isFeatureNonCanonical
 
 addrIsCanonical :: ValAddr -> Maybe CanonicalAddr
 addrIsCanonical (ValAddr xs) =
   let hasReducible = V.any isFeatureNonCanonical xs
    in if hasReducible
         then Nothing
-        else Just $ CanonicalAddr xs
+        else Just $ CanonicalAddr $ ValAddr xs
 
-trimAddrToCanonical :: ValAddr -> CanonicalAddr
-trimAddrToCanonical (ValAddr xs) = CanonicalAddr (V.filter (not . isFeatureNonCanonical) xs)
+collapseToCanonical :: ValAddr -> CanonicalAddr
+collapseToCanonical (ValAddr xs) = CanonicalAddr $ ValAddr (V.filter (not . isFeatureNonCanonical) xs)
+
+collapseToCanonicalForm :: ValAddr -> ValAddr
+collapseToCanonicalForm addr = canonicalToAddr $ collapseToCanonical addr
+
+genWoObjCanonical :: ValAddr -> CanonicalAddr
+genWoObjCanonical addr = CanonicalAddr (trimFirstMatchToEnd isFeatureNonCanonical addr)
+
+genWoObjCanonicalForm :: ValAddr -> ValAddr
+genWoObjCanonicalForm addr = canonicalToAddr $ genWoObjCanonical addr
 
 canonicalToAddr :: CanonicalAddr -> ValAddr
-canonicalToAddr (CanonicalAddr xs) = mkValAddr xs
+canonicalToAddr (CanonicalAddr v) = v
 
 initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
-initCanonical (CanonicalAddr xs)
-  | V.null xs = Nothing
-  | otherwise = Just $ CanonicalAddr (V.init xs)
+initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initValAddr v)
 
 {- | ReferableAddr is a referrable address.
 
-A referable address must end with a referable segment. In its features, there should be no unify operator arguments
-because unification creates a block that replaces the original structure, making it unreferable.
+A referable address must end with a referable segment.
 
 For an address to be referable, there is no need to make sure all segments are referable.
 For example,
@@ -465,19 +490,11 @@ For example,
 
 For the second expression, the addr of the a is /x/dj0/a, which is referable even though dj0 is not referable.
 -}
-newtype ReferableAddr = ReferableAddr {getReferableAddr :: V.Vector Feature}
-  deriving (Show, Eq, Ord, Generic, NFData)
+newtype ReferableAddr = ReferableAddr {getReferableAddr :: CanonicalAddr}
+  deriving (Show, Eq, Ord, Generic, NFData, ToJSON, ToJSONWTIndexer)
 
 instance ShowWTIndexer ReferableAddr where
-  tshow a = tshow $ rfbAddrToAddr a
-
-instance ToJSON ReferableAddr where
-  toJSON a = toJSON (show a)
-
-instance ToJSONWTIndexer ReferableAddr where
-  ttoJSON a = do
-    s <- tshow a
-    return $ toJSON s
+  tshow (ReferableAddr c) = tshow c
 
 isFeatureReferable :: Feature -> Bool
 isFeatureReferable f = case fetchLabelType f of
@@ -485,32 +502,96 @@ isFeatureReferable f = case fetchLabelType f of
   LetLabelType -> True
   ListIdxLabelType -> True
   RootLabelType -> True
-  ObjectLabelType -> True -- The index value feature is used to store the index value. It can be referred by its sub fields.
   _ -> False
 
 rfbAddrToAddr :: ReferableAddr -> ValAddr
-rfbAddrToAddr (ReferableAddr xs) = mkValAddr xs
+rfbAddrToAddr (ReferableAddr c) = canonicalToAddr c
 
 rfbAddrToCanonical :: ReferableAddr -> CanonicalAddr
-rfbAddrToCanonical (ReferableAddr xs) = CanonicalAddr xs
+rfbAddrToCanonical (ReferableAddr c) = c
+
+rfbAddrToTopReducer :: ReferableAddr -> TopReducerAddr
+rfbAddrToTopReducer (ReferableAddr c) = TopReducerAddr c
+
+-- | VertexAddr is a subset of ReferableAddr.
+rfbAddrToVertex :: ReferableAddr -> VertexAddr
+rfbAddrToVertex (ReferableAddr c) = VertexAddr c
 
 addrIsRfbAddr :: ValAddr -> Maybe ReferableAddr
-addrIsRfbAddr (ValAddr xs)
-  | V.null xs = Just $ ReferableAddr V.empty
-  | isFeatureReferable (V.last xs) = Just $ ReferableAddr xs
-  | otherwise = Nothing
+addrIsRfbAddr addr = do
+  c <- addrIsCanonical addr
+  lseg <- lastSeg (canonicalToAddr c)
+  if isFeatureReferable lseg
+    then return $ ReferableAddr c
+    else Nothing
 
-{- | Trim the address to the referable addr.
+trimCanonicalToRfb :: CanonicalAddr -> ReferableAddr
+trimCanonicalToRfb (CanonicalAddr (ValAddr xs)) =
+  let revxs = V.reverse xs
+      rest = V.dropWhile (not . isFeatureReferable) revxs
+   in ReferableAddr (CanonicalAddr (ValAddr $ V.reverse rest))
 
-It first trims the suffix that is not referable, then removes unify operator mut args in all features.
+{- | Vertex differs from Canonical in that disjunct is not considered a legal ending. A disjunct is part of its parent
+vertex.
 -}
-trimAddrToRfb :: ValAddr -> ReferableAddr
-trimAddrToRfb (ValAddr xs) = ReferableAddr (V.filter isFeatureReferable xs)
+newtype VertexAddr = VertexAddr {getVertexAddr :: CanonicalAddr}
+  deriving (Show, Eq, Ord, Generic, NFData, ToJSON, ToJSONWTIndexer)
 
--- | Get the parent referable addr by removing the last referable segment.
-initRfbAddr :: ReferableAddr -> Maybe ReferableAddr
-initRfbAddr x
-  | rootValAddr == rfbAddrToAddr x = Nothing
-  | otherwise = do
-      xAddr <- initValAddr (rfbAddrToAddr x)
-      return $ trimAddrToRfb xAddr
+instance ShowWTIndexer VertexAddr where
+  tshow (VertexAddr c) = tshow c
+
+isFeatureVertex :: Feature -> Bool
+isFeatureVertex f = case fetchLabelType f of
+  DisjLabelType -> False
+  _ -> isFeatureCanonical f
+
+trimCanonicalToVertex :: CanonicalAddr -> VertexAddr
+trimCanonicalToVertex (CanonicalAddr (ValAddr xs)) =
+  let revxs = V.reverse xs
+      rest = V.dropWhile (not . isFeatureVertex) revxs
+   in VertexAddr (CanonicalAddr (ValAddr $ V.reverse rest))
+
+vertexToAddr :: VertexAddr -> ValAddr
+vertexToAddr (VertexAddr c) = canonicalToAddr c
+
+addrIsVertex :: ValAddr -> Maybe VertexAddr
+addrIsVertex addr = do
+  c <- addrIsCanonical addr
+  lseg <- lastSeg (canonicalToAddr c)
+  if isFeatureVertex lseg
+    then return $ VertexAddr c
+    else Nothing
+
+initVertexAddr :: VertexAddr -> Maybe VertexAddr
+initVertexAddr (VertexAddr c) = fmap VertexAddr (initCanonical c)
+
+trimVertexToTopReducerAddr :: VertexAddr -> TopReducerAddr
+trimVertexToTopReducerAddr (VertexAddr c) = trimCanonicalToTopReducer c
+
+-- | TopReducer is the topmost value that can be called reducer on.
+newtype TopReducerAddr = TopReducerAddr {getTopReducerAddr :: CanonicalAddr}
+  deriving (Show, Eq, Ord, Generic, NFData, ShowWTIndexer, ToJSON, ToJSONWTIndexer)
+
+isFeatureTopReducer :: Feature -> Bool
+isFeatureTopReducer f = case fetchLabelType f of
+  ObjectLabelType -> False
+  DisjLabelType -> False
+  _ -> isFeatureCanonical f
+
+trimCanonicalToTopReducer :: CanonicalAddr -> TopReducerAddr
+trimCanonicalToTopReducer (CanonicalAddr xs) =
+  TopReducerAddr $ CanonicalAddr $ trimFirstMatchToEnd (not . isFeatureTopReducer) xs
+
+topReducerToAddr :: TopReducerAddr -> ValAddr
+topReducerToAddr (TopReducerAddr c) = canonicalToAddr c
+
+addrIsTopReducer :: ValAddr -> Maybe TopReducerAddr
+addrIsTopReducer addr = do
+  c@(CanonicalAddr (ValAddr xs)) <- addrIsCanonical addr
+  let isAllTopReducer = V.all isFeatureTopReducer xs
+  if isAllTopReducer
+    then return $ TopReducerAddr c
+    else Nothing
+
+initTopReducer :: TopReducerAddr -> Maybe TopReducerAddr
+initTopReducer (TopReducerAddr c) = fmap TopReducerAddr (initCanonical c)

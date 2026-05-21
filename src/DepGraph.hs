@@ -7,7 +7,7 @@ module DepGraph where
 
 import Control.DeepSeq (NFData)
 import Control.Monad (forM_, when)
-import Control.Monad.State.Strict (MonadState (..), State, evalState, execState, gets, modify', runState)
+import Control.Monad.State.Strict (MonadState (..), State, evalState, execState, gets, modify')
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
 import qualified Data.Map.Strict as Map
@@ -19,11 +19,11 @@ import Debug.Trace
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
-import StringIndex (ShowWTIndexer (..))
+import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer)
 import Text.Printf (printf)
 
 data DepGraph = DepGraph
-  { nodesByUseFunc :: Map.Map CanonicalAddr [ValAddr]
+  { nodesByUseFunc :: Map.Map VertexAddr [ValAddr]
   -- ^ Groups lists of dependent vertex IDs by their function addresses.
   -- If the function does not have an argument, it maps to itself.
   -- For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
@@ -46,7 +46,7 @@ instance ShowWTIndexer DepGraph where
       mapM
         ( \(k, v) -> do
             kt <- tshow k
-            vt <- mapM (\x -> tshow $ getIrredAddrFromIVMust x ng.vidMapping) v
+            vt <- mapM (\x -> tshow $ getVertexAddrFromIVMust x ng.vidMapping) v
             return $ T.pack $ printf "%s: %s" (T.unpack kt) (show vt)
         )
         xs
@@ -149,7 +149,7 @@ getOrCreateRepVtx v g = case HashMap.lookup v (compToRep g) of
 
 The Bool indicates whether the SCC is cyclic.
 -}
-newtype GrpAddr = GrpAddr {getGrpAddr :: (CanonicalAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
+newtype GrpAddr = GrpAddr {getGrpAddr :: (VertexAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
 
 instance Show GrpAddr where
   show (GrpAddr (addr, isCyclic)) =
@@ -163,10 +163,10 @@ instance ShowWTIndexer GrpAddr where
     let cyclicText = if isCyclic then "Cyclic " else ""
     return $ cyclicText <> addrText
 
-pattern IsAcyclicGrpAddr :: CanonicalAddr -> GrpAddr
+pattern IsAcyclicGrpAddr :: VertexAddr -> GrpAddr
 pattern IsAcyclicGrpAddr addr <- GrpAddr (addr, False)
 
-pattern IsCyclicGrpAddr :: CanonicalAddr -> GrpAddr
+pattern IsCyclicGrpAddr :: VertexAddr -> GrpAddr
 pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
 
 emptyPropGraph :: DepGraph
@@ -222,13 +222,15 @@ getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
 
-getIrredAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> CanonicalAddr
-getIrredAddrFromVIDMust vid m = case getAddrFromVID vid m >>= addrIsCanonical of
-  Just addr -> addr
-  Nothing -> error $ printf "VID %s does not correspond to an irreducible address" (show vid)
+getVertexAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> VertexAddr
+getVertexAddrFromVIDMust vid m =
+  let addr = getAddrFromVID vid m
+   in case addr >>= addrIsVertex of
+        Just a -> a
+        Nothing -> error $ printf "VID %s does not correspond to a vertex address: %s" (show vid) (show addr)
 
-getIrredAddrFromIVMust :: (HasCallStack) => ExprVertex -> VIDMapping -> CanonicalAddr
-getIrredAddrFromIVMust iv = getIrredAddrFromVIDMust (getExprVertex iv)
+getVertexAddrFromIVMust :: (HasCallStack) => ExprVertex -> VIDMapping -> VertexAddr
+getVertexAddrFromIVMust iv = getVertexAddrFromVIDMust (getExprVertex iv)
 
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
@@ -261,16 +263,16 @@ rootVID :: Int
 rootVID = 0
 
 -- | Get the component addresses of a given group address in the propagation graph.
-getElemAddrInGrp :: GrpAddr -> DepGraph -> [CanonicalAddr]
+getElemAddrInGrp :: GrpAddr -> DepGraph -> [VertexAddr]
 getElemAddrInGrp gaddr ng = case ( do
                                     (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
                                     HashMap.lookup baseID (repToComps ng.cgraph)
                                  ) of
   Nothing -> []
-  Just (comps, _) -> map (`getIrredAddrFromIVMust` ng.vidMapping) (Set.toList comps)
+  Just (comps, _) -> map (`getVertexAddrFromIVMust` ng.vidMapping) (Set.toList comps)
  where
   addr = fst $ getGrpAddr gaddr
-  (gaddrID, _) = getVID (canonicalToAddr addr) ng.vidMapping
+  (gaddrID, _) = getVID (vertexToAddr addr) ng.vidMapping
 
 -- | Get all node addresses of a given group address in the propagation graph.
 getNodeAddrsInGrp :: GrpAddr -> DepGraph -> [ValAddr]
@@ -285,7 +287,7 @@ getNodeAddrsInGrp gaddr ng =
           Set.empty
           irredAddrs
 
-getNodeAddrsByFunc :: CanonicalAddr -> DepGraph -> [ValAddr]
+getNodeAddrsByFunc :: VertexAddr -> DepGraph -> [ValAddr]
 getNodeAddrsByFunc funcAddr ng = Map.findWithDefault [] funcAddr ng.nodesByUseFunc
 
 -- | Get all use components of a given component address in the propagation graph.
@@ -296,25 +298,25 @@ getUseGroups gaddr ng = case HashMap.lookup (ExprVertex repAddrID) (cgDAG ng.cgr
     map
       ( \use ->
           GrpAddr
-            ( getIrredAddrFromIVMust use ng.vidMapping
+            ( getVertexAddrFromIVMust use ng.vidMapping
             , snd $ fromJust $ HashMap.lookup use ng.cgraph.compToRep
             )
       )
       uses
  where
   repAddr = fst $ getGrpAddr gaddr
-  (repAddrID, _) = getVID (canonicalToAddr repAddr) ng.vidMapping
+  (repAddrID, _) = getVID (vertexToAddr repAddr) ng.vidMapping
 
 -- | Look up the SCC address of a given address (which should be irreducible) in the propagation graph.
-lookupGrpAddr :: CanonicalAddr -> DepGraph -> Maybe GrpAddr
+lookupGrpAddr :: VertexAddr -> DepGraph -> Maybe GrpAddr
 lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep ng.cgraph) of
   Nothing -> Nothing
   Just (baseID, isCyclic) ->
     Just $
       -- The baseID must have its corresponding irreducible address.
-      GrpAddr (getIrredAddrFromIVMust baseID ng.vidMapping, isCyclic)
+      GrpAddr (getVertexAddrFromIVMust baseID ng.vidMapping, isCyclic)
  where
-  (rfbAddrID, _) = getVID (canonicalToAddr rfbAddr) ng.vidMapping
+  (rfbAddrID, _) = getVID (vertexToAddr rfbAddr) ng.vidMapping
 
 {- | Add a new dependency to the propagation graph and update the component graph.
 
@@ -333,8 +335,8 @@ addNewDepToNG use dep =
   execState
     ( do
         let
-          normDepAddr = canonicalToAddr $ trimAddrToCanonical (rfbAddrToAddr dep)
-          normUseAddr = canonicalToAddr $ trimAddrToCanonical use
+          normDepAddr = rfbAddrToAddr dep
+          normUseAddr = vertexToAddr $ trimCanonicalToVertex $ collapseToCanonical use
         irDepID <- liftGetVIDForG normDepAddr
         irUseID <- liftGetVIDForG normUseAddr
         let useVtx = ExprVertex irUseID
@@ -344,7 +346,7 @@ addNewDepToNG use dep =
             insertVGraphEdge
               (RefVertex irDepID)
               useVtx
-        modify' $ \g -> g{nodesByUseFunc = insertMUnique (trimAddrToCanonical use) use g.nodesByUseFunc}
+        modify' $ \g -> g{nodesByUseFunc = insertMUnique (trimCanonicalToVertex $ collapseToCanonical use) use g.nodesByUseFunc}
         depRep <- state (liftGetRepVtx depVtx)
         useRep <- state (liftGetRepVtx useVtx)
 
@@ -397,18 +399,6 @@ delDGEdgesByUseMatch useMatch =
     ( do
         m <- gets vidMapping
         modify' $ \g -> updateCGraph (mapVGraph (delVGEdgeByUseMatch (useMatchAdapt m)) g)
-        -- modify' $ \g ->
-        --   g
-        --     { nodesByUseFunc =
-        --         Map.map
-        --           -- Then filter the values.
-        --           (filter (not . match))
-        --           -- First filter the keys.
-        --           ( Map.filterWithKey
-        --               (\k _ -> not (match (canonicalToAddr k)))
-        --               (nodesByUseFunc g)
-        --           )
-        --     }
     )
  where
   useMatchAdapt :: VIDMapping -> ExprVertex -> Bool
@@ -590,7 +580,7 @@ sccDFS v = do
 
   isRoot <- gets (\ts -> let m = tsMetaMap ts `lookupMust` v in dnmLowLink m == dnmIndex m)
   -- m <- gets tsVIDMapping
-  -- let vAddr = getIrredAddrFromIVMust v m
+  -- let vAddr = getVertexAddrFromIVMust v m
   -- trace
   --   (printf "sccDFS: v=%s, %s, isRoot=%s, neighbors=%s" (show v) (show vAddr) (show isRoot) (show neighbors))
   --   (return ())
@@ -641,11 +631,11 @@ data NeighborType
 A parent address being a prefix of the child means that there must be at least one more referable segment in the
 child address after the parent address.
 -}
-isSufIrredParent :: CanonicalAddr -> CanonicalAddr -> Bool
+isSufIrredParent :: VertexAddr -> VertexAddr -> Bool
 isSufIrredParent parent child =
   let
-    parentAddr = canonicalToAddr parent
-    childAddr = canonicalToAddr child
+    parentAddr = vertexToAddr parent
+    childAddr = vertexToAddr child
     isParentPrefix = isPrefix parentAddr childAddr
    in
     isParentPrefix
@@ -675,11 +665,6 @@ lookupMust :: (HasCallStack, Show k, Show a, Hashable k) => HashMap.HashMap k a 
 lookupMust m k = case HashMap.lookup k m of
   Just v -> v
   Nothing -> error $ printf "key %s not found in map %s" (show k) (show m)
-
-removeChildSIAddrs :: [CanonicalAddr] -> [CanonicalAddr]
-removeChildSIAddrs addrs =
-  -- If there is an address that is a child of another address, remove it.
-  filter (\a -> not $ or [isSufIrredParent x a | x <- addrs]) addrs
 
 insertHMUnique :: (Eq k, Hashable k, Eq a) => k -> a -> HashMap.HashMap k [a] -> HashMap.HashMap k [a]
 insertHMUnique key val =

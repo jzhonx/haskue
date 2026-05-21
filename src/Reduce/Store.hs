@@ -1,6 +1,6 @@
 module Reduce.Store where
 
-import Cursor (setSubVal)
+import Cursor (setSubVN)
 import Data.Aeson (KeyValue (..), object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
@@ -51,21 +51,21 @@ storeValUpToRoot addr v = do
     Nothing -> return ()
 
 propValUp :: ValAddr -> VNode -> RM (Maybe (ValAddr, VNode))
-propValUp addr v
+propValUp addr vn
   | rootValAddr == addr = return Nothing
   | otherwise = do
       let
         subF = fromJust $ lastSeg addr
         parentAddr = fromJust $ initValAddr addr
-      parentV <- fetchValMust "propValUp" parentAddr
-      let newParentVM = setSubVal subF (value v) parentV
-      case newParentVM of
-        Just newParentV -> return $ Just (parentAddr, newParentV)
+      parentVN <- fetchValMust "propValUp" parentAddr
+      let newParentVNM = setSubVN subF vn parentVN
+      case newParentVNM of
+        Just newParentVN -> return $ Just (parentAddr, newParentVN)
         Nothing -> do
           subFT <- tshow subF
           parentAddrT <- tshow parentAddr
           let
-            parentVT = showValType (value parentV)
+            parentVT = showValType (value parentVN)
             msg =
               printf
                 "failed to set sub val for parent val %s with feature %s and parent addr %s"
@@ -75,7 +75,7 @@ propValUp addr v
           debugInstant "propValUp" (object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
           throwFatal msg
 
-queryLastDerefedVal :: CanonicalAddr -> ReferableAddr -> RM (Maybe VNode)
+queryLastDerefedVal :: VertexAddr -> ReferableAddr -> RM (Maybe VNode)
 queryLastDerefedVal addr depAddr = do
   m <- lastDerefs <$> getRMContext
   case Map.lookup addr m of
@@ -101,7 +101,7 @@ copyVTermNode srcAddr dstAddr =
             | let resIdentAddr = ref.resolvedIdentAddr
             , srcAddr `isPrefix` resIdentAddr && resIdentAddr /= srcAddr ->
                 let rest = trimPrefixAddr srcAddr resIdentAddr
-                    rfbDstAddr = trimAddrToRfb dstAddr
+                    rfbDstAddr = trimCanonicalToRfb $ collapseToCanonical dstAddr
                     newIdentAddr = appendValAddr (rfbAddrToAddr rfbDstAddr) rest
                     newRef = ref{resolvedIdentAddr = newIdentAddr}
                  in VTOp (Ref newRef)

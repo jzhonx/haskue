@@ -47,9 +47,7 @@ import Util.Format (msprintfS, packFmtA)
 import Value
 import Value.Export.Debug (
   cnstrsToFullTermsRep,
-  cnstrsToTermsRep,
   termsRepToFullJSON,
-  valToFullStringTermsRep,
   vnToStringTermsRep,
  )
 import Value.Instances (posttravsVT)
@@ -79,7 +77,7 @@ reduceStruct initStruct addr = traceSpanTM "reduceStruct" addr emptySpanValue $ 
                 (stcCnstrs s)
             stcFields' <-
               Map.traverseWithKey
-                (\k v -> vtmapM (applyAddrFOnVal reduce) (nf $ mkStringFeature k) v)
+                (\k v -> vtmapM (applyAddrFOnVN reduce) (nf $ mkStringFeature k) v)
                 (stcFields s)
             stcEmbedVal' <- case stcEmbedVal s of
               Nothing -> return Nothing
@@ -239,18 +237,15 @@ handleSObjChange subValAddr parentV@(VStruct struct) = case lastSeg subValAddr o
     let structAddr = fromJust $ initValAddr subValAddr
     traceSpanTermsRepTM (printf "handleSObjChange, seg: %s" (show seg)) structAddr parentV $ do
       (parentV', affectedPairs) <- handleSObjChangeInner seg struct structAddr parentV
-      res <-
-        foldM
-          ( \acc (afAddr, afv) -> do
-              sub <- reduce afAddr afv
-              let label = fromJust $ lastSeg afAddr
-                  newAcc = fromJust $ setSubVal label (value sub) acc
-              return newAcc
-          )
-          (mkValVN parentV')
-          affectedPairs
-      storeVal structAddr res
-      return $ value res
+      foldM
+        ( \acc (afAddr, afv) -> do
+            sub <- reduce afAddr afv
+            let label = fromJust $ lastSeg afAddr
+                newAcc = fromJust $ setSubVN label sub (mkValVN acc)
+            return $ value newAcc
+        )
+        parentV'
+        affectedPairs
 handleSObjChange _ v = return v
 
 {- | Handle the post process of the mutable object change in the struct.
@@ -341,6 +336,7 @@ removeChangedSubFields :: [ValAddr] -> ValAddr -> RM ()
 removeChangedSubFields affected structAddr =
   mapM_
     ( \afFieldAddr -> do
+        -- First we delete all edges that are from the affected field or its sub fields.
         modifyRMContext $ mapDepGraph $ delDGEdgesByUseMatch (isPrefix afFieldAddr)
         storeVal afFieldAddr (mkValVN VNoVal)
         g <- getRMDepGraph
@@ -355,10 +351,12 @@ removeChangedSubFields affected structAddr =
                 "removed affected addr: %s, watchers: %s, graph: %s"
                 [packFmtA afFieldAddr, packFmtA watchersT, packFmtA g]
           )
-
+        -- Next we delete all values that are sub fields of the affected field and are referenced, and signal reduced
+        -- for them.
+        -- TODO: maybe change the dep of the uses to the affected field.
         mapM_
           ( \(afSubDep, use) ->
-              -- If the use is a sub field of the removed field, then can do nothing since the afSubDep will also be
+              -- If the use is a sub field of the removed field, then we do nothing since the afSubDep will also be
               -- removed. Otherwise, need to set it to NoVal and signal reduced.
               if isPrefix afFieldAddr use
                 then return ()
@@ -366,10 +364,7 @@ removeChangedSubFields affected structAddr =
                   debugInstStr
                     "removeChangedSubFields"
                     structAddr
-                    ( msprintfS
-                        "set sub affected addr to NoVal: %s"
-                        [packFmtA afSubDep]
-                    )
+                    (msprintfS "set sub affected addr to NoVal: %s" [packFmtA afSubDep])
                   storeVal afSubDep (mkValVN VNoVal)
                   signalReduced afSubDep
           )
@@ -593,58 +588,6 @@ removeAppliedObject objID struct addr =
                       let newField = field{ssfValue = field.ssfValue{constraints = constraints'}}
                       return ((name, newField) : accUpdated, accRemoved)
                 else return (accUpdated, accRemoved)
-
-                -- let
-                --   updatedObjectIDs = Set.delete objID (ssfObjects field)
-                --   updatedCnstrs = IntMap.filterWithKey (\k _ -> k `Set.member` updatedObjectIDs) allCnstrs
-                --   updatedDyns = IntMap.filterWithKey (\k _ -> k `Set.member` updatedObjectIDs) allDyns
-                --   -- baseRawM = ssfValue <$> Map.lookup name (stcStaticFieldBases struct)
-                --   baseRawM = Nothing
-                -- debugInstStr
-                --   "removeAppliedObject"
-                --   addr
-                --   ( const $ do
-                --       baseRawMT <- mapM tshow baseRawM
-                --       return $
-                --         printf
-                --           "field: %s, objID: %s, updatedObjectIDs: %s, raw: %s"
-                --           (show name)
-                --           (show objID)
-                --           (show $ Set.toList updatedObjectIDs)
-                --           (show baseRawMT)
-                --   )
-
-                -- case baseRawM of
-                --   Just raw -> do
-                --     let
-                --       rawField = field{ssfValue = raw, ssfObjects = Set.empty}
-                --       fieldWithDyns =
-                --         foldr
-                --           (\dyn acc -> dynToField dyn (Just acc) unifier)
-                --           rawField
-                --           (IntMap.elems updatedDyns)
-                --     newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems updatedCnstrs) addr
-                --     return ((name, newField) : accUpdated, accRemoved)
-                --   -- The field is created by a dynamic field, so it does not have a base raw.
-                --   _ ->
-                --     if null updatedDyns
-                --       -- If there are no dynamic fields left, then the field should be removed.
-                --       then return (accUpdated, name : accRemoved)
-                --       else do
-                --         let
-                --           dyns = IntMap.elems updatedDyns
-                --           startField =
-                --             field
-                --               { ssfValue = dsfValue $ head dyns
-                --               , ssfObjects = Set.singleton (dsfID $ head dyns)
-                --               }
-                --           fieldWithDyns =
-                --             foldr
-                --               (\dyn acc -> dynToField dyn (Just acc) unifier)
-                --               startField
-                --               (tail dyns)
-                --         newField <- constrainFieldWithCnstrs name fieldWithDyns (IntMap.elems updatedCnstrs) addr
-                --         return ((name, newField) : accUpdated, accRemoved)
           )
           ([], [])
           (Map.toList $ stcFields struct)

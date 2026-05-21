@@ -17,7 +17,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduceWithInitVN)
+import {-# SOURCE #-} Reduce.Core (reduceConstraintsInCnstrs)
 import Reduce.Monad (
   RM,
   allocRMObjID,
@@ -26,31 +26,35 @@ import Reduce.Monad (
 import Reduce.Store (storeVal)
 import Reduce.TraceSpan (
   debugInstStr,
+  emptySpanValue,
+  traceSpanAdaptTM,
   traceSpanTermsRepAnyTM,
-  traceSpanTermsRepTM,
  )
 import Reduce.Unification (unifyVals)
-import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..), textIndexToBS)
+import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), textIndexToBS)
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
 import Value.Export.Debug (valToFullStringTermsRep)
 import Value.Instances (posttravsVT)
 
-reduceCompreh :: Comprehension -> ValAddr -> Val -> RM Val
-reduceCompreh cph addr curVN = traceSpanTermsRepTM "reduceCompreh" addr () $ do
-  r <- comprehend cph addr curVN
+reduceCompreh :: ValAddr -> Comprehension -> RM (Val, Comprehension)
+reduceCompreh addr cph = traceSpanAdaptTM "reduceCompreh" addr emptySpanValue (const emptySpanValue) $ do
+  r <- comprehend addr cph
+  let updatedCph = cph{args = r.cphargs}
   case r.res of
-    Left t -> return t
+    Left t -> return (t, updatedCph)
     Right revVs ->
       let vs = reverse revVs
        in if cph.isListCompreh
             then do
-              return $ VList $ mkList (map mkValVN vs) (map mkValVN vs)
+              return (VList $ mkList (map mkValVN vs) (map mkValVN vs), updatedCph)
             else case vs of
-              [] -> return $ VStruct emptyStruct
-              [x] -> return x
-              _ -> unifyVals (map (\x -> (addr, x)) vs) addr False
+              [] -> return (VStruct emptyStruct, updatedCph)
+              [x] -> return (x, updatedCph)
+              _ -> do
+                r <- unifyVals (map (\x -> (addr, x)) vs) addr False
+                return (r, updatedCph)
 
 {- | Reduce the comprehension arguments and generate the resulted struct for each iteration.
 
@@ -91,25 +95,32 @@ The rules are:
 3. For the mutable arguments reducing, arguments will always have the address format of compreh_add/clause_seg or
   compreh_add/clause_seg/embed_seg/clause_seg.
 -}
-comprehend :: Comprehension -> ValAddr -> Val -> RM IterCtx
-comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
+comprehend :: ValAddr -> Comprehension -> RM IterCtx
+comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
  where
-  comprhArg :: Int -> Seq.Seq ComprehArg -> IterCtx -> RM IterCtx
-  comprhArg i args accIctx = do
-    let arg = fromJust $ args Seq.!? i
-        addr = appendSeg topAddr (mkComprehClausesFeature i)
+  comprhArg :: Int -> IterCtx -> RM IterCtx
+  comprhArg i accIctx = do
+    let
+      args = accIctx.cphargs
+      arg = fromJust $ args Seq.!? i
+      comprehStoreAddr = appendSeg topAddr (mkObjectFeature cph.cid)
+      clauseStoreAddr = appendSeg comprehStoreAddr (mkComprehClausesFeature i)
+      clauseCnstrAddr = appendSeg topAddr (mkRegCnstrFeature i)
+      traceMsg :: String -> String
+      traceMsg title = printf "comoprhArg %s_clause_%d" title i
     case arg of
-      ComprehArgTmpl v -> traceSpanTermsRepAnyTM "comprhArg template" addr v $ do
+      ComprehArgTmpl v -> traceSpanTermsRepAnyTM "comprhArg template" clauseCnstrAddr v $ do
         r <- do
-          forked <- forkTemplate addr v
-          resolved <- resolveIterValRefs accIctx.bindings addr forked
-          reduceWithInitVN addr curVN resolved
+          forked <- forkTemplate clauseStoreAddr v
+          resolved <- resolveIterValRefs accIctx.bindings clauseStoreAddr forked
+          reduceConstraintsInCnstrs clauseCnstrAddr resolved
         debugInstStr
           "comprehend"
-          addr
+          clauseCnstrAddr
           ( do
+              bindingsT <- tshowBindings accIctx.bindings
               rep <- valToFullStringTermsRep r
-              msprintfS "comprehension tmpl arg: %s" [packFmtA rep]
+              msprintfS "comprehension tmpl arg: %s, bindings: %s" [packFmtA rep, packFmtA bindingsT]
           )
         return
           accIctx
@@ -118,31 +129,34 @@ comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
                 return (value r : vs)
             , iterCnt = accIctx.iterCnt + 1
             }
-      ComprehArgLet letName v -> do
-        r <- reduceWithInitVN addr curVN v
+      ComprehArgLet letName v -> traceSpanTermsRepAnyTM (traceMsg "let") clauseCnstrAddr v $ do
+        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
+        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgLet letName r) args}
         case r of
-          IsNoVal -> earlyStop i accIctx
-          IsBottom _ -> return $ accIctx{res = Left $ value r}
+          IsNoVal -> earlyStop i updatedIctx
+          IsBottom _ -> return $ updatedIctx{res = Left $ value r}
           _ -> do
-            let bindingAddr = appendSeg addr (mkLetFeature letName)
+            let bindingAddr = appendSeg clauseStoreAddr (mkLetFeature letName)
             -- For later clauses look up.
-            storeVal (canonicalToAddr . trimAddrToCanonical $ bindingAddr) r
-            comprhArg (i + 1) args accIctx{bindings = Map.insert bindingAddr (value r) accIctx.bindings}
-      ComprehArgIf v -> do
-        r <- reduceWithInitVN addr curVN v
+            storeVal (canonicalToAddr . collapseToCanonical $ bindingAddr) r
+            comprhArg (i + 1) updatedIctx{bindings = Map.insert bindingAddr (value r) updatedIctx.bindings}
+      ComprehArgIf v -> traceSpanTermsRepAnyTM (traceMsg "if") clauseCnstrAddr v $ do
+        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
+        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgIf r) args}
         case r of
-          IsNoVal -> earlyStop i accIctx
-          IsBottom _ -> return $ accIctx{res = Left $ value r}
+          IsNoVal -> earlyStop i updatedIctx
+          IsBottom _ -> return $ updatedIctx{res = Left $ value r}
           _ -> case rtrAtom (value r) of
-            Just (Bool True) -> comprhArg (i + 1) args accIctx
+            Just (Bool True) -> comprhArg (i + 1) updatedIctx
             -- Do not go to next clause if the condition is false.
-            Just (Bool False) -> return accIctx
-            _ -> comprhArg (i + 1) args accIctx{res = Left $ mkBoundsVal $ printf "%s is not a boolean" (showValType $ value r)}
-      ComprehArgFor k vM v -> do
-        r <- reduceWithInitVN addr curVN v
+            Just (Bool False) -> return updatedIctx
+            _ -> comprhArg (i + 1) updatedIctx{res = Left $ mkBoundsVal $ printf "%s is not a boolean" (showValType $ value r)}
+      ComprehArgFor k vM v -> traceSpanTermsRepAnyTM (traceMsg "for") clauseCnstrAddr v $ do
+        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
+        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgFor k vM r) args}
         if
-          | IsNoVal <- r -> earlyStop i accIctx
-          | IsBottom _ <- r -> return accIctx{res = Left (value r)}
+          | IsNoVal <- r -> earlyStop i updatedIctx
+          | IsBottom _ <- r -> return updatedIctx{res = Left (value r)}
           -- TODO: only iterate optional fields
           | IsStruct struct <- r ->
               foldM
@@ -151,7 +165,7 @@ comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
                       then return acc
                       else do
                         label <- textIndexToBS labelIdx
-                        let bindAddr = canonicalToAddr . trimAddrToCanonical $ addr
+                        let bindAddr = canonicalToAddr . collapseToCanonical $ clauseStoreAddr
                         case vM of
                           Nothing -> storeVal (bindAddr `appendSeg` mkLetFeature k) (ssfValue field)
                           Just x -> do
@@ -169,9 +183,9 @@ comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
                                       Map.insert fstIterVarAddr (VAtom (String label)) $
                                         Map.insert sndIterVarAddr (value $ ssfValue field) acc.bindings
                                  in acc{bindings = newBindings}
-                        comprhArg (i + 1) args newAcc
+                        traceSpanTermsRepAnyTM ("comoprhArg for iter") clauseCnstrAddr (value $ ssfValue field) $ comprhArg (i + 1) newAcc
                 )
-                accIctx
+                updatedIctx
                 (Map.toList $ stcFields struct)
           | Just (List{store}) <- rtrList (value r) ->
               foldM
@@ -179,7 +193,7 @@ comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
                     if acc.incomplete
                       then return acc
                       else do
-                        let bindAddr = canonicalToAddr . trimAddrToCanonical $ addr
+                        let bindAddr = canonicalToAddr . collapseToCanonical $ clauseStoreAddr
                         case vM of
                           Nothing -> storeVal (bindAddr `appendSeg` mkLetFeature k) element
                           Just x -> do
@@ -196,23 +210,24 @@ comprehend cph topAddr curVN = comprhArg 0 cph.args emptyIterCtx
                                     newBindings =
                                       Map.insert iterVarAddr1 (VAtom (Int idx)) $
                                         Map.insert iterVarAddr2 (value element) acc.bindings
-                                 in accIctx{bindings = newBindings}
-                        comprhArg (i + 1) args newAcc
+                                 in -- FIXME: is it just acc?
+                                    updatedIctx{bindings = newBindings}
+                        comprhArg (i + 1) newAcc
                 )
-                accIctx
+                updatedIctx
                 (zip [0 ..] (toList store))
           | otherwise ->
               return $
-                accIctx
+                updatedIctx
                   { res = Left $ mkBoundsVal $ printf "%s is not iterable" (showValType $ value r)
                   }
 
-  earlyStop i accIctx = do
+  earlyStop i ictx = do
     debugInstStr
       "comprehend"
       topAddr
-      (return $ printf "early stop at iteration %d because step %d has no value" accIctx.iterCnt i)
-    return accIctx{incomplete = True}
+      (return $ printf "early stop at iteration %d because step %d has no value" ictx.iterCnt i)
+    return ictx{incomplete = True}
 
 -- | Fork the struct template for the comprehension iteration.
 forkTemplate :: ValAddr -> VNode -> RM VNode
@@ -296,6 +311,7 @@ data IterCtx = IterCtx
   { iterCnt :: Int
   -- ^ The count of the iterations.
   , incomplete :: Bool
+  , cphargs :: Seq.Seq ComprehArg
   , bindings :: Map.Map ValAddr Val
   , res :: Either Val [Val]
   -- ^ It contains a list of reversed resulted structs that are generated by each iteration.
@@ -321,16 +337,16 @@ instance ToJSONWTIndexer IterCtx where
         ]
 
 emptyIterCtx :: IterCtx
-emptyIterCtx = IterCtx{iterCnt = 0, res = Right [], incomplete = False, bindings = Map.empty}
+emptyIterCtx = IterCtx{iterCnt = 0, res = Right [], incomplete = False, bindings = Map.empty, cphargs = Seq.empty}
 
-tshowBindings :: Map.Map TextIndex VNode -> RM T.Text
+tshowBindings :: Map.Map ValAddr Val -> RM T.Text
 tshowBindings binds = do
   pairs <-
     mapM
       ( \(nameIdx, v) -> do
           name <- tshow nameIdx
-          trep <- oneLinerStringOfVNode v
-          return $ printf "%s: %s" (T.unpack name) (T.unpack trep)
+          vT <- tshow v
+          return $ printf "%s: %s" (T.unpack name) (T.unpack vT)
       )
       (Map.toList binds)
   return $ T.pack $ "{" ++ intercalate ", " pairs ++ "}"

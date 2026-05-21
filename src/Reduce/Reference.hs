@@ -77,7 +77,7 @@ select vsel addr = traceSpanTM "select" addr emptySpanValue $ do
         VBottom _ -> return reducedBase
         _ -> do
           idxFieldPath <- vsFieldPathM
-          value <$> getSubValByAddr (fieldPathToAddr idxFieldPath) (mkValVN reducedBase)
+          value <$> getSubVNByAddr (fieldPathToAddr idxFieldPath) (mkValVN reducedBase)
 
   maybe (return VNoVal) return tarVM
 
@@ -245,26 +245,29 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
                 IsBottom _ -> mkRegDR potentialTarAddr identV
                 _ -> mkPartialFound potentialTarAddr
         else do
-          rcRes <- handleRefSelforSub matchedAddr matchedV
-          resolveRes <- resolveRCValue matchedAddr matchedV
-          -- We first check if the target is self or a sub field of the self. Then handle the RC case.
-          -- Notice the order matters.
-          case listToMaybe $ catMaybes [rcRes, resolveRes] of
-            -- No need to watch since the target is self or a sub field of self, or the target value is RC-resolvable.
-            Just lr -> return lr
-            -- The target value is not RC-resolvable, we can return it directly.
-            _ -> do
-              -- If the reference is an iteration variable, we can skip the cycle detection.
-              unless isIdentIterVal $
-                watch matchedAddr refAddr
-              return $ mkRegDR matchedAddr matchedV
+          -- If the reference is an iteration variable, we can skip the cycle detection.
+          if isIdentIterVal
+            then return $ mkRegDR matchedAddr matchedV
+            else do
+              rcRes <- handleRefSelforSub matchedAddr matchedV
+              resolveRes <- resolveRCValue matchedAddr matchedV
+              -- We first check if the target is self or a sub field of the self. Then handle the RC case.
+              -- Notice the order matters.
+              case listToMaybe $ catMaybes [rcRes, resolveRes] of
+                -- No need to watch since the target is self or a sub field of self, or the target value is RC-resolvable
+                -- which we have already watched before.
+                Just lr -> return lr
+                -- The target value is not RC-resolvable, we can return it directly.
+                _ -> do
+                  watch matchedAddr refAddr
+                  return $ mkRegDR matchedAddr matchedV
  where
   handleRefSelforSub targetAddr targetV = do
     let
       -- We could be in a field, dynamic field, constraint. So we need to trim the addresses to their corresponding
       -- suffix forms to do the prefix check.
-      refSIAddr = trimAddrToCanonical refAddr
-      targetRfbAddr = trimAddrToRfb targetAddr
+      refCanAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
+      targetRfbAddr = trimCanonicalToRfb $ collapseToCanonical targetAddr
       -- If the ref is a conjunct argument or a sole value of a referable feature, we can treat it as a cycle.
       refIsAConjunct = case lastSeg refAddr of
         Just seg | isFeatureConstraint seg -> True
@@ -274,24 +277,24 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
       "locateRef"
       refAddr
       ( do
-          refSIAddrT <- tshow refSIAddr
+          refCanAddrT <- tshow refCanAddr
           targetRfbAddrT <- tshow targetRfbAddr
           return $
             printf
-              "checking if ref forms a cycle with target. refSIAddr: %s, targetRfbAddr: %s, refIsAConjunct: %s"
-              (show refSIAddrT)
+              "checking if target is a sub field of ref. refCanAddr: %s, targetRfbAddr: %s, refIsAConjunct: %s"
+              (show refCanAddrT)
               (show targetRfbAddrT)
               (show refIsAConjunct)
       )
     return $
       -- If the target address is a suffix of the reference address, we do not need to watch. Returning Nothing to let
       -- caller to continue the normal cycle detection.
-      if isPrefix (canonicalToAddr refSIAddr) (rfbAddrToAddr targetRfbAddr)
+      if isPrefix (vertexToAddr refCanAddr) (rfbAddrToAddr targetRfbAddr)
         then
           let rcVal =
                 -- If we are referencing ourself as a conjunct, we can directly treat it a top.
                 -- It also handles the case like a: a & v1 | v2, where a is a conjunct in a disjunction.
-                if canonicalToAddr refSIAddr == rfbAddrToAddr targetRfbAddr && refIsAConjunct
+                if vertexToAddr refCanAddr == rfbAddrToAddr targetRfbAddr && refIsAConjunct
                   then case targetV of
                     -- If the target value is already an atom, we can return it. This addresses the atom constraint
                     -- case.
@@ -304,7 +307,7 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
            in Just $ mkRefCycleDR targetAddr rcVal
         else Nothing
 
-  resolveRCValue targetAddr matchedV = case addrIsCanonical targetAddr of
+  resolveRCValue targetAddr matchedV = case addrIsVertex targetAddr of
     Just dep -> do
       RCResolver{stack, doneRCAddrs, resolving} <- getRCResolver
       if not resolving
@@ -312,8 +315,8 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
         else do
           let
             -- If the dep is a sub-field of any node in the current stack, then it forms a cycle.
-            depOnStack = any (\x -> isPrefix (canonicalToAddr x) (canonicalToAddr dep)) stack
-            depIsDone = any (\x -> isPrefix (canonicalToAddr x) (canonicalToAddr dep)) doneRCAddrs
+            depOnStack = any (\x -> isPrefix (vertexToAddr x) (vertexToAddr dep)) stack
+            depIsDone = any (\x -> isPrefix (vertexToAddr x) (vertexToAddr dep)) doneRCAddrs
           if
             -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
             -- incorrectly raise error.
@@ -335,7 +338,7 @@ descend :: ValAddr -> VNode -> [Selector] -> (ValAddr, VNode, [Selector])
 descend p x [] = (p, x, [])
 descend p x (sel : rs) =
   let f = selToTASeg sel
-      r = getSubVal f x
+      r = getSubVN f x
    in case r of
         Nothing -> case x of
           -- If no sub val can be found, but the current value is a disjunction, we can try to find the sub val in the
@@ -377,15 +380,15 @@ watch tarAddr refAddr = do
     throwFatal $
       printf "watch: target addr %s is not suffix-referable" (show tarAddr)
   let
-    tarRfbAddr = trimAddrToRfb tarAddr
+    tarRfbAddr = trimCanonicalToRfb $ collapseToCanonical tarAddr
 
   ctx <- getRMContext
   let
     newG = addNewDepToNG refAddr tarRfbAddr (depGraph ctx)
     -- Check if the refAddr's SuffixIrreducible form is in a cyclic scc.
-    -- We have to trim the refAddr to its suffix irreducible form because the reference could be mutable argument.
+    -- We have to trim the refAddr to its canonical form because the reference could be mutable argument.
     -- For example, {a: b + 1, b: a - 1}. We are interested in whether b forms a cycle, not /b/fa0.
-    refGrpAddrM = lookupGrpAddr (trimAddrToCanonical refAddr) newG
+    refGrpAddrM = lookupGrpAddr (trimCanonicalToVertex $ collapseToCanonical refAddr) newG
   putRMContext $ ctx{depGraph = newG}
 
   cd <- case refGrpAddrM of
@@ -414,8 +417,11 @@ copyConcrete :: ValAddr -> ValAddr -> VNode -> RM VNode
 copyConcrete tarAddr addr tarV = do
   let vt = copyVTermNode tarAddr addr (VTVNode tarV)
   let v = vtVNodeOr id tarV vt
-  -- We store the last dereferenced value for the reference with the suffix irreducible address.
-  storeLastDerefedVal (trimAddrToCanonical addr) (trimAddrToRfb tarAddr) v
+  -- We store the last dereferenced value for the reference with the canonical address.
+  storeLastDerefedVal
+    (trimCanonicalToVertex $ collapseToCanonical addr)
+    (trimCanonicalToRfb $ collapseToCanonical tarAddr)
+    v
 
   -- We need to make the target immutable before returning it.
   -- 1. If the target is a mutable, then we should not return the mutable because the dependent can receive the new value
@@ -434,7 +440,7 @@ copyConcrete tarAddr addr tarV = do
     )
   return r
 
-storeLastDerefedVal :: CanonicalAddr -> ReferableAddr -> VNode -> RM ()
+storeLastDerefedVal :: VertexAddr -> ReferableAddr -> VNode -> RM ()
 storeLastDerefedVal addr depAddr v = do
   m <- lastDerefs <$> getRMContext
   let depMap = Map.findWithDefault Map.empty addr m
@@ -442,7 +448,7 @@ storeLastDerefedVal addr depAddr v = do
       newM = Map.insert addr newDepMap m
   debugInstStr
     "storeLastDerefedVal"
-    (canonicalToAddr addr)
+    (vertexToAddr addr)
     ( do
         addrT <- tshow addr
         depAddrT <- tshow depAddr

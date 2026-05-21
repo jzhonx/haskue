@@ -38,7 +38,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       -- we only need to finalize the fields of the struct.
       stcFields' <-
         Map.traverseWithKey
-          (\k v -> vtmapM (applyAddrFOnVal finalizeInner) (appendSeg addr $ mkStringFeature k) v)
+          (\k v -> vtmapM (applyAddrFOnVN finalizeInner) (appendSeg addr $ mkStringFeature k) v)
           (stcFields s)
       let s' = s{stcFields = stcFields'}
       return $ setVNodeValue (VStruct s') topV
@@ -52,7 +52,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
         ( \p vt -> case vt of
             VTVNode v -> VTVNode <$> finalizeInner p v
             -- If the vtnode is not a value, we traverse its children and apply the function on the children.
-            _ -> vtmapM (applyAddrFOnVal finalizeInner) p vt
+            _ -> vtmapM (applyAddrFOnVN finalizeInner) p vt
         )
         addr
         topV
