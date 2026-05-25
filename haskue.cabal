@@ -15,7 +15,6 @@ extra-source-files: CHANGELOG.md
 
 library
     exposed-modules:  
-        Cursor,
         DepGraph,
         Env,
         Eval,
@@ -63,7 +62,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-auto
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late
     -- Modules included in this library but not exported.
     -- other-modules:
 

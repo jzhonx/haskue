@@ -46,10 +46,10 @@ class TermsRepShow a where
   toTermsRep :: (TextIndexerMonad s m) => a -> TermsRepOption -> m TermsRep
 
 instance TermsRepShow VNode where
-  toTermsRep = valToTermsRep
+  toTermsRep = vnToTermsRep
 
 instance TermsRepShow Val where
-  toTermsRep = vnToTermsRep
+  toTermsRep = valToTermsRep
 
 instance TermsRepShow Op where
   toTermsRep = opToTermsRep
@@ -127,19 +127,19 @@ mergeInfo info = intercalate "," (filter (not . null) info)
 mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas = intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
-valToStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
-valToStringTermsRep t = do
-  v <- valToTermsRep t defaultTermsRepOption
-  return $ show v
-
-vnToStringTermsRep :: (TextIndexerMonad s m) => Val -> m String
+vnToStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
 vnToStringTermsRep t = do
   v <- vnToTermsRep t defaultTermsRepOption
   return $ show v
 
-valToFullStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
-valToFullStringTermsRep t = do
-  v <- valToTermsRep t (defaultTermsRepOption{troptRecur = True})
+valToStringTermsRep :: (TextIndexerMonad s m) => Val -> m String
+valToStringTermsRep t = do
+  v <- valToTermsRep t defaultTermsRepOption
+  return $ show v
+
+vnToFullStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
+vnToFullStringTermsRep t = do
+  v <- vnToTermsRep t (defaultTermsRepOption{troptRecur = True})
   return $ show v
 
 termsRepToStringWIdent :: Int -> TermsRep -> String
@@ -198,11 +198,11 @@ data TermRep = TermRep
 
 data TermRepContent = TermRepContentRegular TermsRep | TermRepContentScalar String
 
-valToTermsRep :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermsRep
-valToTermsRep v@VNode{constraints} opt = do
+vnToTermsRep :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermsRep
+vnToTermsRep v@VNode{constraints} opt = do
   commonInfo <- buildCommonInfo v
   cnstrs <- cnstrsToTermsRep (toList constraints.static) opt
-  vntr <- vnToTermsRep (value v) opt
+  vntr <- valToTermsRep (value v) opt
   return $
     vntr
       { trInfo = commonInfo ++ trInfo vntr
@@ -215,12 +215,13 @@ buildCommonInfo t = do
   tStr <- showSimpleVal t
   return
     [ tStr
+    , "vers=" ++ show (version t)
     , if isJust (origExpr t) then "" else "N"
     , if t.constraints.allResolved then "" else "U"
     ]
 
-vnToTermsRep :: (TextIndexerMonad s m) => Val -> TermsRepOption -> m TermsRep
-vnToTermsRep vn opt = case vn of
+valToTermsRep :: (TextIndexerMonad s m) => Val -> TermsRepOption -> m TermsRep
+valToTermsRep vn opt = case vn of
   VAtom a -> return $ consRep ([show a], [], [])
   VBounds b -> return $ consRep ([show b], [], [])
   VStruct struct -> buildRepValStruct struct opt
@@ -233,7 +234,7 @@ vnToTermsRep vn opt = case vn of
         fields <- valPairsToTermRepList (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
   VDisj d ->
-    let djFields = zipWith (\j x -> (show $ mkDisjFeature j, mempty, x)) [0 ..] (toList $ dsjDisjuncts d)
+    let djFields = zipWith (\j x -> (show $ mkDisjFeature j, mempty, mkValVN x)) [0 ..] (toList $ dsjDisjuncts d)
      in do
           fields <- valPairsToTermRepList djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
@@ -242,7 +243,7 @@ vnToTermsRep vn opt = case vn of
 
 cnstrToTermsRep :: (TextIndexerMonad s m) => Constraint -> TermsRepOption -> m TermsRep
 cnstrToTermsRep c opt = case c of
-  ValCnstr vn -> vnToTermsRep vn opt
+  ValCnstr vn -> valToTermsRep vn opt
   OpCnstr op -> opToTermsRep op opt
   StructEmbedCnstr xs -> cnstrsToTermsRep (toList xs) opt
 
@@ -475,7 +476,7 @@ dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
 buildValueTermRepNodeContent :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermRepContent
 buildValueTermRepNodeContent fv opt@TermsRepOption{troptRecur = recurOnSub} =
   if recurOnSub
-    then TermRepContentRegular <$> valToTermsRep fv opt
+    then TermRepContentRegular <$> vnToTermsRep fv opt
     else do
       origVal <- showOrigVal fv
       valT <- oneLinerStringOfVNode fv

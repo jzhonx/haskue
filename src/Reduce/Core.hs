@@ -49,7 +49,6 @@ import Reduce.Struct (
  )
 import Reduce.TraceSpan (
   debugInst,
-  debugInstStr,
   emptySpanValue,
   traceSpanAdaptTM,
   traceSpanTermsRepTM,
@@ -62,7 +61,7 @@ import Value.Export.Debug (
   cnstrsToTermsRep,
   defaultTermsRepOption,
   termsRepToJSONWithAddr,
-  vnToStringTermsRep,
+  valToStringTermsRep,
  )
 import Value.Instances (mapMSeqWAddr, pretravsVTQ)
 
@@ -82,7 +81,7 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
     if hasEmptyCnstrs (constraints vn)
       then do
         -- FIXME: Currently, the input vn is only used for reducing constraints. And it is actually not used.
-        v' <- reduceVN addr (value vn)
+        v' <- reduceVal addr (value vn)
         return vn{value = v', constraints = (constraints vn){allResolved = True}}
       else reduceConstraints addr vn False
 
@@ -100,47 +99,55 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
   unless noSignal $ signalReduced addr
   return vn'
 
-{- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.
-
-The initial Val is provided as an argument.
--}
+-- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.
 reduceConstraints :: ValAddr -> VNode -> Bool -> RM VNode
-reduceConstraints addr vn stopAfterOneIter = do
-  (v', cnstrs') <- reduceConstraintsSetFix stopAfterOneIter 0 addr VNoVal vn.constraints
-  return
-    vn
-      { value = v'
-      , constraints = cnstrs'
-      }
+reduceConstraints addr vn stopAfterOneIter = reduceConstraintsSetFix stopAfterOneIter 0 addr vn
 
+-- | Reduce the constraints of a VNode when encountering VNode in reducing constraints.
 reduceConstraintsInCnstrs :: ValAddr -> VNode -> RM VNode
-reduceConstraintsInCnstrs addr vn = reduceConstraints addr vn True
+reduceConstraintsInCnstrs addr vn@VNode{value = v, constraints} = do
+  (v', staticCnstrs', dyn', info) <- reduceCnstrsInner 0 False addr constraints.static constraints.dynamic
+  let
+    isEqual = v' == v
+    nextVersion = if isEqual then vn.version else vn.version + 1
+    constraints' = constraints{static = staticCnstrs', dynamic = dyn', allResolved = info.incompleteCnstrs == 0}
+    vn' = vn{value = v', constraints = constraints', version = nextVersion}
 
-reduceConstraintsSetFix ::
-  Bool -> Int -> ValAddr -> Val -> ConstraintsSet -> RM (Val, ConstraintsSet)
-reduceConstraintsSetFix stopAfterOneIter count addr vn constraints = do
-  (vn', constraints', info) <- traceSpanAdaptTM
+  return vn'
+
+reduceConstraintsSetFix :: Bool -> Int -> ValAddr -> VNode -> RM VNode
+reduceConstraintsSetFix stopAfterOneIter count addr vn@VNode{value = v, constraints} = do
+  (v', constraints', info) <- traceSpanAdaptTM
     (printf "reduceConstraintsSetFix %d" count)
     addr
-    (termsRepToJSONWithAddr addr vn)
-    ( \(a, _, b) -> do
+    (termsRepToJSONWithAddr addr v)
+    ( \(a, b, c) -> do
         aT <- tshow a
-        bJ <- ttoJSON b
-        return $ toJSON (aT, bJ)
+        let
+          bS :: String
+          bS = printf "allResolved: %s" (show b.allResolved)
+        cJ <- ttoJSON c
+        return $ toJSON (aT, bS, cJ)
     )
     $ do
       (res, staticCnstrs', dyn', info) <- reduceCnstrsInner count False addr constraints.static constraints.dynamic
-      -- Update the knowledge base with the temporary result.
-      res' <- reduceVN addr res
-      storeVal addr (mkValVN res')
+      res' <- reduceVal addr res
       return (res', constraints{static = staticCnstrs', dynamic = dyn', allResolved = info.incompleteCnstrs == 0}, info)
-  let shouldHandleRC = not (null info.refCycles) && isJust (addrIsCanonical addr)
+  let
+    isEqual = v' == v
+    nextVersion = if isEqual then vn.version else vn.version + 1
+    vn' = vn{value = v', constraints = constraints', version = nextVersion}
+
+  -- Update the knowledge base with the temporary result.
+  storeVal addr vn'
+
+  let toHandleRCInNext = not (null info.refCycles) && isJust (addrIsCanonical addr)
   createCnstr <- asks (createCnstr . params)
   if
-    | vn' == vn || stopAfterOneIter || not shouldHandleRC -> return (vn', constraints')
+    | isEqual || stopAfterOneIter || not toHandleRCInNext -> return vn'
     | createCnstr && not (null info.atomCnstrs) && info.incompleteCnstrs > 0 ->
-        return (snd $ head info.atomCnstrs, constraints')
-    | otherwise -> reduceConstraintsSetFix stopAfterOneIter (count + 1) addr vn' constraints'
+        return vn'{value = snd $ head info.atomCnstrs}
+    | otherwise -> reduceConstraintsSetFix stopAfterOneIter (count + 1) addr vn'
 
 reduceCnstrsInner ::
   Int ->
@@ -173,7 +180,7 @@ reduceDynCnstrs count addr dynCnstrs = traceSpanAdaptTM
   (printf "foldDynCnstrsM %d" count)
   addr
   emptySpanValue
-  (\(a, b, _) -> emptySpanValue)
+  (const emptySpanValue)
   do
     (revL, revPairs, info) <-
       foldM
@@ -215,7 +222,7 @@ reduceConstraint count addr constraint = traceSpanAdaptTM
         ( constraint
         , vn
         , case vn of
-            VNoVal -> mkInCompleteCnstr
+            VUnknown -> mkInCompleteCnstr
             VAtom a -> mkAtomCnstrInfo addr a
             _ -> emptyCnstrInfo
         )
@@ -226,7 +233,7 @@ reduceConstraint count addr constraint = traceSpanAdaptTM
         ( c'
         , r
         , subInfo `mergeCnstrInfo` case r of
-            VNoVal -> mkInCompleteCnstr
+            VUnknown -> mkInCompleteCnstr
             VAtom a -> mkAtomCnstrInfo addr a
             _ -> emptyCnstrInfo
         )
@@ -257,7 +264,7 @@ mergeReducedCnstrs revPairs isEmbed addr =
   if
     | length revPairs > 1 -> unifyVals (reverse revPairs) addr isEmbed
     | length revPairs == 1 -> return (snd $ head revPairs)
-    | otherwise -> return VNoVal
+    | otherwise -> return VUnknown
 
 foldCnstrsSeqM ::
   (ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)) ->
@@ -272,7 +279,7 @@ foldCnstrsSeqM f addr constraints =
         return
           ( accSeq Seq.|> nc
           , case nv of
-              VNoVal -> accL
+              VUnknown -> accL
               _ -> (p, nv) : accL
           , mergeCnstrInfo info accInfo
           )
@@ -306,7 +313,7 @@ instance ToJSONWTIndexer CnstrInfo where
       mapM
         ( \(a, v) -> do
             aStr <- tshow a
-            vStr <- vnToStringTermsRep v
+            vStr <- valToStringTermsRep v
             let
               s :: String
               s = printf "(%s, %s)" aStr vStr
@@ -367,7 +374,7 @@ reduceNoUnify addr op = case op of
   Ref ref -> do
     let (_, isReady) = retrieveArgs rtrValue op
     if not isReady
-      then return (VNoVal, OpCnstr op)
+      then return (VUnknown, OpCnstr op)
       else do
         dr <- deref addr ref
         handleRefRes dr addr ref
@@ -378,7 +385,7 @@ reduceNoUnify addr op = case op of
       then do
         tar <- select slct addr
         return (tar, OpCnstr op)
-      else return (VNoVal, OpCnstr op)
+      else return (VUnknown, OpCnstr op)
   RegOp rop -> do
     let (as, _) = retrieveArgs rtrValue op
     r <-
@@ -394,7 +401,7 @@ reduceNoUnify addr op = case op of
     r <-
       if isReady
         then resolveInterpolation itp (fromJust $ sequence xs)
-        else return VNoVal
+        else return VUnknown
     return (r, OpCnstr op)
   DisjOp djop -> do
     -- Disjunction operation can have incomplete arguments.
@@ -403,18 +410,18 @@ reduceNoUnify addr op = case op of
   _ -> throwFatal "reduceOp: unsupported mutable op"
 
 handleRefRes :: DerefResult -> ValAddr -> Reference -> RM (Val, Constraint)
-handleRefRes DerefResult{targetValue, isIdentIterVal, targetAddr, isRefCycle} _ ref = do
+handleRefRes DerefResult{targetValue, targetAddr, isRefCycle} _ ref = do
   let newRef = ref{resolvedFullAddr = targetAddr, isRefCycle}
   case targetValue of
-    Nothing -> return (VNoVal, OpCnstr (Ref newRef))
+    Nothing -> return (VUnknown, OpCnstr (Ref newRef))
     Just result -> return (value result, OpCnstr (Ref newRef))
 
-reduceVN :: ValAddr -> Val -> RM Val
-reduceVN addr v = do
+reduceVal :: ValAddr -> Val -> RM Val
+reduceVal addr v = do
   case v of
     VStruct s -> reduceStruct s addr
     VList l -> reduceList l addr
-    VDisj d -> reduceDisj d addr
+    VDisj d -> reduceDisj addr d
     _ -> return v
 
 retrieveArgs :: (Val -> Maybe Val) -> Op -> ([Maybe Val], Bool)

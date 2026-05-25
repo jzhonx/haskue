@@ -22,7 +22,6 @@ import Reduce.Monad (
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (ttoJSON))
 import Text.Printf (printf)
 import Util.Trace (debugInstant, getTraceID, traceSpanExec, traceSpanStart)
-import Value
 import Value.Export.Debug
 
 data RMStartTraceArgs = RMStartTraceArgs
@@ -71,29 +70,6 @@ whenTraceEnabled name f traced = do
   if traceEnable && (Set.null tFilter || Set.member name tFilter)
     then traced
     else f
-
--- valDebugRepJSON :: ValAddr -> VNode -> RM Value
--- valDebugRepJSON addr v = do
---   let isRoot = addr == rootValAddr
---   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = isRoot})
---   return $ toJSON rep
-
--- vnDebugRepJSON :: ValAddr -> Val -> RM Value
--- vnDebugRepJSON addr vn = do
---   let isRoot = addr == rootValAddr
---   rep <- vnToTermsRep vn (defaultTermsRepOption{troptRecur = isRoot})
---   return $ toJSON rep
-
--- valDebugFullRepJSON :: VNode -> RM Value
--- valDebugFullRepJSON v = do
---   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = True})
---   return $ toJSON rep
-
--- valDebugRep :: ValAddr -> VNode -> RM String
--- valDebugRep addr v = do
---   let isRoot = addr == rootValAddr
---   rep <- valToTermsRep v (defaultTermsRepOption{troptRecur = isRoot})
---   return $ show rep
 
 traceSpanTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> RM a -> RM a
 traceSpanTM name addr beforeM = traceAction name addr beforeM (return Nothing) ttoJSON

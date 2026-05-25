@@ -14,6 +14,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
+import GHC.Stack (HasCallStack)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Text.Printf (printf)
 import Value.Comprehension
@@ -72,7 +73,7 @@ instance Eq Val where
   (==) (VBounds b1) (VBounds b2) = b1 == b2
   (==) (VBottom _) (VBottom _) = True
   (==) VTop VTop = True
-  (==) VNoVal VNoVal = True
+  (==) VUnknown VUnknown = True
   (==) _ _ = False
 
 instance Eq VNode where
@@ -120,7 +121,9 @@ deriving instance Show Constraint
 deriving instance Show ConstraintsSet
 
 instance ShowWTIndexer VNode where
-  tshow = oneLinerStringOfVNode
+  tshow vn = do
+    s <- oneLinerStringOfVNode vn
+    return $ T.pack $ printf "(%d) (r:%s) %s" (version vn) (show vn.constraints.allResolved) s
 
 instance ShowWTIndexer Val where
   tshow vn = oneLinerStringOfVNode (mkValVN vn)
@@ -133,7 +136,7 @@ instance ToJSON Val where
 
 instance ToJSONWTIndexer VNode where
   ttoJSON t = do
-    s <- oneLinerStringOfVNode t
+    s <- tshow t
     return $ toJSON s
 
 instance ToJSONWTIndexer Val where
@@ -360,10 +363,10 @@ instance VTerm List where
     return lst{store = store', final = final'}
 
 instance VTerm Disj where
-  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVNode f) mkDisjFeature p (dsjDisjuncts dj)
+  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVal f) mkDisjFeature p (dsjDisjuncts dj)
 
   vtmapM f p d = do
-    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkDisjFeature p (dsjDisjuncts d)
+    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVal f) mkDisjFeature p (dsjDisjuncts d)
     return d{dsjDisjuncts = dsjDisjuncts'}
 
 instance VTerm Op where
@@ -458,3 +461,75 @@ posttravsVT f p x = let x' = vtmapT (posttravsVT f) p x in f p x'
 
 pretravsVTQ :: (r -> r -> r) -> (ValAddr -> VTermNode -> r) -> ValAddr -> VTermNode -> r
 pretravsVTQ k f p x = foldl k (f p x) (vtmapQ (pretravsVTQ k f) p x)
+
+{- | Set the sub tree with the given segment and new tree.
+
+The sub tree should already exist in the parent tree.
+-}
+setSubVN :: (HasCallStack) => Feature -> VNode -> VNode -> Maybe VNode
+setSubVN f subVN parVN = do
+  origSubVN <- getSubVN f parVN
+  case (fetchLabelType f, parVN) of
+    (StringLabelType, IsStruct parStruct) ->
+      let
+        newStruct = updateStructFieldVN (getTextIndexFromFeature f) subVN parStruct
+       in
+        ret origSubVN $ VStruct newStruct
+    (PatternLabelType, IsStruct parStruct) ->
+      let (i, j) = getPatternIndexesFromFeature f
+       in ret origSubVN $ VStruct (mapStructCnstrByID i (const subVN) parStruct)
+    (DynFieldLabelType, IsStruct parStruct) ->
+      let (i, j) = getDynFieldIndexesFromFeature f
+       in ret origSubVN $ VStruct (mapStructDynFieldByID i (const subVN) parStruct)
+    (LetLabelType, IsStruct parStruct) ->
+      ret origSubVN $ VStruct (mapStructLet (getTextIndexFromFeature f) (const subVN) parStruct)
+    (EmbedValueLabelType, IsStruct parStruct) -> ret origSubVN $ VStruct (parStruct{stcEmbedVal = Just subVN.value})
+    (ListStoreIdxLabelType, IsList l) ->
+      let i = fetchIndex f in ret origSubVN $ VList $ updateListStoreAt i (const subVN) l
+    (ListIdxLabelType, IsList l) ->
+      let i = fetchIndex f in ret origSubVN $ VList $ updateListFinalAt i (const subVN) l
+    (DisjLabelType, IsDisj d) ->
+      let i = fetchIndex f
+       in Just $
+            parVN
+              { value = VDisj $ d{dsjDisjuncts = Seq.update i subVN.value (dsjDisjuncts d)}
+              , -- Since the disjuncts are values and they have no versions, we need to compare the subVN.value with the
+                -- original subVN.value to determine whether we need to update the version of the parent node.
+                version = if subVN.value /= origSubVN.value then parVN.version + 1 else parVN.version
+              }
+    (RootLabelType, _) -> Nothing
+    _ -> Nothing
+ where
+  ret origSubVN x =
+    Just $
+      parVN
+        { value = x
+        , version = if subVN.version > origSubVN.version then parVN.version + 1 else parVN.version
+        }
+
+getSubVN :: (HasCallStack) => Feature -> VNode -> Maybe VNode
+getSubVN f t = case (fetchLabelType f, t) of
+  -- Root segment always returns the same tree.
+  (RootLabelType, _) -> Just t
+  (StringLabelType, IsStruct struct)
+    | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
+  (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
+  (PatternLabelType, IsStruct struct) ->
+    let (i, j) = getPatternIndexesFromFeature f
+     in scsPattern <$> stcCnstrs struct IntMap.!? i
+  (DynFieldLabelType, IsStruct struct) ->
+    let (i, j) = getDynFieldIndexesFromFeature f
+     in dsfLabel <$> stcDynFields struct IntMap.!? i
+  (EmbedValueLabelType, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
+  (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
+  (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
+  (DisjLabelType, IsDisj d) -> mkValVN <$> dsjDisjuncts d Seq.!? fetchIndex f
+  _ -> Nothing
+
+getSubVNByAddr :: ValAddr -> VNode -> Maybe VNode
+getSubVNByAddr addr = go (addrToList addr)
+ where
+  go [] v = Just v
+  go (f : fs) v = do
+    subV <- getSubVN f v
+    go fs subV

@@ -42,7 +42,7 @@ import Value.Export.Debug (
   TermsRepShow (..),
   recurShowTermsRepOption,
   termsRepToFullJSON,
-  vnToStringTermsRep,
+  valToStringTermsRep,
  )
 
 data EmbedType
@@ -154,7 +154,7 @@ unifyOrderedConjOpds co1 co2 addr = do
         return [(co1.coAddr, v1), (co2.coAddr, v2)]
   case xs of
     Just ys -> unifyVals ys addr (isEmbeddedIn co2 co1)
-    Nothing -> return VNoVal
+    Nothing -> return VUnknown
 
 -- | Merge a list of processed tree cursors into one tree.
 mergeVals :: [(ValAddr, Val)] -> ValAddr -> Bool -> RM Val
@@ -240,8 +240,8 @@ mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
     addr
     emptySpanValue
     ( do
-        t1Str <- vnToStringTermsRep t1
-        t2Str <- vnToStringTermsRep t2
+        t1Str <- valToStringTermsRep t1
+        t2Str <- valToStringTermsRep t2
         return $
           printf
             "merging\n%s:\n%s\nwith\n%s:\n%s"
@@ -272,7 +272,7 @@ mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
     "mergeBinUTrees"
     addr
     ( do
-        rStr <- vnToStringTermsRep r
+        rStr <- valToStringTermsRep r
         return $ printf "result: %s" rStr
     )
   return r
@@ -644,7 +644,7 @@ fieldsToStruct :: Struct -> Struct -> Struct
 fieldsToStruct st1 st2 =
   emptyStruct
     { stcClosed = stcClosed st1 || stcClosed st2
-    , stcFields = Map.fromList (unionFields (stcFields st1) (stcFields st2))
+    , stcFields = Map.unionWith mergeField (stcFields st1) (stcFields st2)
     , stcDynFields = IntMap.union (stcDynFields st1) (stcDynFields st2)
     , -- The combined patterns are the patterns of the first struct and the patterns of the second struct.
       stcCnstrs = IntMap.union (stcCnstrs st1) (stcCnstrs st2)
@@ -660,37 +660,6 @@ mkPermItem st opSt =
     , piLabels = Set.fromList $ DList.toList $ stcOrdLabels st
     , piOpLabels = Set.fromList $ DList.toList $ stcOrdLabels opSt
     }
-
-{- | Merge two fields.
-
-The structs can not be both embedded.
--}
-unionFields :: Map.Map TextIndex Field -> Map.Map TextIndex Field -> [(TextIndex, Field)]
-unionFields fields1 fields2 =
-  foldr
-    ( \label acc ->
-        let
-          f1M = Map.lookup label fields1
-          f2M = Map.lookup label fields2
-         in
-          if
-            | label `Set.member` l1Set && label `Set.member` l2Set
-            , Just sf1 <- f1M
-            , Just sf2 <- f2M ->
-                ( label
-                , let x = mergeField sf1 sf2
-                   in x
-                )
-                  : acc
-            | label `Set.member` l1Set, Just sf1 <- f1M -> (label, sf1) : acc
-            | label `Set.member` l2Set, Just sf2 <- f2M -> (label, sf2) : acc
-            | otherwise -> acc
-    )
-    []
-    (Set.toList $ Set.union l1Set l2Set)
- where
-  l1Set = Map.keysSet fields1
-  l2Set = Map.keysSet fields2
 
 {- | Put the static field labels in the order of the first struct and append the labels that are not in the first
 struct.
@@ -795,7 +764,7 @@ utsFromDisjs :: ConjOpd -> Disj -> [ConjOpd]
 utsFromDisjs co =
   vtmapQ
     ( \p vt -> case vt of
-        VTVNode v -> co{coVal = value v, coAddr = p}
+        VTVal v -> co{coVal = v, coAddr = p}
         _ -> error "unexpected vt in utsFromDisjs"
     )
     co.coAddr
@@ -810,17 +779,17 @@ treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
         ([], rs) -> concatMap (\j -> map (\i -> (i * n) + j) [0 .. m - 1]) rs
         -- For each i in the left default indexes, we have one default value, x<i,j>.
         (ls, rs) -> concatMap (\i -> map (+ (i * n)) rs) ls
-      disjuncts = map mkValVN (concat matrix)
+      disjuncts = concat matrix
       (newDefIndexes, newDisjuncts) = removeIncompleteDisjuncts defIndexes disjuncts
   return $ VDisj $ emptyDisj{dsjDefIndexes = newDefIndexes, dsjDisjuncts = Seq.fromList newDisjuncts}
 
 -- | TODO: efficient implementation
-removeIncompleteDisjuncts :: [Int] -> [VNode] -> ([Int], [VNode])
+removeIncompleteDisjuncts :: [Int] -> [Val] -> ([Int], [Val])
 removeIncompleteDisjuncts defIdxes ts =
   let (x, y, _) =
         foldl
           ( \(accIdxes, accDjs, removeCnt) (i, dj) -> case dj of
-              IsNoVal -> (accIdxes, accDjs, removeCnt + 1)
+              VUnknown -> (accIdxes, accDjs, removeCnt + 1)
               v ->
                 ( if i `elem` defIdxes then accIdxes ++ [i - removeCnt] else accIdxes
                 , accDjs ++ [v]
@@ -860,3 +829,30 @@ patMatchLabel pat tidx addr = traceSpanAdaptTM "patMatchLabel" addr emptySpanVal
     case rtrAtom r of
       Just (String _) -> return True
       _ -> return False
+
+-- {- | Check if a value is an instance of another value.
+
+-- According to spec,
+-- A value a is an instance of a value b, denoted a ⊑ b, if b == a or b is more general than a, that is if a orders before
+-- b in the partial order (⊑ is not a CUE operator). We also say that b subsumes a in this case. In graphical terms, b is
+-- “above” a in the lattice.
+-- -}
+-- isInstanceOf :: Val -> Val -> Bool
+-- -- Everything is an instance of itself.
+-- isInstanceOf _ VUnknown = True
+-- -- Every meaningful value is an instance of top.
+-- isInstanceOf _ VTop = True
+-- -- Bottom is an instance of every value.
+-- isInstanceOf (VBottom _) _ = True
+-- isInstanceOf (VAtom a1) (VAtom a2) = a1 == a2
+-- isInstanceOf (VBounds b1) (VBounds b2) = b1 == undefined
+-- isInstanceOf (VStruct s1) (VStruct s2) = isStructInstanceOf s1 s2
+-- isInstanceOf (VList l1) (VList l2) = isListInstanceOf l1 l2
+-- isInstanceOf (VDisj d1) (VDisj d2) = isDisjInstanceOf d1 d2
+-- isInstanceOf a (VDisj b) = isInstanceOf a (fromJust $ rtrDisjDefVal b)
+-- isInstanceOf _ _ = False
+
+-- isStructInstanceOf :: Struct -> Struct -> Bool
+-- isStructInstanceOf Struct{stcEmbedVal = Just v1} Struct{stcEmbedVal = Just v2} = isInstanceOf v1 v2
+-- isStructInstanceOf s1@Struct{stcEmbedVal = Nothing} s2@Struct{stcEmbedVal = Nothing} = undefined
+-- isStructInstanceOf _ _ = False

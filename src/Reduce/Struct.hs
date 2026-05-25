@@ -6,7 +6,6 @@
 module Reduce.Struct where
 
 import Control.Monad (foldM, unless)
-import Cursor
 import Data.Aeson (toJSON)
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.IntMap.Strict as IntMap
@@ -16,7 +15,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import DepGraph (delDGEdgesByUseMatch, queryUsesByDepMatch)
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduce, reduceVN, signalReduced)
+import {-# SOURCE #-} Reduce.Core (reduce, reduceVal, signalReduced)
 import Reduce.Monad (
   RM,
   getRMDepGraph,
@@ -24,7 +23,7 @@ import Reduce.Monad (
   modifyRMContext,
  )
 import Reduce.Reference ()
-import Reduce.Store (copyVTermNode, storeVal)
+import Reduce.Store (copyVTermNode, setUnknownInStore, storeVal)
 import Reduce.TraceSpan (
   debugInstStr,
   emptySpanValue,
@@ -48,9 +47,9 @@ import Value
 import Value.Export.Debug (
   cnstrsToFullTermsRep,
   termsRepToFullJSON,
-  vnToStringTermsRep,
+  valToStringTermsRep,
  )
-import Value.Instances (posttravsVT)
+import Value.Instances (posttravsVT, setSubVN)
 
 reduceStruct :: Struct -> ValAddr -> RM Val
 reduceStruct initStruct addr = traceSpanTM "reduceStruct" addr emptySpanValue $ do
@@ -82,7 +81,7 @@ reduceStruct initStruct addr = traceSpanTM "reduceStruct" addr emptySpanValue $ 
             stcEmbedVal' <- case stcEmbedVal s of
               Nothing -> return Nothing
               Just ev -> do
-                Just <$> reduceVN (nf mkEmbedValueFeature) ev
+                Just <$> reduceVal (nf mkEmbedValueFeature) ev
             return
               ( VStruct $
                   s
@@ -109,11 +108,7 @@ reduceStruct initStruct addr = traceSpanTM "reduceStruct" addr emptySpanValue $ 
               (VStruct s)
               (IntMap.keys $ stcCnstrs s)
         )
-  whenStruct
-    ( \s -> do
-        validateStructPerm addr s
-    )
-    r
+  whenStruct (validateStructPerm addr) r
 
 whenStruct :: (Struct -> RM Val) -> Val -> RM Val
 whenStruct f v = do
@@ -139,7 +134,7 @@ validateStructPerm addr struct = traceSpanTermsRepTM "validateStructPerm" addr (
           "validateStructPerm"
           addr
           ( do
-              rep <- vnToStringTermsRep (VBottom err)
+              rep <- valToStringTermsRep (VBottom err)
               msprintfS "permission error: %s" [packFmtA rep]
           )
         return (VStruct $ struct{stcPermErr = Just err})
@@ -152,32 +147,30 @@ A struct must be provided so that dynamic fields and constraints can be found.
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
 validatePermItem :: Struct -> PermItem -> ValAddr -> RM (Maybe Bottom)
-validatePermItem struct pitem addr =
-  -- traceSpanRMTC "validatePermItem" vc $
-  do
-    labelMs <- mapM convertLabel $ Set.toList $ piLabels pitem
-    opLabelMs <- mapM convertLabel $ Set.toList $ piOpLabels pitem
-    let
-      cnstrs = IntMap.fromList $ map (\i -> (i, stcCnstrs struct IntMap.! i)) (Set.toList $ piCnstrs pitem)
-    case (sequence labelMs, sequence opLabelMs) of
-      (Just labels, Just opLabels) -> do
-        foldM
-          ( \acc opLabel -> case acc of
-              Just _ -> return acc
-              Nothing -> do
-                allowed <- checkLabelAllowed (Set.fromList labels) cnstrs opLabel addr
-                if allowed
-                  then return acc
-                  else do
-                    s <- tshow opLabel
-                    -- show s so that we have quotes around the label.
-                    return $ Just (Bottom $ printf "%s is not allowed" (show s))
-          )
-          Nothing
-          (Set.fromList opLabels)
-      -- If not all dynamic fields can be resolved to string labels, we can not check the permission.
-      -- This is what CUE does.
-      _ -> return Nothing
+validatePermItem struct pitem addr = do
+  labelMs <- mapM convertLabel $ Set.toList $ piLabels pitem
+  opLabelMs <- mapM convertLabel $ Set.toList $ piOpLabels pitem
+  let
+    cnstrs = IntMap.fromList $ map (\i -> (i, stcCnstrs struct IntMap.! i)) (Set.toList $ piCnstrs pitem)
+  case (sequence labelMs, sequence opLabelMs) of
+    (Just labels, Just opLabels) -> do
+      foldM
+        ( \acc opLabel -> case acc of
+            Just _ -> return acc
+            Nothing -> do
+              allowed <- checkLabelAllowed (Set.fromList labels) cnstrs opLabel addr
+              if allowed
+                then return acc
+                else do
+                  s <- tshow opLabel
+                  -- show s so that we have quotes around the label.
+                  return $ Just (Bottom $ printf "%s is not allowed" (show s))
+        )
+        Nothing
+        (Set.fromList opLabels)
+    -- If not all dynamic fields can be resolved to string labels, we can not check the permission.
+    -- This is what CUE does.
+    _ -> return Nothing
  where
   convertLabel :: (TextIndexerMonad s m) => StructFieldLabel -> m (Maybe TextIndex)
   convertLabel (StructStaticFieldLabel f) = return $ Just f
@@ -263,10 +256,8 @@ handleSObjChangeInner seg struct structAddr structV = case seg of
     let dsf = stcDynFields struct IntMap.! i
         allCnstrs = IntMap.elems $ stcCnstrs removed
     rE <- dynFieldToStatic (stcFields removed) dsf structAddr
-    debugInstStr
-      "handleSObjChange"
-      structAddr
-      (msprintfS "rE: %s" [packFmtA $ show rE])
+
+    debugInstStr "handleSObjChange" structAddr (msprintfS "rE: %s" [packFmtA $ show rE])
     case rE of
       Left err -> return (value err, [])
       Right Nothing -> return (VStruct removed, [])
@@ -324,13 +315,13 @@ handleSObjChangeInner seg struct structAddr structV = case seg of
   genAddrs baseAddr = map (\name -> appendSeg baseAddr (mkStringFeature name))
   genAddrVals baseAddr = map (\(name, v) -> (appendSeg baseAddr (mkStringFeature name), v))
 
-{- | Make all sub fields of changed fields NoVal.
+{- | Make all sub fields of changed fields Unknown.
 
 The "changed" means a field is removed or its value is changed. No need to do this for added fields as they have been
-NoVal by default.
+Unknown by default.
 
 Suppose we have an old value {a: {b: 1, c: 2}} and the new value is {a: {b: 1}}. All references that reference the a.c
-field should be updated to NoVal since the field is removed.
+field should be updated to Unknown since the field is removed.
 -}
 removeChangedSubFields :: [ValAddr] -> ValAddr -> RM ()
 removeChangedSubFields affected structAddr =
@@ -338,7 +329,7 @@ removeChangedSubFields affected structAddr =
     ( \afFieldAddr -> do
         -- First we delete all edges that are from the affected field or its sub fields.
         modifyRMContext $ mapDepGraph $ delDGEdgesByUseMatch (isPrefix afFieldAddr)
-        storeVal afFieldAddr (mkValVN VNoVal)
+        setUnknownInStore afFieldAddr
         g <- getRMDepGraph
         let pairs = queryUsesByDepMatch (isPrefix afFieldAddr) g
 
@@ -357,15 +348,15 @@ removeChangedSubFields affected structAddr =
         mapM_
           ( \(afSubDep, use) ->
               -- If the use is a sub field of the removed field, then we do nothing since the afSubDep will also be
-              -- removed. Otherwise, need to set it to NoVal and signal reduced.
+              -- removed. Otherwise, need to set it to Unknown and signal reduced.
               if isPrefix afFieldAddr use
                 then return ()
                 else do
                   debugInstStr
                     "removeChangedSubFields"
                     structAddr
-                    (msprintfS "set sub affected addr to NoVal: %s" [packFmtA afSubDep])
-                  storeVal afSubDep (mkValVN VNoVal)
+                    (msprintfS "set sub affected addr to Unknown: %s" [packFmtA afSubDep])
+                  setUnknownInStore afSubDep
                   signalReduced afSubDep
           )
           pairs
@@ -517,26 +508,6 @@ replaceAlias aliasAddr fieldNameT topAddr sq =
     let sq' = vtmapT (\_ vt -> replace vt) topAddr sq
     return sq'
 
-{- | Update the struct with the constrained result.
-
-If the constrained result introduce new fields that are not in the struct, then they are ignored.
--}
-updateStructWithCnstredRes ::
-  -- | The constrained result is a list of tuples that contains the name of the field, the field.
-  [(TextIndex, Field)] ->
-  Struct ->
-  Struct
-updateStructWithCnstredRes res struct =
-  foldr
-    ( \(name, newField) acc ->
-        maybe
-          acc
-          (\_ -> updateStructField name newField acc)
-          (lookupStructField name struct)
-    )
-    struct
-    res
-
 -- | Filter the names that are matched with the constraint's pattern.
 filterMatchedNames :: StructCnstr -> [TextIndex] -> ValAddr -> RM [TextIndex]
 filterMatchedNames cnstr labels addr =
@@ -554,7 +525,7 @@ Returns the updated struct, affected labels that represent values that are chang
 
 This is done by re-applying existing objects except the one that is removed because unification is a lossy operation.
 
-For removed fields, they are not removed from the struct but marked as NoVal.
+For removed fields, they are not removed from the struct but marked as Unknown.
 -}
 removeAppliedObject :: Int -> Struct -> ValAddr -> RM (Struct, [(TextIndex, VNode)], [TextIndex])
 removeAppliedObject objID struct addr =
@@ -563,7 +534,7 @@ removeAppliedObject objID struct addr =
     addr
     emptySpanValue
     ( \(s, fds, rmLabels) -> do
-        sT <- T.pack <$> vnToStringTermsRep (VStruct s)
+        sT <- T.pack <$> valToStringTermsRep (VStruct s)
         fdsT <-
           mapM
             ( \(name, v) -> do
@@ -577,8 +548,9 @@ removeAppliedObject objID struct addr =
     )
     $ do
       (updatedFields, removedLabels) <-
-        foldM
-          ( \(accUpdated, accRemoved) (name, field) -> do
+        Map.foldlWithKey
+          ( \acc name field -> do
+              (accUpdated, accRemoved) <- acc
               if memberDynCnstr objID (constraints $ ssfValue field)
                 then do
                   let constraints' = removeDynCnstr objID (constraints $ ssfValue field)
@@ -589,8 +561,8 @@ removeAppliedObject objID struct addr =
                       return ((name, newField) : accUpdated, accRemoved)
                 else return (accUpdated, accRemoved)
           )
-          ([], [])
-          (Map.toList $ stcFields struct)
+          (return ([], []))
+          (stcFields struct)
       let res =
             removeStructFieldsByNames removedLabels $
               updateStructWithFields updatedFields struct

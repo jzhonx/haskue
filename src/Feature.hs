@@ -535,7 +535,7 @@ trimCanonicalToRfb (CanonicalAddr (ValAddr xs)) =
 vertex.
 -}
 newtype VertexAddr = VertexAddr {getVertexAddr :: CanonicalAddr}
-  deriving (Show, Eq, Ord, Generic, NFData, ToJSON, ToJSONWTIndexer)
+  deriving (Show, Eq, Ord, Generic, NFData, ToJSON, ToJSONWTIndexer, ToJSONKey)
 
 instance ShowWTIndexer VertexAddr where
   tshow (VertexAddr c) = tshow c

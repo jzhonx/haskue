@@ -47,7 +47,7 @@ import Syntax.Scanner (scanTokens, scanTokensFromFile)
 import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (valToFullStringTermsRep)
+import Value.Export.Debug (vnToFullStringTermsRep)
 import Value.Export.JSON (buildJSON)
 
 data Config = Config
@@ -192,9 +192,9 @@ evalValInner conf textIndexer raw = do
     runRWST
       ( do
           when (ecDebugMode conf) $ do
-            rawRep <- valToFullStringTermsRep raw
+            rawRep <- vnToFullStringTermsRep raw
             liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
-            resolvedRep <- valToFullStringTermsRep raw
+            resolvedRep <- vnToFullStringTermsRep raw
             liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
 
           root <-
@@ -208,7 +208,7 @@ evalValInner conf textIndexer raw = do
           reducedRoot <- local (mapParams (\p -> p{createCnstr = False})) (finalize rootValAddr root)
 
           when (ecDebugMode conf) $ do
-            rep <- valToFullStringTermsRep reducedRoot
+            rep <- vnToFullStringTermsRep reducedRoot
             liftIO $
               hPutStr stderr $
                 "Final eval result: " ++ rep ++ "\n"

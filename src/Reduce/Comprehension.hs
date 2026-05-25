@@ -35,7 +35,7 @@ import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), textIndexToBS)
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
-import Value.Export.Debug (valToFullStringTermsRep)
+import Value.Export.Debug (vnToFullStringTermsRep)
 import Value.Instances (posttravsVT)
 
 reduceCompreh :: ValAddr -> Comprehension -> RM (Val, Comprehension)
@@ -119,7 +119,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
           clauseCnstrAddr
           ( do
               bindingsT <- tshowBindings accIctx.bindings
-              rep <- valToFullStringTermsRep r
+              rep <- vnToFullStringTermsRep r
               msprintfS "comprehension tmpl arg: %s, bindings: %s" [packFmtA rep, packFmtA bindingsT]
           )
         return
@@ -133,7 +133,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgLet letName r) args}
         case r of
-          IsNoVal -> earlyStop i updatedIctx
+          IsUnknown -> earlyStop i updatedIctx
           IsBottom _ -> return $ updatedIctx{res = Left $ value r}
           _ -> do
             let bindingAddr = appendSeg clauseStoreAddr (mkLetFeature letName)
@@ -144,7 +144,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgIf r) args}
         case r of
-          IsNoVal -> earlyStop i updatedIctx
+          IsUnknown -> earlyStop i updatedIctx
           IsBottom _ -> return $ updatedIctx{res = Left $ value r}
           _ -> case rtrAtom (value r) of
             Just (Bool True) -> comprhArg (i + 1) updatedIctx
@@ -155,7 +155,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgFor k vM r) args}
         if
-          | IsNoVal <- r -> earlyStop i updatedIctx
+          | IsUnknown <- r -> earlyStop i updatedIctx
           | IsBottom _ <- r -> return updatedIctx{res = Left (value r)}
           -- TODO: only iterate optional fields
           | IsStruct struct <- r ->
@@ -210,8 +210,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
                                     newBindings =
                                       Map.insert iterVarAddr1 (VAtom (Int idx)) $
                                         Map.insert iterVarAddr2 (value element) acc.bindings
-                                 in -- FIXME: is it just acc?
-                                    updatedIctx{bindings = newBindings}
+                                 in acc{bindings = newBindings}
                         comprhArg (i + 1) newAcc
                 )
                 updatedIctx

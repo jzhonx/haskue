@@ -7,6 +7,6 @@ import Reduce.Monad
 import Value.Val (VNode, Val)
 
 reduce :: ValAddr -> VNode -> RM VNode
-reduceVN :: ValAddr -> Val -> RM Val
+reduceVal :: ValAddr -> Val -> RM Val
 reduceConstraintsInCnstrs :: ValAddr -> VNode -> RM VNode
 signalReduced :: ValAddr -> RM ()

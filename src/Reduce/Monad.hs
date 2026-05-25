@@ -81,11 +81,11 @@ data Context = Context
   , rootRecalcQ :: Seq.Seq ReducedSignal
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
-  , lastDerefs :: Map.Map VertexAddr (Map.Map ReferableAddr VNode)
+  , lastDerefs :: Map.Map VertexAddr (Map.Map ReferableAddr Int)
   -- ^ It stores the last dereferenced value of the reference with the canonical address.
   -- We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
   -- time, so if any of them references to the same referable address, they will have the same value.
-  , vStore :: Map.Map CanonicalAddr VNode
+  , vStore :: Map.Map VertexAddr VNode
   -- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
   -- objects.
   , rcResolver :: !RCResolver

@@ -23,7 +23,7 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as LB
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Types (status200, status404)
-import Network.Wai (Application, Request (..), responseFile, responseLBS)
+import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Handler.Warp (defaultSettings, runSettings, setHost, setPort)
 import Network.Wai.Middleware.Cors (cors, corsMethods, corsOrigins, simpleCorsResourcePolicy)
 import System.Console.ANSI (

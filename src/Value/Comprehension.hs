@@ -3,7 +3,6 @@
 
 module Value.Comprehension where
 
-import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
 import StringIndex (TextIndex)

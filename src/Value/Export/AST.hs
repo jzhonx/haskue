@@ -55,12 +55,30 @@ buildExprDebug t tier = do
 newtype BuildConfig = BuildConfig {isDebug :: Bool}
 
 buildExprExt :: VNode -> EM AST.Expression
-buildExprExt t = case value t of
+buildExprExt t = case t of
+  IsUnknown -> do
+    isDebug <- asks isDebug
+    if isDebug
+      then
+        if not (null (static $ constraints t))
+          then buildStaticConstraintsExpr (static $ constraints t)
+          else return $ AST.idCons "Unknown"
+      else case origExpr t of
+        Just e -> return e
+        _
+          | not (null (static $ constraints t)) ->
+              buildStaticConstraintsExpr (static $ constraints t)
+          | otherwise -> throwErrSt "cannot build expression for Unknown value without original expression"
+  IsStruct s -> buildStructASTExpr s t
+  _ -> buildValExprExt (value t)
+
+buildValExprExt :: Val -> EM AST.Expression
+buildValExprExt t = case t of
   VTop -> return $ AST.idCons "_"
   VBottom _ -> buildBottom
   VAtom a -> return $ (AST.litCons . aToLiteral) a
   VBounds b -> return $ buildBoundsASTExpr b
-  VStruct struct -> buildStructASTExpr struct t
+  VStruct struct -> buildStructASTExpr struct (mkValVN t)
   VList l -> do
     ls <-
       mapM
@@ -73,13 +91,11 @@ buildExprExt t = case value t of
   VDisj dj
     | null (rtrDisjDefVal dj) -> disjunctsToAST (toList $ dsjDisjuncts dj)
     | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
-  VNoVal -> do
+  VUnknown -> do
     isDebug <- asks isDebug
     if isDebug
-      then return $ AST.idCons "NoVal"
-      else case origExpr t of
-        Just e -> return e
-        Nothing -> buildStaticConstraintsExpr (static $ constraints t)
+      then return $ AST.idCons "Unknown"
+      else throwErrSt "cannot build expression for Unknown value without original expression"
 
 buildStaticConstraintsExpr :: Seq.Seq Constraint -> EM AST.Expression
 buildStaticConstraintsExpr cs = do
@@ -90,14 +106,14 @@ buildConstraintExpr :: Constraint -> EM AST.Expression
 buildConstraintExpr c = case c of
   ValCnstr vn -> buildExprExt (mkValVN vn)
   StructEmbedCnstr xs -> buildStaticConstraintsExpr xs
-  OpCnstr op -> buildOpASTExpr op (mkValVN VNoVal)
+  OpCnstr op -> buildOpASTExpr op (mkValVN VUnknown)
 
 buildBottom :: EM AST.Expression
 buildBottom = return $ AST.litCons (AST.LitBasic $ AST.BottomLit $ mkTypeToken Token.Bottom)
 
 throwExprNotFound :: VNode -> EM a
 throwExprNotFound t = do
-  rep <- valToStringTermsRep t
+  rep <- vnToStringTermsRep t
   throwError $ printf "expression not found for %s, tree rep: %s" (showValType $ value t) rep
 
 buildOpASTExpr :: Op -> VNode -> EM AST.Expression
@@ -319,9 +335,9 @@ bdRep b = case b of
   BdType t -> show t
   BdIsAtom _ -> show Assign
 
-disjunctsToAST :: [VNode] -> EM AST.Expression
+disjunctsToAST :: [Val] -> EM AST.Expression
 disjunctsToAST ds = do
-  xs <- mapM buildExprExt ds
+  xs <- mapM buildValExprExt ds
   isDebug <- asks isDebug
   -- We might print unresolved disjunctions in debug mode with only one disjunct.
   if isDebug && length xs < 2

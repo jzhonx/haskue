@@ -47,15 +47,9 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       final' <- mapMVectorWAddr finalizeInner mkListIdxFeature addr (final l)
       let l' = l{final = final'}
       return $ setVNodeValue (VList l') topV
-    IsDisj _ -> do
-      vtmapM
-        ( \p vt -> case vt of
-            VTVNode v -> VTVNode <$> finalizeInner p v
-            -- If the vtnode is not a value, we traverse its children and apply the function on the children.
-            _ -> vtmapM (applyAddrFOnVN finalizeInner) p vt
-        )
-        addr
-        topV
+    IsDisj d -> do
+      d' <- vtmapM (applyAddrFOnVal $ \p v -> value <$> finalizeInner p (mkValVN v)) addr d
+      return $ setVNodeValue (VDisj d') topV
     _ -> return topV
   simplify addr v'
  where
@@ -63,9 +57,9 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
     case x of
       IsAtom _ | not x.constraints.allResolved -> validateCnstr p x
       -- Keep the constraints if the value is no val.
-      IsNoVal -> return x
+      IsUnknown -> return x
       IsDisj d -> do
-        r <- normalizeDisj d p
+        r <- normalizeDisj p d
         return $ setVNodeValue r (removeConstraints x)
       IsStruct struct -> do
         let subErrM =
@@ -97,9 +91,9 @@ validateCnstr addr v = traceSpanTermsRepTM "validateCnstr" addr v $ do
   -- get an incomplete value if the RC node did not yield a concrete value.
   -- We should never trigger others because the field is supposed to be atom and no value changes.
   res <- reduce addr v
-  let rv = if res.constraints.allResolved then res else res{value = VNoVal}
+  let rv = if res.constraints.allResolved then res else res{value = VUnknown}
   if
-    | IsNoVal <- rv -> return rv
+    | IsUnknown <- rv -> return rv
     | Just _ <- rtrBottom (value rv) -> return rv
     | Just a <- rtrAtom (value rv) -> return $ mkAtomVN a
     | IsEmbedVal ev <- (value rv), Just a <- rtrAtom ev -> return $ mkAtomVN a

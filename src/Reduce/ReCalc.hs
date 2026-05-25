@@ -17,6 +17,7 @@ import qualified Data.Set as Set
 import DepGraph
 import Feature
 import {-# SOURCE #-} Reduce.Core (reduce)
+import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (
   RCResolver (..),
   RM,
@@ -31,7 +32,7 @@ import Reduce.Monad (
   rootRecalcQ,
   withNoSignalReduced,
  )
-import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefedVal, storeVal, storeValUpToRoot)
+import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefedVal, storeVal)
 import Reduce.Struct (handleSObjChange, validateStructPerm, whenStruct)
 import Reduce.TraceSpan (
   debugInstStr,
@@ -258,14 +259,21 @@ checkIfDirty depAddr useCanAddr = do
     ( do
         siaddrT <- tshow useCanAddr
         depAddrT <- tshow depAddr
-        extV <- tshow extVal
+        extValT <- tshow extVal
         case lastDerefed of
-          Nothing -> return $ printf "useAddr: %s, depAddr: %s, ext: %s, lastDerefed: Nothing" siaddrT depAddrT extV
+          Nothing -> return $ printf "useAddr: %s, depAddr: %s, ext: %d, lastDerefed: Nothing" siaddrT depAddrT extVal.version
           Just ld -> do
             ldSeen <- tshow ld
-            return $ printf "useAddr: %s, depAddr: %s, ext: %s, lastDerefed: %s" siaddrT depAddrT extV ldSeen
+            return $
+              printf
+                "useAddr: %s, depAddr: %s, ext version: %d, ext val: %s, lastDerefed: %s"
+                siaddrT
+                depAddrT
+                extVal.version
+                extValT
+                ldSeen
     )
-  return $ Just extVal /= lastDerefed
+  return $ Just extVal.version /= lastDerefed
 
 appendAddrsToBFSQ :: [GrpAddr] -> Seq.Seq GrpAddr -> DepGraph -> BFSState
 appendAddrsToBFSQ addrs restBFSQ ng =
@@ -335,7 +343,7 @@ recalcGroup sccAddr = do
 
       -- We have to put back all the recalculated values because some of them could be overwritten during the process.
       mapM_
-        (\(siAddr, t) -> storeValUpToRoot (vertexToAddr siAddr) t)
+        (\(siAddr, t) -> storeValUpToRootRecalc (vertexToAddr siAddr) t)
         (Map.toList store)
 
 recalcRC :: VertexAddr -> RM ()
@@ -351,7 +359,7 @@ recalcRCStack = do
   case stack of
     [] -> return ()
     node : xs -> do
-      -- We set the NoSignalReduced flag to True to avoid infinite loop.
+      -- Reducing each RC node should make the effect visible globally, so we call recalcNode for each of them.
       recalcNode node
       RCResolver{stack = stack', doneRCAddrs} <- getRCResolver
       -- If the stack is growing, it means we discovered a new RC node during the reduction.
@@ -375,6 +383,7 @@ recalcNode nodeVAddr = do
     Just v -> void $ traceSpanTermsRepTM "recalcNode" nodeAddr v $ do
       -- We do not need to signal reduced as now everything is driven by the recalculation.
       r <- withNoSignalReduced True $ reduce nodeAddr v
+      -- We have to propagate the change up to the root to make the change effect globally visible.
       storeValUpToRootRecalc nodeAddr r
       return r
 
@@ -388,9 +397,11 @@ storeValUpToRootRecalc addr v = do
   parentM <- propValUp addr v
   case parentM of
     Nothing -> return ()
-    Just (pAddr, pVal) -> do
-      newPVal <- handleSObjChange addr (value pVal) >>= whenStruct (\s -> validateStructPerm pAddr s)
-      storeValUpToRootRecalc pAddr (mkValVN newPVal)
+    Just (pAddr, parVN) -> do
+      parVN' <- case value parVN of
+        VDisj d -> normalizeDisj addr d
+        _ -> handleSObjChange addr (value parVN) >>= whenStruct (validateStructPerm pAddr)
+      storeValUpToRootRecalc pAddr (setVNodeValue parVN' parVN)
 
 {- | Get the ancestor GrpAddrs of the given GrpAddr.
 

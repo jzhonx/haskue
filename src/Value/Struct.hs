@@ -231,6 +231,9 @@ updateStructField name sub struct = struct{stcFields = Map.insert name sub (stcF
 updateStructWithFields :: [(TextIndex, Field)] -> Struct -> Struct
 updateStructWithFields fields struct = foldr (\(k, field) acc -> updateStructField k field acc) struct fields
 
+updateStructFieldVN :: TextIndex -> VNode -> Struct -> Struct
+updateStructFieldVN name vn struct = struct{stcFields = Map.adjust (mapFieldValue (const vn)) name (stcFields struct)}
+
 -- | Remove fields by names from the struct.
 removeStructFieldsByNames :: [TextIndex] -> Struct -> Struct
 removeStructFieldsByNames names struct = struct{stcFields = foldr Map.delete (stcFields struct) names}

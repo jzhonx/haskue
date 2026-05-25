@@ -21,13 +21,8 @@ import qualified Data.Text as T
 import Env (ErrorEnv)
 import Exception (throwErrSt)
 import Feature (
-  LabelType (..),
   Selector (..),
   ValAddr,
-  addrToList,
-  fetchIndex,
-  fetchLabelType,
-  getTextFromFeature,
  )
 import GHC.Generics (Generic)
 import StringIndex (HasTextIndexer (..), TextIndexerMonad, getTextIndexer, textToTextIndex)
@@ -77,6 +72,10 @@ applyAddrFOnVN :: (Applicative f) => (ValAddr -> VNode -> f VNode) -> ValAddr ->
 applyAddrFOnVN f p (VTVNode v) = VTVNode <$> f p v
 applyAddrFOnVN _ _ x = pure x
 
+applyAddrFOnVal :: (Applicative f) => (ValAddr -> Val -> f Val) -> ValAddr -> VTermNode -> f VTermNode
+applyAddrFOnVal f p (VTVal v) = VTVal <$> f p v
+applyAddrFOnVal _ _ x = pure x
+
 -- | Val represents a tree structure that contains values.
 data Val
   = -- | VAtom contains an atom value.
@@ -87,9 +86,7 @@ data Val
   | VStruct Struct
   | VList List
   | VDisj Disj
-  | -- | VNoVal is used to represent a reference that is copied from another expression but has no value
-    -- yet.
-    VNoVal
+  | VUnknown
   deriving (Generic)
 
 data Constraint
@@ -132,6 +129,7 @@ memberDynCnstr idx c = IntMap.member idx (dynamic c)
 
 data VNode = VNode
   { value :: Val
+  , version :: !Int
   , origExpr :: Maybe AST.Expression
   -- ^ origExpr is the parsed expression.
   -- If the op is not Nothing, then origExpr represents the op expression.
@@ -152,14 +150,8 @@ pattern IsBottom b <- VNVal (VBottom b)
 pattern IsBounds :: Bounds -> VNode
 pattern IsBounds b <- VNVal (VBounds b)
 
-pattern IsTop :: VNode
-pattern IsTop <- VNVal VTop
-
 pattern IsStruct :: Struct -> VNode
 pattern IsStruct struct <- VNVal (VStruct struct)
-
-pattern IsFullStruct :: Struct -> VNode
-pattern IsFullStruct struct <- VNVal (VStruct struct@Struct{stcEmbedVal = Nothing})
 
 pattern IsEmbedVal :: Val -> Val
 pattern IsEmbedVal v <- (VStruct Struct{stcEmbedVal = Just v})
@@ -170,17 +162,14 @@ pattern IsList lst <- VNVal (VList lst)
 pattern IsDisj :: Disj -> VNode
 pattern IsDisj d <- VNVal (VDisj d)
 
-pattern IsNoVal :: VNode
-pattern IsNoVal <- VNVal VNoVal
+pattern IsUnknown :: VNode
+pattern IsUnknown <- VNVal VUnknown
 
 pattern StaticConstraints :: Seq.Seq Constraint -> VNode
 pattern StaticConstraints cs <- VNode{constraints = ConstraintsSet{static = cs}}
 
 pattern IsValSoleOp :: Op -> VNode
 pattern IsValSoleOp op <- StaticConstraints (OpCnstr op Seq.:<| Seq.Empty)
-
-pattern IsValImmutable :: VNode
-pattern IsValImmutable <- VNode{constraints = ConstraintsSet{static = Seq.Empty}}
 
 -- = Val getters and setters =
 
@@ -214,18 +203,8 @@ rtrNonUnion v = do
     VDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
     _ -> Nothing
 
--- | Retrieve the concrete value from the tree.
-rtrConcrete :: Val -> Maybe Val
-rtrConcrete t = do
-  v <- rtrNonUnion t
-  case v of
-    VAtom _ -> Just v
-    -- There is only struct value after retrieving concrete value.
-    VStruct s -> if stcIsConcrete s then Just v else Nothing
-    _ -> Nothing
-
 rtrValue :: Val -> Maybe Val
-rtrValue VNoVal = Nothing
+rtrValue VUnknown = Nothing
 rtrValue t = return t
 
 rtrAtom :: Val -> Maybe Atom
@@ -295,7 +274,7 @@ rtrDisjDefVal d =
   let dfs = defDisjunctsFromDisj d
    in if
         | null dfs -> Nothing
-        | length dfs == 1 -> Just (value $ head dfs)
+        | length dfs == 1 -> Just (head dfs)
         | otherwise -> Just $ VDisj $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
 
 -- = Helpers =
@@ -303,7 +282,8 @@ rtrDisjDefVal d =
 emptyVNode :: VNode
 emptyVNode =
   VNode
-    { value = VNoVal
+    { value = VUnknown
+    , version = 0
     , origExpr = Nothing
     , constraints = emptyConstraintsSet
     }
@@ -363,20 +343,6 @@ vnToSel t = case value t of
   VDisj dj | isJust (rtrDisjDefVal dj) -> vnToSel (mkValVN $ fromJust $ rtrDisjDefVal dj)
   _ -> return Nothing
 
-addrToVNodes :: (TextIndexerMonad s m) => ValAddr -> m (Maybe [VNode])
-addrToVNodes p = do
-  xs <- mapM selToVal (addrToList p)
-  return $ sequence xs
- where
-  selToVal sel = case fetchLabelType sel of
-    StringLabelType -> do
-      str <- getTextFromFeature sel
-      return $ Just $ mkAtomVN (String str)
-    ListStoreIdxLabelType -> do
-      let j = fetchIndex sel
-      return $ Just $ mkAtomVN (Int (fromIntegral j))
-    _ -> return Nothing
-
 -- built-in functions
 builtinFuncTable :: [(String, Op)]
 builtinFuncTable =
@@ -413,7 +379,7 @@ showValType t = case t of
   VDisj{} -> "disj"
   VBottom _ -> "_|_"
   VTop -> "_"
-  VNoVal -> "noval"
+  VUnknown -> "unknown"
 
 showValueType :: (ErrorEnv m) => Val -> m String
 showValueType t = case t of
@@ -429,13 +395,3 @@ showValueType t = case t of
   VList _ -> return "list"
   VTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ showValType t
-
-{- | Check whether tree t1 subsumes tree t2.
-
-According to spec,
-A value a is an instance of a value b, denoted a ⊑ b, if b == a or b is more general than a, that is if a orders before
-b in the partial order (⊑ is not a CUE operator). We also say that b subsumes a in this case. In graphical terms, b is
-“above” a in the lattice.
--}
-subsume :: VNode -> VNode -> VNode
-subsume t1 t2 = undefined

@@ -98,3 +98,13 @@ x: {
     z: 1
 }
 
+-- ref7 --
+// this tests that referencing incomplete value is still incomplete.
+a: y.z & 1
+b: a
+y: {}
+-- exp --
+a: y.z & 1
+b: a
+y: {}
+

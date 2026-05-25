@@ -1,6 +1,5 @@
 module Reduce.Store where
 
-import Cursor (setSubVN)
 import Data.Aeson (KeyValue (..), object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
@@ -10,7 +9,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Util.Trace (debugInstant)
 import Value
-import Value.Instances (posttravsVT)
+import Value.Instances (posttravsVT, setSubVN)
 
 fetchValMust :: String -> ValAddr -> RM VNode
 fetchValMust hdr addr = do
@@ -26,7 +25,7 @@ fetchValMust hdr addr = do
 fetchValFromStore :: String -> ValAddr -> RM (Maybe VNode)
 fetchValFromStore hdr addr = do
   store <- vStore <$> getRMContext
-  case addrIsCanonical addr of
+  case addrIsVertex addr of
     Just saddr -> return $ Map.lookup saddr store
     Nothing -> do
       addrT <- tshow addr
@@ -35,19 +34,24 @@ fetchValFromStore hdr addr = do
 storeVal :: ValAddr -> VNode -> RM ()
 storeVal addr v = do
   store <- vStore <$> getRMContext
-  case addrIsCanonical addr of
+  case addrIsVertex addr of
     Just saddr -> do
       let newStore = Map.insert saddr v store
       modifyRMContext $ \ctx -> ctx{vStore = newStore}
     Nothing -> return ()
 
--- | Store the value with the address and all its ancestors up to the root.
-storeValUpToRoot :: ValAddr -> VNode -> RM ()
-storeValUpToRoot addr v = do
-  storeVal addr v
-  parent <- propValUp addr v
-  case parent of
-    Just (pAddr, pVal) -> storeValUpToRoot pAddr pVal
+-- | Set the value to Unknown for the value with the address.
+setUnknownInStore :: ValAddr -> RM ()
+setUnknownInStore addr = do
+  store <- vStore <$> getRMContext
+  case addrIsVertex addr of
+    Just saddr -> do
+      let newStore =
+            Map.adjust
+              (\v -> v{value = VUnknown, version = v.version + 1})
+              saddr
+              store
+      modifyRMContext $ \ctx -> ctx{vStore = newStore}
     Nothing -> return ()
 
 propValUp :: ValAddr -> VNode -> RM (Maybe (ValAddr, VNode))
@@ -75,7 +79,7 @@ propValUp addr vn
           debugInstant "propValUp" (object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
           throwFatal msg
 
-queryLastDerefedVal :: VertexAddr -> ReferableAddr -> RM (Maybe VNode)
+queryLastDerefedVal :: VertexAddr -> ReferableAddr -> RM (Maybe Int)
 queryLastDerefedVal addr depAddr = do
   m <- lastDerefs <$> getRMContext
   case Map.lookup addr m of

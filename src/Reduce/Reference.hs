@@ -6,7 +6,6 @@
 module Reduce.Reference where
 
 import Control.Monad (unless, when)
-import Cursor
 import Data.Aeson (ToJSON, object, toJSON)
 import Data.Foldable (toList)
 import qualified Data.Map as Map
@@ -37,8 +36,8 @@ import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
 import Syntax.Token (Location (..))
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (termsRepToJSONWithAddr, toTermsRepWithAddr, valToFullStringTermsRep)
-import Value.Instances (pretravsVT)
+import Value.Export.Debug (termsRepToJSONWithAddr, toTermsRepWithAddr, vnToFullStringTermsRep)
+import Value.Instances (getSubVN, getSubVNByAddr, pretravsVT)
 
 {- | VSelect the tree with the segments.
 
@@ -79,7 +78,7 @@ select vsel addr = traceSpanTM "select" addr emptySpanValue $ do
           idxFieldPath <- vsFieldPathM
           value <$> getSubVNByAddr (fieldPathToAddr idxFieldPath) (mkValVN reducedBase)
 
-  maybe (return VNoVal) return tarVM
+  maybe (return VUnknown) return tarVM
 
 data DerefResult = DerefResult
   { targetValue :: Maybe VNode
@@ -213,7 +212,7 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
   case identVM of
     Nothing -> do
       let potentialTarAddr = appendValAddr identAddr (fieldPathToAddr sels)
-      rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VNoVal)
+      rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VUnknown)
       case rcRes of
         Just r -> return r
         Nothing -> do
@@ -229,14 +228,21 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
             matchedAddrT <- tshow matchedAddr
             identVT <- show <$> toTermsRepWithAddr identAddr identV
             selsT <- mapM tshow (getSelectors sels)
+            unmatchedSelsT <- mapM tshow unmatchedSels
             return $
-              printf "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, identV: %s" (show sels) matchedAddrT (show selsT) identVT
+              printf
+                "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, identV: %s, unmatchedSels: %s"
+                (show sels)
+                matchedAddrT
+                (show selsT)
+                identVT
+                (show unmatchedSelsT)
         )
 
       if not (null unmatchedSels)
         then do
           let potentialTarAddr = appendValAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
-          rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VNoVal)
+          rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VUnknown)
           case rcRes of
             Just r -> return r
             Nothing -> do
@@ -250,10 +256,17 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
             then return $ mkRegDR matchedAddr matchedV
             else do
               rcRes <- handleRefSelforSub matchedAddr matchedV
-              resolveRes <- resolveRCValue matchedAddr matchedV
+              resolveRCRes <- resolveRCValue matchedAddr matchedV
+              debugInstStr
+                "locateRef"
+                refAddr
+                ( do
+                    resolveRCResT <- tshow resolveRCRes
+                    return $ printf "after handleRefSelforSub and resolveRCValue, resolveRes: %s" resolveRCResT
+                )
               -- We first check if the target is self or a sub field of the self. Then handle the RC case.
               -- Notice the order matters.
-              case listToMaybe $ catMaybes [rcRes, resolveRes] of
+              case listToMaybe $ catMaybes [rcRes, resolveRCRes] of
                 -- No need to watch since the target is self or a sub field of self, or the target value is RC-resolvable
                 -- which we have already watched before.
                 Just lr -> return lr
@@ -273,39 +286,43 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
         Just seg | isFeatureConstraint seg -> True
         Just seg | isFeatureReferable seg -> True
         _ -> False
+
+      res =
+        if isPrefix (vertexToAddr refCanAddr) (rfbAddrToAddr targetRfbAddr)
+          then
+            let rcVal =
+                  -- If we are referencing ourself as a conjunct, we can directly treat it a top.
+                  -- It also handles the case like a: a & v1 | v2, where a is a conjunct in a disjunction.
+                  if vertexToAddr refCanAddr == rfbAddrToAddr targetRfbAddr && refIsAConjunct
+                    then case targetV of
+                      -- If the target value is already an atom, we can return it. This addresses the atom constraint
+                      -- case.
+                      IsAtom _ -> Just targetV
+                      IsBottom _ -> Just targetV
+                      _ -> Just (mkValVN VTop)
+                    else case targetV of
+                      IsUnknown -> Nothing
+                      _ -> Just targetV
+             in Just $ mkRefCycleDR targetAddr rcVal
+          else Nothing
     debugInstStr
       "locateRef"
       refAddr
       ( do
           refCanAddrT <- tshow refCanAddr
           targetRfbAddrT <- tshow targetRfbAddr
+          targetVT <- tshow targetV
+          resT <- tshow res
           return $
             printf
-              "checking if target is a sub field of ref. refCanAddr: %s, targetRfbAddr: %s, refIsAConjunct: %s"
+              "checking if target is a sub field of ref. refCanAddr: %s, targetRfbAddr: %s, refIsAConjunct: %s, targetV: %s, res: %s"
               (show refCanAddrT)
               (show targetRfbAddrT)
               (show refIsAConjunct)
+              targetVT
+              resT
       )
-    return $
-      -- If the target address is a suffix of the reference address, we do not need to watch. Returning Nothing to let
-      -- caller to continue the normal cycle detection.
-      if isPrefix (vertexToAddr refCanAddr) (rfbAddrToAddr targetRfbAddr)
-        then
-          let rcVal =
-                -- If we are referencing ourself as a conjunct, we can directly treat it a top.
-                -- It also handles the case like a: a & v1 | v2, where a is a conjunct in a disjunction.
-                if vertexToAddr refCanAddr == rfbAddrToAddr targetRfbAddr && refIsAConjunct
-                  then case targetV of
-                    -- If the target value is already an atom, we can return it. This addresses the atom constraint
-                    -- case.
-                    IsAtom _ -> Just targetV
-                    IsBottom _ -> Just targetV
-                    _ -> Just (mkValVN VTop)
-                  else case targetV of
-                    IsNoVal -> Nothing
-                    _ -> Just targetV
-           in Just $ mkRefCycleDR targetAddr rcVal
-        else Nothing
+    return res
 
   resolveRCValue targetAddr matchedV = case addrIsVertex targetAddr of
     Just dep -> do
@@ -435,7 +452,7 @@ copyConcrete tarAddr addr tarV = do
     "copyConcrete"
     addr
     ( do
-        rep <- valToFullStringTermsRep r
+        rep <- vnToFullStringTermsRep r
         return $ printf "target concrete is %s" rep
     )
   return r
@@ -444,7 +461,7 @@ storeLastDerefedVal :: VertexAddr -> ReferableAddr -> VNode -> RM ()
 storeLastDerefedVal addr depAddr v = do
   m <- lastDerefs <$> getRMContext
   let depMap = Map.findWithDefault Map.empty addr m
-      newDepMap = Map.insert depAddr v depMap
+      newDepMap = Map.insert depAddr v.version depMap
       newM = Map.insert addr newDepMap m
   debugInstStr
     "storeLastDerefedVal"
@@ -453,7 +470,13 @@ storeLastDerefedVal addr depAddr v = do
         addrT <- tshow addr
         depAddrT <- tshow depAddr
         vT <- tshow v
-        return $ printf "store last derefed val for addr: %s, depAddr: %s, val: %s" addrT depAddrT vT
+        return $
+          printf
+            "store last derefed val for addr: %s, depAddr: %s, val: %s, version: %d"
+            addrT
+            depAddrT
+            vT
+            v.version
     )
   modifyRMContext $ \ctx -> ctx{lastDerefs = newM}
 

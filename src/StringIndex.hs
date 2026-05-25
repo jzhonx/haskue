@@ -145,6 +145,3 @@ textIndexToBS :: (TextIndexerMonad s m) => TextIndex -> m BC.ByteString
 textIndexToBS (TextIndex i) = do
   indexer <- gets getTextIndexer
   return $ indexer.labels V.! i
-
--- bsToTextIndex :: (TextIndexerMonad s m) => BC.ByteString -> m TextIndex
--- bsToTextIndex bs = textToTextIndex (TE.decodeUtf8 bs)

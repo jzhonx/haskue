@@ -58,7 +58,7 @@ resolveUnaryOp op tM = do
       Token.NotMatch
         | String p <- a -> return (mkBoundsValueFromList [BdStrMatch $ BdReNotMatch p])
       _ -> returnErr t
-    _ -> return VNoVal
+    _ -> return VUnknown
  where
   returnErr v = return $ mkBoundsVal $ printf "%s cannot be used for %s" (show v) (show op)
 
@@ -91,13 +91,13 @@ resolveRegBinDir op (d1, t1M) (d2, t2M) = do
         (_, Just err@(VBottom _)) -> return err
         (Just t1, Just t2)
           -- Tops are incomplete.
-          | VTop <- t1 -> return VNoVal
-          | VTop <- t2 -> return VNoVal
+          | VTop <- t1 -> return VUnknown
+          | VTop <- t2 -> return VUnknown
           -- When both trees are atoms.
           | Just a1 <- rtrAtom t1, Just a2 <- rtrAtom t2 -> return $ calc op (d1, a1) (d2, a2)
           -- When both trees are non-union values.
           | Just _ <- rtrNonUnion t1, Just _ <- rtrNonUnion t2 -> return $ mismatch op t1 t2
-        _ -> return VNoVal
+        _ -> return VUnknown
     | otherwise ->
         throwFatal $
           printf "regular binary op %s is not supported for %s and %s" (show op) (show t1M) (show t2M)
@@ -127,7 +127,7 @@ cmp cmpEqu (d1, t1M) (d2, t2M) =
       | Just _ <- rtrNonUnion t1
       , Just _ <- rtrNonUnion t2 ->
           mkBoundsVal $ printf "%s and %s are not comparable" (show t1) (show t2)
-    _ -> VNoVal
+    _ -> VUnknown
 
 cmpNull :: Bool -> Val -> Val
 cmpNull cmpEqu t =
@@ -205,13 +205,13 @@ resolveCloseFunc args addr
 closeConcrete :: VNode -> Val
 closeConcrete a =
   case a of
-    IsNoVal -> VNoVal
+    IsUnknown -> VUnknown
     IsStruct s -> VStruct $ s{stcClosed = True}
     -- This is the current behavior of close for non-struct values.
     -- If the value is a disjunction, we do not close the disjunction itself.
     IsDisj dj -> case defDisjunctsFromDisj dj of
-      [x] -> value x
-      _ -> VNoVal
+      [x] -> x
+      _ -> VUnknown
     _ -> mkBoundsVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
 resolveInterpolation :: Interpolation -> [Val] -> RM Val
