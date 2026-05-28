@@ -16,7 +16,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
-import Feature (ValAddr (..), appendSeg, mkListStoreIdxFeature, rootFeature, rootValAddr)
+import Feature (ValAddr (..), appendSeg, fileBlockFeature, fileTopValAddr, mkListStoreIdxFeature)
 import GHC.Generics (Generic)
 import Reduce.Monad (RM, emptyContext, emptyReduceConfig)
 import StringIndex (TextIndex (..))
@@ -119,13 +119,13 @@ imapM2B = func' "V.imapMViaListIdentity" f testV
 vtmapTB :: Weigh ()
 vtmapTB = func' "vtmapT" f testV
  where
-  f v = runIdentity $ mapMVectorWAddr (\_ v -> return v) mkListStoreIdxFeature rootValAddr v
+  f v = runIdentity $ mapMVectorWAddr (\_ v -> return v) mkListStoreIdxFeature fileTopValAddr v
 
 vtmapVectorMRMB :: Weigh ()
 vtmapVectorMRMB = io "vtmapVectorMRM" f testV
  where
   f v = do
-    let action = mapMVectorWAddr idm mkListStoreIdxFeature rootValAddr v
+    let action = mapMVectorWAddr idm mkListStoreIdxFeature fileTopValAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -158,7 +158,7 @@ vtmapMRMViaMutB = io "vtmapMRMViaMut" f testV
         mv <- V.thaw v
         forM_ [0 .. MV.length mv - 1] $ \i -> do
           v <- MV.read mv i
-          v' <- idm (appendSeg rootValAddr (mkListStoreIdxFeature i)) v
+          v' <- idm (appendSeg fileTopValAddr (mkListStoreIdxFeature i)) v
           MV.write mv i v'
         V.unsafeFreeze mv
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
@@ -171,7 +171,7 @@ vtmapSeqMRMB :: Weigh ()
 vtmapSeqMRMB = io "vtmapSeqMRM" f testSeq
  where
   f v = do
-    let action = mapMSeqWAddr idm mkListStoreIdxFeature rootValAddr v
+    let action = mapMSeqWAddr idm mkListStoreIdxFeature fileTopValAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -182,7 +182,7 @@ traverseWithKeyRMB :: Weigh ()
 traverseWithKeyRMB = io "Map.traverseWithKey" f testMap
  where
   f v = do
-    let action = Map.traverseWithKey (\k !v -> idm (appendSeg rootValAddr (mkListStoreIdxFeature k)) v) v
+    let action = Map.traverseWithKey (\k !v -> idm (appendSeg fileTopValAddr (mkListStoreIdxFeature k)) v) v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -195,7 +195,7 @@ pretravsValB = io "pretravsVT" f testStruct
   f v = do
     let
       action :: RM VNode
-      action = return $ pretravsVT idm rootValAddr v
+      action = return $ pretravsVT idm fileTopValAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -206,7 +206,7 @@ pretravsValMRMB :: Weigh ()
 pretravsValMRMB = io "pretravsVTM" f testStruct
  where
   f v = do
-    let action = pretravsVTM idm rootValAddr v
+    let action = pretravsVTM idm fileTopValAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -220,7 +220,7 @@ posttravsVCB = io "posttravsVC" f testStruct
     let
       action :: RM VNode
       action = do
-        vc <- postVisitValSimple (subNodes False) return (VCur{focus = v, crumbs = [(rootFeature, mkValVN VTop)]})
+        vc <- postVisitValSimple (subNodes False) return (VCur{focus = v, crumbs = [(fileBlockFeature, mkValVN VTop)]})
         return $ focus vc
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result

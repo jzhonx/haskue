@@ -99,12 +99,12 @@ x: {
 }
 
 -- ref7 --
-// this tests that referencing incomplete value is still incomplete.
+// this test demonstrates the different incomplete behavior.
 a: y.z & 1
 b: a
 y: {}
 -- exp --
 a: y.z & 1
-b: a
+b: 1
 y: {}
 

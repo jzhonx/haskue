@@ -17,10 +17,14 @@ import GHC.Generics (Generic)
 import Syntax.Token
 import Prelude hiding (GT, LT)
 
-newtype SourceFile = SourceFile
-  { sfDecls :: [Declaration]
+data SourceFile = SourceFile
+  { sfImports :: [ImportSpec]
+  , sfDecls :: [Declaration]
   }
   deriving (Eq, Show)
+
+data ImportSpec = ImportSpec (Maybe Token) Token
+  deriving (Eq, Show, Generic, NFData)
 
 class ASTNode a where
   getNodeLoc :: a -> Location
@@ -49,6 +53,9 @@ data PrimaryExpr
     PrimExprSelector PrimaryExpr Location Selector
   | -- | Indexing, e.g., `a[0]`. The locations are that of the square brackets.
     PrimExprIndex PrimaryExpr Location Expression Location
+  | -- | Slicing, e.g., `a[1:3]`. The locations are that of the square brackets and the colon. The Maybe Expression is
+    -- for optional start and end expressions.
+    PrimExprSlice PrimaryExpr Location (Maybe Expression) Location (Maybe Expression) Location
   | -- | Function call arguments, e.g., `f(x, y)`. The locations are that of the parentheses.
     PrimExprArguments PrimaryExpr Location [Expression] Location
   deriving (Eq, Show, Generic, NFData)
@@ -57,6 +64,7 @@ instance ASTNode PrimaryExpr where
   getNodeLoc (PrimExprOperand op) = getNodeLoc op
   getNodeLoc (PrimExprSelector pe _ _) = getNodeLoc pe
   getNodeLoc (PrimExprIndex pe _ _ _) = getNodeLoc pe
+  getNodeLoc (PrimExprSlice pe _ _ _ _ _) = getNodeLoc pe
   getNodeLoc (PrimExprArguments pe _ _ _) = getNodeLoc pe
 
 data Selector
@@ -338,6 +346,15 @@ primBld e = case e of
     b1 <- primBld pe
     b2 <- exprBld ie
     return $ b1 <> string7 "[" <> b2 <> string7 "]"
+  PrimExprSlice pe _ startM _ endM _ -> do
+    b1 <- primBld pe
+    startB <- case startM of
+      Nothing -> return mempty
+      Just start -> exprBld start
+    endB <- case endM of
+      Nothing -> return mempty
+      Just end -> exprBld end
+    return $ b1 <> string7 "[" <> startB <> char7 ':' <> endB <> string7 "]"
   PrimExprArguments pe _ es _ -> do
     b <- primBld pe
     (argsB, _) <-

@@ -29,7 +29,7 @@ import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (callStack, prettyCallStack)
 import GHC.Stack.Types (HasCallStack)
-import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndexer, emptyTextIndexer)
+import StringIndex (HasTextIndexer (..), ShowWTIndexer (..), TextIndex, TextIndexer, emptyTextIndexer)
 import Text.Printf (printf)
 import Util.Trace (HasTrace (..), Trace, emptyTrace)
 import Value
@@ -88,13 +88,14 @@ data Context = Context
   , vStore :: Map.Map VertexAddr VNode
   -- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
   -- objects.
+  , comprehBindings :: Seq.Seq [(TextIndex, VNode)]
+  -- ^ The comprehension bindings stack.
   , rcResolver :: !RCResolver
   , noSignalReduced :: !Bool
   -- ^ If true, do not signal ready after reducing.
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
   }
-  deriving (Show, Generic, NFData)
 
 instance HasTrace Context where
   getTrace = ctxTrace
@@ -128,6 +129,7 @@ emptyContext tPut =
     , depGraph = emptyPropGraph
     , lastDerefs = Map.empty
     , vStore = Map.empty
+    , comprehBindings = Seq.empty
     , rcResolver = emptyRCResolver
     , noSignalReduced = False
     , ctxTrace = emptyTrace tPut

@@ -235,8 +235,8 @@ getVertexAddrFromIVMust iv = getVertexAddrFromVIDMust (getExprVertex iv)
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
   VIDMapping
-    { vidToAddr = HashMap.fromList [(rootVID, rootValAddr)]
-    , addrToVid = HashMap.fromList [(rootValAddr, rootVID)]
+    { vidToAddr = HashMap.fromList [(rootVID, fileTopValAddr)]
+    , addrToVid = HashMap.fromList [(fileTopValAddr, rootVID)]
     , nextVid = rootVID + 1
     }
 

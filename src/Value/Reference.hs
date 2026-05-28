@@ -6,7 +6,7 @@ module Value.Reference where
 
 import Control.DeepSeq (NFData)
 import qualified Data.Sequence as Seq
-import Feature (ValAddr)
+import Feature (CanonicalAddr, Feature, ValAddr)
 import GHC.Generics (Generic)
 import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Val
@@ -14,13 +14,15 @@ import {-# SOURCE #-} Value.Val
 -- | Reference denotes a reference starting with an identifier.
 data Reference = Reference
   { ident :: TextIndex
+  , identFeat :: Feature
   , selectors :: Seq.Seq VNode
   , resolvedIdentType :: RefIdentType
-  , resolvedIdentAddr :: ValAddr
+  , resolvedIdentAddr :: ResolvedIdentAddr
   -- ^ The resolved address of the identifier.
-  -- Resolved identifier can be resolved in a field, a stub dyanmic field.
   , resolvedFullAddr :: Maybe ValAddr
   -- ^ The resolved full address of the reference.
+  , resolvedComprehClauseIdx :: Maybe Int
+  -- ^ The resolved comprehension binding of the reference, represented as (comprehension depth, identifier).
   , isRefCycle :: !Bool
   }
   deriving (Generic)
@@ -31,17 +33,37 @@ data RefIdentType
   | ITIterBinding
   deriving (Eq, Show, Generic, NFData)
 
+data ResolvedIdentAddr
+  = ResolvedIdentFromTop ValAddr
+  | ToTargetScopeDiff CanonicalAddr
+  deriving (Eq, Show, Generic, NFData)
+
 mapRefSels :: (Seq.Seq VNode -> Seq.Seq VNode) -> Reference -> Reference
 mapRefSels f ref = ref{selectors = f (selectors ref)}
 
-singletonIdentRef :: TextIndex -> RefIdentType -> ValAddr -> Reference
-singletonIdentRef ident typ addr =
+singletonIdentRef :: TextIndex -> Feature -> RefIdentType -> ResolvedIdentAddr -> Reference
+singletonIdentRef ident identFeat typ addr =
   Reference
     { ident = ident
+    , identFeat
     , selectors = Seq.empty
     , resolvedIdentType = typ
     , resolvedIdentAddr = addr
     , resolvedFullAddr = Nothing
+    , resolvedComprehClauseIdx = Nothing
+    , isRefCycle = False
+    }
+
+comprehensionIdentRef :: TextIndex -> Feature -> Int -> ResolvedIdentAddr -> Reference
+comprehensionIdentRef ident identFeat cIdx addr =
+  Reference
+    { ident = ident
+    , identFeat
+    , selectors = Seq.empty
+    , resolvedIdentType = ITIterBinding
+    , resolvedIdentAddr = addr
+    , resolvedFullAddr = Nothing
+    , resolvedComprehClauseIdx = Just cIdx
     , isRefCycle = False
     }
 

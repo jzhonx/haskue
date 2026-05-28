@@ -20,6 +20,7 @@ import Text.Printf (printf)
 import Value.Comprehension
 import Value.Disj
 import Value.DisjoinOp
+import Value.Func
 import Value.Interpolation
 import Value.List
 import Value.Op
@@ -44,6 +45,7 @@ deriving instance Eq DisjTerm
 
 deriving instance Eq Op
 deriving instance Eq RegularOp
+deriving instance Eq FuncCall
 
 instance Eq Struct where
   (==) s1 s2 = stcFields s1 == stcFields s2 && stcClosed s1 == stcClosed s2 && stcIsConcrete s1 == stcIsConcrete s2
@@ -105,6 +107,15 @@ instance ShowWTIndexer DisjTerm where
 
 deriving instance Show Op
 deriving instance Show RegularOp
+deriving instance Show FuncCall
+
+instance ShowWTIndexer ResolvedIdentAddr where
+  tshow (ResolvedIdentFromTop addr) = do
+    t <- tshow addr
+    return $ "ResolvedIdentFromTop: " <> t
+  tshow (ToTargetScopeDiff diff) = do
+    t <- tshow diff
+    return $ "ToTargetScopeDiff: " <> t
 
 deriving instance Show Struct
 deriving instance Show Field
@@ -161,6 +172,7 @@ deriving instance NFData DisjTerm
 
 deriving instance NFData Op
 deriving instance NFData RegularOp
+deriving instance NFData FuncCall
 
 deriving instance NFData Struct
 deriving instance NFData Field
@@ -376,6 +388,7 @@ instance VTerm Op where
   vtmapQ f p (Compreh c) = vtmapQ f p c
   vtmapQ f p (DisjOp d) = vtmapQ f p d
   vtmapQ f p (Itp itp) = vtmapQ f p itp
+  vtmapQ f p (FCall func) = vtmapQ f p func
 
   vtmapM f p (RegOp rop) = RegOp <$> vtmapM f p rop
   vtmapM f p (Ref ref) = Ref <$> vtmapM f p ref
@@ -383,6 +396,7 @@ instance VTerm Op where
   vtmapM f p (Compreh c) = Compreh <$> vtmapM f p c
   vtmapM f p (DisjOp d) = DisjOp <$> vtmapM f p d
   vtmapM f p (Itp itp) = Itp <$> vtmapM f p itp
+  vtmapM f p (FCall func) = FCall <$> vtmapM f p func
 
 appendMutArgF :: ValAddr -> Int -> ValAddr
 appendMutArgF p i = appendSeg p (mkOpArgFeature i)
@@ -410,17 +424,15 @@ instance VTerm ValueSelect where
 
 instance VTerm Comprehension where
   vtmapQ f p c =
-    let p' = appendSeg p (mkObjectFeature c.cid)
-     in Seq.foldrWithIndex
-          (\i arg acc -> adaptVTMapQOnVNode f (appendSeg p' (mkComprehClausesFeature i)) (getValFromIterClause arg) : acc)
-          []
-          c.args
+    Seq.foldrWithIndex
+      (\i arg acc -> adaptVTMapQOnVNode f (appendSeg p (mkRegCnstrFeature i)) (getValFromIterClause arg) : acc)
+      []
+      c.args
   vtmapM f p c = do
-    let p' = appendSeg p (mkObjectFeature c.cid)
     args' <-
       Seq.traverseWithIndex
         ( \i arg -> do
-            v' <- adaptVTMapMOnVNode f (appendSeg p' (mkComprehClausesFeature i)) (getValFromIterClause arg)
+            v' <- adaptVTMapMOnVNode f (appendSeg p (mkRegCnstrFeature i)) (getValFromIterClause arg)
             return $ setValInIterClause v' arg
         )
         c.args
@@ -447,6 +459,12 @@ instance VTerm Interpolation where
   vtmapM f p itp = do
     itpExprs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (itpExprs itp)
     return itp{itpExprs = itpExprs'}
+
+instance VTerm FuncCall where
+  vtmapQ f p func = foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p (fnFrame func)
+  vtmapM f p func = do
+    fnFrame' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (fnFrame func)
+    return func{fnFrame = fnFrame'}
 
 pretravsVTM :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> VTermNode -> m VTermNode
 pretravsVTM f p x = do
@@ -497,7 +515,7 @@ setSubVN f subVN parVN = do
                 -- original subVN.value to determine whether we need to update the version of the parent node.
                 version = if subVN.value /= origSubVN.value then parVN.version + 1 else parVN.version
               }
-    (RootLabelType, _) -> Nothing
+    (FileTopLabelType, _) -> Nothing
     _ -> Nothing
  where
   ret origSubVN x =
@@ -510,7 +528,7 @@ setSubVN f subVN parVN = do
 getSubVN :: (HasCallStack) => Feature -> VNode -> Maybe VNode
 getSubVN f t = case (fetchLabelType f, t) of
   -- Root segment always returns the same tree.
-  (RootLabelType, _) -> Just t
+  (FileTopLabelType, _) -> Just t
   (StringLabelType, IsStruct struct)
     | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
   (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct

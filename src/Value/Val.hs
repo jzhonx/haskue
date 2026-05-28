@@ -23,9 +23,12 @@ import Exception (throwErrSt)
 import Feature (
   Selector (..),
   ValAddr,
+  appendSeg,
+  mkStringFeature,
+  universalValAddr,
  )
 import GHC.Generics (Generic)
-import StringIndex (HasTextIndexer (..), TextIndexerMonad, getTextIndexer, textToTextIndex)
+import StringIndex (HasTextIndexer (..), TextIndex, TextIndexerMonad, getTextIndexer, strToTextIndex, textToTextIndex)
 import Syntax.AST (exprToOneLinerStr)
 import qualified Syntax.AST as AST
 import Value.Atom
@@ -33,6 +36,7 @@ import Value.Bottom
 import Value.Bounds
 import Value.Disj
 import {-# SOURCE #-} Value.Export.AST (buildExprDebug)
+import Value.Func
 import Value.List
 import Value.Op
 import Value.Reference
@@ -87,6 +91,8 @@ data Val
   | VList List
   | VDisj Disj
   | VUnknown
+  | -- | VFuncAddr is a variant of Unknown but it represents a function address.
+    VFuncAddr ValAddr
   deriving (Generic)
 
 data Constraint
@@ -294,11 +300,11 @@ mkValVN n = emptyVNode{value = n}
 mkAtomVN :: Atom -> VNode
 mkAtomVN a = mkValVN (VAtom a)
 
-mkBottomVal :: String -> VNode
-mkBottomVal msg = mkValVN (VBottom $ Bottom{btmMsg = msg})
+mkBottomVN :: String -> VNode
+mkBottomVN msg = mkValVN (VBottom $ Bottom{btmMsg = msg})
 
-mkBoundsVal :: String -> Val
-mkBoundsVal msg = VBottom $ Bottom{btmMsg = msg}
+mkBottomVal :: String -> Val
+mkBottomVal msg = VBottom $ Bottom{btmMsg = msg}
 
 mkBoundsVN :: Bounds -> VNode
 mkBoundsVN bs = mkValVN (VBounds bs)
@@ -306,8 +312,8 @@ mkBoundsVN bs = mkValVN (VBounds bs)
 mkBoundsVNFromList :: [Bound] -> VNode
 mkBoundsVNFromList bs = mkBoundsVN (Bounds{bdsList = bs})
 
-mkBoundsValueFromList :: [Bound] -> Val
-mkBoundsValueFromList bs = VBounds (Bounds{bdsList = bs})
+mkBottomValueFromList :: [Bound] -> Val
+mkBottomValueFromList bs = VBounds (Bounds{bdsList = bs})
 
 mkDisjVN :: Disj -> VNode
 mkDisjVN d = mkValVN (VDisj d)
@@ -343,21 +349,6 @@ vnToSel t = case value t of
   VDisj dj | isJust (rtrDisjDefVal dj) -> vnToSel (mkValVN $ fromJust $ rtrDisjDefVal dj)
   _ -> return Nothing
 
--- built-in functions
-builtinFuncTable :: [(String, Op)]
-builtinFuncTable =
-  [
-    ( "close"
-    , RegOp $
-        -- built-in close does not recursively close the struct.
-        emptyRegularOp
-          { ropName = "close"
-          , ropArgs = Seq.fromList [mkValVN VTop]
-          , ropOpType = CloseFunc
-          }
-    )
-  ]
-
 -- | Create a one-liner string representation of the snapshot of the tree.
 oneLinerStringOfVNode :: (TextIndexerMonad s m) => VNode -> m T.Text
 oneLinerStringOfVNode t = do
@@ -380,6 +371,7 @@ showValType t = case t of
   VBottom _ -> "_|_"
   VTop -> "_"
   VUnknown -> "unknown"
+  VFuncAddr _ -> "fnAddr"
 
 showValueType :: (ErrorEnv m) => Val -> m String
 showValueType t = case t of
@@ -395,3 +387,24 @@ showValueType t = case t of
   VList _ -> return "list"
   VTop -> return "_"
   _ -> throwErrSt $ "not a value type: " ++ showValType t
+
+builtinValues :: (TextIndexerMonad s m) => m [(TextIndex, Val)]
+builtinValues = do
+  let builtins =
+        ("_", VTop)
+          : map (\b -> (show b, VBounds $ Bounds{bdsList = [BdType b]})) [minBound :: BdType .. maxBound :: BdType]
+  mapM f builtins
+ where
+  f (k, v) = do
+    nameTI <- strToTextIndex k
+    return (nameTI, v)
+
+-- | built-in functions
+builtinFuncAddrTable :: (TextIndexerMonad s m) => m [(TextIndex, ValAddr)]
+builtinFuncAddrTable = do
+  let builtins = ["close"]
+  mapM gen builtins
+ where
+  gen name = do
+    nameTI <- strToTextIndex name
+    return (nameTI, appendSeg universalValAddr (mkStringFeature nameTI))

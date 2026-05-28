@@ -5,11 +5,11 @@
 
 module Reduce.Reference where
 
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Data.Aeson (ToJSON, object, toJSON)
 import Data.Foldable (toList)
 import qualified Data.Map as Map
-import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing, listToMaybe)
 import qualified Data.Text as T
 import DepGraph
 import Feature
@@ -25,7 +25,7 @@ import Reduce.Monad (
   putRMContext,
   throwFatal,
  )
-import Reduce.Store (copyVTermNode, fetchValFromStore)
+import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore)
 import Reduce.TraceSpan (
   debugInstStr,
   emptySpanValue,
@@ -60,8 +60,19 @@ deref addr ref = traceSpanArgsTM
       return $ T.unpack identT
   )
   $ do
-    lparamsM <- lparamsFromRef ref
-    maybe (return selsNotReady) (`getDstVal` addr) lparamsM
+    m <- concreteRefSels ref
+    case m of
+      Nothing -> return selsNotReady
+      Just sels -> do
+        if ref.resolvedIdentType == ITIterBinding
+          then do
+            vn <- fetchComprehBindingVal (fromJust ref.resolvedComprehClauseIdx) ref.ident
+            let (_, tar, _) = descend fileTopValAddr vn (getSelectors sels)
+            return $ mkIterVarDR tar
+          else do
+            let
+              lparams = LocateParams{identFeat = ref.identFeat, resolvedIdentAddr = ref.resolvedIdentAddr, selectors = sels}
+            getDstVal lparams addr
 
 -- | TODO: the value indexed should not be another reference. It should always be resolved.
 select :: ValueSelect -> ValAddr -> RM Val
@@ -84,6 +95,7 @@ data DerefResult = DerefResult
   { targetValue :: Maybe VNode
   , targetAddr :: Maybe ValAddr
   , isIdentIterVal :: Bool
+  , resolvedIdentAddr :: Maybe ValAddr
   , isRefCycle :: !Bool
   }
   deriving (Show)
@@ -118,52 +130,50 @@ selsNotReady =
   DerefResult
     { targetValue = Nothing
     , targetAddr = Nothing
+    , resolvedIdentAddr = Nothing
     , isIdentIterVal = False
     , isRefCycle = False
     }
 
-mkRegDR :: ValAddr -> VNode -> DerefResult
-mkRegDR addr v =
+mkRegDR :: ValAddr -> ValAddr -> VNode -> DerefResult
+mkRegDR identAddr addr v =
   DerefResult
     { targetValue = Just v
     , targetAddr = Just addr
+    , resolvedIdentAddr = Just identAddr
     , isIdentIterVal = False
     , isRefCycle = False
     }
 
-mkPartialFound :: ValAddr -> DerefResult
-mkPartialFound addr =
+mkPartialFound :: ValAddr -> ValAddr -> DerefResult
+mkPartialFound identAddr addr =
   DerefResult
     { targetValue = Nothing
     , targetAddr = Just addr
+    , resolvedIdentAddr = Just identAddr
     , isIdentIterVal = False
     , isRefCycle = False
     }
 
-mkRefCycleDR :: ValAddr -> Maybe VNode -> DerefResult
-mkRefCycleDR addr v =
+mkRefCycleDR :: ValAddr -> ValAddr -> Maybe VNode -> DerefResult
+mkRefCycleDR identAddr addr v =
   DerefResult
     { targetValue = v
     , targetAddr = Just addr
+    , resolvedIdentAddr = Just identAddr
     , isIdentIterVal = False
     , isRefCycle = True
     }
 
--- | Resolve the reference value path using the tree cursor and replace the focus with the resolved value.
-lparamsFromRef :: Reference -> RM (Maybe LocateParams)
-lparamsFromRef ref@Reference{resolvedIdentAddr} = do
-  m <- concreteRefSels ref
-  case m of
-    Just sels ->
-      return $
-        Just
-          ( LocateParams
-              { identAddr = resolvedIdentAddr
-              , selectors = sels
-              , isIdentIterVal = ref.resolvedIdentType == ITIterBinding
-              }
-          )
-    Nothing -> return Nothing
+mkIterVarDR :: VNode -> DerefResult
+mkIterVarDR v =
+  DerefResult
+    { targetValue = Just v
+    , targetAddr = Nothing
+    , resolvedIdentAddr = Nothing
+    , isIdentIterVal = True
+    , isRefCycle = False
+    }
 
 -- | Get the concrete selectors from the reference.
 concreteRefSels :: Reference -> RM (Maybe Selectors)
@@ -183,23 +193,20 @@ concreteVSelSels (ValueSelect _ _ xs) = do
 The env is to provide the context for the dereferencing the reference.
 -}
 getDstVal :: LocateParams -> ValAddr -> RM DerefResult
-getDstVal lp addr = do
-  -- Make deref see the latest tree, even with unreduced nodes.
-  traceSpanTM "getDstVal" addr emptySpanValue $ do
-    dr <- locateRef lp addr
-    case dr of
-      DerefResult{targetValue = Just tarV, targetAddr = Just tarAddr} -> do
-        v <- copyConcrete tarAddr addr tarV
-        return $ dr{targetValue = Just v, isIdentIterVal = lp.isIdentIterVal}
-      _ -> return dr
+getDstVal lp addr = traceSpanTM "getDstVal" addr emptySpanValue $ do
+  dr <- locateRef lp addr
+  case dr of
+    DerefResult{targetValue = Just tarV, targetAddr = Just tarAddr} -> do
+      v <- copyConcrete tarAddr addr tarV
+      return $ dr{targetValue = Just v}
+    _ -> return dr
 
 data LocateParams
-  = -- | The first is the ident, and the second is the selectors.
-    LocateParams
-    { identAddr :: ValAddr
-    , selectors :: Selectors
-    , isIdentIterVal :: Bool
-    }
+  = LocateParams
+  { identFeat :: Feature
+  , resolvedIdentAddr :: ResolvedIdentAddr
+  , selectors :: Selectors
+  }
   deriving (Show)
 
 {- | Locate the node in the lowest ancestor tree by given reference path.
@@ -207,56 +214,82 @@ data LocateParams
 The path must start with a locatable ident.
 -}
 locateRef :: LocateParams -> ValAddr -> RM DerefResult
-locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
-  identVM <- fetchValFromStore "locateRef" identAddr
-  case identVM of
-    Nothing -> do
-      let potentialTarAddr = appendValAddr identAddr (fieldPathToAddr sels)
-      rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VUnknown)
-      case rcRes of
-        Just r -> return r
+locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
+  let identAddr = case resolvedIdentAddr of
+        ResolvedIdentFromTop addr -> addr
+        ToTargetScopeDiff diff -> assembleIdentCanonical diff identFeat refAddr
+  debugInstStr
+    "locateRef"
+    refAddr
+    ( do
+        identAddrT <- tshow identAddr
+        diffT <- tshow resolvedIdentAddr
+        selsT <- mapM tshow (getSelectors sels)
+        return $
+          printf
+            "locating ref. Assembled identAddr: %s, resolvedIdentAddr: %s, selectors: %s"
+            (show identAddrT)
+            (show diffT)
+            (show selsT)
+    )
+  case headSeg identAddr of
+    Just seg | seg == packageFeature -> do
+      let pkgFuncAddr = appendValAddr identAddr (fieldPathToAddr sels)
+      resM <- fetchValFromStore "locateRef" pkgFuncAddr
+      case resM of
+        Just resV -> return $ mkRegDR identAddr pkgFuncAddr resV
+        Nothing ->
+          throwFatal $
+            printf
+              "locateRef: cannot find value for addr %s in package %s"
+              (show pkgFuncAddr)
+              (show identAddr)
+    _ -> do
+      identVM <- fetchValFromStore "locateRef" identAddr
+      case identVM of
         Nothing -> do
-          watch potentialTarAddr refAddr
-          return $ mkPartialFound potentialTarAddr
-    Just identV -> do
-      -- The ref is non-empty, so the rest must be a valid addr.
-      let (matchedAddr, matchedV, unmatchedSels) = descend identAddr identV (getSelectors sels)
-      debugInstStr
-        "locateRef"
-        refAddr
-        ( do
-            matchedAddrT <- tshow matchedAddr
-            identVT <- show <$> toTermsRepWithAddr identAddr identV
-            selsT <- mapM tshow (getSelectors sels)
-            unmatchedSelsT <- mapM tshow unmatchedSels
-            return $
-              printf
-                "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, identV: %s, unmatchedSels: %s"
-                (show sels)
-                matchedAddrT
-                (show selsT)
-                identVT
-                (show unmatchedSelsT)
-        )
-
-      if not (null unmatchedSels)
-        then do
-          let potentialTarAddr = appendValAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
-          rcRes <- handleRefSelforSub potentialTarAddr (mkValVN VUnknown)
+          let potentialTarAddr = appendValAddr identAddr (fieldPathToAddr sels)
+          rcRes <- handleRefSelforSub identAddr potentialTarAddr (mkValVN VUnknown)
           case rcRes of
             Just r -> return r
             Nothing -> do
               watch potentialTarAddr refAddr
-              return case identV of
-                IsBottom _ -> mkRegDR potentialTarAddr identV
-                _ -> mkPartialFound potentialTarAddr
-        else do
-          -- If the reference is an iteration variable, we can skip the cycle detection.
-          if isIdentIterVal
-            then return $ mkRegDR matchedAddr matchedV
+              return $ mkPartialFound identAddr potentialTarAddr
+        Just identV -> do
+          -- The ref is non-empty, so the rest must be a valid addr.
+          let (matchedAddr, matchedV, unmatchedSels) = descend identAddr identV (getSelectors sels)
+          debugInstStr
+            "locateRef"
+            refAddr
+            ( do
+                matchedAddrT <- tshow matchedAddr
+                identVT <- show <$> toTermsRepWithAddr identAddr identV
+                selsT <- mapM tshow (getSelectors sels)
+                unmatchedSelsT <- mapM tshow unmatchedSels
+                return $
+                  printf
+                    "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, identV: %s, unmatchedSels: %s"
+                    (show sels)
+                    matchedAddrT
+                    (show selsT)
+                    identVT
+                    (show unmatchedSelsT)
+            )
+
+          if not (null unmatchedSels)
+            then do
+              let potentialTarAddr = appendValAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
+              rcRes <- handleRefSelforSub identAddr potentialTarAddr (mkValVN VUnknown)
+              case rcRes of
+                Just r -> return r
+                Nothing -> do
+                  watch potentialTarAddr refAddr
+                  return case identV of
+                    IsBottom _ -> mkRegDR identAddr potentialTarAddr identV
+                    _ -> mkPartialFound identAddr potentialTarAddr
             else do
-              rcRes <- handleRefSelforSub matchedAddr matchedV
-              resolveRCRes <- resolveRCValue matchedAddr matchedV
+              rcRes <- handleRefSelforSub identAddr matchedAddr matchedV
+              resolveRCRes <- resolveRCValue identAddr matchedAddr matchedV
               debugInstStr
                 "locateRef"
                 refAddr
@@ -273,9 +306,9 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
                 -- The target value is not RC-resolvable, we can return it directly.
                 _ -> do
                   watch matchedAddr refAddr
-                  return $ mkRegDR matchedAddr matchedV
+                  return $ mkRegDR identAddr matchedAddr matchedV
  where
-  handleRefSelforSub targetAddr targetV = do
+  handleRefSelforSub identAddr targetAddr targetV = do
     let
       -- We could be in a field, dynamic field, constraint. So we need to trim the addresses to their corresponding
       -- suffix forms to do the prefix check.
@@ -303,7 +336,7 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
                     else case targetV of
                       IsUnknown -> Nothing
                       _ -> Just targetV
-             in Just $ mkRefCycleDR targetAddr rcVal
+             in Just $ mkRefCycleDR identAddr targetAddr rcVal
           else Nothing
     debugInstStr
       "locateRef"
@@ -324,7 +357,7 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
       )
     return res
 
-  resolveRCValue targetAddr matchedV = case addrIsVertex targetAddr of
+  resolveRCValue identAddr targetAddr matchedV = case addrIsVertex targetAddr of
     Just dep -> do
       RCResolver{stack, doneRCAddrs, resolving} <- getRCResolver
       if not resolving
@@ -337,9 +370,9 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
           if
             -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
             -- incorrectly raise error.
-            | depOnStack, Just _ <- rtrAtom (value matchedV) -> return $ Just $ mkRegDR targetAddr matchedV
+            | depOnStack, Just _ <- rtrAtom (value matchedV) -> return $ Just $ mkRegDR identAddr targetAddr matchedV
             -- If the target is found on the RC stack, the target value is a top.
-            | depOnStack -> return $ Just $ mkRefCycleDR targetAddr (Just $ mkValVN VTop)
+            | depOnStack -> return $ Just $ mkRefCycleDR identAddr targetAddr (Just $ mkValVN VTop)
             -- If the dep is done, we can return the value directly without watching since the value won't change anymore.
             -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
             -- locateRef fetch the latest value.
@@ -348,7 +381,7 @@ locateRef (LocateParams identAddr sels isIdentIterVal) refAddr = do
                 do
                   debugInstStr "locateRef" refAddr (return $ printf "dep %s is dirty" (show dep))
                   mapRCResolver (\rs -> rs{stack = dep : stack})
-                  return $ Just $ mkPartialFound targetAddr
+                  return $ Just $ mkPartialFound identAddr targetAddr
     Nothing -> return Nothing
 
 descend :: ValAddr -> VNode -> [Selector] -> (ValAddr, VNode, [Selector])

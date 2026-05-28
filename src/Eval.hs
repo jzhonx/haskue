@@ -34,12 +34,13 @@ import qualified Data.Set as Set
 import qualified Data.Yaml as Yaml
 import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter)
 import qualified Env
-import Feature (rootValAddr)
+import Feature (fileTopValAddr)
 import Reduce (finalize, reduce)
+import Reduce.Core (storeBuiltinsAndPackages)
 import Reduce.Monad
 import Reduce.Recalc (recalc)
 import Reduce.Store (fetchValMust)
-import Semant.Semant (TM, TransErr (..), TransState (..), emptyTransState, transExprToVal, transSourceFile)
+import Semant.Semant (TM, TransErr (..), TransState (..), mkTransState, transExprToVal, transSourceFile)
 import StringIndex (TextIndexer, emptyTextIndexer)
 import Syntax.AST
 import Syntax.Parser (parseExpr, parseSourceFile)
@@ -136,7 +137,7 @@ strToCUEVal s conf = do
   --   let tokenReps = map show tokens
   --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
   e <- liftEither $ parseExpr tokens
-  evalVal (transExprToVal e rootValAddr) conf
+  evalVal (transExprToVal e fileTopValAddr) conf
 
 evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalStrToVal s conf = do
@@ -153,28 +154,26 @@ evalStrToVal s conf = do
   evalFile e conf
 
 evalFile :: SourceFile -> Config -> ExceptT String IO (VNode, TextIndexer)
-evalFile sf conf = evalVal (transSourceFile sf rootValAddr) conf
+evalFile sf conf = evalVal (transSourceFile sf fileTopValAddr) conf
 
 evalVal :: TM VNode -> Config -> ExceptT String IO (VNode, TextIndexer)
-evalVal f conf =
+evalVal f conf = do
   let
-    initTransState = emptyTransState emptyTextIndexer
+    initTransState = mkTransState emptyTextIndexer
     transRes = runRWST f () initTransState
-   in
-    do
-      (raw, tIndexer, isValid) <-
-        mapExceptT
-          ( \m -> do
-              r <- m
-              case r of
-                Left (SemantErr msg) -> return $ Right (mkBottomVal msg, emptyTextIndexer, False)
-                Left (FatalErr msg) -> return $ Left msg
-                Right (val, s, _) -> return $ Right (val, s.tIndexer, True)
-          )
-          transRes
-      if isValid
-        then evalValInner conf tIndexer raw
-        else return (raw, tIndexer)
+  (raw, tIndexer, isValid) <-
+    mapExceptT
+      ( \m -> do
+          r <- m
+          case r of
+            Left (SemantErr msg) -> return $ Right (mkBottomVN msg, emptyTextIndexer, False)
+            Left (FatalErr msg) -> return $ Left msg
+            Right (val, s, _) -> return $ Right (val, s.tIndexer, True)
+      )
+      transRes
+  if isValid
+    then evalValInner conf tIndexer raw
+    else return (raw, tIndexer)
 
 evalValInner :: Config -> TextIndexer -> VNode -> ExceptT String IO (VNode, TextIndexer)
 evalValInner conf textIndexer raw = do
@@ -193,27 +192,27 @@ evalValInner conf textIndexer raw = do
       ( do
           when (ecDebugMode conf) $ do
             rawRep <- vnToFullStringTermsRep raw
-            liftIO $ hPutStr stderr $ "Parsed result: " ++ rawRep ++ "\n"
-            resolvedRep <- vnToFullStringTermsRep raw
-            liftIO $ hPutStr stderr $ "Resolved result: " ++ resolvedRep ++ "\n"
+            liftIO $ hPutStr stderr $ "Translated result: " ++ rawRep ++ "\n"
 
-          root <-
+          storeBuiltinsAndPackages
+
+          topVal <-
             local
               (mapParams (\p -> p{createCnstr = True}))
               ( do
-                  void $ reduce rootValAddr raw
+                  void $ reduce fileTopValAddr raw
                   recalc
-                  fetchValMust "eval" rootValAddr
+                  fetchValMust "eval" fileTopValAddr
               )
-          reducedRoot <- local (mapParams (\p -> p{createCnstr = False})) (finalize rootValAddr root)
+          reducedTopVal <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopValAddr topVal)
 
           when (ecDebugMode conf) $ do
-            rep <- vnToFullStringTermsRep reducedRoot
+            rep <- vnToFullStringTermsRep reducedTopVal
             liftIO $
               hPutStr stderr $
                 "Final eval result: " ++ rep ++ "\n"
 
-          return reducedRoot
+          return reducedTopVal
       )
       (ReduceConfig{baseConfig = config, params = (emptyReduceParams{createCnstr = True})})
       (emptyContext (LB.hPut conf.ecTraceHandle))

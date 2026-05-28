@@ -14,10 +14,9 @@ import Control.Monad.State.Strict (gets, modify')
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.DList as DList
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import qualified Data.Vector as V
 import Debug.Trace (trace)
 import Feature
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
@@ -26,6 +25,8 @@ import StringIndex (
   ShowWTIndexer (..),
   TextIndex,
   TextIndexer,
+  TextIndexerMonad,
+  strToTextIndex,
   textToTextIndex,
  )
 import Syntax.AST
@@ -43,10 +44,35 @@ import Text.Printf (printf)
 import Value
 
 transSourceFile :: SourceFile -> ValAddr -> TM VNode
-transSourceFile (SourceFile decls) addr = trDataEToVNode <$> transStructLit (StructLit emptyLoc decls emptyLoc) addr
+transSourceFile (SourceFile imports decls) addr = do
+  universalEnv <- mkUniversalEnv
+  pckEnv <- transImports imports
+  modify' $ mapEnvs (const $ Environments [universalEnv, pckEnv])
+  res <- transStructLit (StructLit emptyLoc decls emptyLoc) addr
+  return $ trDataEToVNode res
+
+transImports :: [ImportSpec] -> TM Environment
+transImports imps = do
+  pkgs <- mapM transImport imps
+  return $
+    Environment
+      { envid = 0
+      , envType = EnvTypeStruct
+      , envAddr = packageValAddr
+      , names = Map.fromList $ map (\k -> (k, (ITField, False))) pkgs
+      , nameFeatMap = Map.fromList $ map (\k -> (k, mkStringFeature k)) pkgs
+      , clausesDepth = 0
+      }
+
+transImport :: ImportSpec -> TM TextIndex
+transImport (ImportSpec _ path) = textToTextIndex path.tkLiteral
 
 transExprToVal :: Expression -> ValAddr -> TM VNode
-transExprToVal e addr = trDataEToVNode <$> transExpr e addr
+transExprToVal e addr = do
+  universalEnv <- mkUniversalEnv
+  modify' $ mapEnvs (const $ Environments [universalEnv])
+  r <- transExpr e addr
+  return $ trDataEToVNode r
 
 data TrDataE = TrDataE
   { trData :: TrData
@@ -227,12 +253,11 @@ transEmbedding
   (EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit))
   addr = do
     cid <- allocObjID
-    let comprehAddr = addr `appendSeg` mkObjectFeature cid
     args <-
-      mapM (\(j, c) -> transClause c (comprehAddr `appendSeg` mkComprehClausesFeature j)) (zip [1 ..] cls)
-    gev <- transExpr ge (comprehAddr `appendSeg` mkComprehClausesFeature 0)
+      mapM (\(j, c) -> transClause c (addr `appendSeg` mkRegCnstrFeature j)) (zip [1 ..] cls)
+    gev <- transExpr ge (addr `appendSeg` mkRegCnstrFeature 0)
     let vs = ComprehArgIf (trDataEToVNode gev) : args
-    sv <- transStructLit lit (comprehAddr `appendSeg` mkComprehClausesFeature (length vs))
+    sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
     return $
       mkEmptyExprTrDataE $
         TrOp $
@@ -247,16 +272,15 @@ transEmbedding
       Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
     cid <- allocObjID
-    let comprehAddr = addr `appendSeg` mkObjectFeature cid
-    let forClsAddr = comprehAddr `appendSeg` mkComprehClausesFeature 0
+    let forClsAddr = addr `appendSeg` mkRegCnstrFeature 0
     inClauseScope iIdx jIdxM forClsAddr $ do
       args <-
         mapM
-          (\(j, c) -> transClause c (comprehAddr `appendSeg` mkComprehClausesFeature j))
+          (\(j, c) -> transClause c (addr `appendSeg` mkRegCnstrFeature j))
           (zip [1 ..] cls)
       fev <- transExpr fe forClsAddr
       let vs = ComprehArgFor iIdx jIdxM (trDataEToVNode fev) : args
-      sv <- transStructLit lit (comprehAddr `appendSeg` mkComprehClausesFeature (length vs))
+      sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
       return $ mkEmptyExprTrDataE $ TrOp $ Compreh $ mkComprehension cid isListCompreh vs (trDataEToVNode sv)
 
 transClause :: Clause -> ValAddr -> TM ComprehArg
@@ -344,7 +368,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       -- \^---------------^ -- the whole pattern value is a constraint scope
       --           ^-----^ -- This is the cnstrval scope. The alias is defined for this scope.
       ---}
-      inCnstrValScope aliasIdxM cnstrValAddr $ do
+      inPatternCnstrValScope aliasIdxM cnstrValAddr $ do
         pat <- trDataEToVNode <$> transExpr pe (structAddr `appendSeg` mkPatternFeature cnstrid 0)
         cs <- trDataEToCnstrsSeq <$> vgen cnstrValAddr
         cnstrvid <- getEnvID
@@ -433,54 +457,73 @@ transUnaryExpr ue addr = case ue of
   Primary primExpr -> transPrimExpr primExpr addr
   UnaryOp op e -> transUnaryOp op.tkType e addr
 
-builtinOpNameTable :: [(String, TrData)]
-builtinOpNameTable =
-  -- built-in identifier names
-  [("_", TrValue VTop)]
-    ++ map (\b -> (show b, TrValue $ VBounds $ Bounds{bdsList = [BdType b]})) [minBound :: BdType .. maxBound :: BdType]
-    -- built-in function names
-    -- We use the function to distinguish the identifier from the string literal.
-    ++ map (\(s, op) -> (s, TrOp op)) builtinFuncTable
-
 transPrimExpr :: PrimaryExpr -> ValAddr -> TM TrDataE
 transPrimExpr e addr = case e of
   (PrimExprOperand op) -> case op of
     OpLiteral lit -> transLiteral lit addr
-    OpName (OperandName ident) -> case lookup (BC.unpack (tkLiteral ident)) builtinOpNameTable of
-      Just v -> return $ mkEmptyExprTrDataE v
-      Nothing -> do
-        idIdx <- identTokenToTextIndex ident
-        IdentLookupResult{identType, identFeat, identAddr} <- lookupIdentInScopes idIdx ident.tkLoc
-        return $
-          mkEmptyExprTrDataE $
-            TrOp $
-              Ref $
-                singletonIdentRef
-                  (getTextIndexFromFeature identFeat)
-                  identType
-                  (getResolvedIdentAddr identAddr identType)
+    OpName (OperandName ident) -> do
+      idIdx <- identTokenToTextIndex ident
+      IdentLookupResult{identType, identFeat, clausesDepth, resolvedIdentAddr} <-
+        lookupIdentInScopes idIdx ident.tkLoc
+      case identType of
+        ITIterBinding ->
+          return $
+            mkEmptyExprTrDataE $
+              TrOp $
+                Ref $
+                  comprehensionIdentRef idIdx identFeat (clausesDepth - 1) resolvedIdentAddr
+        _ ->
+          return $
+            mkEmptyExprTrDataE $
+              TrOp $
+                Ref $
+                  singletonIdentRef
+                    (getTextIndexFromFeature identFeat)
+                    identFeat
+                    identType
+                    resolvedIdentAddr
     OpExpression _ expr _ -> transExpr expr addr
   (PrimExprSelector primExpr _ sel) -> transSelector primExpr sel addr
   (PrimExprIndex primExpr _ idx _) -> transIndex primExpr idx addr
+  (PrimExprSlice primExpr _ startM _ endM _) -> do
+    opd <- transPrimExpr primExpr (addr `appendSeg` mkOpArgFeature 0)
+    let genArgs argEs = do
+          sliceIdxes <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature (i + 1))) (zip [0 ..] argEs)
+          return $ opd : sliceIdxes
+    case (startM, endM) of
+      (Nothing, Nothing) -> return opd
+      (Just start, Nothing) -> do
+        args <- genArgs [start]
+        mkSliceFunc "sliceLeft" args
+      (Nothing, Just end) -> do
+        args <- genArgs [end]
+        mkSliceFunc "sliceRight" args
+      (Just start, Just end) -> do
+        args <- genArgs [start, end]
+        mkSliceFunc "slice" args
   (PrimExprArguments primExpr _ aes _) -> do
-    p <- transPrimExpr primExpr addr
-    args <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature i)) (zip [0 ..] aes)
-    replaceFuncArgs p args
-
-getResolvedIdentAddr :: ValAddr -> RefIdentType -> ValAddr
-getResolvedIdentAddr addr _ =
-  let xs = vFeatures addr
-   in ValAddr $ V.filter (not . isFeatureNonCanonical) xs
+    p <- transPrimExpr primExpr (addr `appendSeg` mkOpArgFeature 0)
+    args <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature i)) (zip [1 ..] aes)
+    return $
+      TrDataE
+        ( TrOp $
+            FCall $
+              FuncCall
+                { fnFrame = Seq.fromList (trDataEToVNode p : map trDataEToVNode args)
+                }
+        )
+        Nothing
 
 -- | Creates a new function tree for the original function with the arguments applied.
-replaceFuncArgs :: TrDataE -> [TrDataE] -> TM TrDataE
-replaceFuncArgs TrDataE{trData = TrOp (RegOp fn)} args =
+mkSliceFunc :: String -> [TrDataE] -> TM TrDataE
+mkSliceFunc sliceFName args = do
+  ti <- strToTextIndex sliceFName
+  let funcAddr = appendSeg universalValAddr (mkStringFeature ti)
   return $
     mkEmptyExprTrDataE $
       TrOp $
-        RegOp $
-          fn{ropArgs = Seq.fromList (map trDataEToVNode args)}
-replaceFuncArgs _ _ = throwFatal "expected a function value"
+        FCall $
+          FuncCall{fnFrame = mkValVN (VFuncAddr funcAddr) Seq.<| Seq.fromList (map trDataEToVNode args)}
 
 {- | Evaluates the selector.
 
@@ -509,6 +552,7 @@ getPrimaryExprValAddr :: PrimaryExpr -> ValAddr -> TM (ValAddr, Int)
 getPrimaryExprValAddr pe addr = case pe of
   PrimExprIndex{} -> return (addr, 0)
   PrimExprSelector{} -> return (addr, 0)
+  PrimExprSlice{} -> return (addr, 0)
   _ -> do
     oid <- allocObjID
     return (addr `appendSeg` mkObjectFeature oid, oid)
@@ -638,8 +682,8 @@ instance HasTextIndexer TransState where
   getTextIndexer = tIndexer
   setTextIndexer ti ts = ts{tIndexer = ti}
 
-emptyTransState :: TextIndexer -> TransState
-emptyTransState ti = TransState{objID = 0, tIndexer = ti, envs = emptyEnvironments}
+mkTransState :: TextIndexer -> TransState
+mkTransState ti = TransState{objID = 0, tIndexer = ti, envs = emptyEnvironments}
 
 mapEnvs :: (Environments -> Environments) -> TransState -> TransState
 mapEnvs f s = s{envs = f s.envs}
@@ -684,43 +728,56 @@ notFoundMsg ident locM = do
 data IdentLookupResult = IdentLookupResult
   { isInTopEnv :: Bool
   , envid :: Int
+  , clausesDepth :: Int
   , identType :: RefIdentType
   , identFeat :: Feature
   , identAddr :: ValAddr
+  , resolvedIdentAddr :: ResolvedIdentAddr
+  -- ^ The address difference to the top environment.
+  -- When using, we must get the canonical address of the current address and subtract the resolvedIdentAddr to get the
+  -- target address.
   }
 
-lookupIdentCurEnv :: TextIndex -> TM (Maybe IdentLookupResult)
-lookupIdentCurEnv name = do
+getTopEnvMust :: TM Environment
+getTopEnvMust = do
   (Environments envs) <- gets envs
   case envs of
     [] -> throwFatal "no environment"
-    (env : _) -> return $ lookupIdentInEnv name env.envid env
+    (env : _) -> return env
 
-lookupIdentInEnv :: TextIndex -> Int -> Environment -> Maybe IdentLookupResult
-lookupIdentInEnv name topEnvID env = do
+lookupIdentCurEnv :: TextIndex -> TM (Maybe IdentLookupResult)
+lookupIdentCurEnv name = do
+  env <- getTopEnvMust
+  return $ lookupIdentInEnv name env env
+
+lookupIdentInEnv :: TextIndex -> Environment -> Environment -> Maybe IdentLookupResult
+lookupIdentInEnv name topEnv env = do
   (t, _) <- Map.lookup name env.names
   let identFeat = fromJust $ Map.lookup name env.nameFeatMap
   return
     IdentLookupResult
-      { isInTopEnv = topEnvID == env.envid
+      { isInTopEnv = topEnv.envid == env.envid
       , envid = env.envid
+      , clausesDepth = env.clausesDepth
       , identType = t
       , identFeat = identFeat
       , identAddr = env.envAddr `appendSeg` identFeat
+      , resolvedIdentAddr =
+          if env.clausesDepth > 0
+            then ToTargetScopeDiff $ collapseToCanonical $ trimPrefixAddr env.envAddr topEnv.envAddr
+            else ResolvedIdentFromTop $ collapseToCanonicalForm $ env.envAddr `appendSeg` identFeat
       }
 
 -- | Lookup the identifier in the environments.
 lookupIdentInEnvs :: TextIndex -> TM (Maybe IdentLookupResult)
 lookupIdentInEnvs name = do
   (Environments envs) <- gets envs
-  let (res, updatedEnvs) = lookupInStack (topEnvID envs) [] envs
-  modify' $ mapEnvs (const $ Environments updatedEnvs)
+  topEnv <- getTopEnvMust
+
+  let (res, updatedEnvs) = lookupInStack topEnv [] envs
+  modify' $ mapEnvs (mapEnvsList $ const updatedEnvs)
   return res
  where
-  topEnvID envs = case envs of
-    [] -> -1
-    (env : _) -> env.envid
-
   lookupInStack _ acc [] = (Nothing, reverse acc)
   lookupInStack tenvid acc (env : rest) =
     case lookupIdentInEnv name tenvid env of
@@ -733,30 +790,37 @@ lookupIdentInEnvs name = do
 addNameToCurrentEnv :: TextIndex -> RefIdentType -> TM ()
 addNameToCurrentEnv name identType = do
   checkIdentInEnvs name identType
-  envid <- getEnvID
-  feat <- case identType of
-    ITField -> return $ mkStringFeature name
-    ITLetBinding -> do
-      tiWSuf <- modifyTISuffix envid name
-      return $ mkLetFeature tiWSuf
-    -- For the temporary iteration variable, we do not need to modify the text index with the env id suffix because
-    -- the iteration is transient and in the reference we will fetch the value and make the reference a concrete
-    -- value.
-    ITIterBinding -> return $ mkLetFeature name
-  modify' $ mapEnvs $ addName feat
+  topValTI <- strToTextIndex "_"
+  if name == topValTI && identType == ITIterBinding
+    then return ()
+    else do
+      envid <- getEnvID
+      feat <- case identType of
+        ITField -> return $ mkStringFeature name
+        ITLetBinding -> do
+          tiWSuf <- modifyTISuffix envid name
+          return $ mkLetFeature tiWSuf
+        -- For the temporary iteration variable, we do not need to modify the text index with the env id suffix because
+        -- the iteration is transient and in the reference we will fetch the value and make the reference a concrete
+        -- value.
+        ITIterBinding -> return $ mkLetFeature name
+      modify' $ mapEnvs $ addName feat
  where
-  addName feat (Environments envs) = case envs of
-    [] -> Environments []
+  addName feat envs = case getEnvs envs of
+    [] -> envs
     (env : rest) ->
-      Environments $
-        env
-          { names = Map.insert name (identType, False) env.names
-          , nameFeatMap = Map.insert name feat env.nameFeatMap
-          }
-          : rest
+      envs
+        { getEnvs =
+            env
+              { names = Map.insert name (identType, False) env.names
+              , nameFeatMap = Map.insert name feat env.nameFeatMap
+              }
+              : rest
+        }
 
 checkIdentInEnvs :: TextIndex -> RefIdentType -> TM ()
 checkIdentInEnvs key identType = do
+  topValTI <- strToTextIndex "_"
   res <- lookupIdentInEnvs key
   case res of
     Just (IdentLookupResult{isInTopEnv, identType = targetIdentType})
@@ -768,6 +832,7 @@ checkIdentInEnvs key identType = do
       | targetIdentType == ITField && identType == ITLetBinding
           || targetIdentType == ITLetBinding && identType == ITField ->
           aliasErr key
+    Nothing | key == topValTI, identType /= ITLetBinding -> semanticError "cannot use _ as a label or variable name"
     _ -> return ()
 
 aliasErr :: TextIndex -> TM ()
@@ -843,23 +908,23 @@ For example, [X=constraint]: value, a new environment is created for evaluating 
             ^---------------------^
               scope for evaluating "value"
 -}
-inCnstrValScope :: Maybe TextIndex -> ValAddr -> TM StructElemAdder -> TM StructElemAdder
-inCnstrValScope aliasIdxM addr action = do
-  enterCnstrValScope aliasIdxM addr
+inPatternCnstrValScope :: Maybe TextIndex -> ValAddr -> TM StructElemAdder -> TM StructElemAdder
+inPatternCnstrValScope aliasIdxM addr action = do
+  enterPatternCnstrValScope aliasIdxM addr
   result <- action
-  leaveCnstrValScope
+  leavePatternCnstrValScope
   return result
 
-enterCnstrValScope :: Maybe TextIndex -> ValAddr -> TM ()
-enterCnstrValScope aliasIdxM addr = do
+enterPatternCnstrValScope :: Maybe TextIndex -> ValAddr -> TM ()
+enterPatternCnstrValScope aliasIdxM addr = do
   fid <- allocObjID
   modify' $ mapEnvs (pushBlock fid EnvTypeCnstr addr)
   case aliasIdxM of
     Just aliasIdx -> addNameToCurrentEnv aliasIdx ITLetBinding
     Nothing -> return ()
 
-leaveCnstrValScope :: TM ()
-leaveCnstrValScope = do
+leavePatternCnstrValScope :: TM ()
+leavePatternCnstrValScope = do
   envs <- gets envs
   let (_, restEnvs) = popBlock envs
   modify' $ mapEnvs (const restEnvs)
@@ -885,6 +950,7 @@ inClauseScope iIdx jIdxM addr action = do
   cid <- getEnvID
   res <- action
   leaveUntil cid
+  leaveClauseScope
   return res
  where
   leaveUntil cid = do
@@ -914,7 +980,10 @@ instance Show Environments where
 instance ShowWTIndexer Environments where
   tshow (Environments envs) = do
     envStrs <- mapM tshow envs
-    return $ T.pack $ "Envs[" ++ concatMap (\e -> T.unpack e ++ "; ") envStrs ++ "]"
+    return $ T.pack $ "Envs[" ++ concatMap (\e -> T.unpack e ++ "\n") envStrs ++ "]"
+
+mapEnvsList :: ([Environment] -> [Environment]) -> Environments -> Environments
+mapEnvsList f (Environments envs) = Environments (f envs)
 
 debugShowEnvs :: String -> TM ()
 debugShowEnvs msg = do
@@ -937,11 +1006,14 @@ data Environment = Environment
   -- them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
   , nameFeatMap :: Map.Map TextIndex Feature
   -- ^ nameFeatMap is used to store the mapping from identifier to its corresponding feature.
+  , clausesDepth :: !Int
+  -- ^ The depth of iteration bindings of the current environment.
   }
   deriving (Eq)
 
 instance Show Environment where
-  show (Environment envid typ addr names _) = printf "Env(id=%d, type=%s addr=[%s] names=[%s])" envid (show typ) (show addr) nameStr
+  show (Environment{envid, envType, envAddr, names, clausesDepth}) =
+    printf "Env(id=%d, type=%s addr=%s names=[%s] depth=%d)" envid (show envType) (show envAddr) nameStr clausesDepth
    where
     nameStr :: String
     nameStr =
@@ -952,8 +1024,8 @@ instance Show Environment where
         (Map.toList names)
 
 instance ShowWTIndexer Environment where
-  tshow (Environment envid typ addr names _) = do
-    addrT <- tshow addr
+  tshow (Environment{envid, envType, envAddr, names, clausesDepth}) = do
+    addrT <- tshow envAddr
     nameStrs <-
       mapM
         ( \(k, (t, r)) -> do
@@ -963,27 +1035,72 @@ instance ShowWTIndexer Environment where
         (Map.toList names)
     return $
       T.pack $
-        printf "Env(id=%d, type=%s, addr=%s, names=[%s])" envid (show typ) addrT (T.unpack $ T.concat nameStrs)
+        printf
+          "Env(id=%d, type=%s, addr=%s, names=[%s], depth=%d)"
+          envid
+          (show envType)
+          addrT
+          (T.unpack $ T.concat nameStrs)
+          clausesDepth
 
 emptyEnvironments :: Environments
 emptyEnvironments = Environments []
+
+mkUniversalEnv :: (TextIndexerMonad s m) => m Environment
+mkUniversalEnv = do
+  vNames <- builtinValues >>= genNames
+  funcNames <- builtinFuncAddrTable >>= genNames
+  let names = Map.union vNames funcNames
+  return $
+    Environment
+      { envid = 0
+      , envType = EnvTypeStruct
+      , envAddr = universalValAddr
+      , names = names
+      , nameFeatMap = Map.mapWithKey (\k _ -> mkStringFeature k) names
+      , clausesDepth = 0
+      }
+ where
+  genNames :: (TextIndexerMonad s m) => [(TextIndex, a)] -> m (Map.Map TextIndex (RefIdentType, Bool))
+  genNames xs = do
+    pairs <- mapM (\(s, _) -> return (s, (ITField, False))) xs
+    return $ Map.fromList pairs
 
 markNameAsReferenced :: TextIndex -> Environment -> Environment
 markNameAsReferenced key env = env{names = Map.adjust markRef key env.names}
  where
   markRef (identType, _) = (identType, True)
 
+getTopEnv :: Environments -> Maybe Environment
+getTopEnv (Environments envs) = case envs of
+  [] -> Nothing
+  (env : _) -> Just env
+
 pushBlock :: Int -> EnvType -> ValAddr -> Environments -> Environments
-pushBlock envid typ addr (Environments envs) =
-  Environments $
-    Environment
-      { names = Map.empty
-      , envType = typ
-      , envid = envid
-      , envAddr = addr
-      , nameFeatMap = Map.empty
+pushBlock envid typ addr e@(Environments envs) =
+  let
+    newClausesDepth =
+      fromMaybe
+        0
+        ( do
+            topEnv <- getTopEnv e
+            if typ == EnvTypeClause
+              then Just (topEnv.clausesDepth + 1)
+              else Just topEnv.clausesDepth
+        )
+   in
+    Environments
+      { getEnvs =
+          Environment
+            { names = Map.empty
+            , envType = typ
+            , envid = envid
+            , envAddr = addr
+            , nameFeatMap = Map.empty
+            , clausesDepth = newClausesDepth
+            }
+            : envs
       }
-      : envs
 
 popBlock :: Environments -> (Environment, Environments)
 popBlock (Environments envs) = case envs of

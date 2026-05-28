@@ -72,7 +72,9 @@ newtype Feature = Feature {getFeature :: Int}
   deriving (Eq, Ord, Generic, NFData, Hashable)
 
 data LabelType
-  = RootLabelType
+  = FileTopLabelType
+  | UniversalLabelType
+  | PackageLabelType
   | ListStoreIdxLabelType
   | ListIdxLabelType
   | DisjLabelType
@@ -85,12 +87,13 @@ data LabelType
   | ObjectLabelType -- ObjectLabelType indicates an object value that is in the sub structure of a value.
   | ConstraintLabelType
   | DynCnstrLabelType
-  | ComprehClauseStoreLabelType -- This is used to store the comprehension clauses in store.
   deriving (Eq, Ord, Generic, NFData, Enum)
 
 instance Show Feature where
   show f = case fetchLabelType f of
-    RootLabelType -> "/"
+    FileTopLabelType -> "/top"
+    UniversalLabelType -> "/builtin"
+    PackageLabelType -> "/pkg"
     ListStoreIdxLabelType -> "lsi" ++ show (fetchIndex f)
     ListIdxLabelType -> "li" ++ show (fetchIndex f)
     DisjLabelType -> "dj" ++ show (fetchIndex f)
@@ -103,13 +106,15 @@ instance Show Feature where
     ObjectLabelType -> "o_" ++ show (fetchIndex f)
     ConstraintLabelType -> "c_" ++ show (fetchIndex f)
     DynCnstrLabelType -> "dc_" ++ show (fetchIndex f)
-    ComprehClauseStoreLabelType -> "ccs" ++ show (fetchIndex f)
    where
     showSub :: (Int, a) -> (a -> String) -> String
     showSub (x, y) g = show x ++ "_" ++ g y
 
 instance ShowWTIndexer Feature where
   tshow f = case fetchLabelType f of
+    FileTopLabelType -> do
+      t <- tshow (TextIndex (fetchIndex f))
+      return $ "/" `T.append` t
     StringLabelType -> tshow (TextIndex (fetchIndex f))
     LetLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))
@@ -118,9 +123,6 @@ instance ShowWTIndexer Feature where
 
 pattern FeatureType :: LabelType -> Feature
 pattern FeatureType lType <- (fetchLabelType -> lType)
-
-pattern IsRootFeature :: Feature
-pattern IsRootFeature <- (fetchLabelType -> RootLabelType)
 
 fetchLabelType :: Feature -> LabelType
 fetchLabelType (Feature f) = toEnum $ (f `shiftR` 24) .&. 0x000000FF
@@ -217,9 +219,6 @@ mkDynCnstrFeature i = mkFeature i DynCnstrLabelType
 mkObjectFeature :: Int -> Feature
 mkObjectFeature i = mkFeature i ObjectLabelType
 
-mkComprehClausesFeature :: Int -> Feature
-mkComprehClausesFeature i = mkFeature i ComprehClauseStoreLabelType
-
 getTextFromFeature :: (TextIndexerMonad s m) => Feature -> m BC.ByteString
 getTextFromFeature f = case fetchLabelType f of
   StringLabelType -> textIndexToBS (TextIndex (fetchIndex f))
@@ -263,6 +262,11 @@ isFeatureObject f = case fetchLabelType f of
   ObjectLabelType -> True
   _ -> False
 
+isFeatureFileTop :: Feature -> Bool
+isFeatureFileTop f = case fetchLabelType f of
+  FileTopLabelType -> True
+  _ -> False
+
 bsToStringFeature :: (MonadState s m, HasTextIndexer s) => BC.ByteString -> m Feature
 bsToStringFeature s = mkStringFeature <$> textToTextIndex s
 
@@ -283,8 +287,14 @@ toBinOpTASeg :: BinOpDirect -> Feature
 toBinOpTASeg L = binOpLeftTASeg
 toBinOpTASeg R = binOpRightTASeg
 
-rootFeature :: Feature
-rootFeature = mkFeature 0 RootLabelType
+fileTopFeature :: Feature
+fileTopFeature = mkFeature 0 FileTopLabelType
+
+universalFeature :: Feature
+universalFeature = mkFeature 0 UniversalLabelType
+
+packageFeature :: Feature
+packageFeature = mkFeature 0 PackageLabelType
 
 data BinOpDirect = L | R deriving (Eq, Ord)
 
@@ -303,7 +313,7 @@ newtype ValAddr = ValAddr
 instance ShowWTIndexer ValAddr where
   tshow (ValAddr a)
     | V.null a = return "."
-    | a V.! 0 == rootFeature = do
+    | isFeatureFileTop (a V.! 0) = do
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList $ V.drop 1 a)
         return $ T.pack $ "/" ++ intercalate "/" x
     | otherwise = do
@@ -327,8 +337,14 @@ mkValAddr = ValAddr
 emptyValAddr :: ValAddr
 emptyValAddr = mkValAddr V.empty
 
-rootValAddr :: ValAddr
-rootValAddr = mkValAddr (V.singleton rootFeature)
+fileTopValAddr :: ValAddr
+fileTopValAddr = mkValAddr (V.singleton fileTopFeature)
+
+universalValAddr :: ValAddr
+universalValAddr = mkValAddr (V.singleton universalFeature)
+
+packageValAddr :: ValAddr
+packageValAddr = mkValAddr (V.singleton packageFeature)
 
 isValAddrEmpty :: ValAddr -> Bool
 isValAddrEmpty a = V.null (vFeatures a)
@@ -426,6 +442,21 @@ trimPrefixAddr pre@(ValAddr pa) x@(ValAddr xa)
   | not (isPrefix pre x) = x
   | otherwise = mkValAddr (V.drop (V.length pa) xa)
 
+isSuffix :: ValAddr -> ValAddr -> Bool
+isSuffix (ValAddr x) (ValAddr y) = isSegVSuffix x y
+
+{- | Check if the first features are a suffix of the second features.
+
+For example, isSegVSuffix (c.d) (a.b.c.d) = True, isSegVSuffix (b.c) (a.b) = False.
+-}
+isSegVSuffix :: V.Vector Feature -> V.Vector Feature -> Bool
+isSegVSuffix x y = isSegVPrefix (V.reverse x) (V.reverse y)
+
+trimSuffixAddr :: ValAddr -> ValAddr -> ValAddr
+trimSuffixAddr suf@(ValAddr sa) x@(ValAddr xa)
+  | not (isSuffix suf x) = x
+  | otherwise = mkValAddr (V.take (V.length xa - V.length sa) xa)
+
 {- | CanonicalAddr is an addr that ends with an irreducible segment.
 
 Besides referrable segments, irreducible segments include dynamic field segments and pattern segments, etc..
@@ -479,6 +510,20 @@ canonicalToAddr (CanonicalAddr v) = v
 initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
 initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initValAddr v)
 
+assembleIdentCanonical :: CanonicalAddr -> Feature -> ValAddr -> ValAddr
+assembleIdentCanonical diff feat addr =
+  let
+    -- If the last seg is dj
+    --  - the value is a struct, it is impossible.
+    canAddr = collapseToCanonical addr
+    canParAddrM = initCanonical canAddr
+    identScopeAddr = case canParAddrM of
+      Just canParAddr -> trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr canParAddr)
+      Nothing -> fileTopValAddr
+    identAddr = appendSeg identScopeAddr feat
+   in
+    identAddr
+
 {- | ReferableAddr is a referrable address.
 
 A referable address must end with a referable segment.
@@ -501,7 +546,7 @@ isFeatureReferable f = case fetchLabelType f of
   StringLabelType -> True
   LetLabelType -> True
   ListIdxLabelType -> True
-  RootLabelType -> True
+  FileTopLabelType -> True
   _ -> False
 
 rfbAddrToAddr :: ReferableAddr -> ValAddr

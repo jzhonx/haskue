@@ -555,7 +555,7 @@ returnNotUnifiable (ConjOpd{coVal = t1, dir = d1}) (ConjOpd{coVal = t2}) = do
   f x y = do
     tx <- showValueType x
     ty <- showValueType y
-    return $ mkBoundsVal $ printf "%s can not be unified with %s" tx ty
+    return $ mkBottomVal $ printf "%s can not be unified with %s" tx ty
 
 mergeLeftStruct :: (Struct, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
 mergeLeftStruct (s1, co1) co2 addr

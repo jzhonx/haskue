@@ -96,6 +96,11 @@ buildValExprExt t = case t of
     if isDebug
       then return $ AST.idCons "Unknown"
       else throwErrSt "cannot build expression for Unknown value without original expression"
+  VFuncAddr addr -> do
+    isDebug <- asks isDebug
+    if isDebug
+      then return $ AST.idCons "fnAddr"
+      else throwErrSt "cannot build expression for function address value without original expression"
 
 buildStaticConstraintsExpr :: Seq.Seq Constraint -> EM AST.Expression
 buildStaticConstraintsExpr cs = do
@@ -138,6 +143,7 @@ buildOpASTExprForce op t = case op of
         AST.LitStruct (AST.StructLit emptyLoc [AST.Embedding (AST.EmbedComprehension ce)] emptyLoc)
   DisjOp dop -> buildDisjoinOpASTExpr dop t
   Itp _ -> throwExprNotFound t
+  FCall _ -> throwExprNotFound t
 
 buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
@@ -420,7 +426,7 @@ buildRegOpASTExpr op = case ropOpType op of
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
   BinOpType bop
     | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-  CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (BC.pack "close func"))
+  -- CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (BC.pack "close func"))
   _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
 buildUnaryExpr :: TokenType -> VNode -> EM AST.Expression

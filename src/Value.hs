@@ -10,6 +10,7 @@ import Value.Comprehension as Export
 import Value.Disj as Export
 import Value.DisjoinOp as Export
 import Value.Export.AST as Export
+import Value.Func as Export
 import Value.Instances as Export ()
 import Value.Interpolation as Export
 import Value.List as Export

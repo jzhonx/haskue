@@ -19,6 +19,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Feature (
   ValAddr,
+  fileTopValAddr,
   mkDisjFeature,
   mkDynFieldFeature,
   mkLetFeature,
@@ -28,7 +29,6 @@ import Feature (
   mkPatternFeature,
   mkRegCnstrFeature,
   mkStringFeature,
-  rootValAddr,
  )
 import StringIndex (ShowWTIndexer (..), TextIndexerMonad)
 import Text.Printf (printf)
@@ -75,7 +75,7 @@ recurShowTermsRepOption = TermsRepOption{troptRecur = True}
 
 toTermsRepWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m TermsRep
 toTermsRepWithAddr addr a = do
-  let isRoot = addr == rootValAddr
+  let isRoot = addr == fileTopValAddr
   toTermsRep a (defaultTermsRepOption{troptRecur = isRoot})
 
 termsRepToJSONWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m Value
@@ -301,8 +301,9 @@ opToTermsRep op opt = do
       ra <- do
         sStr <- tshow ref.ident
         return $ T.unpack sStr
-      resolvedIdentAddrStr <- T.unpack <$> tshow ref.resolvedIdentAddr
-      return $ consTGenRep ([("ref", ra), ("resolved", resolvedIdentAddrStr)] ++ metas, fields)
+      diffStr <- T.unpack <$> tshow ref.resolvedIdentAddr
+      return $
+        consTGenRep ([("ref", ra), ("diff", diffStr), ("comprehIdx", show ref.resolvedComprehClauseIdx)] ++ metas, fields)
     Compreh _ -> do
       fields <- valPairsToTermRepList args opt
       return $ consTGenRep (metas, fields)

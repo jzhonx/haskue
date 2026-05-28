@@ -10,7 +10,8 @@ import Control.Monad.Reader.Class (asks)
 import Data.Aeson (ToJSON (..), toJSON)
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.Maybe (fromJust, isJust)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Sequence as Seq
 import Feature (
   ValAddr (..),
@@ -22,7 +23,10 @@ import Feature (
   mkObjectFeature,
   mkOpArgFeature,
   mkRegCnstrFeature,
+  mkStringFeature,
+  universalValAddr,
  )
+import Reduce.Builtin (builtinFuncMap)
 import Reduce.Comprehension (reduceCompreh)
 import Reduce.Disjunction (reduceDisj, resolveDisjOp)
 import Reduce.Monad (
@@ -35,7 +39,7 @@ import Reduce.Monad (
   throwFatal,
   treeDepthCheck,
  )
-import Reduce.Primitives (reduceList, resolveCloseFunc, resolveInterpolation)
+import Reduce.Primitives (reduceList, resolveInterpolation)
 import qualified Reduce.Primitives as Primitives
 import Reduce.Recalc (sendToRootRecalcQ)
 import Reduce.Reference (
@@ -43,6 +47,7 @@ import Reduce.Reference (
   deref,
   select,
  )
+import qualified Reduce.Stdlib.Strings as LibStrings
 import Reduce.Store (storeVal)
 import Reduce.Struct (
   reduceStruct,
@@ -350,14 +355,38 @@ mergeCnstrInfo c1 c2 =
     , refCycles = refCycles c1 ++ refCycles c2
     }
 
+funcFlatMap :: RM (Map.Map ValAddr ([Val] -> ValAddr -> RM Val))
+funcFlatMap = do
+  b <- builtinFuncMap
+  s <- LibStrings.funcMap
+  return $ Map.union b s
+
 reduceOp :: ValAddr -> Op -> RM (Val, Constraint)
 reduceOp addr op = case op of
   Compreh compreh -> do
     (r, cph') <- reduceCompreh addr compreh
     return (r, OpCnstr (Compreh cph'))
-  RegOp rop | ropOpType rop == CloseFunc -> do
-    r <- resolveCloseFunc (toList $ ropArgs rop) addr
-    return (r, OpCnstr op)
+  FCall fc -> do
+    fc' <- vtmapM (applyAddrFOnVN reduce) addr fc
+    case fnFrame fc' of
+      fnAddrVN Seq.:<| args -> case value fnAddrVN of
+        VFuncAddr funcAddr -> do
+          fm <- funcFlatMap
+          case Map.lookup funcAddr fm of
+            Just f -> do
+              let argVals = map value (toList args)
+              r <- f argVals addr
+              return (r, OpCnstr op)
+            Nothing -> do
+              funcAddrT <- tshow funcAddr
+              throwFatal $ printf "unknown function: %s" funcAddrT
+        VUnknown -> return (VUnknown, OpCnstr (FCall fc'))
+        _ ->
+          return
+            ( mkBottomVal $ printf "function call on non-function value: %s" (show $ value fnAddrVN)
+            , OpCnstr (FCall fc')
+            )
+      _ -> throwFatal "function call with empty frame"
   VSelect vs -> do
     let baseAddr = canonicalToAddr $ collapseToCanonical $ appendSeg addr (mkObjectFeature vs.bvID)
     -- The base of the vselect should be fully reduced so that we have full info about its sub fields.
@@ -372,14 +401,14 @@ reduceOp addr op = case op of
 reduceNoUnify :: ValAddr -> Op -> RM (Val, Constraint)
 reduceNoUnify addr op = case op of
   Ref ref -> do
-    let (_, isReady) = retrieveArgs rtrValue op
+    let (_, isReady) = retrieveArgs op
     if not isReady
       then return (VUnknown, OpCnstr op)
       else do
         dr <- deref addr ref
         handleRefRes dr addr ref
   VSelect slct -> do
-    let (_, isReady) = retrieveArgs rtrValue op
+    let (_, isReady) = retrieveArgs op
         valIsReady = isJust $ (rtrValue . value) slct.base
     if isReady && valIsReady
       then do
@@ -387,17 +416,17 @@ reduceNoUnify addr op = case op of
         return (tar, OpCnstr op)
       else return (VUnknown, OpCnstr op)
   RegOp rop -> do
-    let (as, _) = retrieveArgs rtrValue op
+    let (as, _) = retrieveArgs op
+        args = map (fromMaybe VUnknown) as
     r <-
       case ropOpType rop of
         InvalidOpType -> throwFatal "invalid op type"
-        UnaryOpType opType -> Primitives.resolveUnaryOp opType (head as)
+        UnaryOpType opType -> Primitives.resolveUnaryOp opType (head args)
         -- Operands of the binary operation can be incomplete.
-        BinOpType opType -> Primitives.resolveRegBinOp opType (head as) (as !! 1) addr
-        CloseFunc -> throwFatal "should not reach here"
+        BinOpType opType -> Primitives.resolveRegBinOp opType (head args) (args !! 1) addr
     return (r, OpCnstr op)
   Itp itp -> do
-    let (xs, isReady) = retrieveArgs rtrValue op
+    let (xs, isReady) = retrieveArgs op
     r <-
       if isReady
         then resolveInterpolation itp (fromJust $ sequence xs)
@@ -410,8 +439,17 @@ reduceNoUnify addr op = case op of
   _ -> throwFatal "reduceOp: unsupported mutable op"
 
 handleRefRes :: DerefResult -> ValAddr -> Reference -> RM (Val, Constraint)
-handleRefRes DerefResult{targetValue, targetAddr, isRefCycle} _ ref = do
-  let newRef = ref{resolvedFullAddr = targetAddr, isRefCycle}
+handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr = riAddr} _ ref = do
+  let
+    updatedRef :: Reference
+    updatedRef = ref{resolvedFullAddr = targetAddr, isRefCycle}
+    -- Update the resolvedIdentAddr if the ident is resolved to an absolute address.
+    newRef = case ref.resolvedIdentAddr of
+      ToTargetScopeDiff _
+        | Just resIdentAddr <- riAddr ->
+            updatedRef{Value.resolvedIdentAddr = ResolvedIdentFromTop resIdentAddr}
+      _ -> updatedRef
+
   case targetValue of
     Nothing -> return (VUnknown, OpCnstr (Ref newRef))
     Just result -> return (value result, OpCnstr (Ref newRef))
@@ -424,14 +462,16 @@ reduceVal addr v = do
     VDisj d -> reduceDisj addr d
     _ -> return v
 
-retrieveArgs :: (Val -> Maybe Val) -> Op -> ([Maybe Val], Bool)
-retrieveArgs rtr op =
+retrieveArgs :: Op -> ([Maybe Val], Bool)
+retrieveArgs op =
   let args =
         vtmapQ
           ( \_ vt -> do
               case vt of
                 -- The immediate children of the op node can only be VNode.
-                VTVNode v -> rtr (value v)
+                VTVNode v -> case value v of
+                  VUnknown -> Nothing
+                  other -> Just other
                 _ -> Nothing
           )
           emptyValAddr
@@ -440,3 +480,10 @@ retrieveArgs rtr op =
 
 signalReduced :: ValAddr -> RM ()
 signalReduced = sendToRootRecalcQ
+
+storeBuiltinsAndPackages :: RM ()
+storeBuiltinsAndPackages = do
+  builtins <- builtinValues
+  mapM_ (\(ti, v) -> storeVal (appendSeg universalValAddr (mkStringFeature ti)) (mkValVN v)) builtins
+  m <- funcFlatMap
+  mapM_ (\(addr, _) -> storeVal addr (mkValVN (VFuncAddr addr))) (Map.toList m)

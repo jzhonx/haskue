@@ -1,0 +1,8 @@
+-- pkg_strings_1 --
+import "strings"
+
+x: strings.Join(["a", "b", "c"], ".")
+
+-- exp --
+x: "a.b.c"
+

@@ -21,10 +21,13 @@ import {-# SOURCE #-} Reduce.Core (reduceConstraintsInCnstrs)
 import Reduce.Monad (
   RM,
   allocRMObjID,
+  comprehBindings,
+  getRMContext,
   throwFatal,
  )
-import Reduce.Store (storeVal)
+import Reduce.Store (lookupComprehBindingVal, withComprehBindings)
 import Reduce.TraceSpan (
+  debugInst,
   debugInstStr,
   emptySpanValue,
   traceSpanAdaptTM,
@@ -53,8 +56,8 @@ reduceCompreh addr cph = traceSpanAdaptTM "reduceCompreh" addr emptySpanValue (c
               [] -> return (VStruct emptyStruct, updatedCph)
               [x] -> return (x, updatedCph)
               _ -> do
-                r <- unifyVals (map (\x -> (addr, x)) vs) addr False
-                return (r, updatedCph)
+                res <- unifyVals (map (\x -> (addr, x)) vs) addr False
+                return (res, updatedCph)
 
 {- | Reduce the comprehension arguments and generate the resulted struct for each iteration.
 
@@ -96,31 +99,28 @@ The rules are:
   compreh_add/clause_seg/embed_seg/clause_seg.
 -}
 comprehend :: ValAddr -> Comprehension -> RM IterCtx
-comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
+comprehend comprehAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
  where
   comprhArg :: Int -> IterCtx -> RM IterCtx
   comprhArg i accIctx = do
     let
       args = accIctx.cphargs
       arg = fromJust $ args Seq.!? i
-      comprehStoreAddr = appendSeg topAddr (mkObjectFeature cph.cid)
-      clauseStoreAddr = appendSeg comprehStoreAddr (mkComprehClausesFeature i)
-      clauseCnstrAddr = appendSeg topAddr (mkRegCnstrFeature i)
+      clauseCnstrAddr = appendSeg comprehAddr (mkRegCnstrFeature i)
       traceMsg :: String -> String
       traceMsg title = printf "comoprhArg %s_clause_%d" title i
     case arg of
       ComprehArgTmpl v -> traceSpanTermsRepAnyTM "comprhArg template" clauseCnstrAddr v $ do
         r <- do
-          forked <- forkTemplate clauseStoreAddr v
-          resolved <- resolveIterValRefs accIctx.bindings clauseStoreAddr forked
+          forked <- forkTemplate v
+          resolved <- replaceIterValRefs clauseCnstrAddr forked
           reduceConstraintsInCnstrs clauseCnstrAddr resolved
         debugInstStr
           "comprehend"
           clauseCnstrAddr
           ( do
-              bindingsT <- tshowBindings accIctx.bindings
               rep <- vnToFullStringTermsRep r
-              msprintfS "comprehension tmpl arg: %s, bindings: %s" [packFmtA rep, packFmtA bindingsT]
+              msprintfS "comprehension tmpl arg: %s" [packFmtA rep]
           )
         return
           accIctx
@@ -135,11 +135,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
         case r of
           IsUnknown -> earlyStop i updatedIctx
           IsBottom _ -> return $ updatedIctx{res = Left $ value r}
-          _ -> do
-            let bindingAddr = appendSeg clauseStoreAddr (mkLetFeature letName)
-            -- For later clauses look up.
-            storeVal (canonicalToAddr . collapseToCanonical $ bindingAddr) r
-            comprhArg (i + 1) updatedIctx{bindings = Map.insert bindingAddr (value r) updatedIctx.bindings}
+          _ -> withComprehBindings [(letName, r)] $ comprhArg (i + 1) updatedIctx
       ComprehArgIf v -> traceSpanTermsRepAnyTM (traceMsg "if") clauseCnstrAddr v $ do
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgIf r) args}
@@ -150,7 +146,7 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
             Just (Bool True) -> comprhArg (i + 1) updatedIctx
             -- Do not go to next clause if the condition is false.
             Just (Bool False) -> return updatedIctx
-            _ -> comprhArg (i + 1) updatedIctx{res = Left $ mkBoundsVal $ printf "%s is not a boolean" (showValType $ value r)}
+            _ -> comprhArg (i + 1) updatedIctx{res = Left $ mkBottomVal $ printf "%s is not a boolean" (showValType $ value r)}
       ComprehArgFor k vM v -> traceSpanTermsRepAnyTM (traceMsg "for") clauseCnstrAddr v $ do
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgFor k vM r) args}
@@ -165,25 +161,13 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
                       then return acc
                       else do
                         label <- textIndexToBS labelIdx
-                        let bindAddr = canonicalToAddr . collapseToCanonical $ clauseStoreAddr
-                        case vM of
-                          Nothing -> storeVal (bindAddr `appendSeg` mkLetFeature k) (ssfValue field)
-                          Just x -> do
-                            storeVal (bindAddr `appendSeg` mkLetFeature k) (mkAtomVN (String label))
-                            storeVal (bindAddr `appendSeg` mkLetFeature x) (ssfValue field)
+                        let pairs = case vM of
+                              Nothing -> [(k, ssfValue field)]
+                              Just x -> [(k, mkAtomVN (String label)), (x, ssfValue field)]
 
-                        let newAcc = case vM of
-                              Nothing ->
-                                let fstIterVarAddr = appendSeg bindAddr (mkLetFeature k)
-                                 in acc{bindings = Map.insert fstIterVarAddr (value $ ssfValue field) acc.bindings}
-                              Just x ->
-                                let fstIterVarAddr = appendSeg bindAddr (mkLetFeature k)
-                                    sndIterVarAddr = appendSeg bindAddr (mkLetFeature x)
-                                    newBindings =
-                                      Map.insert fstIterVarAddr (VAtom (String label)) $
-                                        Map.insert sndIterVarAddr (value $ ssfValue field) acc.bindings
-                                 in acc{bindings = newBindings}
-                        traceSpanTermsRepAnyTM ("comoprhArg for iter") clauseCnstrAddr (value $ ssfValue field) $ comprhArg (i + 1) newAcc
+                        traceSpanTermsRepAnyTM "comoprhArg for iter" clauseCnstrAddr (value $ ssfValue field) $
+                          withComprehBindings pairs $
+                            comprhArg (i + 1) acc
                 )
                 updatedIctx
                 (Map.toList $ stcFields struct)
@@ -193,44 +177,32 @@ comprehend topAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
                     if acc.incomplete
                       then return acc
                       else do
-                        let bindAddr = canonicalToAddr . collapseToCanonical $ clauseStoreAddr
-                        case vM of
-                          Nothing -> storeVal (bindAddr `appendSeg` mkLetFeature k) element
-                          Just x -> do
-                            storeVal (bindAddr `appendSeg` mkLetFeature k) (mkAtomVN (Int idx))
-                            storeVal (bindAddr `appendSeg` mkLetFeature x) element
-
-                        let newAcc = case vM of
-                              Nothing ->
-                                let iterVarAddr = appendSeg bindAddr (mkLetFeature k)
-                                 in acc{bindings = Map.insert iterVarAddr (value element) acc.bindings}
-                              Just x ->
-                                let iterVarAddr1 = appendSeg bindAddr (mkLetFeature k)
-                                    iterVarAddr2 = appendSeg bindAddr (mkLetFeature x)
-                                    newBindings =
-                                      Map.insert iterVarAddr1 (VAtom (Int idx)) $
-                                        Map.insert iterVarAddr2 (value element) acc.bindings
-                                 in acc{bindings = newBindings}
-                        comprhArg (i + 1) newAcc
+                        let pairs =
+                              case vM of
+                                Nothing -> [(k, mkAtomVN (Int idx))]
+                                Just x -> [(k, mkAtomVN (Int idx)), (x, element)]
+                        traceSpanTermsRepAnyTM "comoprhArg for iter" clauseCnstrAddr element $
+                          withComprehBindings pairs $
+                            comprhArg (i + 1) acc
                 )
                 updatedIctx
                 (zip [0 ..] (toList store))
           | otherwise ->
               return $
                 updatedIctx
-                  { res = Left $ mkBoundsVal $ printf "%s is not iterable" (showValType $ value r)
+                  { res = Left $ mkBottomVal $ printf "%s is not iterable" (showValType $ value r)
                   }
 
   earlyStop i ictx = do
     debugInstStr
       "comprehend"
-      topAddr
+      comprehAddr
       (return $ printf "early stop at iteration %d because step %d has no value" ictx.iterCnt i)
     return ictx{incomplete = True}
 
 -- | Fork the struct template for the comprehension iteration.
-forkTemplate :: ValAddr -> VNode -> RM VNode
-forkTemplate _ v@VNode{constraints} = case v of
+forkTemplate :: VNode -> RM VNode
+forkTemplate v@VNode{constraints} = case v of
   -- Whether the struct is a sole constraint or a base constraint, it is the first constraint in the constraints
   -- sequence.
   StaticConstraints (ValCnstr (VStruct struct) Seq.:<| rest) -> do
@@ -242,33 +214,65 @@ forkTemplate _ v@VNode{constraints} = case v of
       mapConstraints (\c -> c{static = Seq.singleton $ StructEmbedCnstr (ValCnstr (VStruct newStruct) Seq.:<| rest)}) v
   _ -> throwFatal $ "forkTemplate can only be used with a struct template, but got " ++ show constraints
 
--- | Resolve the references that point to the iteration variable and replace them with the reduced value.
-resolveIterValRefs :: Map.Map ValAddr Val -> ValAddr -> VNode -> RM VNode
-resolveIterValRefs bindings tmplAddr tmplV =
-  do
-    let vt' =
-          posttravsVT
-            ( \_ x ->
-                case x of
-                  IsRef _ ref
-                    | let resIdentAddr = ref.resolvedIdentAddr
-                    , Just iterVar <- Map.lookup resIdentAddr bindings ->
-                        if null ref.selectors
-                          then VTVal iterVar
-                          else
-                            let newIndx =
-                                  -- FIXME: better logic
-                                  ValueSelect
-                                    { bvID = 0 -- It should not be referenced, as bindings have been reduced.
-                                    , iSelectors = ref.selectors
-                                    , base = mkValVN iterVar
-                                    }
-                             in VTOp (VSelect newIndx)
-                  _ -> x
+{- | Resolve the references that point to the iteration variable and replace them with the reduced value.
+
+Selectors might not be ready.
+-}
+replaceIterValRefs :: ValAddr -> VNode -> RM VNode
+replaceIterValRefs tmplAddr tmplV = do
+  bindings <- comprehBindings <$> getRMContext
+  debugInstStr
+    "replaceIterValRefs"
+    tmplAddr
+    ( do
+        let xs = toList bindings
+        xsT <-
+          mapM
+            ( mapM
+                ( \(k, v) -> do
+                    kT <- tshow k
+                    vT <- tshow v
+                    let
+                      s :: String
+                      s = printf "%s: %s" (T.unpack kT) (T.unpack vT)
+                    return s
+                )
             )
-            tmplAddr
-            (VTVNode tmplV)
-    return $ vtVNodeOr id tmplV vt'
+            xs
+        return $ show xsT
+    )
+  debugInstStr
+    "replaceIterValRefs"
+    tmplAddr
+    ( do
+        rep <- vnToFullStringTermsRep tmplV
+        msprintfS "tmpl before replacing refs: %s" [packFmtA rep]
+    )
+
+  let vt' =
+        posttravsVT
+          ( \_ x ->
+              case x of
+                IsRef _ ref
+                  | ref.resolvedIdentType == ITIterBinding
+                  , Just cIdx <- ref.resolvedComprehClauseIdx
+                  , Just vn <- lookupComprehBindingVal cIdx ref.ident bindings ->
+                      if null ref.selectors
+                        then VTVal (value vn)
+                        else
+                          let newIndx =
+                                -- FIXME: better logic
+                                ValueSelect
+                                  { bvID = 0 -- It should not be referenced, as bindings have been reduced.
+                                  , iSelectors = ref.selectors
+                                  , base = vn
+                                  }
+                           in VTOp (VSelect newIndx)
+                _ -> x
+          )
+          tmplAddr
+          (VTVNode tmplV)
+  return $ vtVNodeOr id tmplV vt'
 
 mkUniqueStruct :: Struct -> RM Struct
 mkUniqueStruct struct = do
@@ -311,7 +315,6 @@ data IterCtx = IterCtx
   -- ^ The count of the iterations.
   , incomplete :: Bool
   , cphargs :: Seq.Seq ComprehArg
-  , bindings :: Map.Map ValAddr Val
   , res :: Either Val [Val]
   -- ^ It contains a list of reversed resulted structs that are generated by each iteration.
   }
@@ -336,7 +339,7 @@ instance ToJSONWTIndexer IterCtx where
         ]
 
 emptyIterCtx :: IterCtx
-emptyIterCtx = IterCtx{iterCnt = 0, res = Right [], incomplete = False, bindings = Map.empty, cphargs = Seq.empty}
+emptyIterCtx = IterCtx{iterCnt = 0, res = Right [], incomplete = False, cphargs = Seq.empty}
 
 tshowBindings :: Map.Map ValAddr Val -> RM T.Text
 tshowBindings binds = do

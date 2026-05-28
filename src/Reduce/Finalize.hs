@@ -99,4 +99,4 @@ validateCnstr addr v = traceSpanTermsRepTM "validateCnstr" addr v $ do
     | IsEmbedVal ev <- (value rv), Just a <- rtrAtom ev -> return $ mkAtomVN a
     | otherwise -> do
         rvnStr <- tshow rv
-        return $ mkBottomVal $ printf "constraint not satisfied, %s" rvnStr
+        return $ mkBottomVN $ printf "constraint not satisfied, %s" rvnStr

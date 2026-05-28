@@ -53,13 +53,13 @@ recalc = do
   q <- rootRecalcQ <$> getRMContext
   debugInstStr
     "recalc"
-    rootValAddr
+    fileTopValAddr
     ( do
         qT <- tshow (toList q)
         return $ printf "starting queue: %s" qT
     )
 
-  traceSpanTM "recalc" rootValAddr emptySpanValue drainQ
+  traceSpanTM "recalc" fileTopValAddr emptySpanValue drainQ
 
 sendToRootRecalcQ :: ValAddr -> RM ()
 sendToRootRecalcQ addr = do
@@ -109,7 +109,7 @@ drainQ = do
   itemM <- popRootRecalcQ
   stop <- traceSpanArgsTM
     "drainQ"
-    rootValAddr
+    fileTopValAddr
     emptySpanValue
     ( do
         restQ <- rootRecalcQ <$> getRMContext
@@ -131,7 +131,7 @@ drainQ = do
           rsQT <- tshow (toList next.bfsQ)
           debugInstStr
             "drainQ"
-            rootValAddr
+            fileTopValAddr
             (msprintfS "new popped item: %s, bfsQ: %s" [packFmtA item, packFmtA rsQT])
           runBFS next
         return False
@@ -183,7 +183,7 @@ runBFS state = case state.bfsQ of
     when (updated' /= cur) $ do
       debugInstStr
         "runBFS"
-        rootValAddr
+        fileTopValAddr
         ( do
             curT <- tshow cur
             updated'T <- tshow updated'
@@ -199,7 +199,7 @@ Neighbors are dependents of the current GrpAddr and all of its ancestors.
 findNeighbors :: GrpAddr -> Seq.Seq GrpAddr -> RM BFSState
 findNeighbors cur restBFSQ = traceSpanAdaptTM
   "findNeighbors"
-  rootValAddr
+  fileTopValAddr
   emptySpanValue
   ( \a -> do
       nextQ <- mapM tshow (toList a.bfsQ)
@@ -224,7 +224,7 @@ findNeighbors cur restBFSQ = traceSpanAdaptTM
 
     debugInstStr
       "findNeighbors"
-      rootValAddr
+      fileTopValAddr
       ( do
           curT <- tshow cur
           depsT <- mapM tshow deps
@@ -255,7 +255,7 @@ checkIfDirty depAddr useCanAddr = do
   lastDerefed <- queryLastDerefedVal useCanAddr depAddr
   debugInstStr
     "checkIfDirty"
-    rootValAddr
+    fileTopValAddr
     ( do
         siaddrT <- tshow useCanAddr
         depAddrT <- tshow depAddr
@@ -318,7 +318,7 @@ recalcGroup sccAddr = do
 
   traceSpanArgsTM
     "recalcCyclic"
-    rootValAddr
+    fileTopValAddr
     emptySpanValue
     ( do
         compAddrStrs <- mapM tshow compAddrs
@@ -334,7 +334,7 @@ recalcGroup sccAddr = do
               v <- fetchValMust "recalcGroup" (vertexToAddr siAddr)
               debugInstStr
                 "recalcCyclic"
-                rootValAddr
+                fileTopValAddr
                 (msprintfS "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
               return (Map.insert siAddr v accStore)
           )
@@ -430,7 +430,7 @@ And because it is either a struct or a list.
 -}
 getAncGrpFromAddr :: VertexAddr -> Maybe GrpAddr
 getAncGrpFromAddr raddr
-  | rootValAddr == vertexToAddr raddr = Nothing
+  | fileTopValAddr == vertexToAddr raddr = Nothing
   | otherwise = do
       let parentAddr =
             topReducerToVertexAddr $

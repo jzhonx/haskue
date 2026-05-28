@@ -3,9 +3,7 @@
 
 module Syntax.Parser where
 
-import Control.Monad (void)
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.Text as T
+import Control.Monad (void, when)
 import Syntax.AST
 import qualified Syntax.AST as AST
 import Syntax.Token
@@ -53,7 +51,37 @@ parseSourceFile tks = case runParser sourceFile 0 "" tks of
   Right res -> return res
 
 sourceFile :: Parser SourceFile
-sourceFile = SourceFile <$> decls
+sourceFile = do
+  imps <- importDecls
+  decls' <- decls
+  eof
+  return $ SourceFile imps decls'
+
+importDecls :: Parser [ImportSpec]
+importDecls = do
+  xs <- many importDecl
+  return $ concat xs
+
+importDecl :: Parser [ImportSpec]
+importDecl = do
+  _ <- accept Import <?> "failed to parse import keyword"
+  specs <-
+    ( do
+        _ <- lparen
+        specs' <- manyEndByComma importSpec rparen ")"
+        _ <- rparen
+        return specs'
+      )
+      <|> (: [])
+      <$> importSpec
+  when (length specs > 0) $ void comma
+  return specs
+
+importSpec :: Parser ImportSpec
+importSpec = do
+  pkgNameM <- optionMaybe $ try identifier
+  path <- accept Token.String <?> "failed to parse import path string"
+  return $ ImportSpec pkgNameM path
 
 expr :: Parser Expression
 expr = prec1
@@ -104,7 +132,7 @@ unaryOp =
     <|> accept Multiply
 
 primaryExpr :: Parser PrimaryExpr
-primaryExpr = chainPrimExpr primOperand (selector <|> index <|> arguments)
+primaryExpr = chainPrimExpr primOperand (selector <|> indexOrSlice <|> arguments)
  where
   primOperand :: Parser PrimaryExpr
   primOperand = PrimExprOperand <$> operand
@@ -117,12 +145,22 @@ primaryExpr = chainPrimExpr primOperand (selector <|> index <|> arguments)
         <|> (StringSelector <$> simpleStringLit)
     return $ \p -> PrimExprSelector p l.tkLoc sel
 
-  index :: Parser (PrimaryExpr -> PrimaryExpr)
-  index = do
+  indexOrSlice :: Parser (PrimaryExpr -> PrimaryExpr)
+  indexOrSlice = do
     l <- lsquare
-    sel <- expr
-    r <- rsquare
-    return $ \p -> PrimExprIndex p l.tkLoc sel r.tkLoc
+    try
+      ( do
+          sel <- expr
+          r <- rsquare
+          return $ \p -> PrimExprIndex p l.tkLoc sel r.tkLoc
+      )
+      <|> ( do
+              startM <- optionMaybe expr
+              c <- colon
+              endM <- optionMaybe expr
+              r <- rsquare
+              return $ \p -> PrimExprSlice p l.tkLoc startM c.tkLoc endM r.tkLoc
+          )
 
   arguments :: Parser (PrimaryExpr -> PrimaryExpr)
   arguments = do
@@ -466,6 +504,9 @@ dot = accept Dot <?> "failed to parse ."
 
 colon :: Parser Token
 colon = accept Colon <?> "failed to parse :"
+
+eof :: Parser ()
+eof = void (accept EOF <?> "failed to parse end of file")
 
 ptrace :: String -> Parser ()
 ptrace s = do
