@@ -1,32 +1,24 @@
-# Haskue
+# Haskue ![WIP](https://img.shields.io/badge/status-WIP-yellow)
 
-Haskue is a Haskell implementation of the [CUE](https://cuelang.org/) configuration language.
+A Haskell implementation of the [CUE](https://cuelang.org/) configuration language. Work in progress — parses, evaluates, and exports a useful subset of CUE, but is not yet spec-compliant.
 
-## WIP status
+## CLI Usage
 
-This project is still in the work-in-progress stage.
+```
+haskue export <file> [--out cue|json|yaml] [--debug] [--trace]
+haskue eval   <file>
+haskue show-trace <trace-file>
+```
 
-## Features
+```sh
+haskue eval config.cue
+haskue export config.cue --out json
+```
 
-Here is a list of features that are either implemented or planned to be implemented.
+## Not Yet Implemented
 
-- [x] Parsing expressions.
-- [ ] Evaluating literals.
-    - [x] atoms
-    - [x] strings
-    - [x] lists
-    - [x] disjunctions
-    - [x] bounds
-    - [ ] structs
-- [ ] Evaluating operators.
-    - [x] unary
-    - [x] binary
-    - [x] selector
-    - [x] index
-    - [x] unification
-    - [x] disjunction
-    - [x] references
-    - [ ] comprehensions
-    - [ ] builtin functions
-- [ ] Package system
-- [ ] Standard library
+- Package/module system (basic import parsing exists, but loading and resolution are not)
+- Standard library (only `strings.Join` is available)
+- Built-in functions (only `close` and `slice` variants are implemented)
+- Default values in ellipsis (`...<value>`)
+- Definitions (`#foo`) and hidden fields (`_foo`) as first-class features
