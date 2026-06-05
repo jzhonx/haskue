@@ -76,7 +76,7 @@ transExprToVal e addr = do
 
 data TrDataE = TrDataE
   { trData :: TrData
-  , trExpr :: Maybe Expression
+  , trLoc :: Location
   }
   deriving (Show)
 
@@ -87,17 +87,17 @@ data TrData
   | TrCnstrs ConstraintSeq
   deriving (Show)
 
-mkEmptyExprTrDataE :: TrData -> TrDataE
-mkEmptyExprTrDataE d = TrDataE{trData = d, trExpr = Nothing}
+exprTrDataE :: Location -> TrData -> TrDataE
+exprTrDataE loc d = TrDataE{trData = d, trLoc = loc}
 
 trDataEToVNode :: TrDataE -> VNode
 trDataEToVNode d =
   let v = case trData d of
-        TrValue x -> mkValCnstrVN x
-        TrOp op -> mkOpVN op
+        TrValue x -> mkValCnstrVN d.trLoc x
+        TrOp op -> mkOpVN d.trLoc op
         TrCnstrs cs -> emptyVNode{constraints = emptyConstraintsSet{static = cs}}
         TrStructEmbed cs -> emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (StructEmbedCnstr cs)}}
-   in v{origExpr = trExpr d}
+   in v
 
 trDataEToCnstrsSeq :: TrDataE -> ConstraintSeq
 trDataEToCnstrsSeq d = case trDataEToCnstr d of
@@ -108,8 +108,8 @@ trDataEToCnstrsSeq d = case trDataEToCnstr d of
 
 trDataEToCnstr :: TrDataE -> Maybe Constraint
 trDataEToCnstr d = case trData d of
-  TrValue n -> Just $ ValCnstr n
-  TrOp o -> Just $ OpCnstr o
+  TrValue n -> Just $ ValCnstr (ValConstraint{vcLoc = d.trLoc, vcVal = n})
+  TrOp o -> Just $ OpCnstr (OpConstraint{ocLoc = d.trLoc, ocOp = o})
   TrStructEmbed cs -> Just (StructEmbedCnstr cs)
   TrCnstrs _ -> Nothing
 
@@ -126,38 +126,38 @@ transExpr e addr = do
   r <- case e of
     (Unary ue) -> transUnaryExpr ue addr
     (Binary op e1 e2) -> transBinary op.tkType e1 e2 addr
-  return r{trExpr = Just e}
+  return r{trLoc = getNodeLoc e}
 
 transLiteral :: Literal -> ValAddr -> TM TrDataE
 transLiteral (LitStruct s) addr = transStructLit s addr
-transLiteral (LitList (ListLit _ l _)) addr = transListLit l addr
-transLiteral (LitBasic a) addr
+transLiteral (LitList (ListLit loc l _)) addr = transListLit loc l addr
+transLiteral literal@(LitBasic a) addr
   | (StringLit (SimpleStringL (SimpleStringLit _ segs))) <- a = segsToStrAtom segs
   | (StringLit (MultiLineStringL (MultiLineStringLit _ segs))) <- a = segsToStrAtom segs
  where
   segsToStrAtom segs = do
     rE <- strLitSegsToStr segs addr
     return $ case rE of
-      Left op -> mkEmptyExprTrDataE (TrOp op)
-      Right str -> mkAtomTrDataE $ String str
+      Left op -> exprTrDataE (getNodeLoc literal) (TrOp op)
+      Right str -> mkAtomTrDataE (getNodeLoc literal) $ String str
 transLiteral (LitBasic a) _ = case a of
   IntLit i -> do
     let v = read (BC.unpack (tkLiteral i)) :: Integer
-    return $ mkAtomTrDataE $ Int v
+    return $ mkAtomTrDataE (getNodeLoc a) $ Int v
   FloatLit f -> do
     let v = read (BC.unpack (tkLiteral f)) :: Double
-    return $ mkAtomTrDataE $ Float v
+    return $ mkAtomTrDataE (getNodeLoc a) $ Float v
   BoolLit b -> do
     v <- case BC.unpack (tkLiteral b) of
       "true" -> return True
       "false" -> return False
       _ -> throwFatal $ printf "invalid boolean literal: %s" (show b)
-    return $ mkAtomTrDataE $ Bool v
-  NullLit _ -> return $ mkAtomTrDataE Null
-  BottomLit _ -> return $ mkEmptyExprTrDataE (TrValue $ VBottom $ Bottom "")
+    return $ mkAtomTrDataE (getNodeLoc a) $ Bool v
+  NullLit _ -> return $ mkAtomTrDataE (getNodeLoc a) Null
+  BottomLit _ -> return $ exprTrDataE (getNodeLoc a) (TrValue $ VBottom $ Bottom "")
 
-mkAtomTrDataE :: Atom -> TrDataE
-mkAtomTrDataE a = mkEmptyExprTrDataE (TrValue $ VAtom a)
+mkAtomTrDataE :: Location -> Atom -> TrDataE
+mkAtomTrDataE l a = exprTrDataE l (TrValue $ VAtom a)
 
 data DeclWithEmbedIndex
   = RegDecl Declaration
@@ -165,7 +165,7 @@ data DeclWithEmbedIndex
     EmbedDecl Int Embedding
 
 transStructLit :: StructLit -> ValAddr -> TM TrDataE
-transStructLit (StructLit _ decls _) addr = inStructScope decls addr $ do
+transStructLit literal@(StructLit _ decls _) addr = inStructScope decls addr $ do
   sid <- getEnvID
   let (revRes, embedCnt) =
         foldl
@@ -185,10 +185,14 @@ transStructLit (StructLit _ decls _) addr = inStructScope decls addr $ do
   let embeds = [tr | EmbedSAdder tr <- elems]
       embedCnstrs = foldl (\acc tr -> acc Seq.>< trDataEToCnstrsSeq tr) Seq.empty embeds
   if not (null embedCnstrs)
-    then do
-      -- trace (printf "struct with embeds, id: %d, embed constraints: %s" sid (show embedCnstrs)) (return ())
-      return $ mkEmptyExprTrDataE (TrStructEmbed (ValCnstr (VStruct struct) Seq.<| embedCnstrs))
-    else return $ mkEmptyExprTrDataE $ TrValue (VStruct struct)
+    then
+      do
+        return
+        $ exprTrDataE
+          (getNodeLoc literal)
+        $ TrStructEmbed
+          (ValCnstr (ValConstraint{vcVal = VStruct struct, vcLoc = getNodeLoc literal}) Seq.<| embedCnstrs)
+    else return $ exprTrDataE (getNodeLoc literal) $ TrValue (VStruct struct)
 
 strLitSegsToStr :: [StringLitSeg] -> ValAddr -> TM (Either Op BC.ByteString)
 strLitSegsToStr segs addr = do
@@ -198,7 +202,7 @@ strLitSegsToStr segs addr = do
       ( \(accCurStrM, accItpSegs, accItpExprs) seg -> case seg of
           UnicodeChars x ->
             return (Just x, accItpSegs, accItpExprs)
-          AST.Interpolation _ e -> do
+          InterpolationExpr _ e -> do
             t <- transExpr e (addr `appendSeg` mkOpArgFeature (length accItpExprs))
             -- First append the current string segment to the accumulator if the current string segment exists, then
             -- append the interpolation segment. Finally reset the current string segment to Nothing.
@@ -250,7 +254,7 @@ transEmbedding :: Bool -> Embedding -> ValAddr -> TM TrDataE
 transEmbedding _ (EmbeddingAlias (AliasExpr _ e)) addr = transExpr e addr
 transEmbedding
   isListCompreh
-  (EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit))
+  compreh@(EmbedComprehension (AST.Comprehension (Clauses (GuardClause _ ge) cls) lit))
   addr = do
     cid <- allocObjID
     args <-
@@ -258,14 +262,15 @@ transEmbedding
     gev <- transExpr ge (addr `appendSeg` mkRegCnstrFeature 0)
     let vs = ComprehArgIf (trDataEToVNode gev) : args
     sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
-    return $
-      mkEmptyExprTrDataE $
-        TrOp $
-          Compreh $
-            mkComprehension cid isListCompreh vs (trDataEToVNode sv)
+    return
+      $ exprTrDataE
+        (getNodeLoc compreh)
+      $ TrOp
+      $ Compreh
+      $ mkComprehension cid isListCompreh vs (trDataEToVNode sv)
 transEmbedding
   isListCompreh
-  (EmbedComprehension (AST.Comprehension (Clauses (ForClause _ i jM fe) cls) lit))
+  compreh@(EmbedComprehension (AST.Comprehension (Clauses (ForClause _ i jM fe) cls) lit))
   addr = do
     iIdx <- identTokenToTextIndex i
     jIdxM <- case jM of
@@ -281,7 +286,12 @@ transEmbedding
       fev <- transExpr fe forClsAddr
       let vs = ComprehArgFor iIdx jIdxM (trDataEToVNode fev) : args
       sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
-      return $ mkEmptyExprTrDataE $ TrOp $ Compreh $ mkComprehension cid isListCompreh vs (trDataEToVNode sv)
+      return
+        $ exprTrDataE
+          (getNodeLoc compreh)
+        $ TrOp
+        $ Compreh
+        $ mkComprehension cid isListCompreh vs (trDataEToVNode sv)
 
 transClause :: Clause -> ValAddr -> TM ComprehArg
 transClause c clAddr = case c of
@@ -314,7 +324,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       sf2 <- transFDeclLabels (l2 : rs) ae fAddr
       sid <- allocObjID
       let struct = insertElemToStruct sf2 (emptyStruct{stcID = sid})
-      return $ mkEmptyExprTrDataE $ TrValue (VStruct struct)
+      return $ exprTrDataE (getNodeLoc l2) $ TrValue (VStruct struct)
  where
   mkAdderWithValGen :: Label -> (ValAddr -> TM TrDataE) -> TM StructElemAdder
   mkAdderWithValGen (Label le) vgen = case le of
@@ -349,7 +359,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
                   ( DynamicField
                       { dsfID = oid
                       , dsfAttr = attr
-                      , dsfLabel = mkOpVN t
+                      , dsfLabel = mkOpVN (getNodeLoc le) t
                       , dsfLabelIsInterp = True
                       , dsfValue = val
                       }
@@ -437,9 +447,9 @@ insertElemToStruct adder struct = case adder of
   (LetSAdder name val) -> insertStructLet name val struct
   _ -> struct
 
-transListLit :: ElementList -> ValAddr -> TM TrDataE
-transListLit (EllipsisList _) _ = return $ mkEmptyExprTrDataE $ TrValue $ VList $ mkList [] []
-transListLit (EmbeddingList es _) addr = do
+transListLit :: Location -> ElementList -> ValAddr -> TM TrDataE
+transListLit loc (EllipsisList _) _ = return $ exprTrDataE loc $ TrValue $ VList $ mkList []
+transListLit loc (EmbeddingList es _) addr = do
   xs <-
     mapM
       ( \(i, e) ->
@@ -450,12 +460,12 @@ transListLit (EmbeddingList es _) addr = do
               (addr `appendValAddr` addrFromList [mkListStoreIdxFeature i, mkRegCnstrFeature 0])
       )
       (zip [0 ..] es)
-  return $ mkEmptyExprTrDataE $ TrValue $ VList $ mkList xs []
+  return $ exprTrDataE loc $ TrValue $ VList $ mkList xs
 
 transUnaryExpr :: UnaryExpr -> ValAddr -> TM TrDataE
 transUnaryExpr ue addr = case ue of
   Primary primExpr -> transPrimExpr primExpr addr
-  UnaryOp op e -> transUnaryOp op.tkType e addr
+  UnaryOp op e -> transUnaryOp op e addr
 
 transPrimExpr :: PrimaryExpr -> ValAddr -> TM TrDataE
 transPrimExpr e addr = case e of
@@ -467,21 +477,23 @@ transPrimExpr e addr = case e of
         lookupIdentInScopes idIdx ident.tkLoc
       case identType of
         ITIterBinding ->
-          return $
-            mkEmptyExprTrDataE $
-              TrOp $
-                Ref $
-                  comprehensionIdentRef idIdx identFeat (clausesDepth - 1) resolvedIdentAddr
+          return
+            $ exprTrDataE
+              (getNodeLoc e)
+            $ TrOp
+            $ Ref
+            $ comprehensionIdentRef idIdx identFeat (clausesDepth - 1) resolvedIdentAddr
         _ ->
-          return $
-            mkEmptyExprTrDataE $
-              TrOp $
-                Ref $
-                  singletonIdentRef
-                    (getTextIndexFromFeature identFeat)
-                    identFeat
-                    identType
-                    resolvedIdentAddr
+          return
+            $ exprTrDataE
+              (getNodeLoc e)
+            $ TrOp
+            $ Ref
+            $ singletonIdentRef
+              (getTextIndexFromFeature identFeat)
+              identFeat
+              identType
+              resolvedIdentAddr
     OpExpression _ expr _ -> transExpr expr addr
   (PrimExprSelector primExpr _ sel) -> transSelector primExpr sel addr
   (PrimExprIndex primExpr _ idx _) -> transIndex primExpr idx addr
@@ -490,37 +502,38 @@ transPrimExpr e addr = case e of
     let genArgs argEs = do
           sliceIdxes <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature (i + 1))) (zip [0 ..] argEs)
           return $ opd : sliceIdxes
+        loc = getNodeLoc e
     case (startM, endM) of
       (Nothing, Nothing) -> return opd
       (Just start, Nothing) -> do
         args <- genArgs [start]
-        mkSliceFunc "sliceLeft" args
+        mkSliceFunc "sliceLeft" loc args
       (Nothing, Just end) -> do
         args <- genArgs [end]
-        mkSliceFunc "sliceRight" args
+        mkSliceFunc "sliceRight" loc args
       (Just start, Just end) -> do
         args <- genArgs [start, end]
-        mkSliceFunc "slice" args
+        mkSliceFunc "slice" loc args
   (PrimExprArguments primExpr _ aes _) -> do
     p <- transPrimExpr primExpr (addr `appendSeg` mkOpArgFeature 0)
     args <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature i)) (zip [1 ..] aes)
     return $
-      TrDataE
+      exprTrDataE
+        (getNodeLoc e)
         ( TrOp $
             FCall $
               FuncCall
                 { fnFrame = Seq.fromList (trDataEToVNode p : map trDataEToVNode args)
                 }
         )
-        Nothing
 
 -- | Creates a new function tree for the original function with the arguments applied.
-mkSliceFunc :: String -> [TrDataE] -> TM TrDataE
-mkSliceFunc sliceFName args = do
+mkSliceFunc :: String -> Location -> [TrDataE] -> TM TrDataE
+mkSliceFunc sliceFName loc args = do
   ti <- strToTextIndex sliceFName
   let funcAddr = appendSeg universalValAddr (mkStringFeature ti)
   return $
-    mkEmptyExprTrDataE $
+    exprTrDataE loc $
       TrOp $
         FCall $
           FuncCall{fnFrame = mkValVN (VFuncAddr funcAddr) Seq.<| Seq.fromList (map trDataEToVNode args)}
@@ -538,8 +551,8 @@ transSelector :: PrimaryExpr -> Syntax.AST.Selector -> ValAddr -> TM TrDataE
 transSelector pe astSel addr = do
   (oprdAddr, oid) <- getPrimaryExprValAddr pe addr
   oprnd <- transPrimExpr pe oprdAddr
-  (selAddr, selVGen) <- getSelCons addr oprnd
-  let f sel = selVGen oid (mkAtomTrDataE (String sel))
+  (selAddr, selVGen) <- getSelCons addr (oprnd, False)
+  let f sel = selVGen oid (mkAtomTrDataE (getNodeLoc pe) (String sel))
   case astSel of
     IDSelector ident -> return $ f (tkLiteral ident)
     StringSelector (SimpleStringLit _ segs) -> do
@@ -561,23 +574,23 @@ transIndex :: PrimaryExpr -> Expression -> ValAddr -> TM TrDataE
 transIndex pe e addr = do
   (oprdAddr, oid) <- getPrimaryExprValAddr pe addr
   oprnd <- transPrimExpr pe oprdAddr
-  (selAddr, selVGen) <- getSelCons addr oprnd
+  (selAddr, selVGen) <- getSelCons addr (oprnd, True)
   sel <- transExpr e selAddr
   return $ selVGen oid sel
 
-getSelCons :: ValAddr -> TrDataE -> TM (ValAddr, Int -> TrDataE -> TrDataE)
-getSelCons addr oprnd = case trData oprnd of
+getSelCons :: ValAddr -> (TrDataE, Bool) -> TM (ValAddr, Int -> TrDataE -> TrDataE)
+getSelCons addr (oprnd, isIndex) = case trData oprnd of
   TrOp (Ref ref) -> do
     let n = length ref.selectors
     return
       ( appendSeg addr (mkOpArgFeature n)
-      , \_ sel -> oprnd{trData = TrOp (Ref $ appendRefArg (trDataEToVNode sel) ref)}
+      , \_ sel -> oprnd{trData = TrOp (Ref $ appendRefArg (trDataEToVNode sel) isIndex ref)}
       )
-  TrOp (VSelect index@(ValueSelect _ _ indexes)) -> do
-    let n = length indexes
+  TrOp (VSelect vs) -> do
+    let n = length vs.iSelectors
     return
       ( appendSeg addr (mkOpArgFeature n)
-      , \_ sel -> oprnd{trData = TrOp (VSelect $ appendValueSelectArg (trDataEToVNode sel) index)}
+      , \_ sel -> oprnd{trData = TrOp (VSelect $ appendValueSelectArg (trDataEToVNode sel) isIndex vs)}
       )
   _ -> do
     let selAddr = appendSeg addr (mkOpArgFeature 0)
@@ -592,15 +605,16 @@ getSelCons addr oprnd = case trData oprnd of
                       { bvID = i
                       , base = trDataEToVNode oprnd
                       , iSelectors = Seq.fromList [trDataEToVNode sel]
+                      , iSelectorTypes = Seq.singleton isIndex
                       }
             }
       )
 
 -- | Evaluates the unary operator.
-transUnaryOp :: TokenType -> UnaryExpr -> ValAddr -> TM TrDataE
+transUnaryOp :: Token -> UnaryExpr -> ValAddr -> TM TrDataE
 transUnaryOp op e addr = do
   r <- transUnaryExpr e (addr `appendSeg` mkOpArgFeature 0)
-  return $ mkEmptyExprTrDataE $ TrOp $ mkUnaryOp op (trDataEToVNode r)
+  return $ exprTrDataE op.tkLoc $ TrOp $ mkUnaryOp op.tkType (trDataEToVNode r)
 
 {- | order of arguments is important for disjunctions.
 
@@ -622,11 +636,11 @@ transBinary Unify e1 e2 addr = do
             Nothing -> throwFatal "unexpected constraints"
       )
       (zip [0 ..] exprs)
-  return $ mkEmptyExprTrDataE $ TrCnstrs $ Seq.fromList res
+  return $ exprTrDataE (getNodeLoc e1) $ TrCnstrs $ Seq.fromList res
 transBinary op e1 e2 addr = do
   lv <- trDataEToVNode <$> transExpr e1 (appendSeg addr (mkOpArgFeature 0))
   rv <- trDataEToVNode <$> transExpr e2 (appendSeg addr (mkOpArgFeature 1))
-  return $ mkEmptyExprTrDataE $ TrOp (mkBinaryOp op lv rv)
+  return $ exprTrDataE (getNodeLoc e1) $ TrOp (mkBinaryOp op lv rv)
 
 flattenUnify :: Expression -> DList.DList Expression -> DList.DList Expression
 flattenUnify e acc = case e of
@@ -655,7 +669,7 @@ transDisj e1 e2 addr = do
       terms = DList.toList $ flattenDisj e2 acc1
 
   res <- mapM (\(i, e) -> parseTerm e (addr `appendSeg` mkOpArgFeature i)) (zip [0 ..] terms)
-  return $ mkEmptyExprTrDataE $ TrOp $ mkDisjoinOpFromList res
+  return $ exprTrDataE (getNodeLoc e1) $ TrOp $ mkDisjoinOpFromList res
 
 {- | Flattens the disjunction expression into a list of terms.
 

@@ -5,15 +5,13 @@
 module Value.Struct where
 
 import Control.DeepSeq (NFData (..))
-import Control.Monad (foldM)
-import qualified Data.ByteString.Char8 as BC
 import qualified Data.DList as DList
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import GHC.Generics (Generic)
-import StringIndex (ShowWTIndexer (..), TextIndex, TextIndexerMonad, textIndexToBS)
+import StringIndex (ShowWTIndexer (..), TextIndex)
 import Text.Printf (printf)
 import Value.Bottom (Bottom)
 import {-# SOURCE #-} Value.Val
@@ -30,7 +28,6 @@ data Struct = Struct
   , stcDynFields :: IntMap.IntMap DynamicField
   , stcCnstrs :: IntMap.IntMap StructCnstr
   , stcOrdLabels :: DList.DList StructFieldLabel
-  , stcIsConcrete :: !Bool
   , stcEmbedVal :: Maybe Val
   , stcPermErr :: Maybe Bottom
   , stcPerms :: [PermItem]
@@ -169,7 +166,6 @@ emptyStruct =
     , stcCnstrs = IntMap.empty
     , stcClosed = False
     , stcOrdLabels = DList.empty
-    , stcIsConcrete = False
     , stcEmbedVal = Nothing
     , stcPermErr = Nothing
     , stcPerms = []
@@ -262,35 +258,6 @@ mapStructDynFieldByID oid f struct =
           oid
           (stcDynFields struct)
     }
-
-{- | Build the ordered list of labels in the struct.
-
-If not all dynamic field labels can be resolved to strings, return Nothing.
--}
-buildStructOrdLabels :: (TextIndexerMonad s m) => (VNode -> Maybe BC.ByteString) -> Struct -> m (Maybe [BC.ByteString])
-buildStructOrdLabels rtrString struct = do
-  r <-
-    foldM
-      ( \acc blkLabel -> case acc of
-          Nothing -> return Nothing
-          Just (revAcc, seen) -> do
-            newLabelM <- case blkLabel of
-              StructStaticFieldLabel n -> Just <$> textIndexToBS n
-              StructDynFieldOID i -> return $ do
-                dsf <- lookupStructDynField i struct
-                rtrString (dsfLabel dsf)
-            case newLabelM of
-              Nothing -> return Nothing
-              Just newLabel ->
-                return $
-                  Just
-                    if Set.member newLabel seen
-                      then (revAcc, seen)
-                      else (newLabel : revAcc, Set.insert newLabel seen)
-      )
-      (Just ([], Set.empty))
-      (stcOrdLabels struct)
-  return $ reverse . fst <$> r
 
 {- | Update the stub static field that has already existed with the given name.
 

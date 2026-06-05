@@ -102,7 +102,20 @@ expr = prec1
   prec6 = binOp prec7 (precedence (accept Plus <|> accept Minus))
 
   prec5 :: Parser Expression
-  prec5 = binOp prec6 (precedence (accept Equal <|> accept NotEqual))
+  prec5 =
+    binOp
+      prec6
+      ( precedence
+          ( accept Equal
+              <|> accept NotEqual
+              <|> accept Less
+              <|> accept LessEqual
+              <|> accept Greater
+              <|> accept GreaterEqual
+              <|> accept Match
+              <|> accept NotMatch
+          )
+      )
 
   prec2 :: Parser Expression
   prec2 = binOp prec5 (precedence (accept Unify))
@@ -442,11 +455,11 @@ interpolation :: Parser (Token, [StringLitSeg])
 interpolation = do
   startST <- accept Token.Interpolation <?> "failed to parse string interpolation"
   startE <- expr
-  let segs = [AST.UnicodeChars (tkLiteral startST), AST.Interpolation startST.tkLoc startE]
+  let segs = [AST.UnicodeChars (tkLiteral startST), InterpolationExpr startST.tkLoc startE]
   rest <- many $ do
     st <- accept Token.Interpolation <?> "failed to parse string interpolation after interpolation segment"
     e <- expr
-    return [AST.UnicodeChars (tkLiteral st), AST.Interpolation st.tkLoc e]
+    return [AST.UnicodeChars (tkLiteral st), InterpolationExpr st.tkLoc e]
   end <- do
     endSt <- accept Token.InterpolationEnd <?> "failed to parse end of string interpolation"
     return $ AST.UnicodeChars (tkLiteral endSt)

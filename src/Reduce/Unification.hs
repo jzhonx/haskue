@@ -37,6 +37,7 @@ import Reduce.TraceSpan (
 import StringIndex (ShowWTIndexer (..), TextIndex, textIndexToBS)
 import qualified Syntax.AST as AST
 import Text.Printf (printf)
+import Text.Regex.TDFA ((=~))
 import Value
 import Value.Export.Debug (
   TermsRepShow (..),
@@ -362,15 +363,13 @@ mergeAtomBounds (d1, a1) (d2, bs) =
             _ -> VBottom $ Bottom $ printf "unexpected bounds unification result: %s" (show x)
           _ -> VBottom $ Bottom $ printf "unexpected bounds unification result: %s" (show v)
 
--- TODO: regex implementation
--- Second argument is the pattern.
+-- | Match the left string with the right regex pattern.
 reMatch :: BC.ByteString -> BC.ByteString -> Bool
-reMatch = (==)
+reMatch = (=~)
 
--- TODO: regex implementation
--- Second argument is the pattern.
+-- | Match the left string with the right regex pattern and return whether it does not match.
 reNotMatch :: BC.ByteString -> BC.ByteString -> Bool
-reNotMatch = (/=)
+reNotMatch s p = not (reMatch s p)
 
 mergeBoundList :: (BinOpDirect, [Bound]) -> (BinOpDirect, [Bound]) -> Either String [Bound]
 mergeBoundList (d1, bs1) (d2, bs2) = case (bs1, bs2) of

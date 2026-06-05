@@ -44,7 +44,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       return $ setVNodeValue (VStruct s') topV
     IsList l -> do
       -- We only need to finalize the final part of the list.
-      final' <- mapMVectorWAddr finalizeInner mkListIdxFeature addr (final l)
+      final' <- mapMVectorWAddr (\p v -> value <$> finalizeInner p (mkValVN v)) mkListIdxFeature addr (final l)
       let l' = l{final = final'}
       return $ setVNodeValue (VList l') topV
     IsDisj d -> do
@@ -60,7 +60,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       IsUnknown -> return x
       IsDisj d -> do
         r <- normalizeDisj p d
-        return $ setVNodeValue r (removeConstraints x)
+        return $ setVNodeValue r x
       IsStruct struct -> do
         let subErrM =
               foldl
@@ -74,10 +74,10 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
                 (stcFields struct)
             embErrM = mkValVN . VBottom <$> rtrBottom (value x)
         maybe
-          (return $ removeConstraints x)
+          (return x)
           return
           (listToMaybe $ catMaybes [subErrM, embErrM])
-      _ -> return $ removeConstraints x
+      _ -> return x
 
 {- | Validate the constraint.
 

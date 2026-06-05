@@ -32,3 +32,14 @@ x2: 7
 x1: "foo" + "bar"
 -- exp_binop3 --
 x1: "foobar"
+
+-- binop4 --
+x1: "Wild cats" =~ "cat"   // true
+x2: "Wild cats" !~ "dog"   // true
+x3: "foo" =~ "^[a-z]{3}$"  // true
+x4: "foo" =~ "^[a-z]{4}$"  // false
+-- exp --
+x1: true
+x2: true
+x3: true
+x4: false

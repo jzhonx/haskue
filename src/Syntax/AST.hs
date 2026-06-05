@@ -151,10 +151,13 @@ instance ASTNode MultiLineStringLit where
 
 data StringLitSeg
   = UnicodeChars BC.ByteString
-  | Interpolation Location Expression
+  | InterpolationExpr Location Expression
   deriving (Eq, Show, Generic, NFData)
 
 newtype Label = Label LabelExpr deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode Label where
+  getNodeLoc (Label le) = getNodeLoc le
 
 data Declaration
   = FieldDecl FieldDecl
@@ -190,6 +193,10 @@ data LabelExpr
     LabelExpr Location AliasExpr Location
   deriving (Eq, Show, Generic, NFData)
 
+instance ASTNode LabelExpr where
+  getNodeLoc (LabelName ln _) = getNodeLoc ln
+  getNodeLoc (LabelExpr loc _ _) = loc
+
 data LabelName
   = LabelID Token
   | LabelString SimpleStringLit
@@ -197,8 +204,17 @@ data LabelName
     LabelNameExpr Location AliasExpr Location
   deriving (Eq, Show, Generic, NFData)
 
+instance ASTNode LabelName where
+  getNodeLoc (LabelID tk) = tk.tkLoc
+  getNodeLoc (LabelString s) = getNodeLoc s
+  getNodeLoc (LabelNameExpr loc _ _) = loc
+
 data Embedding = EmbedComprehension Comprehension | EmbeddingAlias AliasExpr
   deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode Embedding where
+  getNodeLoc (EmbedComprehension c) = getNodeLoc c
+  getNodeLoc (EmbeddingAlias a) = getNodeLoc a
 
 {- | An alias expression.
 
@@ -207,10 +223,20 @@ The first token is the alias name, and the second expression is the aliased expr
 data AliasExpr = AliasExpr (Maybe Token) Expression
   deriving (Eq, Show, Generic, NFData)
 
+instance ASTNode AliasExpr where
+  getNodeLoc (AliasExpr (Just tk) _) = tk.tkLoc
+  getNodeLoc (AliasExpr Nothing e) = getNodeLoc e
+
 data Comprehension = Comprehension Clauses StructLit
   deriving (Eq, Show, Generic, NFData)
 
+instance ASTNode Comprehension where
+  getNodeLoc (Comprehension clauses _) = getNodeLoc clauses
+
 data Clauses = Clauses StartClause [Clause] deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode Clauses where
+  getNodeLoc (Clauses startClause _) = getNodeLoc startClause
 
 data StartClause
   = -- | GuardClause is an "if" expression
@@ -222,6 +248,10 @@ data StartClause
     -- The Maybe Token is the optional second identifier.
     ForClause Location Token (Maybe Token) Expression
   deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode StartClause where
+  getNodeLoc (GuardClause loc _) = loc
+  getNodeLoc (ForClause loc _ _ _) = loc
 
 data Clause
   = ClauseStart StartClause
@@ -423,7 +453,7 @@ multilineStrLitBld (Syntax.AST.MultiLineStringLit _ segs) =
 
 strLitSegBld :: (M m) => StringLitSeg -> m Builder
 strLitSegBld (UnicodeChars chs) = return $ escapeBS chs
-strLitSegBld (Syntax.AST.Interpolation _ e) = do
+strLitSegBld (InterpolationExpr _ e) = do
   b <- exprBld e
   return $ string7 "\\(" <> b <> char7 ')'
 

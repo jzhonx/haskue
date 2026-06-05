@@ -1,0 +1,464 @@
+-- binop_cmp1 --
+i0: 1 == 2
+i1: 2 == 2
+i2: 2 == 1
+
+f0: 1.0 == 2.0
+f1: 2.0 == 2.0
+f2: 2.0 == 1.0
+f3: 2.0 == 2
+f4: 2 == 2.0
+f5: 1 == 2.0
+
+b0: true == false
+b1: true == true
+b2: false == true
+
+s0: "a" == "b"
+s1: "a" == "a"
+s2: "b" == "a"
+
+n0: null == null
+n1: null == "a"
+n2: "a" == null
+n3: null == {}
+n4: {} == null
+n5: null == (*1 | 2)
+n6: (*1 | 2) == null
+
+d1: (1 | 2) == _|_
+d2: (1 | 2) != _|_
+-- exp --
+i0: false
+i1: true
+i2: false
+f0: false
+f1: true
+f2: false
+f3: true
+f4: true
+f5: false
+b0: false
+b1: true
+b2: false
+s0: false
+s1: true
+s2: false
+n0: true
+n1: false
+n2: false
+n3: false
+n4: false
+n5: false
+n6: false
+d1: false
+d2: true
+
+-- binop_cmp2 --
+i0: 1 != 2
+i1: 2 != 2
+i2: 2 != 1
+
+b0: true != false
+b1: true != true
+b2: false != true
+
+s0: "a" != "b"
+s1: "a" != "a"
+s2: "b" != "a"
+
+n0: null != null
+n1: null != "a"
+n2: "a" != null
+n3: null != {}
+n4: {} != null
+n5: null != (*1 | 2)
+n6: (*1 | 2) != null
+-- exp --
+i0: true
+i1: false
+i2: true
+b0: true
+b1: false
+b2: true
+s0: true
+s1: false
+s2: true
+n0: false
+n1: true
+n2: true
+n3: true
+n4: true
+n5: true
+n6: true
+
+-- binop_cmp3 --
+i0: 1 < 2
+i1: 2 <= 2
+i2: 1 > 2
+i3: 1 >= 2
+
+-- exp --
+i0: true
+i1: true
+i2: false
+i3: false
+
+-- cmp_lt --
+// Less-than: integers
+lt_i0: 1 < 2
+lt_i1: 2 < 1
+lt_i2: 2 < 2
+lt_i3: 0 < 0
+lt_i4: -1 < 0
+lt_i5: -5 < -3
+lt_i6: -3 < -5
+lt_i7: -100 < -200
+lt_i8: 1000 < 2000
+// Less-than: floats
+lt_f0: 1.0 < 2.0
+lt_f1: 2.0 < 1.0
+lt_f2: 2.0 < 2.0
+lt_f3: 1.5 < 2.5
+lt_f4: 2.5 < 1.5
+lt_f5: 0.1 < 0.2
+lt_f6: -1.0 < 0.0
+lt_f7: -3.0 < -1.0
+// Less-than: mixed int/float
+lt_m0: 1 < 2.0
+lt_m1: 2.0 < 1
+lt_m2: 2 < 2.0
+lt_m3: 2.0 < 2
+lt_m4: -1 < 0.0
+lt_m5: 0.0 < 1
+// Less-than: strings
+lt_s0: "a" < "b"
+lt_s1: "b" < "a"
+lt_s2: "a" < "a"
+lt_s3: "aa" < "ab"
+lt_s4: "ab" < "aa"
+lt_s5: "hello" < "world"
+lt_s6: "A" < "a"
+lt_s7: "" < "a"
+lt_s8: "a" < ""
+// Less-than: bytes
+// lt_b0: 'a' < 'b'
+// lt_b1: 'b' < 'a'
+// lt_b2: 'a' < 'a'
+// lt_b0: true
+// lt_b1: false
+// lt_b2: false
+-- exp_cmp_lt --
+lt_i0: true
+lt_i1: false
+lt_i2: false
+lt_i3: false
+lt_i4: true
+lt_i5: true
+lt_i6: false
+lt_i7: false
+lt_i8: true
+lt_f0: true
+lt_f1: false
+lt_f2: false
+lt_f3: true
+lt_f4: false
+lt_f5: true
+lt_f6: true
+lt_f7: true
+lt_m0: true
+lt_m1: false
+lt_m2: false
+lt_m3: false
+lt_m4: true
+lt_m5: true
+lt_s0: true
+lt_s1: false
+lt_s2: false
+lt_s3: true
+lt_s4: false
+lt_s5: true
+lt_s6: true
+lt_s7: true
+lt_s8: false
+
+-- cmp_le --
+// Less-or-equal: integers
+le_i0: 1 <= 2
+le_i1: 2 <= 1
+le_i2: 2 <= 2
+le_i3: 0 <= 0
+le_i4: -1 <= 0
+le_i5: -5 <= -3
+le_i6: -3 <= -5
+le_i7: 1000 <= 2000
+le_i8: 2000 <= 1000
+// Less-or-equal: floats
+le_f0: 1.0 <= 2.0
+le_f1: 2.0 <= 1.0
+le_f2: 2.0 <= 2.0
+le_f3: 1.5 <= 2.5
+le_f4: 2.5 <= 1.5
+// Less-or-equal: mixed int/float
+le_m0: 1 <= 2.0
+le_m1: 2.0 <= 1
+le_m2: 2 <= 2.0
+le_m3: 2.0 <= 2
+// Less-or-equal: strings
+le_s0: "a" <= "b"
+le_s1: "b" <= "a"
+le_s2: "a" <= "a"
+le_s3: "aa" <= "ab"
+le_s4: "ab" <= "aa"
+-- exp_cmp_le --
+le_i0: true
+le_i1: false
+le_i2: true
+le_i3: true
+le_i4: true
+le_i5: true
+le_i6: false
+le_i7: true
+le_i8: false
+le_f0: true
+le_f1: false
+le_f2: true
+le_f3: true
+le_f4: false
+le_m0: true
+le_m1: false
+le_m2: true
+le_m3: true
+le_s0: true
+le_s1: false
+le_s2: true
+le_s3: true
+le_s4: false
+
+-- cmp_gt --
+// Greater-than: integers
+gt_i0: 1 > 2
+gt_i1: 2 > 1
+gt_i2: 2 > 2
+gt_i3: 0 > 0
+gt_i4: -1 > 0
+gt_i5: -5 > -3
+gt_i6: -3 > -5
+gt_i7: 1000 > 2000
+gt_i8: 2000 > 1000
+// Greater-than: floats
+gt_f0: 1.0 > 2.0
+gt_f1: 2.0 > 1.0
+gt_f2: 2.0 > 2.0
+gt_f3: 1.5 > 2.5
+gt_f4: 2.5 > 1.5
+// Greater-than: mixed int/float
+gt_m0: 1 > 2.0
+gt_m1: 2.0 > 1
+gt_m2: 2 > 2.0
+gt_m3: 2.0 > 2
+// Greater-than: strings
+gt_s0: "a" > "b"
+gt_s1: "b" > "a"
+gt_s2: "a" > "a"
+gt_s3: "aa" > "ab"
+gt_s4: "ab" > "aa"
+-- exp_cmp_gt --
+gt_i0: false
+gt_i1: true
+gt_i2: false
+gt_i3: false
+gt_i4: false
+gt_i5: false
+gt_i6: true
+gt_i7: false
+gt_i8: true
+gt_f0: false
+gt_f1: true
+gt_f2: false
+gt_f3: false
+gt_f4: true
+gt_m0: false
+gt_m1: true
+gt_m2: false
+gt_m3: false
+gt_s0: false
+gt_s1: true
+gt_s2: false
+gt_s3: false
+gt_s4: true
+
+-- cmp_ge --
+// Greater-or-equal: integers
+ge_i0: 1 >= 2
+ge_i1: 2 >= 1
+ge_i2: 2 >= 2
+ge_i3: 0 >= 0
+ge_i4: -1 >= 0
+ge_i5: -5 >= -3
+ge_i6: -3 >= -5
+// Greater-or-equal: floats
+ge_f0: 1.0 >= 2.0
+ge_f1: 2.0 >= 1.0
+ge_f2: 2.0 >= 2.0
+ge_f3: 1.5 >= 2.5
+ge_f4: 2.5 >= 1.5
+// Greater-or-equal: mixed int/float
+ge_m0: 1 >= 2.0
+ge_m1: 2.0 >= 1
+ge_m2: 2 >= 2.0
+ge_m3: 2.0 >= 2
+// Greater-or-equal: strings
+ge_s0: "a" >= "b"
+ge_s1: "b" >= "a"
+ge_s2: "a" >= "a"
+ge_s3: "aa" >= "ab"
+ge_s4: "ab" >= "aa"
+-- exp_cmp_ge --
+ge_i0: false
+ge_i1: true
+ge_i2: true
+ge_i3: true
+ge_i4: false
+ge_i5: false
+ge_i6: true
+ge_f0: false
+ge_f1: true
+ge_f2: true
+ge_f3: false
+ge_f4: true
+ge_m0: false
+ge_m1: true
+ge_m2: true
+ge_m3: true
+ge_s0: false
+ge_s1: true
+ge_s2: true
+ge_s3: false
+ge_s4: true
+
+-- cmp_match --
+// Regex matching with =~
+rm0: "Wild cats" =~ "cat"
+rm1: "Wild cats" =~ "dog"
+rm2: "foo" =~ "^[a-z]{3}$"
+rm3: "foo" =~ "^[a-z]{4}$"
+rm4: "hello" =~ "^h"
+rm5: "hello" =~ "o$"
+rm6: "hello" =~ "ell"
+rm7: "123" =~ "[0-9]+"
+rm8: "hello world" =~ "world"
+rm9: "abc" =~ "abc"
+rm10: "abc" =~ "^abc$"
+rm11: "abc" =~ "b"
+rm12: "abc" =~ "."
+rm13: "abc" =~ "^."
+rm14: "a" =~ "a"
+rm15: "a" =~ "b"
+-- exp_cmp_match --
+rm0: true
+rm1: false
+rm2: true
+rm3: false
+rm4: true
+rm5: true
+rm6: true
+rm7: true
+rm8: true
+rm9: true
+rm10: true
+rm11: true
+rm12: true
+rm13: true
+rm14: true
+rm15: false
+
+-- cmp_not_match --
+// Regex non-matching with !~
+rn0: "Wild cats" !~ "cat"
+rn1: "Wild cats" !~ "dog"
+rn2: "foo" !~ "^[a-z]{3}$"
+rn3: "foo" !~ "^[a-z]{4}$"
+rn4: "hello" !~ "^h"
+rn5: "hello" !~ "o$"
+rn6: "hello" !~ "ell"
+rn7: "123" !~ "[0-9]+"
+rn8: "hello world" !~ "world"
+rn9: "abc" !~ "abc"
+rn10: "abc" !~ "^abc$"
+rn11: "abc" !~ "b"
+rn12: "a" !~ "a"
+rn13: "a" !~ "b"
+-- exp_cmp_not_match --
+rn0: false
+rn1: true
+rn2: false
+rn3: true
+rn4: false
+rn5: false
+rn6: false
+rn7: false
+rn8: false
+rn9: false
+rn10: false
+rn11: false
+rn12: false
+rn13: true
+
+-- cmp_eq_int_float --
+// Equality with mixed int/float
+ef0: 2.0 == 2
+ef1: 2 == 2.0
+ef2: 1 == 2.0
+ef3: 1.0 == 2
+ef4: 0.0 == 0
+ef5: 0 == 0.0
+ef6: 2.0 != 2
+ef7: 2 != 2.0
+ef8: 1 != 2.0
+ef9: 1.0 != 2
+ef10: 0.0 != 0
+ef11: 0 != 0.0
+-- exp_cmp_eq_int_float --
+ef0: true
+ef1: true
+ef2: false
+ef3: false
+ef4: true
+ef5: true
+ef6: false
+ef7: false
+ef8: true
+ef9: true
+ef10: false
+ef11: false
+
+-- cmp_eq_list --
+a: [1,2] == [1,2]
+-- exp --
+a: true
+
+-- cmp_err_struct --
+a: {} == {}
+-- exp --
+a: true
+
+-- cmp_cross_eq --
+a: 1 == "a"
+-- exp --
+a: false
+
+-- cmp_err_bool_ord --
+a: true < false
+-- exp --
+error: invalid operands true and false to '<' (type bool and bool):
+	-:1:4
+	-:1:11
+
+-- cmp_err_null_ord --
+a: null < 1
+-- exp --
+error: invalid operands null and 1 to '<' (type null and int):
+	-:1:4
+	-:1:11
+

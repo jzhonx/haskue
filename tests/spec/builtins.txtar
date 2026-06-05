@@ -1,0 +1,54 @@
+-- and1 --
+and([])
+
+-- exp --
+_
+
+-- and2 --
+and([{a: 1}])
+
+-- exp --
+a: 1
+
+-- and3 --
+and([{a: 1}, {b:2}])
+
+-- exp --
+a: 1
+b: 2
+
+-- and_incomplete --
+x: {}
+y: and([x.y])
+
+-- exp --
+x: {}
+y: and([x.y])
+
+-- or1 --
+or([])
+
+-- exp --
+
+-- or2 --
+or([1])
+
+-- exp --
+1
+
+-- or3 --
+or([1,2])
+
+-- exp --
+1 | 2
+
+-- len1 --
+x1: len("Hellø")
+x2: len([1, 2, 3])
+x3: len([1, 2, ...])
+
+-- exp --
+x1: 6
+x2: 3
+x3: 2
+

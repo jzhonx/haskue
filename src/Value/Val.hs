@@ -30,13 +30,12 @@ import Feature (
 import GHC.Generics (Generic)
 import StringIndex (HasTextIndexer (..), TextIndex, TextIndexerMonad, getTextIndexer, strToTextIndex, textToTextIndex)
 import Syntax.AST (exprToOneLinerStr)
-import qualified Syntax.AST as AST
+import Syntax.Token (Location)
 import Value.Atom
 import Value.Bottom
 import Value.Bounds
 import Value.Disj
 import {-# SOURCE #-} Value.Export.AST (buildExprDebug)
-import Value.Func
 import Value.List
 import Value.Op
 import Value.Reference
@@ -82,8 +81,7 @@ applyAddrFOnVal _ _ x = pure x
 
 -- | Val represents a tree structure that contains values.
 data Val
-  = -- | VAtom contains an atom value.
-    VAtom Atom
+  = VAtom Atom
   | VBottom Bottom
   | VBounds Bounds
   | VTop
@@ -96,9 +94,22 @@ data Val
   deriving (Generic)
 
 data Constraint
-  = ValCnstr Val
-  | OpCnstr Op
+  = -- | Location indicates the starting point of the constraint.
+    ValCnstr ValConstraint
+  | OpCnstr OpConstraint
   | StructEmbedCnstr ConstraintSeq
+  deriving (Generic)
+
+data ValConstraint = ValConstraint
+  { vcLoc :: Location
+  , vcVal :: Val
+  }
+  deriving (Generic)
+
+data OpConstraint = OpConstraint
+  { ocLoc :: Location
+  , ocOp :: Op
+  }
   deriving (Generic)
 
 type ConstraintSeq = Seq.Seq Constraint
@@ -136,10 +147,6 @@ memberDynCnstr idx c = IntMap.member idx (dynamic c)
 data VNode = VNode
   { value :: Val
   , version :: !Int
-  , origExpr :: Maybe AST.Expression
-  -- ^ origExpr is the parsed expression.
-  -- If the op is not Nothing, then origExpr represents the op expression.
-  -- If the op is Nothing, then origExpr represents the value expression.
   , constraints :: ConstraintsSet
   }
   deriving (Generic)
@@ -175,15 +182,12 @@ pattern StaticConstraints :: Seq.Seq Constraint -> VNode
 pattern StaticConstraints cs <- VNode{constraints = ConstraintsSet{static = cs}}
 
 pattern IsValSoleOp :: Op -> VNode
-pattern IsValSoleOp op <- StaticConstraints (OpCnstr op Seq.:<| Seq.Empty)
+pattern IsValSoleOp ocOp <- StaticConstraints (OpCnstr (OpConstraint{ocOp}) Seq.:<| Seq.Empty)
 
 -- = Val getters and setters =
 
 setVNodeValue :: Val -> VNode -> VNode
 setVNodeValue n v = v{value = n}
-
-setExpr :: Maybe AST.Expression -> VNode -> VNode
-setExpr eM v = v{origExpr = eM}
 
 mapConstraints :: (ConstraintsSet -> ConstraintsSet) -> VNode -> VNode
 mapConstraints f v = v{constraints = f (constraints v)}
@@ -199,15 +203,25 @@ appendStaticCnstrs c v = v{constraints = (constraints v){static = static (constr
 Union type represents an incomplete value, such as a disjunction or bounds.
 -}
 rtrNonUnion :: Val -> Maybe Val
-rtrNonUnion v = do
-  case v of
-    VAtom _ -> Just v
-    VBottom _ -> Just v
-    VTop -> Just v
-    VList _ -> Just v
-    VStruct _ -> Just v
-    VDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
-    _ -> Nothing
+rtrNonUnion v = case v of
+  VAtom _ -> Just v
+  VBottom _ -> Just v
+  VTop -> Just v
+  VList _ -> Just v
+  VStruct _ -> Just v
+  VDisj d | Just df <- rtrDisjDefVal d -> rtrNonUnion df
+  _ -> Nothing
+
+rtrIncomplete :: Val -> Maybe Val
+rtrIncomplete v = case v of
+  VTop -> Just v
+  VDisj d -> do
+    dft <- rtrDisjDefVal d
+    rtrIncomplete dft
+  VBounds _ -> Just v
+  VUnknown -> Just v
+  VFuncAddr _ -> Just v
+  _ -> Nothing
 
 rtrValue :: Val -> Maybe Val
 rtrValue VUnknown = Nothing
@@ -290,7 +304,6 @@ emptyVNode =
   VNode
     { value = VUnknown
     , version = 0
-    , origExpr = Nothing
     , constraints = emptyConstraintsSet
     }
 
@@ -318,17 +331,20 @@ mkBottomValueFromList bs = VBounds (Bounds{bdsList = bs})
 mkDisjVN :: Disj -> VNode
 mkDisjVN d = mkValVN (VDisj d)
 
-mkOpVN :: Op -> VNode
-mkOpVN fn = emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (OpCnstr fn)}}
-
-mkListVN :: [VNode] -> [VNode] -> VNode
-mkListVN x y = mkValVN (VList $ mkList x y)
-
 mkStructVN :: Struct -> VNode
 mkStructVN s = mkValVN (VStruct s)
 
-mkValCnstrVN :: Val -> VNode
-mkValCnstrVN n = emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (ValCnstr n)}}
+mkValCnstrVN :: Location -> Val -> VNode
+mkValCnstrVN loc n =
+  emptyVNode
+    { constraints = emptyConstraintsSet{static = Seq.singleton (ValCnstr (ValConstraint{vcLoc = loc, vcVal = n}))}
+    }
+
+mkOpVN :: Location -> Op -> VNode
+mkOpVN loc fn =
+  emptyVNode
+    { constraints = emptyConstraintsSet{static = Seq.singleton (OpCnstr (OpConstraint{ocLoc = loc, ocOp = fn}))}
+    }
 
 mergeValCnstrs :: [VNode] -> VNode
 mergeValCnstrs vs =
@@ -402,7 +418,7 @@ builtinValues = do
 -- | built-in functions
 builtinFuncAddrTable :: (TextIndexerMonad s m) => m [(TextIndex, ValAddr)]
 builtinFuncAddrTable = do
-  let builtins = ["close"]
+  let builtins = ["close", "or", "and", "len"]
   mapM gen builtins
  where
   gen name = do

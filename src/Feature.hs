@@ -210,6 +210,13 @@ modifyTISuffix oid ti = do
     let str = BC.unpack prefix ++ "." ++ show oid
     strToTextIndex str
 
+removeTISuffix :: (TextIndexerMonad s m) => TextIndex -> m TextIndex
+removeTISuffix ti = do
+  b <- textIndexToBS ti
+  case BC.findIndex (== '.') b of
+    Just dotIdx -> textToTextIndex (BC.take dotIdx b)
+    Nothing -> return ti
+
 mkEmbedValueFeature :: Feature
 mkEmbedValueFeature = mkFeature 0 EmbedValueLabelType
 

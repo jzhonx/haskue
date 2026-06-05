@@ -27,7 +27,7 @@ library
         Reduce.Disjunction,
         Reduce.Monad,
         Reduce.Finalize,
-        Reduce.Primitives,
+        Reduce.Op,
         Reduce.Recalc,
         Reduce.Reference,
         Reduce.Store,
@@ -66,7 +66,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -threaded
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -114,6 +114,7 @@ library
       filepath,
       ansi-terminal,
       dlist,
+      regex-tdfa,
 
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -135,7 +136,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -rtsopts 
+    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -rtsopts -threaded
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0

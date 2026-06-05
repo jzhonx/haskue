@@ -27,7 +27,6 @@ import Reduce.Monad (
  )
 import Reduce.Store (lookupComprehBindingVal, withComprehBindings)
 import Reduce.TraceSpan (
-  debugInst,
   debugInstStr,
   emptySpanValue,
   traceSpanAdaptTM,
@@ -51,7 +50,7 @@ reduceCompreh addr cph = traceSpanAdaptTM "reduceCompreh" addr emptySpanValue (c
       let vs = reverse revVs
        in if cph.isListCompreh
             then do
-              return (VList $ mkList (map mkValVN vs) (map mkValVN vs), updatedCph)
+              return (VList $ mkList (map mkValVN vs), updatedCph)
             else case vs of
               [] -> return (VStruct emptyStruct, updatedCph)
               [x] -> return (x, updatedCph)
@@ -151,10 +150,10 @@ comprehend comprehAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
         r <- reduceConstraintsInCnstrs clauseCnstrAddr v
         let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgFor k vM r) args}
         if
-          | IsUnknown <- r -> earlyStop i updatedIctx
+          | Just _ <- rtrIncomplete (value r) -> earlyStop i updatedIctx
           | IsBottom _ <- r -> return updatedIctx{res = Left (value r)}
           -- TODO: only iterate optional fields
-          | IsStruct struct <- r ->
+          | Just struct <- rtrStruct (value r) ->
               foldM
                 ( \acc (labelIdx, field) ->
                     if acc.incomplete
@@ -205,13 +204,16 @@ forkTemplate :: VNode -> RM VNode
 forkTemplate v@VNode{constraints} = case v of
   -- Whether the struct is a sole constraint or a base constraint, it is the first constraint in the constraints
   -- sequence.
-  StaticConstraints (ValCnstr (VStruct struct) Seq.:<| rest) -> do
+  StaticConstraints (ValCnstr vc@(ValConstraint{vcVal = VStruct struct}) Seq.:<| rest) -> do
     newStruct <- mkUniqueStruct struct
-    return $ mapConstraints (\c -> c{static = ValCnstr (VStruct newStruct) Seq.:<| rest}) v
-  StaticConstraints (StructEmbedCnstr (ValCnstr (VStruct struct) Seq.:<| rest) Seq.:<| Seq.Empty) -> do
-    newStruct <- mkUniqueStruct struct
-    return $
-      mapConstraints (\c -> c{static = Seq.singleton $ StructEmbedCnstr (ValCnstr (VStruct newStruct) Seq.:<| rest)}) v
+    return $ mapConstraints (\c -> c{static = ValCnstr (vc{vcVal = VStruct newStruct}) Seq.:<| rest}) v
+  StaticConstraints
+    (StructEmbedCnstr (ValCnstr vc@(ValConstraint{vcVal = VStruct struct}) Seq.:<| rest) Seq.:<| Seq.Empty) -> do
+      newStruct <- mkUniqueStruct struct
+      return $
+        mapConstraints
+          (\c -> c{static = Seq.singleton $ StructEmbedCnstr (ValCnstr (vc{vcVal = VStruct newStruct}) Seq.:<| rest)})
+          v
   _ -> throwFatal $ "forkTemplate can only be used with a struct template, but got " ++ show constraints
 
 {- | Resolve the references that point to the iteration variable and replace them with the reduced value.
@@ -265,6 +267,8 @@ replaceIterValRefs tmplAddr tmplV = do
                                 ValueSelect
                                   { bvID = 0 -- It should not be referenced, as bindings have been reduced.
                                   , iSelectors = ref.selectors
+                                  , -- FIXME
+                                    iSelectorTypes = undefined
                                   , base = vn
                                   }
                            in VTOp (VSelect newIndx)

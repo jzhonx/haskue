@@ -4,7 +4,7 @@ module Syntax.Scanner where
 
 import Control.Monad (void, when)
 import Control.Monad.State.Strict
-import Data.ByteString.Builder (Builder, char7, toLazyByteString)
+import Data.ByteString.Builder (Builder, toLazyByteString, word8)
 import Data.ByteString.Char8 (toStrict)
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isAlpha, isDigit)
@@ -450,9 +450,9 @@ scanStrContent tryClose closeTkType b = do
       shouldStop <- tryClose closeTkType c b
       if shouldStop
         then return ()
-        else scanStrContent tryClose closeTkType (b <> char7 c)
+        else scanStrContent tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
  where
-  escape c = advance >> advance >> scanStrContent tryClose closeTkType (b <> char7 c)
+  escape c = advance >> advance >> scanStrContent tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
 
 scanItplEnd :: Int -> Scanner ()
 scanItplEnd lparenDepth = do
@@ -541,3 +541,8 @@ debugSState :: Scanner ()
 debugSState = do
   s <- get
   trace ("source: " ++ show (source s) ++ ", current: " ++ show (current s)) (return ())
+
+isByteStringIdentifier :: BC.ByteString -> Bool
+isByteStringIdentifier bs = case scanTokens bs of
+  Right [Token{tkType = Identifier, tkLiteral = lit}] | lit == bs -> True
+  _ -> False

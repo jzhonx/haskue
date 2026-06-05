@@ -2,7 +2,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -39,7 +38,7 @@ getOpFArgs op =
 getOpArgs :: Op -> Seq.Seq VNode
 getOpArgs (RegOp rop) = ropArgs rop
 getOpArgs (Ref ref) = selectors ref
-getOpArgs (VSelect (ValueSelect _ _ xs)) = xs
+getOpArgs (VSelect vs) = iSelectors vs
 getOpArgs (Compreh c) = fmap getValFromIterClause c.args
 getOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
 getOpArgs (Itp itp) = itpExprs itp

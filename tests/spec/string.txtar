@@ -54,3 +54,17 @@ d: 42
 x: "ac 42"
 d: 42
 
+-- string9 --
+"你好"
+
+-- exp --
+"你好"
+
+-- interpolation_incomplete --
+x: "a\(y.z)b"
+y: {}
+
+-- exp --
+x: "a\(y.z)b"
+y: {}
+

@@ -16,6 +16,7 @@ import qualified Data.Vector as V
 import Feature
 import GHC.Stack (HasCallStack)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
+import Syntax.AST (ASTNode (..))
 import Text.Printf (printf)
 import Value.Comprehension
 import Value.Disj
@@ -48,7 +49,9 @@ deriving instance Eq RegularOp
 deriving instance Eq FuncCall
 
 instance Eq Struct where
-  (==) s1 s2 = stcFields s1 == stcFields s2 && stcClosed s1 == stcClosed s2 && stcIsConcrete s1 == stcIsConcrete s2
+  -- Struct values are equal if they have the same set of regular field labels and the corresponding values are
+  -- recursively equal. Only regular fields are considered; field order and closedness are irrelevant.
+  (==) s1 s2 = stcFields s1 == stcFields s2
 
 instance Eq Field where
   (==) f1 f2 = f1.ssfValue == f2.ssfValue && f1.ssfAttr == f2.ssfAttr
@@ -59,6 +62,8 @@ deriving instance Eq StructCnstr
 deriving instance Eq List
 deriving instance Eq Disj
 
+deriving instance Eq ValConstraint
+deriving instance Eq OpConstraint
 deriving instance Eq Constraint
 deriving instance Eq ConstraintsSet
 
@@ -92,7 +97,7 @@ instance Show Reference where
   show (Reference{ident}) = "ref_" ++ show ident
 
 instance Show ValueSelect where
-  show (ValueSelect _ _ _) = "vselect"
+  show (ValueSelect{}) = "vselect"
 
 deriving instance Show Interpolation
 
@@ -128,6 +133,9 @@ deriving instance Show Disj
 deriving instance Show Val
 deriving instance Show VNode
 deriving instance Show VTermNode
+
+deriving instance Show ValConstraint
+deriving instance Show OpConstraint
 deriving instance Show Constraint
 deriving instance Show ConstraintsSet
 
@@ -184,6 +192,9 @@ deriving instance NFData Disj
 
 deriving instance NFData Val
 deriving instance NFData VNode
+
+deriving instance NFData ValConstraint
+deriving instance NFData OpConstraint
 deriving instance NFData Constraint
 deriving instance NFData ConstraintsSet
 
@@ -202,7 +213,7 @@ mapMIntMapWAddr ::
   (Monad m) => (ValAddr -> a -> m a) -> (Int -> Feature) -> ValAddr -> IntMap.IntMap a -> m (IntMap.IntMap a)
 mapMIntMapWAddr f g p = IntMap.traverseWithKey (\i !v -> f (appendSeg p (g i)) v)
 
-foldrVecWAddr :: (ValAddr -> VNode -> r) -> (Int -> Feature) -> ValAddr -> V.Vector VNode -> [r]
+foldrVecWAddr :: (ValAddr -> a -> r) -> (Int -> Feature) -> ValAddr -> V.Vector a -> [r]
 foldrVecWAddr f g p = V.ifoldr (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
 foldrSeqWAddr :: (ValAddr -> a -> r) -> (Int -> Feature) -> ValAddr -> Seq.Seq a -> [r]
@@ -275,19 +286,19 @@ instance VTerm ConstraintsSet where
 
 instance VTerm Constraint where
   vtmapQ f p c = case c of
-    ValCnstr vn -> [f p (VTVal vn)]
+    ValCnstr vc -> [f p (VTVal vc.vcVal)]
+    OpCnstr oc -> [f p (VTOp oc.ocOp)]
     StructEmbedCnstr xs -> foldrSeqWAddrConcat (vtmapQ f) mkRegCnstrFeature p xs
-    OpCnstr o -> [f p (VTOp o)]
   vtmapM f p c = case c of
-    ValCnstr vn -> do
-      vn' <- f p (VTVal vn)
-      return $ vtValOr ValCnstr c vn'
+    ValCnstr vc -> do
+      vn' <- f p (VTVal vc.vcVal)
+      return $ vtValOr (\v -> ValCnstr vc{vcVal = v}) c vn'
     StructEmbedCnstr xs -> StructEmbedCnstr <$> mapMSeqWAddr (vtmapM f) mkRegCnstrFeature p xs
-    OpCnstr o -> do
-      ovt' <- f p (VTOp o)
+    OpCnstr oc -> do
+      ovt' <- f p (VTOp oc.ocOp)
       case ovt' of
-        VTOp o' -> return $ OpCnstr o'
-        VTVal vn -> return $ ValCnstr vn
+        VTOp o' -> return $ OpCnstr oc{ocOp = o'}
+        VTVal v -> return $ ValCnstr $ ValConstraint{vcLoc = oc.ocLoc, vcVal = v}
         _ -> return c
 
 instance VTerm ConstraintSeq where
@@ -367,11 +378,11 @@ instance VTerm StructCnstr where
 instance VTerm List where
   vtmapQ f p lst =
     foldrVecWAddr (adaptVTMapQOnVNode f) mkListStoreIdxFeature p (store lst)
-      ++ foldrVecWAddr (adaptVTMapQOnVNode f) mkListIdxFeature p (final lst)
+      ++ foldrVecWAddr (adaptVTMapQOnVal f) mkListIdxFeature p (final lst)
 
   vtmapM f p lst = do
     store' <- mapMVectorWAddr (adaptVTMapMOnVNode f) mkListStoreIdxFeature p (store lst)
-    final' <- mapMVectorWAddr (adaptVTMapMOnVNode f) mkListIdxFeature p (final lst)
+    final' <- mapMVectorWAddr (adaptVTMapMOnVal f) mkListIdxFeature p (final lst)
     return lst{store = store', final = final'}
 
 instance VTerm Disj where
@@ -414,13 +425,13 @@ instance VTerm Reference where
     return ref{selectors = selectors'}
 
 instance VTerm ValueSelect where
-  vtmapQ f p (ValueSelect i b xs) =
+  vtmapQ f p (ValueSelect i b xs _) =
     adaptVTMapQOnVNode f (appendSeg p (mkObjectFeature i)) b
       : foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p xs
-  vtmapM f p (ValueSelect i b xs) = do
+  vtmapM f p (ValueSelect i b xs typs) = do
     b' <- adaptVTMapMOnVNode f (appendSeg p (mkObjectFeature i)) b
     xs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p xs
-    return $ ValueSelect i b' xs'
+    return $ ValueSelect i b' xs' typs
 
 instance VTerm Comprehension where
   vtmapQ f p c =
@@ -505,7 +516,7 @@ setSubVN f subVN parVN = do
     (ListStoreIdxLabelType, IsList l) ->
       let i = fetchIndex f in ret origSubVN $ VList $ updateListStoreAt i (const subVN) l
     (ListIdxLabelType, IsList l) ->
-      let i = fetchIndex f in ret origSubVN $ VList $ updateListFinalAt i (const subVN) l
+      let i = fetchIndex f in ret origSubVN $ VList $ updateListFinalAt i (const $ value subVN) l
     (DisjLabelType, IsDisj d) ->
       let i = fetchIndex f
        in Just $
@@ -540,7 +551,7 @@ getSubVN f t = case (fetchLabelType f, t) of
      in dsfLabel <$> stcDynFields struct IntMap.!? i
   (EmbedValueLabelType, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
   (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
-  (ListIdxLabelType, IsList l) -> getListFinalAt (fetchIndex f) l
+  (ListIdxLabelType, IsList l) -> mkValVN <$> getListFinalAt (fetchIndex f) l
   (DisjLabelType, IsDisj d) -> mkValVN <$> dsjDisjuncts d Seq.!? fetchIndex f
   _ -> Nothing
 
@@ -551,3 +562,35 @@ getSubVNByAddr addr = go (addrToList addr)
   go (f : fs) v = do
     subV <- getSubVN f v
     go fs subV
+
+-----
+-- ASTNode
+-----
+
+instance ASTNode ValConstraint where
+  getNodeLoc = vcLoc
+
+instance ASTNode OpConstraint where
+  getNodeLoc = ocLoc
+
+instance ASTNode ConstraintSeq where
+  getNodeLoc c =
+    case Seq.viewl c of
+      h Seq.:< _ -> getNodeLoc h
+      Seq.EmptyL -> error "ConstraintSeq should have at least one constraint"
+
+instance ASTNode Constraint where
+  getNodeLoc c = case c of
+    ValCnstr vc -> getNodeLoc vc
+    OpCnstr oc -> getNodeLoc oc
+    StructEmbedCnstr xs -> getNodeLoc xs
+
+instance ASTNode ConstraintsSet where
+  getNodeLoc c
+    | not (Seq.null (static c)) = getNodeLoc c.static
+    | otherwise = case IntMap.toList c.dynamic of
+        (_, h) : _ -> getNodeLoc h
+        [] -> error "ConstraintsSet should have at least one constraint"
+
+instance ASTNode VNode where
+  getNodeLoc vn = getNodeLoc vn.constraints

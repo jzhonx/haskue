@@ -31,7 +31,7 @@ buildJSONExt v = case value v of
   VStruct stc -> buildJSONStruct stc
   VList l -> do
     let elems = V.toList l.final
-    jsonElems <- mapM buildJSONExt elems
+    jsonElems <- mapM (buildJSONExt . mkValVN) elems
     return $ toJSON jsonElems
   VDisj dj | Just df <- rtrDisjDefVal dj -> buildJSONExt (mkValVN df)
   _ -> do

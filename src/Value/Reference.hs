@@ -16,6 +16,9 @@ data Reference = Reference
   { ident :: TextIndex
   , identFeat :: Feature
   , selectors :: Seq.Seq VNode
+  , selectorTypes :: Seq.Seq Bool
+  -- ^ selectorTypes stores the type of each selector, where True means index select (e.g. `a[0]`) and False means field
+  -- select (e.g. `a.b`).
   , resolvedIdentType :: RefIdentType
   , resolvedIdentAddr :: ResolvedIdentAddr
   -- ^ The resolved address of the identifier.
@@ -47,6 +50,7 @@ singletonIdentRef ident identFeat typ addr =
     { ident = ident
     , identFeat
     , selectors = Seq.empty
+    , selectorTypes = Seq.empty
     , resolvedIdentType = typ
     , resolvedIdentAddr = addr
     , resolvedFullAddr = Nothing
@@ -60,6 +64,7 @@ comprehensionIdentRef ident identFeat cIdx addr =
     { ident = ident
     , identFeat
     , selectors = Seq.empty
+    , selectorTypes = Seq.empty
     , resolvedIdentType = ITIterBinding
     , resolvedIdentAddr = addr
     , resolvedFullAddr = Nothing
@@ -67,8 +72,8 @@ comprehensionIdentRef ident identFeat cIdx addr =
     , isRefCycle = False
     }
 
-appendRefArg :: VNode -> Reference -> Reference
-appendRefArg v ref = ref{selectors = selectors ref Seq.|> v}
+appendRefArg :: VNode -> Bool -> Reference -> Reference
+appendRefArg v typ ref = ref{selectors = selectors ref Seq.|> v, selectorTypes = selectorTypes ref Seq.|> typ}
 
 {- | ValueSelect denotes a select operation with a base and multiple selectors.
 
@@ -78,8 +83,9 @@ data ValueSelect = ValueSelect
   { bvID :: !Int
   , base :: VNode
   , iSelectors :: Seq.Seq VNode
+  , iSelectorTypes :: Seq.Seq Bool
   }
   deriving (Generic)
 
-appendValueSelectArg :: VNode -> ValueSelect -> ValueSelect
-appendValueSelectArg y vs@(ValueSelect _ _ xs) = vs{iSelectors = xs Seq.|> y}
+appendValueSelectArg :: VNode -> Bool -> ValueSelect -> ValueSelect
+appendValueSelectArg y typ vs = vs{iSelectors = iSelectors vs Seq.|> y, iSelectorTypes = iSelectorTypes vs Seq.|> typ}

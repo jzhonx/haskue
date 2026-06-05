@@ -54,10 +54,12 @@ fetchStringArgs = mapM isString
         Left $ mkBottomVal msg
 
 join :: [Val] -> ValAddr -> RM Val
-join [VList l, VAtom (String sep)] _ = do
-  case fetchStringArgs (map value $ V.toList l.final) of
-    Left v -> return v
-    Right stringArgs -> return $ VAtom $ String $ joinBSs stringArgs sep
+join [VList l, VAtom (String sep)] _
+  | not l.isFinalReady = return VUnknown
+  | otherwise = do
+      case fetchStringArgs (V.toList l.final) of
+        Left v -> return v
+        Right stringArgs -> return $ VAtom $ String $ joinBSs stringArgs sep
 join _ _ =
   return $
     mkBottomVal "wrong type of arguments to Join"

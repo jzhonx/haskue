@@ -5,21 +5,27 @@
 
 module Reduce.Core where
 
-import Control.Monad (foldM, unless)
+import Control.Monad (foldM, unless, when)
 import Control.Monad.Reader.Class (asks)
 import Data.Aeson (ToJSON (..), toJSON)
+import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
+import qualified Data.Vector as V
+import Debug.Trace (trace)
 import Feature (
   ValAddr (..),
   addrIsCanonical,
+  addrIsVertex,
   appendSeg,
   canonicalToAddr,
   collapseToCanonical,
   emptyValAddr,
+  mkListIdxFeature,
+  mkListStoreIdxFeature,
   mkObjectFeature,
   mkOpArgFeature,
   mkRegCnstrFeature,
@@ -39,8 +45,7 @@ import Reduce.Monad (
   throwFatal,
   treeDepthCheck,
  )
-import Reduce.Primitives (reduceList, resolveInterpolation)
-import qualified Reduce.Primitives as Primitives
+import Reduce.Op (resolveRegBinOp, resolveUnaryOp)
 import Reduce.Recalc (sendToRootRecalcQ)
 import Reduce.Reference (
   DerefResult (..),
@@ -48,27 +53,31 @@ import Reduce.Reference (
   select,
  )
 import qualified Reduce.Stdlib.Strings as LibStrings
-import Reduce.Store (storeVal)
+import Reduce.Store (fetchValFromStore, storeVal)
 import Reduce.Struct (
   reduceStruct,
  )
 import Reduce.TraceSpan (
   debugInst,
+  debugInstStr,
   emptySpanValue,
   traceSpanAdaptTM,
+  traceSpanTM,
   traceSpanTermsRepTM,
  )
 import Reduce.Unification (unifyVals)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
+import Syntax.Token (Location)
 import Text.Printf (printf)
 import Value
 import Value.Export.Debug (
   cnstrsToTermsRep,
   defaultTermsRepOption,
   termsRepToJSONWithAddr,
+  toTermsRepWithAddr,
   valToStringTermsRep,
  )
-import Value.Instances (mapMSeqWAddr, pretravsVTQ)
+import Value.Instances (foldrVecWAddr, mapMSeqWAddr, mapMVectorWAddr, pretravsVTQ)
 
 -- | Reduce the tree to the lowest form.
 reduce :: ValAddr -> VNode -> RM VNode
@@ -222,17 +231,17 @@ reduceConstraint count addr constraint = traceSpanAdaptTM
       return $ toJSON (aJ, bJ)
   )
   $ case constraint of
-    ValCnstr vn -> do
+    ValCnstr vc -> do
       return
         ( constraint
-        , vn
-        , case vn of
+        , vc.vcVal
+        , case vc.vcVal of
             VUnknown -> mkInCompleteCnstr
             VAtom a -> mkAtomCnstrInfo addr a
             _ -> emptyCnstrInfo
         )
-    OpCnstr op -> do
-      (r, c') <- reduceOp addr op
+    OpCnstr oc -> do
+      (r, c') <- reduceOp addr oc
       let subInfo = discoverRefCyclesForOp addr c'
       return
         ( c'
@@ -243,7 +252,7 @@ reduceConstraint count addr constraint = traceSpanAdaptTM
             _ -> emptyCnstrInfo
         )
     StructEmbedCnstr embedCnstrs -> case embedCnstrs of
-      ValCnstr (VStruct _) Seq.:<| _ -> do
+      ValCnstr (ValConstraint{vcVal = VStruct _}) Seq.:<| _ -> do
         (evn', constraints', _, info) <- reduceCnstrsInner count True addr embedCnstrs IntMap.empty
         return (StructEmbedCnstr constraints', evn', info)
       _ -> do
@@ -252,7 +261,7 @@ reduceConstraint count addr constraint = traceSpanAdaptTM
         throwFatal $ printf "unexpected non-struct constraint in StructEmbedCnstr, constraints: %s" s
 
 discoverRefCyclesForOp :: ValAddr -> Constraint -> CnstrInfo
-discoverRefCyclesForOp addr (OpCnstr op) =
+discoverRefCyclesForOp addr (OpCnstr oc) =
   pretravsVTQ
     mergeCnstrInfo
     ( \_ vt -> do
@@ -261,7 +270,7 @@ discoverRefCyclesForOp addr (OpCnstr op) =
           _ -> emptyCnstrInfo
     )
     addr
-    (VTOp op)
+    (VTOp oc.ocOp)
 discoverRefCyclesForOp _ _ = emptyCnstrInfo
 
 mergeReducedCnstrs :: [(ValAddr, Val)] -> Bool -> ValAddr -> RM Val
@@ -361,11 +370,11 @@ funcFlatMap = do
   s <- LibStrings.funcMap
   return $ Map.union b s
 
-reduceOp :: ValAddr -> Op -> RM (Val, Constraint)
-reduceOp addr op = case op of
+reduceOp :: ValAddr -> OpConstraint -> RM (Val, Constraint)
+reduceOp addr oc = case oc.ocOp of
   Compreh compreh -> do
     (r, cph') <- reduceCompreh addr compreh
-    return (r, OpCnstr (Compreh cph'))
+    return (r, OpCnstr (oc{ocOp = Compreh cph'}))
   FCall fc -> do
     fc' <- vtmapM (applyAddrFOnVN reduce) addr fc
     case fnFrame fc' of
@@ -376,15 +385,15 @@ reduceOp addr op = case op of
             Just f -> do
               let argVals = map value (toList args)
               r <- f argVals addr
-              return (r, OpCnstr op)
+              return (r, OpCnstr oc)
             Nothing -> do
               funcAddrT <- tshow funcAddr
               throwFatal $ printf "unknown function: %s" funcAddrT
-        VUnknown -> return (VUnknown, OpCnstr (FCall fc'))
+        VUnknown -> return (VUnknown, OpCnstr (oc{ocOp = FCall fc'}))
         _ ->
           return
             ( mkBottomVal $ printf "function call on non-function value: %s" (show $ value fnAddrVN)
-            , OpCnstr (FCall fc')
+            , OpCnstr (oc{ocOp = FCall fc'})
             )
       _ -> throwFatal "function call with empty frame"
   VSelect vs -> do
@@ -393,53 +402,52 @@ reduceOp addr op = case op of
     v' <- reduce baseAddr vs.base
     xs' <- mapMSeqWAddr reduceConstraintsInCnstrs mkOpArgFeature addr (iSelectors vs)
     let vs' = vs{base = v', iSelectors = xs'}
-    reduceNoUnify addr (VSelect vs')
+    reduceNoUnify addr (oc{ocOp = VSelect vs'})
   _ -> do
-    op' <- vtmapM (applyAddrFOnVN reduceConstraintsInCnstrs) addr op
-    reduceNoUnify addr op'
+    op' <- vtmapM (applyAddrFOnVN reduceConstraintsInCnstrs) addr oc.ocOp
+    reduceNoUnify addr (oc{ocOp = op'})
 
-reduceNoUnify :: ValAddr -> Op -> RM (Val, Constraint)
-reduceNoUnify addr op = case op of
+reduceNoUnify :: ValAddr -> OpConstraint -> RM (Val, Constraint)
+reduceNoUnify addr oc = case oc.ocOp of
   Ref ref -> do
-    let (_, isReady) = retrieveArgs op
+    let (_, isReady) = retrieveArgs oc.ocOp
     if not isReady
-      then return (VUnknown, OpCnstr op)
+      then return (VUnknown, OpCnstr oc)
       else do
         dr <- deref addr ref
-        handleRefRes dr addr ref
+        handleRefRes dr addr oc.ocLoc ref
   VSelect slct -> do
-    let (_, isReady) = retrieveArgs op
+    let (_, isReady) = retrieveArgs oc.ocOp
         valIsReady = isJust $ (rtrValue . value) slct.base
     if isReady && valIsReady
       then do
         tar <- select slct addr
-        return (tar, OpCnstr op)
-      else return (VUnknown, OpCnstr op)
+        return (tar, OpCnstr oc)
+      else return (VUnknown, OpCnstr oc)
   RegOp rop -> do
-    let (as, _) = retrieveArgs op
-        args = map (fromMaybe VUnknown) as
+    let (args, _) = retrieveArgs oc.ocOp
     r <-
       case ropOpType rop of
         InvalidOpType -> throwFatal "invalid op type"
-        UnaryOpType opType -> Primitives.resolveUnaryOp opType (head args)
+        UnaryOpType opType -> resolveUnaryOp opType (head args)
         -- Operands of the binary operation can be incomplete.
-        BinOpType opType -> Primitives.resolveRegBinOp opType (head args) (args !! 1) addr
-    return (r, OpCnstr op)
+        BinOpType opType -> resolveRegBinOp opType (head args) (args !! 1) addr
+    return (r, OpCnstr oc)
   Itp itp -> do
-    let (xs, isReady) = retrieveArgs op
+    let (args, isReady) = retrieveArgs oc.ocOp
     r <-
       if isReady
-        then resolveInterpolation itp (fromJust $ sequence xs)
+        then resolveInterpolation itp args
         else return VUnknown
-    return (r, OpCnstr op)
+    return (r, OpCnstr oc)
   DisjOp djop -> do
     -- Disjunction operation can have incomplete arguments.
     r <- resolveDisjOp djop addr
-    return (r, OpCnstr op)
+    return (r, OpCnstr oc)
   _ -> throwFatal "reduceOp: unsupported mutable op"
 
-handleRefRes :: DerefResult -> ValAddr -> Reference -> RM (Val, Constraint)
-handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr = riAddr} _ ref = do
+handleRefRes :: DerefResult -> ValAddr -> Location -> Reference -> RM (Val, Constraint)
+handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr = riAddr} _ loc ref = do
   let
     updatedRef :: Reference
     updatedRef = ref{resolvedFullAddr = targetAddr, isRefCycle}
@@ -451,8 +459,8 @@ handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr 
       _ -> updatedRef
 
   case targetValue of
-    Nothing -> return (VUnknown, OpCnstr (Ref newRef))
-    Just result -> return (value result, OpCnstr (Ref newRef))
+    Nothing -> return (VUnknown, OpCnstr (OpConstraint{ocOp = Ref newRef, ocLoc = loc}))
+    Just result -> return (value result, OpCnstr (OpConstraint{ocOp = Ref newRef, ocLoc = loc}))
 
 reduceVal :: ValAddr -> Val -> RM Val
 reduceVal addr v = do
@@ -462,21 +470,21 @@ reduceVal addr v = do
     VDisj d -> reduceDisj addr d
     _ -> return v
 
-retrieveArgs :: Op -> ([Maybe Val], Bool)
+retrieveArgs :: Op -> ([VNode], Bool)
 retrieveArgs op =
   let args =
         vtmapQ
           ( \_ vt -> do
               case vt of
                 -- The immediate children of the op node can only be VNode.
-                VTVNode v -> case value v of
-                  VUnknown -> Nothing
-                  other -> Just other
-                _ -> Nothing
+                VTVNode vn -> Right vn
+                _ -> Left ()
           )
           emptyValAddr
           op
-   in (args, isJust $ sequence args)
+   in case sequence args of
+        Left _ -> error "retrieveArgs: unexpected non-VNode child in op"
+        Right xs -> (xs, all (isJust . rtrValue . value) xs)
 
 signalReduced :: ValAddr -> RM ()
 signalReduced = sendToRootRecalcQ
@@ -487,3 +495,81 @@ storeBuiltinsAndPackages = do
   mapM_ (\(ti, v) -> storeVal (appendSeg universalValAddr (mkStringFeature ti)) (mkValVN v)) builtins
   m <- funcFlatMap
   mapM_ (\(addr, _) -> storeVal addr (mkValVN (VFuncAddr addr))) (Map.toList m)
+
+reduceList :: List -> ValAddr -> RM Val
+reduceList l addr = traceSpanTM "reduceList" addr emptySpanValue do
+  updstore <- mapMVectorWAddr reduce mkListStoreIdxFeature addr (store l)
+  (revR, isReady) <-
+    V.foldM
+      ( \(acc, isReadyAcc) sub -> do
+          debugInstStr "reduceList finalize" addr (show <$> toTermsRepWithAddr addr sub)
+          case static $ constraints sub of
+            -- If the element is a comprehension and the result of the comprehension is a list, per the spec, we insert
+            -- the elements of the list into the list at the current index.
+            OpCnstr (OpConstraint{ocOp = Compreh cph}) Seq.:<| Seq.Empty
+              | cph.isListCompreh
+              , Just rList <- rtrList (value sub) ->
+                  return ((reverse . toList $ rList.final) ++ acc, isReadyAcc && rList.isFinalReady)
+            _ -> return (value sub : acc, isReadyAcc && isJust (rtrValue $ value sub))
+      )
+      ([], True)
+      updstore
+  let
+    r = reverse revR
+    finalV = V.fromList r
+
+  finalV' <-
+    if isReady
+      then do
+        -- We have to manually signal reduced for all the addresses.
+        sequence_ $
+          foldrVecWAddr
+            ( \p v -> case addrIsVertex p of
+                Just _ -> do
+                  prevM <- fetchValFromStore "reduceList" p
+                  case prevM of
+                    Just prev -> when (prev.value /= v) $ do
+                      storeVal p (prev{value = v, version = prev.version + 1})
+                      signalReduced p
+                    Nothing -> do
+                      storeVal p (mkValVN v){version = 1}
+                      signalReduced p
+                _ -> return ()
+            )
+            mkListIdxFeature
+            addr
+            finalV
+        return finalV
+      else return V.empty
+  return
+    ( VList $
+        l
+          { store = updstore
+          , isFinalReady = isReady
+          , final = finalV'
+          }
+    )
+
+resolveInterpolation :: Interpolation -> [VNode] -> RM Val
+resolveInterpolation l args = do
+  r <-
+    foldM
+      ( \accRes seg -> case seg of
+          IplSegExpr j -> do
+            let r = value (args !! j)
+            if
+              | Just s <- rtrString r -> return $ (`BC.append` s) <$> accRes
+              | Just i <- rtrInt r -> return $ (`BC.append` (BC.pack $ show i)) <$> accRes
+              | Just b <- rtrBool r -> return $ (`BC.append` (BC.pack $ show b)) <$> accRes
+              | Just f <- rtrFloat r -> return $ (`BC.append` (BC.pack $ show f)) <$> accRes
+              | Just _ <- rtrBottom r -> return $ Left r
+              | VDisj _ <- r -> return $ Left r
+              | VTop <- r -> return $ Left r
+              | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
+          IplSegStr s -> return $ (`BC.append` s) <$> accRes
+      )
+      (Right BC.empty)
+      (itpSegs l)
+  case r of
+    Left err -> return err
+    Right res -> return $ VAtom (String res)

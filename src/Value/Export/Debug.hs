@@ -216,7 +216,6 @@ buildCommonInfo t = do
   return
     [ tStr
     , "vers=" ++ show (version t)
-    , if isJust (origExpr t) then "" else "N"
     , if t.constraints.allResolved then "" else "U"
     ]
 
@@ -228,7 +227,7 @@ valToTermsRep vn opt = case vn of
   VList vs ->
     let
       sfields = zipWith (\j v -> (show (mkListStoreIdxFeature j), mempty, v)) [0 ..] (toList vs.store)
-      ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, v)) [0 ..] (toList vs.final)
+      ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, mkValVN v)) [0 ..] (toList vs.final)
      in
       do
         fields <- valPairsToTermRepList (sfields ++ ffields) opt
@@ -243,8 +242,8 @@ valToTermsRep vn opt = case vn of
 
 cnstrToTermsRep :: (TextIndexerMonad s m) => Constraint -> TermsRepOption -> m TermsRep
 cnstrToTermsRep c opt = case c of
-  ValCnstr vn -> valToTermsRep vn opt
-  OpCnstr op -> opToTermsRep op opt
+  ValCnstr vc -> valToTermsRep vc.vcVal opt
+  OpCnstr oc -> opToTermsRep oc.ocOp opt
   StructEmbedCnstr xs -> cnstrsToTermsRep (toList xs) opt
 
 cnstrsToTermsRep :: (TextIndexerMonad s m) => [Constraint] -> TermsRepOption -> m TermsRep
@@ -255,9 +254,9 @@ cnstrsToTermsRep constraints opt = do
           fT <- T.unpack <$> tshow (mkRegCnstrFeature i)
           cont <- cnstrToTermsRep c opt
           case c of
-            ValCnstr _ ->
+            ValCnstr{} ->
               return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
-            OpCnstr _ ->
+            OpCnstr{} ->
               return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
             StructEmbedCnstr _ ->
               return $ TermRep{trfLabel = fT, trfAttr = ",stremb", trfContent = TermRepContentRegular cont}
@@ -408,8 +407,7 @@ buildRepValStruct struct opt =
             return (k, T.unpack vstr)
         )
         [ ("id", tshow s.stcID)
-        , ("isConc", tshow $ stcIsConcrete s)
-        , ("isClosed", tshow $ stcClosed s)
+        , ("closed", tshow $ stcClosed s)
         ,
           ( "ord"
           , do

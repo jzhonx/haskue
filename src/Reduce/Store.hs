@@ -6,6 +6,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import Feature
 import Reduce.Monad
+import Reduce.TraceSpan (debugInstStr)
 import StringIndex (ShowWTIndexer (..), TextIndex, strToTextIndex)
 import Text.Printf (printf)
 import Util.Trace (debugInstant)
@@ -95,6 +96,29 @@ queryLastDerefedVal addr depAddr = do
   case Map.lookup addr m of
     Just depMap -> return $ Map.lookup depAddr depMap
     Nothing -> return Nothing
+
+storeLastDerefedVal :: VertexAddr -> ReferableAddr -> VNode -> RM ()
+storeLastDerefedVal addr depAddr v = do
+  m <- lastDerefs <$> getRMContext
+  let depMap = Map.findWithDefault Map.empty addr m
+      newDepMap = Map.insert depAddr v.version depMap
+      newM = Map.insert addr newDepMap m
+  debugInstStr
+    "storeLastDerefedVal"
+    (vertexToAddr addr)
+    ( do
+        addrT <- tshow addr
+        depAddrT <- tshow depAddr
+        vT <- tshow v
+        return $
+          printf
+            "store last derefed val for addr: %s, depAddr: %s, val: %s, version: %d"
+            addrT
+            depAddrT
+            vT
+            v.version
+    )
+  modifyRMContext $ \ctx -> ctx{lastDerefs = newM}
 
 {- | Copy the value from the target address to the reference address.
 

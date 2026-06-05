@@ -91,7 +91,7 @@ data TokenType
     Identifier -- variable names, field names
   | EOF -- end of file
   | Illegal -- illegal token
-  deriving (Show, Eq, Enum, Bounded, Generic, NFData)
+  deriving (Show, Eq, Enum, Bounded, Generic, NFData, Ord)
 
 toByteString :: TokenType -> BC.ByteString
 toByteString tt = case tt of

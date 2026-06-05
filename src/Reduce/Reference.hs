@@ -25,7 +25,7 @@ import Reduce.Monad (
   putRMContext,
   throwFatal,
  )
-import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore)
+import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore, storeLastDerefedVal)
 import Reduce.TraceSpan (
   debugInstStr,
   emptySpanValue,
@@ -184,8 +184,8 @@ concreteRefSels (Reference{selectors}) = do
     return $ Selectors rest
 
 concreteVSelSels :: ValueSelect -> RM (Maybe Selectors)
-concreteVSelSels (ValueSelect _ _ xs) = do
-  m <- mapM vnToSel (toList xs)
+concreteVSelSels vs = do
+  m <- mapM vnToSel (toList $ iSelectors vs)
   return $ Selectors <$> sequence m
 
 {- | Get the value pointed by the value path and the original addresses.
@@ -489,29 +489,6 @@ copyConcrete tarAddr addr tarV = do
         return $ printf "target concrete is %s" rep
     )
   return r
-
-storeLastDerefedVal :: VertexAddr -> ReferableAddr -> VNode -> RM ()
-storeLastDerefedVal addr depAddr v = do
-  m <- lastDerefs <$> getRMContext
-  let depMap = Map.findWithDefault Map.empty addr m
-      newDepMap = Map.insert depAddr v.version depMap
-      newM = Map.insert addr newDepMap m
-  debugInstStr
-    "storeLastDerefedVal"
-    (vertexToAddr addr)
-    ( do
-        addrT <- tshow addr
-        depAddrT <- tshow depAddr
-        vT <- tshow v
-        return $
-          printf
-            "store last derefed val for addr: %s, depAddr: %s, val: %s, version: %d"
-            addrT
-            depAddrT
-            vT
-            v.version
-    )
-  modifyRMContext $ \ctx -> ctx{lastDerefs = newM}
 
 checkRefDef :: ValAddr -> VNode -> RM VNode
 checkRefDef tarAddr val = do

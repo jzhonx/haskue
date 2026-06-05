@@ -9,17 +9,19 @@ import {-# SOURCE #-} Value.Val
 data List = List
   { store :: V.Vector VNode
   -- ^ Stores the variants of the list, including the comprehensions.
-  , final :: V.Vector VNode
+  , isFinalReady :: Bool
+  , final :: V.Vector Val
   -- ^ Stores the finalized elements of the list.
   -- Reference to the list should only read from the final field.
   }
   deriving (Generic)
 
-mkList :: [VNode] -> [VNode] -> List
-mkList x y =
+mkList :: [VNode] -> List
+mkList x =
   List
     { store = V.fromList x
-    , final = V.fromList y
+    , isFinalReady = False
+    , final = V.empty
     }
 
 getListStoreAt :: Int -> List -> Maybe VNode
@@ -28,8 +30,8 @@ getListStoreAt i lst = store lst V.!? i
 updateListStoreAt :: Int -> (VNode -> VNode) -> List -> List
 updateListStoreAt i f lst = lst{store = store lst V.// [(i, f (store lst V.! i))]}
 
-getListFinalAt :: Int -> List -> Maybe VNode
+getListFinalAt :: Int -> List -> Maybe Val
 getListFinalAt i lst = final lst V.!? i
 
-updateListFinalAt :: Int -> (VNode -> VNode) -> List -> List
+updateListFinalAt :: Int -> (Val -> Val) -> List -> List
 updateListFinalAt i f lst = lst{final = final lst V.// [(i, f (final lst V.! i))]}

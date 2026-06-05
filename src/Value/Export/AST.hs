@@ -14,18 +14,23 @@ module Value.Export.AST (
 where
 
 import Control.Monad (foldM)
-import Control.Monad.Except (Except, MonadError (..))
-import Control.Monad.RWS.Strict (RWST, runRWST)
+import Control.Monad.Except (Except)
+import Control.Monad.RWS.Strict (RWST, local, runRWST)
 import Control.Monad.Reader (asks)
 import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
 import qualified Data.Text as T
+import Debug.Trace (trace)
 import Exception (throwErrSt)
+import Feature (removeTISuffix)
 import StringIndex (TextIndex, TextIndexer, textIndexToBS, textToTextIndex)
 import qualified Syntax.AST as AST
+import Syntax.Scanner (isByteStringIdentifier)
 import Syntax.Token as Token
 import Text.Printf (printf)
 import Value.Atom as Atom
@@ -33,7 +38,8 @@ import Value.Bounds
 import Value.Comprehension
 import Value.Disj
 import Value.DisjoinOp
-import Value.Export.Debug
+import Value.Func (FuncCall (..))
+import Value.Interpolation (Interpolation, IplSeg (..), itpExprs, itpSegs)
 import Value.List
 import Value.Op
 import Value.Reference
@@ -44,33 +50,41 @@ type EM = RWST BuildConfig () TextIndexer (Except String)
 
 buildExpr :: VNode -> TextIndexer -> Except String (AST.Expression, TextIndexer)
 buildExpr t tier = do
-  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig False) tier
+  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig False False) tier
   return (a, s)
 
 buildExprDebug :: VNode -> TextIndexer -> Except String (AST.Expression, TextIndexer)
 buildExprDebug t tier = do
-  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig True) tier
+  (a, s, _) <- runRWST (buildExprExt t) (BuildConfig True False) tier
   return (a, s)
 
-newtype BuildConfig = BuildConfig {isDebug :: Bool}
+data BuildConfig = BuildConfig
+  { isDebug :: Bool
+  , forceBuildFromCnstrs :: Bool
+  }
 
 buildExprExt :: VNode -> EM AST.Expression
-buildExprExt t = case t of
-  IsUnknown -> do
-    isDebug <- asks isDebug
-    if isDebug
-      then
-        if not (null (static $ constraints t))
-          then buildStaticConstraintsExpr (static $ constraints t)
-          else return $ AST.idCons "Unknown"
-      else case origExpr t of
-        Just e -> return e
-        _
-          | not (null (static $ constraints t)) ->
-              buildStaticConstraintsExpr (static $ constraints t)
-          | otherwise -> throwErrSt "cannot build expression for Unknown value without original expression"
-  IsStruct s -> buildStructASTExpr s t
-  _ -> buildValExprExt (value t)
+buildExprExt t = do
+  forceBuild <- asks forceBuildFromCnstrs
+  case t of
+    IsUnknown -> do
+      if not (null (static $ constraints t))
+        then
+          -- All the sub nodes of an Unknown value should be built from constraints.
+          local (\cfg -> cfg{forceBuildFromCnstrs = True}) $ buildConstraintSeqExpr (static $ constraints t)
+        else do
+          isDebug <- asks isDebug
+          if isDebug
+            then return $ AST.idCons "Unknown"
+            else throwErrSt "no constraints found for Unknown value, cannot build expression for it"
+    IsStruct s
+      | isStructAllLabelsConcrete s -> buildStructASTExpr s
+      | otherwise ->
+          local (\cfg -> cfg{forceBuildFromCnstrs = True}) $
+            buildConstraintSeqExpr (static $ constraints t)
+    _
+      | forceBuild -> buildConstraintSeqExpr (static $ constraints t)
+      | otherwise -> buildValExprExt (value t)
 
 buildValExprExt :: Val -> EM AST.Expression
 buildValExprExt t = case t of
@@ -78,15 +92,24 @@ buildValExprExt t = case t of
   VBottom _ -> buildBottom
   VAtom a -> return $ (AST.litCons . aToLiteral) a
   VBounds b -> return $ buildBoundsASTExpr b
-  VStruct struct -> buildStructASTExpr struct (mkValVN t)
+  VStruct struct -> buildStructASTExpr struct
   VList l -> do
     ls <-
-      mapM
-        ( \x -> do
-            e <- buildExprExt x
-            return $ AST.EmbeddingAlias $ AST.AliasExpr Nothing e
-        )
-        (toList l.final)
+      if l.isFinalReady
+        then
+          mapM
+            ( \x -> do
+                e <- buildValExprExt x
+                return $ AST.EmbeddingAlias $ AST.AliasExpr Nothing e
+            )
+            (toList l.final)
+        else
+          mapM
+            ( \x -> do
+                e <- buildExprExt x
+                return $ AST.EmbeddingAlias $ AST.AliasExpr Nothing e
+            )
+            (toList l.store)
     return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls Nothing) emptyLoc
   VDisj dj
     | null (rtrDisjDefVal dj) -> disjunctsToAST (toList $ dsjDisjuncts dj)
@@ -96,43 +119,31 @@ buildValExprExt t = case t of
     if isDebug
       then return $ AST.idCons "Unknown"
       else throwErrSt "cannot build expression for Unknown value without original expression"
-  VFuncAddr addr -> do
+  VFuncAddr _ -> do
     isDebug <- asks isDebug
     if isDebug
       then return $ AST.idCons "fnAddr"
       else throwErrSt "cannot build expression for function address value without original expression"
 
-buildStaticConstraintsExpr :: Seq.Seq Constraint -> EM AST.Expression
-buildStaticConstraintsExpr cs = do
-  cs' <- mapM buildConstraintExpr (toList cs)
-  return $ foldr1 (AST.Binary (mkTypeToken Token.Unify)) cs'
+buildConstraintSeqExpr :: Seq.Seq Constraint -> EM AST.Expression
+buildConstraintSeqExpr cs = do
+  es' <- mapM buildConstraintExpr (toList cs)
+  case es' of
+    [] -> throwErrSt "no constraints found, cannot build expression for it"
+    [e] -> return e
+    _ -> return $ foldl1 (AST.Binary (mkTypeToken Token.Unify)) es'
 
 buildConstraintExpr :: Constraint -> EM AST.Expression
 buildConstraintExpr c = case c of
-  ValCnstr vn -> buildExprExt (mkValVN vn)
-  StructEmbedCnstr xs -> buildStaticConstraintsExpr xs
-  OpCnstr op -> buildOpASTExpr op (mkValVN VUnknown)
+  ValCnstr vc -> buildValExprExt (vcVal vc)
+  OpCnstr oc -> buildOpASTExpr (ocOp oc)
+  StructEmbedCnstr xs -> buildConstraintSeqExpr xs
 
 buildBottom :: EM AST.Expression
 buildBottom = return $ AST.litCons (AST.LitBasic $ AST.BottomLit $ mkTypeToken Token.Bottom)
 
-throwExprNotFound :: VNode -> EM a
-throwExprNotFound t = do
-  rep <- vnToStringTermsRep t
-  throwError $ printf "expression not found for %s, tree rep: %s" (showValType $ value t) rep
-
-buildOpASTExpr :: Op -> VNode -> EM AST.Expression
-buildOpASTExpr mut t = do
-  -- If in debug mode, we build the expression because arguments might have updated values even though the mutval is
-  -- not ready.
-  isDebug <- asks isDebug
-  if isDebug
-    then buildOpASTExprForce mut t
-    -- TODO: handle parenthese in origExpr. Currently origExpr does not have parenthese.
-    else maybe (buildOpASTExprForce mut t) return (origExpr t)
-
-buildOpASTExprForce :: Op -> VNode -> EM AST.Expression
-buildOpASTExprForce op t = case op of
+buildOpASTExpr :: Op -> EM AST.Expression
+buildOpASTExpr op = case op of
   RegOp r -> buildRegOpASTExpr r
   Ref ref -> buildRefASTExpr ref
   VSelect idx -> buildIndexASTExpr idx
@@ -141,9 +152,37 @@ buildOpASTExprForce op t = case op of
     return $
       AST.litCons $
         AST.LitStruct (AST.StructLit emptyLoc [AST.Embedding (AST.EmbedComprehension ce)] emptyLoc)
-  DisjOp dop -> buildDisjoinOpASTExpr dop t
-  Itp _ -> throwExprNotFound t
-  FCall _ -> throwExprNotFound t
+  DisjOp dop -> buildDisjoinOpASTExpr dop
+  Itp itp -> buildInterpolationASTExpr itp
+  FCall fc -> buildFCallASTExpr fc
+
+buildInterpolationASTExpr :: Interpolation -> EM AST.Expression
+buildInterpolationASTExpr itp = do
+  exprs <- mapM buildExprExt (toList $ itpExprs itp)
+  let xs =
+        map
+          ( \seg ->
+              ( case seg of
+                  IplSegStr s -> AST.UnicodeChars s
+                  IplSegExpr i -> AST.InterpolationExpr emptyLoc (exprs !! i)
+              )
+          )
+          (itpSegs itp)
+  return $ AST.litCons $ AST.LitBasic $ AST.StringLit $ AST.SimpleStringL (AST.SimpleStringLit emptyLoc xs)
+
+buildFCallASTExpr :: FuncCall -> EM AST.Expression
+buildFCallASTExpr FuncCall{fnFrame}
+  | faddr Seq.:<| args <- fnFrame = do
+      fe <- local (\cfg -> cfg{forceBuildFromCnstrs = True}) $ buildExprExt faddr
+      argEs <- mapM (local (\cfg -> cfg{forceBuildFromCnstrs = True}) . buildExprExt) args
+      case fe of
+        AST.Unary (AST.Primary pe) ->
+          return $
+            AST.Unary $
+              AST.Primary $
+                AST.PrimExprArguments pe emptyLoc (toList argEs) emptyLoc
+        _ -> throwErrSt "the function address of a function call should be a primary expression"
+  | otherwise = throwErrSt "function call should have at least one element in the frame"
 
 buildStaticFieldExpr :: (TextIndex, Field) -> EM AST.Declaration
 buildStaticFieldExpr (sIdx, sf) = do
@@ -164,7 +203,7 @@ buildStaticFieldExpr (sIdx, sf) = do
 buildDynFieldExpr :: DynamicField -> EM AST.Declaration
 buildDynFieldExpr sf = do
   le <- buildExprExt (dsfLabel sf)
-  ve <- buildStaticConstraintsExpr (dsfValue sf)
+  ve <- buildConstraintSeqExpr (dsfValue sf)
   let decl =
         AST.FieldDecl
           ( AST.Field
@@ -179,7 +218,7 @@ buildDynFieldExpr sf = do
 buildPatternExpr :: StructCnstr -> EM AST.Declaration
 buildPatternExpr pat = do
   pte <- buildExprExt (scsPattern pat)
-  ve <- buildStaticConstraintsExpr (scsValue pat)
+  ve <- buildConstraintSeqExpr (scsValue pat)
   return $ AST.FieldDecl (AST.Field [labelPatternCons pte] (AST.AliasExpr Nothing ve))
 
 buildLetExpr :: (TextIndex, VNode) -> EM AST.Declaration
@@ -205,32 +244,24 @@ labelCons a ln =
 labelPatternCons :: AST.Expression -> AST.Label
 labelPatternCons le = AST.Label (AST.LabelExpr emptyLoc (AST.AliasExpr Nothing le) emptyLoc)
 
-buildStructASTExpr :: Struct -> VNode -> EM AST.Expression
-buildStructASTExpr struct t = do
+buildStructASTExpr :: Struct -> EM AST.Expression
+buildStructASTExpr struct = do
   isDebug <- asks isDebug
   if isDebug
-    then buildStructASTExprDebug struct t
-    else buildStructASTExprNormal struct t
+    then buildStructASTExprDebug struct
+    else buildStructASTExprNormal struct
 
-buildStructASTExprDebug :: Struct -> VNode -> EM AST.Expression
-buildStructASTExprDebug (stcEmbedVal -> Just ev) _ = do
-  evE <- buildExprExt (mkValVN ev)
+buildStructASTExprDebug :: Struct -> EM AST.Expression
+buildStructASTExprDebug (stcEmbedVal -> Just ev) = do
+  evE <- buildValExprExt ev
   return $
     AST.litCons $
       AST.LitStruct (AST.StructLit emptyLoc [AST.Embedding (AST.EmbeddingAlias (AST.AliasExpr Nothing evE))] emptyLoc)
-buildStructASTExprDebug s _ = do
-  statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
-  dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
-  patterns <- mapM buildPatternExpr (IntMap.elems $ stcCnstrs s)
-  lets <- mapM buildLetExpr (Map.toList $ stcBindings s)
-  let
-    decls = statics ++ dynamics ++ patterns ++ lets
-    e = AST.litCons $ AST.LitStruct (AST.StructLit emptyLoc decls emptyLoc)
-  return e
+buildStructASTExprDebug s = buildNonConcreteStructASTExpr s
 
-buildStructASTExprNormal :: Struct -> VNode -> EM AST.Expression
-buildStructASTExprNormal _ (VNVal (IsEmbedVal v)) = buildExprExt (mkValVN v)
-buildStructASTExprNormal s t = do
+buildStructASTExprNormal :: Struct -> EM AST.Expression
+buildStructASTExprNormal Struct{stcEmbedVal = Just v} = buildValExprExt v
+buildStructASTExprNormal s = do
   r <- buildStructOrdLabels (rtrString . value) s
   case r of
     Just labels -> do
@@ -250,12 +281,50 @@ buildStructASTExprNormal s t = do
       let decls = fields
           e = AST.litCons $ AST.LitStruct (AST.StructLit emptyLoc decls emptyLoc)
       return e
-    -- If not all dynamic fields can be resolved to string labels, we can not build the struct expression.
-    Nothing ->
-      maybe
-        (throwErrSt "not all dynamic fields can be resolved to string labels")
-        return
-        (origExpr t)
+    Nothing -> buildNonConcreteStructASTExpr s
+
+buildNonConcreteStructASTExpr :: Struct -> EM AST.Expression
+buildNonConcreteStructASTExpr s = do
+  statics <- mapM buildStaticFieldExpr (Map.toList $ stcFields s)
+  dynamics <- mapM buildDynFieldExpr (IntMap.elems $ stcDynFields s)
+  patterns <- mapM buildPatternExpr (IntMap.elems $ stcCnstrs s)
+  lets <- mapM buildLetExpr (Map.toList $ stcBindings s)
+  let
+    decls = statics ++ dynamics ++ patterns ++ lets
+    e = AST.litCons $ AST.LitStruct (AST.StructLit emptyLoc decls emptyLoc)
+  return e
+
+isStructAllLabelsConcrete :: Struct -> Bool
+isStructAllLabelsConcrete s = all (isJust . rtrString . value . dsfLabel) (IntMap.elems $ stcDynFields s)
+
+{- | Build the ordered list of labels in the struct.
+
+If not all dynamic field labels can be resolved to strings, return Nothing.
+-}
+buildStructOrdLabels :: (VNode -> Maybe BC.ByteString) -> Struct -> EM (Maybe [BC.ByteString])
+buildStructOrdLabels rtrBC struct = do
+  r <-
+    foldM
+      ( \acc blkLabel -> case acc of
+          Nothing -> return Nothing
+          Just (revAcc, seen) -> do
+            newLabelM <- case blkLabel of
+              StructStaticFieldLabel n -> Just <$> textIndexToBS n
+              StructDynFieldOID i -> return $ do
+                dsf <- lookupStructDynField i struct
+                rtrBC (dsfLabel dsf)
+            case newLabelM of
+              Nothing -> return Nothing
+              Just newLabel ->
+                return $
+                  Just
+                    if Set.member newLabel seen
+                      then (revAcc, seen)
+                      else (newLabel : revAcc, Set.insert newLabel seen)
+      )
+      (Just ([], Set.empty))
+      (stcOrdLabels struct)
+  return $ reverse . fst <$> r
 
 buildComprehASTExpr :: Comprehension -> EM AST.Comprehension
 buildComprehASTExpr cph = do
@@ -354,70 +423,91 @@ disjunctsToAST ds = do
     else
       return $ foldr1 (AST.Binary (mkTypeToken Disjoin)) xs
 
--- buildUnifyOpASTExpr :: UnifyOp -> EM AST.Expression
--- buildUnifyOpASTExpr op
---   | fstConj Seq.:<| rest <- op.conjs
---   , -- The rest should be a non-empty sequence.
---     _ Seq.:|> _ <- rest = do
---       leftMost <- buildExprExt fstConj
---       foldM
---         ( \acc x -> do
---             right <- buildExprExt x
---             return $ AST.Binary (mkTypeToken Unify) acc right
---         )
---         leftMost
---         rest
---   | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
-
-buildDisjoinOpASTExpr :: DisjoinOp -> VNode -> EM AST.Expression
-buildDisjoinOpASTExpr op t = do
-  isDebug <- asks isDebug
-  if isDebug
-    then go
-    else throwExprNotFound t
+buildDisjoinOpASTExpr :: DisjoinOp -> EM AST.Expression
+buildDisjoinOpASTExpr op
+  | length (djoTerms op) < 2 = throwErrSt "DisjoinOp should have at least two conjuncts"
+  | fstDisj Seq.:<| rest <- djoTerms op = do
+      leftMost <- build fstDisj
+      foldM
+        ( \acc x -> do
+            right <- build x
+            return $ AST.Binary (mkTypeToken Disjoin) acc right
+        )
+        leftMost
+        rest
+  | otherwise = throwErrSt "unreachable"
  where
-  go
-    | fstDisj Seq.:<| rest <- djoTerms op
-    , -- The rest should be a non-empty sequence.
-      _ Seq.:|> _ <- rest = do
-        leftMost <- buildExprExt (dstValue fstDisj)
-        foldM
-          ( \acc x -> do
-              right <- buildExprExt (dstValue x)
-              return $ AST.Binary (mkTypeToken Disjoin) acc right
-          )
-          leftMost
-          rest
-    | otherwise = throwErrSt "UnifyOp should have at least two conjuncts"
+  build term = do
+    e <- buildExprExt (dstValue term)
+    if dstMarked term
+      then case e of
+        AST.Unary ue -> return $ AST.Unary $ AST.UnaryOp (mkTypeToken Token.Multiply) ue
+        _ ->
+          return
+            $ AST.Unary
+            $ AST.UnaryOp
+              (mkTypeToken Token.Multiply)
+            $ AST.Primary
+            $ AST.PrimExprOperand
+            $ AST.OpExpression emptyLoc e emptyLoc
+      else return e
 
 buildRefASTExpr :: Reference -> EM AST.Expression
 buildRefASTExpr ref = do
-  varS <- textIndexToBS ref.ident
+  varS <-
+    if ref.resolvedIdentType == ITLetBinding
+      then removeTISuffix ref.ident >>= textIndexToBS
+      else textIndexToBS ref.ident
   let varE = AST.PrimExprOperand $ AST.OpName $ AST.OperandName (textIdentToken varS)
   r <-
     foldM
-      ( \acc x -> do
+      ( \acc (x, isIndex) -> do
           xe <- buildExprExt x
-          return $ AST.PrimExprIndex acc emptyLoc xe emptyLoc
+          if isIndex
+            then return $ AST.PrimExprIndex acc emptyLoc xe emptyLoc
+            else do
+              sel <- exprToSelector xe
+              return $ AST.PrimExprSelector acc emptyLoc sel
       )
       varE
-      ref.selectors
+      (Seq.zip ref.selectors ref.selectorTypes)
   return $ AST.Unary (AST.Primary r)
 
+exprToSelector :: AST.Expression -> EM AST.Selector
+exprToSelector e = case e of
+  AST.Unary
+    ( AST.Primary
+        ( AST.PrimExprOperand
+            ( AST.OpLiteral
+                ( AST.LitBasic
+                    (AST.StringLit (AST.SimpleStringL s@(AST.SimpleStringLit _ [AST.UnicodeChars t])))
+                  )
+              )
+          )
+      ) ->
+      if isByteStringIdentifier t
+        then return (AST.IDSelector (mkToken Identifier t))
+        else return (AST.StringSelector s)
+  _ -> throwErrSt "selector should be a string literal"
+
 buildIndexASTExpr :: ValueSelect -> EM AST.Expression
-buildIndexASTExpr (ValueSelect _ b xs) = do
-  be <- buildExprExt b
+buildIndexASTExpr vs = do
+  be <- buildExprExt vs.base
   v <- case be of
     AST.Unary (AST.Primary v) -> return v
     _ -> throwErrSt "the index value of ValueSelect should be a primary expression"
   r <-
     foldM
-      ( \acc y -> do
+      ( \acc (y, isIndex) -> do
           ye <- buildExprExt y
-          return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
+          if isIndex
+            then return $ AST.PrimExprIndex acc emptyLoc ye emptyLoc
+            else do
+              sel <- exprToSelector ye
+              return $ AST.PrimExprSelector acc emptyLoc sel
       )
       v
-      xs
+      (Seq.zip vs.iSelectors vs.iSelectorTypes)
   return $ AST.Unary (AST.Primary r)
 
 buildRegOpASTExpr :: RegularOp -> EM AST.Expression
@@ -426,7 +516,6 @@ buildRegOpASTExpr op = case ropOpType op of
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
   BinOpType bop
     | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-  -- CloseFunc -> return $ AST.litCons (AST.textToSimpleStrLiteral (BC.pack "close func"))
   _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
 
 buildUnaryExpr :: TokenType -> VNode -> EM AST.Expression
@@ -447,11 +536,3 @@ buildBinaryExpr op l r = do
   xe <- buildExprExt l
   ye <- buildExprExt r
   return $ AST.Binary (mkTypeToken op) xe ye
-
-buildArgsExpr :: String -> [VNode] -> EM AST.Expression
-buildArgsExpr func ts = do
-  ets <- mapM buildExprExt ts
-  return $
-    AST.Unary $
-      AST.Primary
-        (AST.PrimExprArguments (AST.idToPrimExpr (T.pack func)) emptyLoc ets emptyLoc)
