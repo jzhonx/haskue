@@ -132,14 +132,16 @@ transLiteral :: Literal -> ValAddr -> TM TrDataE
 transLiteral (LitStruct s) addr = transStructLit s addr
 transLiteral (LitList (ListLit loc l _)) addr = transListLit loc l addr
 transLiteral literal@(LitBasic a) addr
-  | (StringLit (SimpleStringL (SimpleStringLit _ segs))) <- a = segsToStrAtom segs
-  | (StringLit (MultiLineStringL (MultiLineStringLit _ segs))) <- a = segsToStrAtom segs
+  | (StringLit (SimpleStringL (SimpleStringLit _ segs))) <- a = segsToAtom String False segs
+  | (StringLit (MultiLineStringL (MultiLineStringLit _ segs))) <- a = segsToAtom String False segs
+  | (StringLit (SimpleBytesL (SimpleBytesLit _ segs))) <- a = segsToAtom Bytes True segs
+  | (StringLit (MultiLineBytesL (MultiLineBytesLit _ segs))) <- a = segsToAtom Bytes True segs
  where
-  segsToStrAtom segs = do
-    rE <- strLitSegsToStr segs addr
+  segsToAtom mkAtom isBytes segs = do
+    rE <- strLitSegsToStr segs addr isBytes
     return $ case rE of
       Left op -> exprTrDataE (getNodeLoc literal) (TrOp op)
-      Right str -> mkAtomTrDataE (getNodeLoc literal) $ String str
+      Right s -> mkAtomTrDataE (getNodeLoc literal) $ mkAtom s
 transLiteral (LitBasic a) _ = case a of
   IntLit i -> do
     let v = read (BC.unpack (tkLiteral i)) :: Integer
@@ -154,7 +156,11 @@ transLiteral (LitBasic a) _ = case a of
       _ -> throwFatal $ printf "invalid boolean literal: %s" (show b)
     return $ mkAtomTrDataE (getNodeLoc a) $ Bool v
   NullLit _ -> return $ mkAtomTrDataE (getNodeLoc a) Null
-  BottomLit _ -> return $ exprTrDataE (getNodeLoc a) (TrValue $ VBottom $ Bottom "")
+  BottomLit _ ->
+    return $
+      exprTrDataE
+        (getNodeLoc a)
+        (TrValue $ VBottom $ Bottom $ printf "explicit error (_|_ literal) in source:\n\t%s" (show $ getNodeLoc a))
 
 mkAtomTrDataE :: Location -> Atom -> TrDataE
 mkAtomTrDataE l a = exprTrDataE l (TrValue $ VAtom a)
@@ -194,8 +200,8 @@ transStructLit literal@(StructLit _ decls _) addr = inStructScope decls addr $ d
           (ValCnstr (ValConstraint{vcVal = VStruct struct, vcLoc = getNodeLoc literal}) Seq.<| embedCnstrs)
     else return $ exprTrDataE (getNodeLoc literal) $ TrValue (VStruct struct)
 
-strLitSegsToStr :: [StringLitSeg] -> ValAddr -> TM (Either Op BC.ByteString)
-strLitSegsToStr segs addr = do
+strLitSegsToStr :: [StringLitSeg] -> ValAddr -> Bool -> TM (Either Op BC.ByteString)
+strLitSegsToStr segs addr isBytes = do
   -- TODO: efficiency
   (asM, aSegs, aExprs) <-
     foldM
@@ -218,7 +224,7 @@ strLitSegsToStr segs addr = do
   if
     | null rSegs -> return $ Right BC.empty
     | not (null aExprs) ->
-        return $ Left $ mkItpSOp rSegs (map trDataEToVNode aExprs)
+        return $ Left $ (if isBytes then mkItpSOpBytes else mkItpSOp) rSegs (map trDataEToVNode aExprs)
     | length rSegs == 1, IplSegStr s <- head rSegs -> return $ Right s
     | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
@@ -345,7 +351,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
               (DynamicField{dsfID = oid, dsfAttr = attr, dsfLabel = selTree, dsfLabelIsInterp = False, dsfValue = val})
         (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
           oid <- allocObjID
-          rE <- strLitSegsToStr segs (structAddr `appendSeg` mkDynFieldFeature oid 0)
+          rE <- strLitSegsToStr segs (structAddr `appendSeg` mkDynFieldFeature oid 0) False
           case rE of
             Right str -> do
               strIdx <- textToTextIndex str
@@ -556,7 +562,7 @@ transSelector pe astSel addr = do
   case astSel of
     IDSelector ident -> return $ f (tkLiteral ident)
     StringSelector (SimpleStringLit _ segs) -> do
-      rE <- strLitSegsToStr segs selAddr
+      rE <- strLitSegsToStr segs selAddr False
       case rE of
         Left _ -> throwFatal "selector should not have interpolation"
         Right str -> return $ f str

@@ -186,6 +186,7 @@ cmpLess tktyp (_, vn1@VNode{value = v1}) (_, vn2@VNode{value = v2})
         (Int i1, Float f2) -> reta (Bool $ fromIntegral i1 < f2)
         (Float f1, Int i2) -> reta (Bool $ f1 < fromIntegral i2)
         (String s1, String s2) -> reta (Bool $ s1 < s2)
+        (Bytes b1, Bytes b2) -> reta (Bool $ b1 < b2)
         _ -> invalidCmpOperandsErr tktyp vn1 vn2
   | otherwise = invalidCmpOperandsErr tktyp vn1 vn2
 
@@ -201,6 +202,7 @@ cmpLessEqual tktyp (_, vn1@VNode{value = v1}) (_, vn2@VNode{value = v2})
         (Int i1, Float f2) -> reta (Bool $ fromIntegral i1 <= f2)
         (Float f1, Int i2) -> reta (Bool $ f1 <= fromIntegral i2)
         (String s1, String s2) -> reta (Bool $ s1 <= s2)
+        (Bytes b1, Bytes b2) -> reta (Bool $ b1 <= b2)
         _ -> invalidCmpOperandsErr tktyp vn1 vn2
   | otherwise = invalidCmpOperandsErr tktyp vn1 vn2
 
@@ -234,6 +236,8 @@ calc op (L, a1) (_, a2) =
       | Int i2 <- a2, Just f <- lookup op floatOps -> rf (f f1 (fromIntegral i2))
     String s1
       | String s2 <- a2, op == Token.Plus -> VAtom (String $ s1 <> s2)
+    Bytes b1
+      | Bytes b2 <- a2, op == Token.Plus -> VAtom (Bytes $ b1 <> b2)
     _ -> mismatch op a1 a2
  where
   ri = VAtom . Int

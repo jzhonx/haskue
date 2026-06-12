@@ -291,6 +291,8 @@ mergeLeftAtom (v1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) 
     case (v1, t2) of
       (String x, VAtom s)
         | String y <- s -> rtn $ if x == y then VAtom v1 else amismatch x y
+      (Bytes x, VAtom s)
+        | Bytes y <- s -> rtn $ if x == y then VAtom v1 else amismatch x y
       (Int x, VAtom s)
         | Int y <- s -> rtn $ if x == y then VAtom v1 else amismatch x y
       (Float x, VAtom s)
@@ -432,7 +434,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
       (BdReNotMatch _, BdReNotMatch _) -> return $ if m1 == m2 then [b1] else newOrdBounds
       _ -> return [b1, b2]
     BdType t2 ->
-      if t2 `elem` [BdString]
+      if t2 `elem` [BdString, BdBytes]
         then return [b1]
         else Left conflict
     BdIsAtom a2 -> uStrMatchAtom m1 a2
@@ -461,6 +463,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   uNEStrMatch a1 m2 = do
     _ <- case a1 of
       String x -> return x
+      Bytes x -> return x
       _ -> Left conflict
     case m2 of
       -- delay verification
@@ -473,6 +476,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
     Int _ -> if BdInt == t2 then Left conflict else return newOrdBounds
     Float _ -> if BdFloat == t2 then Left conflict else return newOrdBounds
     String _ -> if BdString == t2 then Left conflict else return newOrdBounds
+    Bytes _ -> if BdBytes == t2 then Left conflict else return newOrdBounds
     -- TODO: null?
     _ -> Left conflict
 
@@ -521,6 +525,11 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
             BdReMatch p1 -> reMatch s2 p1
             BdReNotMatch p1 -> reNotMatch s2 p1
        in if r then return [b2] else Left conflict
+    Bytes bs2 ->
+      let r = case m1 of
+            BdReMatch p1 -> reMatch bs2 p1
+            BdReNotMatch p1 -> reNotMatch bs2 p1
+       in if r then return [b2] else Left conflict
     _ -> Left conflict
 
   uTypeAtom :: BdType -> Atom -> Either String [Bound]
@@ -530,6 +539,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
           Int _ -> t1 `elem` [BdInt, BdNumber]
           Float _ -> t1 `elem` [BdFloat, BdNumber]
           String _ -> t1 == BdString
+          Bytes _ -> t1 == BdBytes
           _ -> False
      in if r then return [b2] else Left conflict
 

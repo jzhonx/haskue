@@ -9,10 +9,22 @@ import Control.DeepSeq (NFData (..))
 import Control.Monad (foldM)
 import Control.Monad.State.Strict (MonadState, evalState, gets, modify')
 import qualified Data.ByteString as BS
-import Data.ByteString.Builder (Builder, byteString, char7, string7, toLazyByteString, word8)
+import Data.ByteString.Builder (
+  Builder,
+  byteString,
+  char7,
+  string7,
+  toLazyByteString,
+  word8,
+  word8Hex,
+  word8HexFixed,
+  wordHex,
+ )
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.Word (Word8)
+import Debug.Trace (trace)
 import GHC.Generics (Generic)
 import Syntax.Token
 import Prelude hiding (GT, LT)
@@ -131,11 +143,15 @@ instance ASTNode BasicLit where
 data StringLit
   = SimpleStringL SimpleStringLit
   | MultiLineStringL MultiLineStringLit
+  | SimpleBytesL SimpleBytesLit
+  | MultiLineBytesL MultiLineBytesLit
   deriving (Eq, Show, Generic, NFData)
 
 instance ASTNode StringLit where
   getNodeLoc (SimpleStringL s) = getNodeLoc s
   getNodeLoc (MultiLineStringL s) = getNodeLoc s
+  getNodeLoc (SimpleBytesL s) = getNodeLoc s
+  getNodeLoc (MultiLineBytesL s) = getNodeLoc s
 
 data SimpleStringLit = SimpleStringLit Location [StringLitSeg]
   deriving (Eq, Show, Generic, NFData)
@@ -148,6 +164,18 @@ data MultiLineStringLit = MultiLineStringLit Location [StringLitSeg]
 
 instance ASTNode MultiLineStringLit where
   getNodeLoc (MultiLineStringLit loc _) = loc
+
+data SimpleBytesLit = SimpleBytesLit Location [StringLitSeg]
+  deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode SimpleBytesLit where
+  getNodeLoc (SimpleBytesLit loc _) = loc
+
+data MultiLineBytesLit = MultiLineBytesLit Location [StringLitSeg]
+  deriving (Eq, Show, Generic, NFData)
+
+instance ASTNode MultiLineBytesLit where
+  getNodeLoc (MultiLineBytesLit loc _) = loc
 
 data StringLitSeg
   = UnicodeChars BC.ByteString
@@ -287,6 +315,9 @@ textToMultiLineLiteral :: BC.ByteString -> Literal
 textToMultiLineLiteral s =
   LitBasic $ Syntax.AST.StringLit $ MultiLineStringL $ MultiLineStringLit emptyLoc [UnicodeChars s]
 
+textToSimpleBytesLiteral :: BC.ByteString -> Literal
+textToSimpleBytesLiteral s = LitBasic $ Syntax.AST.StringLit $ SimpleBytesL $ SimpleBytesLit emptyLoc [UnicodeChars s]
+
 textToSimpleStrLit :: BC.ByteString -> SimpleStringLit
 textToSimpleStrLit s = SimpleStringLit emptyLoc [UnicodeChars s]
 
@@ -422,20 +453,29 @@ litBld (LitBasic b) = case b of
 litBld (LitStruct l) = structLitBld l
 litBld (LitList (ListLit _ l _)) = listBld l
 
+multilineHeader :: Builder
+multilineHeader = byteString "\t"
+
 strLitBld :: (M m) => StringLit -> m Builder
 strLitBld (SimpleStringL s) = do
   b <- simpleStrLitBld s
   return $ char7 '"' <> b <> char7 '"'
 strLitBld (MultiLineStringL s) = do
   b <- multilineStrLitBld s
-  return $ string7 "\"\"\"\n" <> b <> string7 "\"\"\""
+  return $ string7 "\"\"\"\n" <> multilineHeader <> b <> char7 '\n' <> multilineHeader <> string7 "\"\"\""
+strLitBld (SimpleBytesL s) = do
+  b <- simpleBytesLitBld s
+  return $ char7 '\'' <> b <> char7 '\''
+strLitBld (MultiLineBytesL s) = do
+  b <- multilineBytesLitBld s
+  return $ string7 "'''\n" <> multilineHeader <> b <> char7 '\n' <> multilineHeader <> string7 "'''"
 
 -- | TODO: efficiency
 simpleStrLitBld :: (M m) => SimpleStringLit -> m Builder
 simpleStrLitBld (SimpleStringLit _ segs) =
   foldM
     ( \acc seg -> do
-        b <- strLitSegBld seg
+        b <- strLitSegBld mempty seg
         return $ acc <> b
     )
     mempty
@@ -445,31 +485,97 @@ multilineStrLitBld :: (M m) => MultiLineStringLit -> m Builder
 multilineStrLitBld (Syntax.AST.MultiLineStringLit _ segs) =
   foldM
     ( \acc seg -> do
-        b <- strLitSegBld seg
+        b <- strLitSegBld multilineHeader seg
         return $ acc <> b
     )
     mempty
     segs
 
-strLitSegBld :: (M m) => StringLitSeg -> m Builder
-strLitSegBld (UnicodeChars chs) = return $ escapeBS chs
-strLitSegBld (InterpolationExpr _ e) = do
+strLitSegBld :: (M m) => Builder -> StringLitSeg -> m Builder
+strLitSegBld lineHeader (UnicodeChars chs) = return $ renderBS lineHeader chs
+strLitSegBld _ (InterpolationExpr _ e) = do
   b <- exprBld e
   return $ string7 "\\(" <> b <> char7 ')'
 
-escapeBS :: BS.ByteString -> Builder
-escapeBS =
-  BS.foldl'
-    ( \acc w -> acc <> escape1 w
+simpleBytesLitBld :: (M m) => SimpleBytesLit -> m Builder
+simpleBytesLitBld (SimpleBytesLit _ segs) =
+  foldM
+    ( \acc seg -> do
+        b <- bytesLitSegBld mempty False seg
+        return $ acc <> b
     )
     mempty
+    segs
+
+multilineBytesLitBld :: (M m) => MultiLineBytesLit -> m Builder
+multilineBytesLitBld (MultiLineBytesLit _ segs) =
+  foldM
+    ( \acc seg -> do
+        b <- bytesLitSegBld multilineHeader True seg
+        return $ acc <> b
+    )
+    mempty
+    segs
+
+bytesLitSegBld :: (M m) => Builder -> Bool -> StringLitSeg -> m Builder
+bytesLitSegBld lineHeader isMultiline (UnicodeChars chs) = return $ renderBSBytes lineHeader isMultiline chs
+bytesLitSegBld _ _ (InterpolationExpr _ e) = do
+  b <- exprBld e
+  return $ string7 "\\(" <> b <> char7 ')'
+
+renderBS :: Builder -> BS.ByteString -> Builder
+renderBS lineHeader =
+  BS.foldl'
+    ( \acc w -> case w of
+        0x0A -> acc <> word8 w <> lineHeader
+        _ -> acc <> escapeWord8 False w
+    )
+    mempty
+
+renderBSBytes :: Builder -> Bool -> BS.ByteString -> Builder
+renderBSBytes lineHeader isMultiline b = go b mempty
  where
-  escape1 w =
-    case w of
-      34 -> word8 92 <> word8 34 -- Escape double quote (")
-      92 -> word8 92 <> word8 92 -- Escape backslash (\)
-      -- 10 -> word8 92 <> word8 110 -- Escape newline (\n)
-      _ -> word8 w
+  go :: BS.ByteString -> Builder -> Builder
+  go input acc = do
+    let (i, _) = TE.validateUtf8Chunk input
+    if i == BS.length input
+      -- The entire byte string is valid UTF-8, we can escape it as a string literal.
+      then acc <> render input
+      -- If the byte at i is not a valid UTF-8 byte, we escape it as a hex byte.
+      -- This covers two cases:
+      -- 1. The byte is not a valid UTF-8 byte (e.g., 0xFF). We escape it as \xFF.
+      -- 2. The byte is a valid UTF-8 byte (e.g., 0xE6) but no valid bytes follow it to form a valid UTF-8 character.
+      else
+        go
+          (BS.drop (i + 1) input)
+          (acc <> render (BS.take i input) <> byteString "\\x" <> word8HexFixed (BS.index input i))
+
+  render =
+    BS.foldl'
+      ( \acc w ->
+          acc <> case w of
+            0x0A -> word8 w <> lineHeader
+            _ -> escapeWord8 True w
+      )
+      mempty
+
+escapeWord8 :: Bool -> Word8 -> Builder
+escapeWord8 forBytes w = case w of
+  -- Named escapes
+  0x07 -> byteString "\\a"
+  0x08 -> byteString "\\b"
+  0x09 -> byteString "\\t"
+  -- Newline is not escaped as \n. The actual string literal is converted to multiple lines instead.
+  -- 0x0A  -> byteString "\\n"
+  0x0B -> byteString "\\v"
+  0x0C -> byteString "\\f"
+  0x0D -> byteString "\\r"
+  -- Backslash
+  0x5C -> byteString "\\\\"
+  -- Quotes
+  0x27 | forBytes -> byteString "\\'" -- '
+  0x22 | not forBytes -> byteString "\\\"" -- "
+  _ -> word8 w
 
 structLitBld :: (M m) => StructLit -> m Builder
 structLitBld (StructLit _ decls _)

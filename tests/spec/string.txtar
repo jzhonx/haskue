@@ -12,9 +12,7 @@ x: """
     a
   """
 -- exp --
-x: """
-    a
-  """
+x: "  a"
 
 -- string3 --
 s1: "\"a"
@@ -26,9 +24,7 @@ x: """
     \"a
   """
 -- exp --
-x: """
-    \"a
-  """
+x: "  \"a"
 
 -- string5 --
 s1: "\\"
@@ -59,6 +55,54 @@ d: 42
 
 -- exp --
 "你好"
+
+-- string_escape_slash --
+x: "\/\/"
+-- exp --
+x: "//"
+
+-- string_escape_backslash_quote --
+x: "\\\""
+-- exp --
+x: "\\\""
+
+-- string_escape_newline --
+x: "a\nb"
+-- exp --
+x: """
+	a
+	b
+	"""
+
+-- string_escape_tab --
+x: "\t"
+-- exp --
+x: "\t"
+
+-- string_escape_cr --
+x: "\r"
+-- exp --
+x: "\r"
+
+-- string_escape_bell --
+x: "\a"
+-- exp --
+x: "\a"
+
+-- string_escape_bs_ctrl --
+x: "\b"
+-- exp --
+x: "\b"
+
+-- string_escape_ff --
+x: "\f"
+-- exp --
+x: "\f"
+
+-- string_escape_vtab --
+x: "\v"
+-- exp --
+x: "\v"
 
 -- interpolation_incomplete --
 x: "a\(y.z)b"

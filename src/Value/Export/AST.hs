@@ -39,7 +39,7 @@ import Value.Comprehension
 import Value.Disj
 import Value.DisjoinOp
 import Value.Func (FuncCall (..))
-import Value.Interpolation (Interpolation, IplSeg (..), itpExprs, itpSegs)
+import Value.Interpolation (Interpolation, IplSeg (..), itpExprs, itpIsBytes, itpSegs)
 import Value.List
 import Value.Op
 import Value.Reference
@@ -168,7 +168,10 @@ buildInterpolationASTExpr itp = do
               )
           )
           (itpSegs itp)
-  return $ AST.litCons $ AST.LitBasic $ AST.StringLit $ AST.SimpleStringL (AST.SimpleStringLit emptyLoc xs)
+      lit = if itpIsBytes itp
+        then AST.StringLit $ AST.SimpleBytesL (AST.SimpleBytesLit emptyLoc xs)
+        else AST.StringLit $ AST.SimpleStringL (AST.SimpleStringLit emptyLoc xs)
+  return $ AST.litCons $ AST.LitBasic $ lit
 
 buildFCallASTExpr :: FuncCall -> EM AST.Expression
 buildFCallASTExpr FuncCall{fnFrame}

@@ -4,14 +4,16 @@ module Syntax.Scanner where
 
 import Control.Monad (void, when)
 import Control.Monad.State.Strict
-import Data.ByteString.Builder (Builder, toLazyByteString, word8)
+import Data.ByteString.Builder (Builder, charUtf8, toLazyByteString, word8)
 import Data.ByteString.Char8 (toStrict)
 import qualified Data.ByteString.Char8 as BC
-import Data.Char (isAlpha, isDigit)
+import Data.Char (chr, digitToInt, isAlpha, isDigit, isHexDigit, isOctDigit)
 import Data.Foldable (toList)
+import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Syntax.Token
+import Text.Printf (printf)
 
 -- | Scanner state using State monad
 newtype Scanner a = Scanner
@@ -151,6 +153,8 @@ insertComma cM = do
         Float -> True
         String -> True
         MultiLineString -> True
+        Bytes -> True
+        MultiLineBytes -> True
         InterpolationEnd -> True -- Interpolation end is part of string literals.
         RParen -> True
         RBrace -> True
@@ -284,6 +288,7 @@ scanToken = do
     | c == '=' = scanEqual
     | c == '.' = scanEllipsis
     | c == '"' = scanStringLit
+    | c == '\'' = scanBytesLit
     | isDigit c = scanNumber
     | isAlpha c || c `elem` ("_$#" :: String) = do
         (second, third) <- peek2
@@ -389,7 +394,7 @@ scanStringLit = do
 
 -- | Scan string content.
 scanString :: Scanner ()
-scanString = scanStrContent tryClose String mempty
+scanString = scanByteSeq tryClose String mempty
  where
   tryClose closeType c b
     | c == '\n' = addInvalidToken (const "Unterminated string literal") >> return True
@@ -398,51 +403,130 @@ scanString = scanStrContent tryClose String mempty
 
 -- | Scan multiline string content.
 scanMultiline :: Scanner ()
-scanMultiline = scanStrContent tryClose MultiLineString mempty
+scanMultiline = scanByteSeq tryClose MultiLineString mempty
  where
   tryClose closeType c b
     | c == '"' = do
         (first, second) <- peek2
         case (first, second) of
-          (Just '"', Just '"') ->
-            advance
-              >> advance
-              >>
-              -- Remove the first newline plus the triple quotes in the beginning.
-              addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b)
-              >> return True
+          (Just '"', Just '"') -> do
+            void $ advance >> advance
+            case stripMultilineIndent $ toStrict $ toLazyByteString b of
+              Left err -> addInvalidToken (const err)
+              Right stripped -> addTokenTransLit (const closeType) (const stripped)
+            return True
           _ -> return False
     | otherwise = return False
 
-scanStrContent :: (TokenType -> Char -> Builder -> Scanner Bool) -> TokenType -> Builder -> Scanner ()
-scanStrContent tryClose closeTkType b = do
+-- | Scan bytes literal (handles both simple and multiline)
+scanBytesLit :: Scanner ()
+scanBytesLit = do
+  -- We've already consumed the first '\''.
+  (second, third) <- peek2
+  case (second, third) of
+    (Just '\'', Just '\'') ->
+      advance >> advance >> do
+        ch <- peek
+        case ch of
+          Just '\n' -> advance >> scanMLBytes
+          _ -> addInvalidToken (const "Invalid multiline bytes literal")
+    _ -> scanBytes
+
+-- | Scan simple bytes content.
+scanBytes :: Scanner ()
+scanBytes = scanByteSeq tryClose Bytes mempty
+ where
+  tryClose closeType c b
+    | c == '\n' = addInvalidToken (const "Unterminated bytes literal") >> return True
+    | c == '\'' = addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b) >> return True
+    | otherwise = return False
+
+-- | Scan multiline bytes content.
+scanMLBytes :: Scanner ()
+scanMLBytes = scanByteSeq tryClose MultiLineBytes mempty
+ where
+  tryClose closeType c b
+    | c == '\'' = do
+        (first, second) <- peek2
+        case (first, second) of
+          (Just '\'', Just '\'') -> do
+            void $ advance >> advance
+            case stripMultilineIndent $ toStrict $ toLazyByteString b of
+              Left err -> addInvalidToken (const err)
+              Right stripped -> addTokenTransLit (const closeType) (const stripped)
+            return True
+          _ -> return False
+    | otherwise = return False
+
+stripMultilineIndent :: BC.ByteString -> Either BC.ByteString BC.ByteString
+stripMultilineIndent content =
+  let ls = BC.split '\n' content
+      (contentLines, indent) =
+        if not (null ls) && BC.all (\c -> c == ' ' || c == '\t') (last ls)
+          then (init ls, last ls) -- last line is whitespace-only: it's the closing indent
+          else (ls, BC.empty) -- last line is content: no indent to strip
+      stripLine l
+        | BC.isPrefixOf indent l = Right $ BC.drop (BC.length indent) l
+        | BC.null l = Right l -- allow empty lines without the indent
+        | otherwise =
+            Left
+              "Indentation error in multiline literal: all lines must have the same indentation as the closing line"
+   in fmap (BC.intercalate "\n") (mapM stripLine contentLines)
+
+scanByteSeq :: (TokenType -> Char -> Builder -> Scanner Bool) -> TokenType -> Builder -> Scanner ()
+scanByteSeq tryClose closeTkType b = do
   ch <- peek
   case ch of
     -- EOF, there might be some non-empty string characters to add.
     Nothing -> addInvalidToken (const "Unterminated string literal")
     Just c | c == '\\' -> do
       nextCh <- peekNext
+      let isBytes = closeTkType == Bytes || closeTkType == MultiLineBytes
       case nextCh of
         Nothing -> addInvalidToken (const "Unterminated escape sequence")
         Just nextC -> case nextC of
-          'a' -> escape '\a'
-          'b' -> escape '\b'
-          'f' -> escape '\f'
-          'n' -> escape '\n'
-          'r' -> escape '\r'
-          't' -> escape '\t'
-          'v' -> escape '\v'
-          '/' -> escape '/'
-          '\\' -> escape '\\'
-          '\'' -> escape '\''
-          '"' -> escape '"'
+          'a' -> escapeNamed '\a'
+          'b' -> escapeNamed '\b'
+          'f' -> escapeNamed '\f'
+          'n' -> escapeNamed '\n'
+          'r' -> escapeNamed '\r'
+          't' -> escapeNamed '\t'
+          'v' -> escapeNamed '\v'
+          '/' -> escapeNamed '/'
+          '\\' -> escapeNamed '\\'
+          '\'' -> escapeNamed '\''
+          '"' -> escapeNamed '"'
           '(' -> do
             void $ advance >> advance
             addTokenTransLit (const Interpolation) (const $ toStrict $ toLazyByteString b)
             curLParens <- gets lparens
             scanItplEnd (length curLParens)
             -- After finishing the interpolation, we need to start a new partition.
-            scanStrContent tryClose InterpolationEnd mempty
+            scanByteSeq tryClose InterpolationEnd mempty
+          'u' -> do
+            void $ advance >> advance
+            readHexDigits 4 >>= \case
+              Just n -> scanByteSeq tryClose closeTkType (b <> (charUtf8 . chr) n)
+              Nothing -> addInvalidToken (const "Invalid unicode escape sequence")
+          'U' -> do
+            void $ advance >> advance
+            readHexDigits 8 >>= \case
+              Just n -> scanByteSeq tryClose closeTkType (b <> (charUtf8 . chr) n)
+              Nothing -> addInvalidToken (const "Invalid unicode escape sequence")
+          'x' | isBytes -> do
+            void $ advance >> advance
+            readHexDigits 2 >>= \case
+              Just n -> scanByteSeq tryClose closeTkType (b <> (word8 . fromIntegral) n)
+              Nothing -> addInvalidToken (const "Invalid hex escape sequence")
+          _ | isBytes && isOctDigit nextC -> do
+            void $ advance >> advance
+            let d1 = digitToInt nextC
+            readOctalDigits2 >>= \case
+              Just (d2, d3) -> do
+                let byte = fromIntegral (d1 * 64 + d2 * 8 + d3)
+                trace ("Octal escape sequence: " ++ show byte ++ " from digits " ++ show [d1, d2, d3]) $ return ()
+                scanByteSeq tryClose closeTkType (b <> word8 byte)
+              Nothing -> addInvalidToken (const "Invalid octal escape sequence")
           _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC)
     Just c -> do
       void advance
@@ -450,9 +534,31 @@ scanStrContent tryClose closeTkType b = do
       shouldStop <- tryClose closeTkType c b
       if shouldStop
         then return ()
-        else scanStrContent tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
+        else scanByteSeq tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
  where
-  escape c = advance >> advance >> scanStrContent tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
+  escapeNamed c = advance >> advance >> scanByteSeq tryClose closeTkType (b <> word8 (fromIntegral (fromEnum c)))
+
+  readHexDigits :: Int -> Scanner (Maybe Int)
+  readHexDigits n = go n 0
+   where
+    go 0 acc = return $ Just acc
+    go k acc = do
+      ch' <- peek
+      case ch' of
+        Just c' | isHexDigit c' -> do
+          void advance
+          go (k - 1) (acc * 16 + fromIntegral (digitToInt c'))
+        _ -> return Nothing
+
+  readOctalDigits2 :: Scanner (Maybe (Int, Int))
+  readOctalDigits2 = do
+    (d1M, d2M) <- peek2
+    case (d1M, d2M) of
+      (Just c1, Just c2) | isOctDigit c1 && isOctDigit c2 -> do
+        trace ("Octal digits: " ++ show [digitToInt c1, digitToInt c2]) $ return ()
+        void advance >> void advance
+        return $ Just (digitToInt c1, digitToInt c2)
+      _ -> return Nothing
 
 scanItplEnd :: Int -> Scanner ()
 scanItplEnd lparenDepth = do

@@ -6,8 +6,9 @@ import Control.Monad (foldM, when)
 import Control.Monad.Except (MonadError, runExceptT)
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString.Builder (Builder, toLazyByteString)
-import qualified Data.ByteString.Char8 as BC (ByteString, lines, readFile, toStrict, unpack)
-import Data.List (sort)
+import qualified Data.ByteString.Char8 as BC (ByteString, lines, pack, readFile, toStrict, unpack)
+import Data.Char (isSpace)
+import Data.List (dropWhileEnd, sort)
 import Eval (ecMaxTreeDepth, emptyConfig, evalStr)
 import Exception (throwErrSt)
 import System.Directory (listDirectory)
@@ -61,11 +62,7 @@ parseTxtar file = do
                   TPSFoundExpHeader ->
                     return ((cur{expectedOutput = cur.expectedOutput <> line <> "\n"}, out), TPSReadingExpectedOutput)
                   TPSReadingExpectedOutput ->
-                    -- allow empty lines in expected output
-                    if line == "\n" || line == ""
-                      then return ((cur, out), TPSReadingExpectedOutput)
-                      else
-                        return ((cur{expectedOutput = cur.expectedOutput <> line <> "\n"}, out), TPSReadingExpectedOutput)
+                    return ((cur{expectedOutput = cur.expectedOutput <> line <> "\n"}, out), TPSReadingExpectedOutput)
       )
       ((emptyTestCase, []), TPSInitial)
       (BC.lines file)
@@ -89,9 +86,9 @@ runCase c = do
     Left err -> assertFailure (show err)
     Right b -> do
       let act = BC.toStrict $ toLazyByteString b
-          expOut = c.expectedOutput
-          rippedExp = if expOut == "\n" then "" else expOut
-      liftIO $ cmpStrings rippedExp act
+          -- We strip the trailing whitespace from the expected output.
+          strippedExpOut = BC.pack $ dropWhileEnd isSpace (BC.unpack c.expectedOutput)
+      liftIO $ cmpStrings strippedExpOut act
 
 createTestsInTxtar :: String -> String -> IO TestTree
 createTestsInTxtar path name = do

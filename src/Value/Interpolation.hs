@@ -16,6 +16,7 @@ For example, "hello, \(name)" is make up of the string segment "hello, " and the
 data Interpolation = Interpolation
   { itpSegs :: [IplSeg]
   , itpExprs :: Seq.Seq VNode
+  , itpIsBytes :: Bool
   }
   deriving (Generic)
 
@@ -27,4 +28,4 @@ data IplSeg
   deriving (Eq, Show, Generic, NFData)
 
 emptyInterpolation :: Interpolation
-emptyInterpolation = Interpolation [] Seq.empty
+emptyInterpolation = Interpolation [] Seq.empty False

@@ -94,6 +94,9 @@ mkDisjoinOpFromList ts = mkDisjoinOp (Seq.fromList ts)
 mkItpSOp :: [IplSeg] -> [VNode] -> Op
 mkItpSOp segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs}
 
+mkItpSOpBytes :: [IplSeg] -> [VNode] -> Op
+mkItpSOpBytes segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs, itpIsBytes = True}
+
 showOpType :: Op -> String
 showOpType op = case op of
   RegOp _ -> "op"

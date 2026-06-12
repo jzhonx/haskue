@@ -1,0 +1,76 @@
+-- bytes1 --
+x1: "日本語"                                 // UTF-8 input text
+x2: '日本語'                                 // UTF-8 input text as byte sequence
+x3: "\u65e5\u672c\u8a9e"                    // the explicit Unicode code points
+x4: "\U000065e5\U0000672c\U00008a9e"        // the explicit Unicode code points
+x5: '\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e'  // the explicit UTF-8 bytes
+x6: '\u65e5\u672c\u8a9e'                    // the explicit Unicode code points
+x7: '\U000065e5\U0000672c\U00008a9e'        // the explicit Unicode code points
+
+-- exp --
+x1: "日本語"
+x2: '日本語'
+x3: "日本語"
+x4: "日本語"
+x5: '日本語'
+x6: '日本語'
+x7: '日本語'
+
+-- bytes_escape_single_quote --
+x: '\''
+-- exp --
+x: '\''
+
+-- bytes_escape_slash --
+x: '\/'
+-- exp --
+x: '/'
+
+-- bytes_escape_backslash --
+x: '\\'
+-- exp --
+x: '\\'
+
+-- bytes_escape_octal --
+x: '\141\142\143'
+-- exp --
+x: 'abc'
+
+-- bytes_escape_tab --
+x: '\t'
+-- exp --
+x: '\t'
+
+-- bytes_escape_cr --
+x: '\r'
+-- exp --
+x: '\r'
+
+-- bytes_escape_bell --
+x: '\a'
+-- exp --
+x: '\a'
+
+-- bytes_escape_bs_ctrl --
+x: '\b'
+-- exp --
+x: '\b'
+
+-- bytes_escape_ff --
+x: '\f'
+-- exp --
+x: '\f'
+
+-- bytes_escape_vtab --
+x: '\v'
+-- exp --
+x: '\v'
+
+-- bytes_escape_newline --
+x: '\n'
+-- exp --
+x: '''
+	
+	
+	'''
+

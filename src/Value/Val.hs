@@ -238,6 +238,10 @@ rtrString :: Val -> Maybe BC.ByteString
 rtrString (rtrAtom -> Just (String s)) = Just s
 rtrString _ = Nothing
 
+rtrBytes :: Val -> Maybe BC.ByteString
+rtrBytes (rtrAtom -> Just (Bytes s)) = Just s
+rtrBytes _ = Nothing
+
 rtrInt :: Val -> Maybe Int
 rtrInt (rtrAtom -> Just (Int i)) = Just (fromIntegral i)
 rtrInt _ = Nothing
@@ -393,6 +397,7 @@ showValueType :: (ErrorEnv m) => Val -> m String
 showValueType t = case t of
   VAtom a -> case a of
     String _ -> return "string"
+    Bytes _ -> return "bytes"
     Int _ -> return "int"
     Float _ -> return "float"
     Bool _ -> return "bool"

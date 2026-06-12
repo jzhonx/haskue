@@ -16,6 +16,7 @@ import qualified Syntax.Token as Token
 
 data Atom
   = String BC.ByteString
+  | Bytes BC.ByteString
   | Int Integer
   | Float Double
   | Bool Bool
@@ -25,6 +26,7 @@ data Atom
 -- | Show is only used for debugging.
 instance Show Atom where
   show (String s) = show s
+  show (Bytes s) = show s
   show (Int i) = show i
   show (Float f) = show f
   show (Bool b) = show b
@@ -32,6 +34,7 @@ instance Show Atom where
 
 instance Eq Atom where
   (==) (String s1) (String s2) = s1 == s2
+  (==) (Bytes b1) (Bytes b2) = b1 == b2
   (==) (Int i1) (Int i2) = i1 == i2
   (==) (Int i1) (Float i2) = fromIntegral i1 == i2
   (==) (Float i1) (Int i2) = i1 == fromIntegral i2
@@ -42,14 +45,20 @@ instance Eq Atom where
 
 instance ToJSON Atom where
   toJSON (String s) = toJSON (BC.unpack s)
+  toJSON (Bytes s) = toJSON (BC.unpack s)
   toJSON (Int i) = toJSON i
   toJSON (Float f) = toJSON f
   toJSON (Bool b) = toJSON b
   toJSON Null = Data.Aeson.Null
 
+-- | TODO: consider move renderBytes from AST to here and use it in aToLiteral.
 aToLiteral :: Atom -> AST.Literal
 aToLiteral a = case a of
   String s -> let f = if BC.elem '\n' s then textToMultiLineLiteral else textToSimpleStrLiteral in f s
+  Bytes s ->
+    if BC.elem '\n' s
+      then AST.LitBasic $ AST.StringLit $ AST.MultiLineBytesL $ AST.MultiLineBytesLit Token.emptyLoc [AST.UnicodeChars s]
+      else AST.LitBasic $ AST.StringLit $ AST.SimpleBytesL $ AST.SimpleBytesLit Token.emptyLoc [AST.UnicodeChars s]
   Int i -> AST.LitBasic $ AST.IntLit (mkToken Token.Int (BC.pack (show i)))
   Float f -> AST.LitBasic $ AST.FloatLit (mkToken Token.Float (BC.pack (show f)))
   Bool b -> AST.LitBasic $ AST.BoolLit (mkToken Token.Bool (if b then "true" else "false"))

@@ -559,6 +559,7 @@ resolveInterpolation l args = do
             let r = value (args !! j)
             if
               | Just s <- rtrString r -> return $ (`BC.append` s) <$> accRes
+              | Just bs <- rtrBytes r -> return $ (`BC.append` bs) <$> accRes
               | Just i <- rtrInt r -> return $ (`BC.append` (BC.pack $ show i)) <$> accRes
               | Just b <- rtrBool r -> return $ (`BC.append` (BC.pack $ show b)) <$> accRes
               | Just f <- rtrFloat r -> return $ (`BC.append` (BC.pack $ show f)) <$> accRes
@@ -572,4 +573,4 @@ resolveInterpolation l args = do
       (itpSegs l)
   case r of
     Left err -> return err
-    Right res -> return $ VAtom (String res)
+    Right res -> return $ VAtom (if itpIsBytes l then Bytes res else String res)

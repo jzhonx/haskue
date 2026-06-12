@@ -57,6 +57,7 @@ data BdType
   | BdFloat
   | BdNumber
   | BdString
+  | BdBytes
   deriving (Eq, Enum, Bounded, Generic, NFData)
 
 instance Show BdType where
@@ -65,3 +66,4 @@ instance Show BdType where
   show BdFloat = "float"
   show BdNumber = "number"
   show BdString = "string"
+  show BdBytes = "bytes"

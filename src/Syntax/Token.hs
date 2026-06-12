@@ -73,6 +73,8 @@ data TokenType
   | -- Literals
     String -- "hello"
   | MultiLineString -- """hello\nworld"""
+  | Bytes -- 'hello'
+  | MultiLineBytes -- '''hello\nworld'''
   | Interpolation -- "abc\(", the end of an interpolation is always "\("
   | InterpolationEnd -- ")..."
   | Int -- 42
@@ -124,6 +126,8 @@ toByteString tt = case tt of
   Ellipsis -> "..."
   Null -> "null"
   Bottom -> "_|_"
+  Bytes -> ""
+  MultiLineBytes -> ""
   Package -> "package"
   Import -> "import"
   For -> "for"

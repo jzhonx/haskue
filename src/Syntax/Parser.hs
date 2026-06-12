@@ -232,6 +232,8 @@ stringLit :: Parser StringLit
 stringLit =
   (SimpleStringL <$> simpleStringLit)
     <|> (MultiLineStringL <$> multiLineStringLit)
+    <|> (SimpleBytesL <$> simpleBytesLit)
+    <|> (MultiLineBytesL <$> multiLineBytesLit)
 
 structLit :: Parser StructLit
 structLit = do
@@ -449,6 +451,30 @@ multiLineStringLit =
     <|> ( do
             (startST, segs) <- interpolation
             return $ MultiLineStringLit startST.tkLoc segs
+        )
+
+simpleBytesLit :: Parser SimpleBytesLit
+simpleBytesLit =
+  ( do
+      st <- accept Token.Bytes <?> "failed to parse bytes literal"
+      let segs = [AST.UnicodeChars (tkLiteral st)]
+      return $ SimpleBytesLit st.tkLoc segs
+  )
+    <|> ( do
+            (startST, segs) <- interpolation
+            return $ SimpleBytesLit startST.tkLoc segs
+        )
+
+multiLineBytesLit :: Parser MultiLineBytesLit
+multiLineBytesLit =
+  ( do
+      st <- accept Token.MultiLineBytes <?> "failed to parse bytes literal"
+      let segs = [AST.UnicodeChars (tkLiteral st)]
+      return $ MultiLineBytesLit st.tkLoc segs
+  )
+    <|> ( do
+            (startST, segs) <- interpolation
+            return $ MultiLineBytesLit startST.tkLoc segs
         )
 
 interpolation :: Parser (Token, [StringLitSeg])

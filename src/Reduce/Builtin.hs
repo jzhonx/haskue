@@ -77,6 +77,7 @@ and args _ = return $ mkBottomVal $ printf "and function expects exactly 1 argum
 len :: [Val] -> ValAddr -> RM Val
 len [rtrList -> Just vs] _ = return $ VAtom $ Int $ fromIntegral $ V.length vs.final
 len [rtrString -> Just str] _ = return $ VAtom $ Int $ fromIntegral $ BC.length str
+len [rtrBytes -> Just bs] _ = return $ VAtom $ Int $ fromIntegral $ BC.length bs
 len [arg] _ = return $ mkBottomVal $ printf "cannot use %s as argument to len" (show arg)
 len args _ = return $ mkBottomVal $ printf "len function expects exactly 1 argument, got %d" (length args)
 
