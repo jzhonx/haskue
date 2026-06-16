@@ -5,7 +5,7 @@
 
 module Reduce.Core where
 
-import Control.Monad (foldM, unless, when)
+import Control.Monad (foldM, when)
 import Control.Monad.Reader.Class (asks)
 import Data.Aeson (ToJSON (..), toJSON)
 import qualified Data.ByteString.Char8 as BC
@@ -15,7 +15,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
-import Debug.Trace (trace)
 import Feature (
   ValAddr (..),
   addrIsCanonical,
@@ -39,7 +38,6 @@ import Reduce.Monad (
   Context (..),
   RM,
   createCnstr,
-  getNoSignalReduced,
   getRMContext,
   params,
   throwFatal,
@@ -109,8 +107,7 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
         ttoJSON store
     )
 
-  noSignal <- getNoSignalReduced
-  unless noSignal $ signalReduced addr
+  signalReduced addr
   return vn'
 
 -- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.

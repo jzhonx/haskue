@@ -90,35 +90,40 @@ propValUp addr vn
           debugInstant "propValUp" (object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
           throwFatal msg
 
-queryLastDerefedVal :: VertexAddr -> ReferableAddr -> RM (Maybe Int)
-queryLastDerefedVal addr depAddr = do
+queryLastDerefedVersion :: VertexAddr -> ReferableAddr -> RM (Maybe Int)
+queryLastDerefedVersion useAddr depAddr = do
   m <- lastDerefs <$> getRMContext
-  case Map.lookup addr m of
+  case Map.lookup useAddr m.ldUseToDep of
     Just depMap -> return $ Map.lookup depAddr depMap
     Nothing -> return Nothing
 
-storeLastDerefedVal :: VertexAddr -> ReferableAddr -> VNode -> RM ()
-storeLastDerefedVal addr depAddr v = do
+storeLastDerefedVersion :: VertexAddr -> ReferableAddr -> VNode -> RM ()
+storeLastDerefedVersion userAddr depAddr v = do
   m <- lastDerefs <$> getRMContext
-  let depMap = Map.findWithDefault Map.empty addr m
-      newDepMap = Map.insert depAddr v.version depMap
-      newM = Map.insert addr newDepMap m
+  let depPairs = Map.findWithDefault Map.empty userAddr m.ldUseToDep
+      newDepPairs = Map.insert depAddr v.version depPairs
+      newLDUseToDep = Map.insert userAddr newDepPairs m.ldUseToDep
+
+      usePairs = Map.findWithDefault Map.empty depAddr m.ldDepToUse
+      newUsePairs = Map.insert userAddr v.version usePairs
+      newLDDepToUse = Map.insert depAddr newUsePairs m.ldDepToUse
+
   debugInstStr
-    "storeLastDerefedVal"
-    (vertexToAddr addr)
+    "storeLastDerefedVersion"
+    (vertexToAddr userAddr)
     ( do
-        addrT <- tshow addr
+        addrT <- tshow userAddr
         depAddrT <- tshow depAddr
         vT <- tshow v
         return $
           printf
-            "store last derefed val for addr: %s, depAddr: %s, val: %s, version: %d"
+            "store last derefed version for addr: %s, depAddr: %s, val: %s, version: %d"
             addrT
             depAddrT
             vT
             v.version
     )
-  modifyRMContext $ \ctx -> ctx{lastDerefs = newM}
+  modifyRMContext $ \ctx -> ctx{lastDerefs = m{ldUseToDep = newLDUseToDep, ldDepToUse = newLDDepToUse}}
 
 {- | Copy the value from the target address to the reference address.
 
@@ -139,8 +144,9 @@ copyVTermNode srcAddr dstAddr =
             | ResolvedIdentFromTop resIdentAddr <- ref.resolvedIdentAddr
             , srcAddr `isPrefix` resIdentAddr && resIdentAddr /= srcAddr ->
                 let rest = trimPrefixAddr srcAddr resIdentAddr
-                    rfbDstAddr = trimCanonicalToRfb $ collapseToCanonical dstAddr
-                    newIdentAddr = appendValAddr (rfbAddrToAddr rfbDstAddr) rest
+                    -- The destination address should be normalized to get rid of any constraint arguments.
+                    normDstAddr = collapseToCanonicalForm dstAddr
+                    newIdentAddr = appendValAddr normDstAddr rest
                     newRef = ref{resolvedIdentAddr = ResolvedIdentFromTop newIdentAddr}
                  in VTOp (Ref newRef)
           _ -> x

@@ -19,7 +19,7 @@ import Debug.Trace
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
-import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer)
+import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
 data DepGraph = DepGraph
@@ -427,6 +427,9 @@ queryUsesByDepMatch depMatch =
  where
   depMatchAdapt :: VIDMapping -> RefVertex -> Bool
   depMatchAdapt m x = depMatch (getAddrFromVIDMust (getRefVertex x) m)
+
+queryUsesByDep :: (HasCallStack) => ReferableAddr -> DepGraph -> [ValAddr]
+queryUsesByDep dep ng = map snd $ queryUsesByDepMatch (== rfbAddrToAddr dep) ng
 
 -- | Update the component graph based on the current propagation graph.
 updateCGraph :: (HasCallStack) => DepGraph -> DepGraph

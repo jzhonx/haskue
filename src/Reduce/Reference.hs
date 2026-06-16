@@ -25,7 +25,7 @@ import Reduce.Monad (
   putRMContext,
   throwFatal,
  )
-import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore, storeLastDerefedVal)
+import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore, storeLastDerefedVersion)
 import Reduce.TraceSpan (
   debugInstStr,
   emptySpanValue,
@@ -238,12 +238,14 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
       resM <- fetchValFromStore "locateRef" pkgFuncAddr
       case resM of
         Just resV -> return $ mkRegDR identAddr pkgFuncAddr resV
-        Nothing ->
+        Nothing -> do
+          pkgFuncAddrT <- tshow pkgFuncAddr
+          identAddrT <- tshow identAddr
           throwFatal $
             printf
               "locateRef: cannot find value for addr %s in package %s"
-              (show pkgFuncAddr)
-              (show identAddr)
+              (show pkgFuncAddrT)
+              (show identAddrT)
     _ -> do
       identVM <- fetchValFromStore "locateRef" identAddr
       case identVM of
@@ -468,7 +470,7 @@ copyConcrete tarAddr addr tarV = do
   let vt = copyVTermNode tarAddr addr (VTVNode tarV)
   let v = vtVNodeOr id tarV vt
   -- We store the last dereferenced value for the reference with the canonical address.
-  storeLastDerefedVal
+  storeLastDerefedVersion
     (trimCanonicalToVertex $ collapseToCanonical addr)
     (trimCanonicalToRfb $ collapseToCanonical tarAddr)
     v

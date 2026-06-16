@@ -81,18 +81,13 @@ data Context = Context
   , rootRecalcQ :: Seq.Seq ReducedSignal
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
-  , lastDerefs :: Map.Map VertexAddr (Map.Map ReferableAddr Int)
-  -- ^ It stores the last dereferenced value of the reference with the canonical address.
-  -- We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
-  -- time, so if any of them references to the same referable address, they will have the same value.
+  , lastDerefs :: LastDerefed
   , vStore :: Map.Map VertexAddr VNode
   -- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
   -- objects.
   , comprehBindings :: Seq.Seq [(TextIndex, VNode)]
   -- ^ The comprehension bindings stack.
   , rcResolver :: !RCResolver
-  , noSignalReduced :: !Bool
-  -- ^ If true, do not signal ready after reducing.
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
   }
@@ -108,18 +103,34 @@ instance HasTextIndexer Context where
 mapDepGraph :: (DepGraph -> DepGraph) -> Context -> Context
 mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
 
+data LastDerefed = LastDerefed
+  { ldUseToDep :: Map.Map VertexAddr (Map.Map ReferableAddr Int)
+  -- ^ It stores the last dereferenced value of the reference with the canonical address.
+  -- We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
+  -- time, so if any of them references to the same referable address, they will have the same value.
+  , ldDepToUse :: Map.Map ReferableAddr (Map.Map VertexAddr Int)
+  }
+  deriving (Show, Generic, NFData)
+
+emptyLastDerefed :: LastDerefed
+emptyLastDerefed = LastDerefed{ldUseToDep = Map.empty, ldDepToUse = Map.empty}
+
 data ReducedSignal = ReducedSignal
   { addr :: ValAddr
   , rfbAddr :: ReferableAddr
   , grpAddr :: GrpAddr
+  , createdWithRCResolver :: Bool
+  -- ^ If true, the signal is created with an active RC resolver.
   }
   deriving (Show, Generic, NFData)
 
 instance ShowWTIndexer ReducedSignal where
-  tshow ReducedSignal{addr, grpAddr} = do
+  tshow ReducedSignal{addr, grpAddr, createdWithRCResolver} = do
     addrT <- tshow addr
     grpAddrT <- tshow grpAddr
-    return $ T.pack $ printf "ReducedSignal {addr:%s,grpAddr:%s}" addrT grpAddrT
+    return $
+      T.pack $
+        printf "ReducedSignal {addr:%s,grpAddr:%s,createdWithRCResolver:%s}" addrT grpAddrT (show createdWithRCResolver)
 
 emptyContext :: (LB.ByteString -> IO ()) -> Context
 emptyContext tPut =
@@ -127,11 +138,10 @@ emptyContext tPut =
     { ctxObjID = 0
     , rootRecalcQ = Seq.empty
     , depGraph = emptyPropGraph
-    , lastDerefs = Map.empty
+    , lastDerefs = emptyLastDerefed
     , vStore = Map.empty
     , comprehBindings = Seq.empty
     , rcResolver = emptyRCResolver
-    , noSignalReduced = False
     , ctxTrace = emptyTrace tPut
     , tIndexer = emptyTextIndexer
     }
@@ -170,22 +180,6 @@ getRMObjID = gets ctxObjID
 
 setRMObjID :: Int -> RM ()
 setRMObjID newID = modify' $ \ctx -> ctx{ctxObjID = newID}
-
--- Notify ready
-
-getNoSignalReduced :: RM Bool
-getNoSignalReduced = noSignalReduced <$> getRMContext
-
-setNoSignalReduced :: Bool -> RM ()
-setNoSignalReduced b = modifyRMContext $ \ctx -> ctx{noSignalReduced = b}
-
-withNoSignalReduced :: Bool -> RM a -> RM a
-withNoSignalReduced b f = do
-  oldB <- getNoSignalReduced
-  setNoSignalReduced b
-  r <- f
-  setNoSignalReduced oldB
-  return r
 
 -- VNode depth check
 

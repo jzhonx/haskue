@@ -108,3 +108,25 @@ a: y.z & 1
 b: 1
 y: {}
 
+-- ref8 --
+a: ({}).b
+-- exp --
+a: {}.b
+
+-- ref9 --
+// this tests a field of a struct that is created in recalc can correctly notify users.
+a: {x: 1} & b.z
+b: {("z"): {y: 2}}
+c: a.y
+-- exp --
+a: {
+    x: 1
+    y: 2
+}
+b: {
+    z: {
+        y: 2
+    }
+}
+c: 2
+

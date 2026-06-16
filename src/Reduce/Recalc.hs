@@ -30,9 +30,8 @@ import Reduce.Monad (
   modifyRMContext,
   putRMContext,
   rootRecalcQ,
-  withNoSignalReduced,
  )
-import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefedVal, storeVal)
+import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefedVersion, storeVal)
 import Reduce.Struct (handleSObjChange, validateStructPerm, whenStruct)
 import Reduce.TraceSpan (
   debugInstStr,
@@ -81,7 +80,8 @@ createReducedSignal addr = do
     Nothing -> return Nothing
     Just rfbAddr -> do
       gAddr <- vertexAddrToGrpAddr (rfbAddrToVertex rfbAddr)
-      return $ Just ReducedSignal{addr, rfbAddr, grpAddr = gAddr}
+      RCResolver{resolving} <- getRCResolver
+      return $ Just ReducedSignal{addr, rfbAddr, grpAddr = gAddr, createdWithRCResolver = resolving}
 
 vertexAddrToGrpAddr :: VertexAddr -> RM GrpAddr
 vertexAddrToGrpAddr siAddr = do
@@ -145,22 +145,10 @@ mkCyclicBFSState item = traceSpanAdaptTM
   emptySpanValue
   (const emptySpanValue)
   $ do
-    let itemCanAddr = rfbAddrToVertex item.rfbAddr
-    recalcRC itemCanAddr
     g <- depGraph <$> getRMContext
-    let
-      elems = getElemAddrInGrp item.grpAddr g
-      elemsExcludeSelf = filter (/= itemCanAddr) elems
-    hasDirty <-
-      foldM
-        ( \acc elemCanAddr -> do
-            dirty <- checkIfDirty item.rfbAddr elemCanAddr
-            return $ acc || dirty
-        )
-        False
-        elemsExcludeSelf
-    -- TODO: use the hasDirty
-    return $ appendAddrsToBFSQ [item.grpAddr] Seq.empty g
+    if item.createdWithRCResolver
+      then findNeighbors item.grpAddr Seq.empty
+      else return $ appendAddrsToBFSQ [item.grpAddr] Seq.empty g
 
 -- | BFSState for the breadth-first traversal of the recalculation.
 data BFSState = BFSState
@@ -174,7 +162,8 @@ data BFSState = BFSState
 runBFS :: BFSState -> RM ()
 runBFS state = case state.bfsQ of
   Seq.Empty -> return ()
-  (cur Seq.:<| rest) -> do
+  (h Seq.:<| rest) -> do
+    cur <- getTopReducerGAddr h
     recalcGroup cur
     updated' <- vertexAddrToGrpAddr (fst $ getGrpAddr cur)
     -- If the updated gAddr is different from the current gAddr, it means the current gAddr is changed during the
@@ -191,6 +180,17 @@ runBFS state = case state.bfsQ of
         )
       recalcGroup updated'
     findNeighbors updated' rest >>= runBFS
+
+getTopReducerGAddr :: GrpAddr -> RM GrpAddr
+getTopReducerGAddr gaddr
+  -- If the gaddr is cyclic, it is referable and thus it is the same as its top reducer gaddr.
+  | snd (getGrpAddr gaddr) = return gaddr
+  | otherwise = do
+      let nodeVertexAddr = VertexAddr $ getTopReducerAddr $ trimVertexToTopReducerAddr (fst $ getGrpAddr gaddr)
+      ng <- depGraph <$> getRMContext
+      case lookupGrpAddr nodeVertexAddr ng of
+        Just gAddr -> return gAddr
+        Nothing -> return (GrpAddr (nodeVertexAddr, False))
 
 {- | Get the next BFSState by disovering the neighbors of the current GrpAddr.
 
@@ -252,28 +252,28 @@ filterAffectedUses depAddr =
 checkIfDirty :: ReferableAddr -> VertexAddr -> RM Bool
 checkIfDirty depAddr useCanAddr = do
   extVal <- fetchValMust "checkIfDirty" (rfbAddrToAddr depAddr)
-  lastDerefed <- queryLastDerefedVal useCanAddr depAddr
+  lastDerefed <- queryLastDerefedVersion useCanAddr depAddr
+  ng <- depGraph <$> getRMContext
+  let actualUseCanAddrSet = Set.fromList (map (trimCanonicalToVertex . collapseToCanonical) $ queryUsesByDep depAddr ng)
   debugInstStr
     "checkIfDirty"
     fileTopValAddr
     ( do
-        siaddrT <- tshow useCanAddr
+        userCanAddrT <- tshow useCanAddr
         depAddrT <- tshow depAddr
         extValT <- tshow extVal
-        case lastDerefed of
-          Nothing -> return $ printf "useAddr: %s, depAddr: %s, ext: %d, lastDerefed: Nothing" siaddrT depAddrT extVal.version
-          Just ld -> do
-            ldSeen <- tshow ld
-            return $
-              printf
-                "useAddr: %s, depAddr: %s, ext version: %d, ext val: %s, lastDerefed: %s"
-                siaddrT
-                depAddrT
-                extVal.version
-                extValT
-                ldSeen
+        actualUseCanAddrSetT <- mapM tshow (Set.toList actualUseCanAddrSet)
+        return $
+          printf
+            "depAddr: %s, useAddr: %s, ext version: %d, ext val: %s, lastDerefed: %s, actualUseCanAddrSet: %s"
+            depAddrT
+            userCanAddrT
+            extVal.version
+            extValT
+            (show lastDerefed)
+            (show actualUseCanAddrSetT)
     )
-  return $ Just extVal.version /= lastDerefed
+  return $ useCanAddr `Set.member` actualUseCanAddrSet && Just extVal.version /= lastDerefed
 
 appendAddrsToBFSQ :: [GrpAddr] -> Seq.Seq GrpAddr -> DepGraph -> BFSState
 appendAddrsToBFSQ addrs restBFSQ ng =
@@ -376,13 +376,15 @@ recalcRCStack = do
 -- | Re-calculate a single node.
 recalcNode :: VertexAddr -> RM ()
 recalcNode nodeVAddr = do
-  let nodeAddr = topReducerToAddr $ trimVertexToTopReducerAddr nodeVAddr
+  let nodeAddr = vertexToAddr nodeVAddr
   vM <- fetchValFromStore "recalcNode" nodeAddr
   case vM of
     Nothing -> return ()
     Just v -> void $ traceSpanTermsRepTM "recalcNode" nodeAddr v $ do
-      -- We do not need to signal reduced as now everything is driven by the recalculation.
-      r <- withNoSignalReduced True $ reduce nodeAddr v
+      -- If the result is a struct, then all of its fields will signal reduced, which is what we want.
+      -- It is ok to signal reduced again for the node because the reduce value will not trigger another reduction for
+      -- its dependents.
+      r <- reduce nodeAddr v
       -- We have to propagate the change up to the root to make the change effect globally visible.
       storeValUpToRootRecalc nodeAddr r
       return r

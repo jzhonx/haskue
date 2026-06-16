@@ -9,11 +9,9 @@ import Data.ByteString.Char8 (toStrict)
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (chr, digitToInt, isAlpha, isDigit, isHexDigit, isOctDigit)
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import Debug.Trace (trace)
 import Syntax.Token
-import Text.Printf (printf)
 
 -- | Scanner state using State monad
 newtype Scanner a = Scanner
@@ -524,7 +522,6 @@ scanByteSeq tryClose closeTkType b = do
             readOctalDigits2 >>= \case
               Just (d2, d3) -> do
                 let byte = fromIntegral (d1 * 64 + d2 * 8 + d3)
-                trace ("Octal escape sequence: " ++ show byte ++ " from digits " ++ show [d1, d2, d3]) $ return ()
                 scanByteSeq tryClose closeTkType (b <> word8 byte)
               Nothing -> addInvalidToken (const "Invalid octal escape sequence")
           _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC)
@@ -555,7 +552,6 @@ scanByteSeq tryClose closeTkType b = do
     (d1M, d2M) <- peek2
     case (d1M, d2M) of
       (Just c1, Just c2) | isOctDigit c1 && isOctDigit c2 -> do
-        trace ("Octal digits: " ++ show [digitToInt c1, digitToInt c2]) $ return ()
         void advance >> void advance
         return $ Just (digitToInt c1, digitToInt c2)
       _ -> return Nothing

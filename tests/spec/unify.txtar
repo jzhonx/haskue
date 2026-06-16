@@ -144,3 +144,20 @@ x: {
     b: true
 }
 
+-- unify10 --
+// This tests in-place expressions and reference to the in-place expressions
+a: (f & {k: "key"}).v
+b: a
+
+f: {
+	k: string
+	v: k
+}
+-- exp --
+a: "key"
+b: "key"
+f: {
+    k: string
+    v: string
+}
+

@@ -168,9 +168,10 @@ buildInterpolationASTExpr itp = do
               )
           )
           (itpSegs itp)
-      lit = if itpIsBytes itp
-        then AST.StringLit $ AST.SimpleBytesL (AST.SimpleBytesLit emptyLoc xs)
-        else AST.StringLit $ AST.SimpleStringL (AST.SimpleStringLit emptyLoc xs)
+      lit =
+        if itpIsBytes itp
+          then AST.StringLit $ AST.SimpleBytesL (AST.SimpleBytesLit emptyLoc xs)
+          else AST.StringLit $ AST.SimpleStringL (AST.SimpleStringLit emptyLoc xs)
   return $ AST.litCons $ AST.LitBasic $ lit
 
 buildFCallASTExpr :: FuncCall -> EM AST.Expression
@@ -340,7 +341,13 @@ buildComprehASTExpr cph = do
   e <- buildExprExt (getValFromIterClause structTmpl)
   sl <- case e of
     AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l)))) -> return l
-    _ -> throwErrSt "struct lit is not found"
+    AST.Binary
+      Token.Token{tkType = Unify}
+      (AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l1)))))
+      e2 -> return l1
+    _ ->
+      throwErrSt
+        "the struct template of a comprehension should be a struct literal or a unify expression with a struct literal on the left"
   return $
     AST.Comprehension (AST.Clauses start rest) sl
  where
@@ -498,7 +505,10 @@ buildIndexASTExpr vs = do
   be <- buildExprExt vs.base
   v <- case be of
     AST.Unary (AST.Primary v) -> return v
-    _ -> throwErrSt "the index value of ValueSelect should be a primary expression"
+    _ ->
+      return $
+        AST.PrimExprOperand $
+          AST.OpExpression emptyLoc be emptyLoc
   r <-
     foldM
       ( \acc (y, isIndex) -> do
