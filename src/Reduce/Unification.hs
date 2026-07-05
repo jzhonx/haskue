@@ -28,11 +28,11 @@ import Reduce.Monad (
  )
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
-  traceSpanArgsAdaptTM,
-  traceSpanArgsTM,
-  traceSpanTM,
+  emptyTracePreData,
+  tpvArgs,
+  traceSpanNoPreRM,
+  traceSpanRM,
+  traceSpanWithRM,
  )
 import StringIndex (ShowWTIndexer (..), TextIndex, textIndexToBS)
 import qualified Syntax.AST as AST
@@ -114,11 +114,10 @@ If RC can not be cancelled, then the result is Nothing.
 The order of the unification is the same as the order of the trees.
 -}
 unifyVals :: [(ValAddr, Val)] -> ValAddr -> Bool -> RM Val
-unifyVals ps addr isEmbedUnify = traceSpanArgsTM
+unifyVals ps addr isEmbedUnify = traceSpanRM
   "unifyVals"
   addr
-  emptySpanValue
-  (return $ printf "isEmbedUnify: %s" (show isEmbedUnify))
+  (return $ emptyTracePreData{tpvArgs = Just $ printf "isEmbedUnify: %s" (show isEmbedUnify)})
   $ do
     when (length ps < 2) $ throwFatal $ printf "not enough arguments for unification, got %d" (length ps)
     debugInstStr
@@ -159,10 +158,9 @@ unifyOrderedConjOpds co1 co2 addr = do
 
 -- | Merge a list of processed tree cursors into one tree.
 mergeVals :: [(ValAddr, Val)] -> ValAddr -> Bool -> RM Val
-mergeVals tcs addr isEmbedUnify = traceSpanArgsTM
+mergeVals tcs addr isEmbedUnify = traceSpanRM
   (printf "mergeVals %s" (if isEmbedUnify then "embed" :: String else ""))
   addr
-  emptySpanValue
   ( do
       tcsStr <-
         mapM
@@ -175,7 +173,7 @@ mergeVals tcs addr isEmbedUnify = traceSpanArgsTM
               return s
           )
           tcs
-      return $ show tcsStr
+      return $ emptyTracePreData{tpvArgs = Just $ show tcsStr}
   )
   $ do
     when (null tcs) $ throwFatal "not enough arguments"
@@ -236,20 +234,23 @@ opAddr is not necessarily equal to the parent of one of the tree cursors if the 
 -}
 mergeBinUTrees :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
 mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
-  r <- traceSpanArgsTM
+  r <- traceSpanRM
     "mergeBinUTrees"
     addr
-    emptySpanValue
     ( do
         t1Str <- valToStringTermsRep t1
         t2Str <- valToStringTermsRep t2
         return $
-          printf
-            "merging\n%s:\n%s\nwith\n%s:\n%s"
-            (show $ dir co1)
-            t1Str
-            (show $ dir co2)
-            t2Str
+          emptyTracePreData
+            { tpvArgs =
+                Just $
+                  printf
+                    "merging\n%s:\n%s\nwith\n%s:\n%s"
+                    (show $ dir co1)
+                    t1Str
+                    (show $ dir co2)
+                    t2Str
+            }
     )
     $
     -- Each case should handle embedded case where the left value is embedded and the right value is a struct.
@@ -287,7 +288,7 @@ mergeLeftTop co1 co2 addr = do
 
 mergeLeftAtom :: (Atom, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
 mergeLeftAtom (v1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) addr =
-  traceSpanTM "mergeLeftAtom" addr emptySpanValue $ do
+  traceSpanNoPreRM "mergeLeftAtom" addr $ do
     case (v1, t2) of
       (String x, VAtom s)
         | String y <- s -> rtn $ if x == y then VAtom v1 else amismatch x y
@@ -606,14 +607,13 @@ For closedness, unification only generates a closed struct but not a recursively
 recursively, the only way is to reference the struct via a #ident.
 -}
 mergeStructs :: (Struct, ConjOpd) -> (Struct, ConjOpd) -> ValAddr -> RM Val
-mergeStructs (s1, co1@ConjOpd{dir = L}) (s2, co2) addr = traceSpanArgsAdaptTM
+mergeStructs (s1, co1@ConjOpd{dir = L}) (s2, co2) addr = traceSpanWithRM
   "mergeStructs"
   addr
-  emptySpanValue
   ( do
       ut1Str <- show <$> toTermsRep (VStruct s1) recurShowTermsRepOption
       ut2Str <- show <$> toTermsRep (VStruct s2) recurShowTermsRepOption
-      return $ printf "co1: %s\nco2: %s" ut1Str ut2Str
+      return $ emptyTracePreData{tpvArgs = Just $ printf "co1: %s\nco2: %s" ut1Str ut2Str}
   )
   termsRepToFullJSON
   $ do
@@ -725,7 +725,7 @@ mergeLeftDisj (dj1, co1) co2@(ConjOpd{coVal = t2}) addr = do
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
 mergeDisjWithVal :: (Disj, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
-mergeDisjWithVal (dj1, _ut1@(ConjOpd{dir = fstDir})) _ut2 addr = traceSpanTM "mergeDisjWithVal" addr emptySpanValue $ do
+mergeDisjWithVal (dj1, _ut1@(ConjOpd{dir = fstDir})) _ut2 addr = traceSpanNoPreRM "mergeDisjWithVal" addr $ do
   let
     uts1 = utsFromDisjs _ut1 dj1
     defIdxes1 = dsjDefIndexes dj1
@@ -752,7 +752,7 @@ U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
 mergeDisjWithDisj :: (Disj, ConjOpd) -> (Disj, ConjOpd) -> ValAddr -> RM Val
 mergeDisjWithDisj (dj1, _ut1@(ConjOpd{dir = fstDir})) (dj2, _ut2) addr =
-  traceSpanTM "mergeDisjWithDisj" addr emptySpanValue $ do
+  traceSpanNoPreRM "mergeDisjWithDisj" addr $ do
     let
       uts1 = utsFromDisjs _ut1 dj1
       uts2 = utsFromDisjs _ut2 dj2
@@ -814,7 +814,7 @@ removeIncompleteDisjuncts defIdxes ts =
 The pattern is expected to be an Atom or a Bounds.
 -}
 patMatchLabel :: VNode -> TextIndex -> ValAddr -> RM Bool
-patMatchLabel pat tidx addr = traceSpanAdaptTM "patMatchLabel" addr emptySpanValue (return . toJSON) $ do
+patMatchLabel pat tidx addr = traceSpanWithRM "patMatchLabel" addr (return emptyTracePreData) (return . toJSON) $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom (value pat) >>= Just . mkAtomVN, rtrBounds pat >>= Just . mkBoundsVN]
   maybe (return False) match vM

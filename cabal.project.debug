@@ -1,0 +1,11 @@
+packages: .
+
+package *
+  optimization: False
+  ghc-options:
+    -O0
+    -g
+    -fprof-late
+    -ddump-simpl
+    -ddump-to-file
+    -dsuppress-coercions

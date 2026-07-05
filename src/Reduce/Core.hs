@@ -58,10 +58,12 @@ import Reduce.Struct (
 import Reduce.TraceSpan (
   debugInst,
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
-  traceSpanTM,
+  emptyTracePreDataRM,
+  markFlowEventStart,
+  mkTracePreDataWithOnlyVal,
+  traceSpanNoPreRM,
   traceSpanTermsRepTM,
+  traceSpanWithRM,
  )
 import Reduce.Unification (unifyVals)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
@@ -97,6 +99,7 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
         return vn{value = v', constraints = (constraints vn){allResolved = True}}
       else reduceConstraints addr vn False
 
+  markFlowEventStart addr vn'.version
   storeVal addr vn'
 
   debugInst
@@ -128,10 +131,10 @@ reduceConstraintsInCnstrs addr vn@VNode{value = v, constraints} = do
 
 reduceConstraintsSetFix :: Bool -> Int -> ValAddr -> VNode -> RM VNode
 reduceConstraintsSetFix stopAfterOneIter count addr vn@VNode{value = v, constraints} = do
-  (v', constraints', info) <- traceSpanAdaptTM
+  (v', constraints', info) <- traceSpanWithRM
     (printf "reduceConstraintsSetFix %d" count)
     addr
-    (termsRepToJSONWithAddr addr v)
+    (mkTracePreDataWithOnlyVal <$> termsRepToJSONWithAddr addr v)
     ( \(a, b, c) -> do
         aT <- tshow a
         let
@@ -167,10 +170,10 @@ reduceCnstrsInner ::
   ConstraintSeq ->
   IntMap.IntMap ConstraintSeq ->
   RM (Val, ConstraintSeq, IntMap.IntMap ConstraintSeq, CnstrInfo)
-reduceCnstrsInner count isEmbed addr staticCnstrs dynCnstrs = traceSpanAdaptTM
+reduceCnstrsInner count isEmbed addr staticCnstrs dynCnstrs = traceSpanWithRM
   (printf "reduceCnstrsInner %d" count)
   addr
-  emptySpanValue
+  emptyTracePreDataRM
   ( \(a, b, _, _) -> do
       aJ <- ttoJSON a
       bJ <- toJSON <$> cnstrsToTermsRep (toList b) defaultTermsRepOption
@@ -187,11 +190,11 @@ reduceDynCnstrs ::
   ValAddr ->
   IntMap.IntMap ConstraintSeq ->
   RM (IntMap.IntMap ConstraintSeq, [(ValAddr, Val)], CnstrInfo)
-reduceDynCnstrs count addr dynCnstrs = traceSpanAdaptTM
+reduceDynCnstrs count addr dynCnstrs = traceSpanWithRM
   (printf "foldDynCnstrsM %d" count)
   addr
-  emptySpanValue
-  (const emptySpanValue)
+  emptyTracePreDataRM
+  (const (return (toJSON ())))
   do
     (revL, revPairs, info) <-
       foldM
@@ -213,13 +216,12 @@ reduceDynCnstrs count addr dynCnstrs = traceSpanAdaptTM
 It reduces every conjunct node it finds.
 -}
 reduceConstraint :: Int -> ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)
-reduceConstraint count addr constraint = traceSpanAdaptTM
+reduceConstraint count addr constraint = traceSpanWithRM
   (printf "reduceConstraint %d" count)
   addr
   ( do
       cnstrsRep <- cnstrsToTermsRep [constraint] defaultTermsRepOption
-      let aJ = toJSON cnstrsRep
-      return aJ
+      return $ mkTracePreDataWithOnlyVal $ toJSON cnstrsRep
   )
   ( \(a, b, _) -> do
       cnstrsRep <- cnstrsToTermsRep [a] defaultTermsRepOption
@@ -494,7 +496,7 @@ storeBuiltinsAndPackages = do
   mapM_ (\(addr, _) -> storeVal addr (mkValVN (VFuncAddr addr))) (Map.toList m)
 
 reduceList :: List -> ValAddr -> RM Val
-reduceList l addr = traceSpanTM "reduceList" addr emptySpanValue do
+reduceList l addr = traceSpanNoPreRM "reduceList" addr do
   updstore <- mapMVectorWAddr reduce mkListStoreIdxFeature addr (store l)
   (revR, isReady) <-
     V.foldM

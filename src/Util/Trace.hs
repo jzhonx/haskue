@@ -36,30 +36,12 @@ instance HasTrace Trace where
   setTrace :: Trace -> Trace -> Trace
   setTrace s t = t{traceID = traceID s}
 
-type TraceM s m =
-  ( MonadState s m
-  , HasTrace s
-  , MonadIO m
-  )
+type TraceM s m = (MonadState s m, HasTrace s, MonadIO m)
 
 data ChromeStartTrace = ChromeStartTrace
   { cstrName :: !T.Text
   , cstrTime :: !Int
   , cstrArgs :: Value
-  }
-  deriving (Eq, Show)
-
-data ChromeEndTrace = ChromeEndTrace
-  { cetrName :: !T.Text
-  , cetrTime :: !Int
-  , cetrArgs :: Value
-  }
-  deriving (Eq, Show)
-
-data ChromeInstantTrace = ChromeInstantTrace
-  { ctiName :: !T.Text
-  , ctiStart :: !Int
-  , ctiArgs :: Value
   }
   deriving (Eq, Show)
 
@@ -74,6 +56,13 @@ instance ToJSON ChromeStartTrace where
       , "args" .= cstrArgs ct
       ]
 
+data ChromeEndTrace = ChromeEndTrace
+  { cetrName :: !T.Text
+  , cetrTime :: !Int
+  , cetrArgs :: Value
+  }
+  deriving (Eq, Show)
+
 instance ToJSON ChromeEndTrace where
   toJSON ct =
     object
@@ -85,6 +74,13 @@ instance ToJSON ChromeEndTrace where
       , "args" .= cetrArgs ct
       ]
 
+data ChromeInstantTrace = ChromeInstantTrace
+  { ctiName :: !T.Text
+  , ctiStart :: !Int
+  , ctiArgs :: Value
+  }
+  deriving (Eq, Show)
+
 instance ToJSON ChromeInstantTrace where
   toJSON c =
     object
@@ -95,6 +91,23 @@ instance ToJSON ChromeInstantTrace where
       , "pid" .= (0 :: Int)
       , "tid" .= (0 :: Int)
       , "args" .= ctiArgs c
+      ]
+
+data ChromeFlowEvent = ChromeFlowEvent
+  { cfeTime :: !Int
+  , cfePhase :: !T.Text
+  , cfeID :: !T.Text
+  }
+  deriving (Eq, Show)
+
+instance ToJSON ChromeFlowEvent where
+  toJSON c =
+    object
+      [ "ts" .= cfeTime c
+      , "ph" .= cfePhase c
+      , "pid" .= (0 :: Int)
+      , "tid" .= (0 :: Int)
+      , "id" .= cfeID c
       ]
 
 traceSpanStart :: (TraceM s m) => T.Text -> Value -> m ()
@@ -130,6 +143,15 @@ debugInstant name args = do
   dumpTrace tr.tPut $
     encode
       ( ChromeInstantTrace{ctiName = name, ctiStart = timeInMicros, ctiArgs = args}
+      )
+
+emitFlowEvent :: (TraceM s m) => T.Text -> T.Text -> m ()
+emitFlowEvent phase flowID = do
+  tr <- gets getTrace
+  let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+  dumpTrace tr.tPut $
+    encode
+      ( ChromeFlowEvent{cfeTime = timeInMicros, cfePhase = phase, cfeID = flowID}
       )
 
 dumpTrace :: (MonadIO m) => (LB.ByteString -> IO ()) -> LB.ByteString -> m ()

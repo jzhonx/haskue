@@ -114,7 +114,7 @@ instance ShowWTIndexer Feature where
   tshow f = case fetchLabelType f of
     FileTopLabelType -> do
       t <- tshow (TextIndex (fetchIndex f))
-      return $ "/" `T.append` t
+      return $ "/top" `T.append` t
     StringLabelType -> tshow (TextIndex (fetchIndex f))
     LetLabelType -> do
       str <- tshow (TextIndex (fetchIndex f))

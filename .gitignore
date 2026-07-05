@@ -1,5 +1,7 @@
 .DS_Store
 haskue
 dist-newstyle/*
+dist-release/*
 _debug/*
+release/*
 .vscode/*

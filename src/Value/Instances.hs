@@ -6,6 +6,7 @@
 module Value.Instances where
 
 import Control.DeepSeq (NFData (..))
+import Control.Monad.State.Strict (MonadState)
 import Data.Aeson (ToJSON (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -15,7 +16,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
 import GHC.Stack (HasCallStack)
-import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
+import StringIndex (HasTextIndexer, ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Syntax.AST (ASTNode (..))
 import Text.Printf (printf)
 import Value.Comprehension
@@ -140,9 +141,7 @@ deriving instance Show Constraint
 deriving instance Show ConstraintsSet
 
 instance ShowWTIndexer VNode where
-  tshow vn = do
-    s <- oneLinerStringOfVNode vn
-    return $ T.pack $ printf "(%d) (r:%s) %s" (version vn) (show vn.constraints.allResolved) s
+  tshow = oneLinerStringOfVNode
 
 instance ShowWTIndexer Val where
   tshow vn = oneLinerStringOfVNode (mkValVN vn)

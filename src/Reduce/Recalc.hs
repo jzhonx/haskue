@@ -14,7 +14,7 @@ are re-evaluated, making the process demand-driven.
 -}
 module Reduce.Recalc where
 
-import Control.Monad (filterM, foldM, unless, void, when)
+import Control.Monad (foldM, unless, void, when)
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
@@ -42,11 +42,14 @@ import Reduce.Store (fetchValFromStore, fetchValMust, propValUp, queryLastDerefe
 import Reduce.Struct (handleSObjChange, validateStructPerm, whenStruct)
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
-  traceSpanArgsTM,
-  traceSpanTM,
+  emptyTracePreData,
+  emptyTracePreDataRM,
+  markFlowEventEnd,
+  tpvArgs,
+  traceSpanNoPreRM,
+  traceSpanRM,
   traceSpanTermsRepTM,
+  traceSpanWithRM,
  )
 import StringIndex (ShowWTIndexer (tshow))
 import Text.Printf (printf)
@@ -65,7 +68,7 @@ recalc = do
         return $ printf "starting queue: %s" qT
     )
 
-  traceSpanTM "recalc" fileTopValAddr emptySpanValue drainQ
+  traceSpanNoPreRM "recalc" fileTopValAddr drainQ
 
 {- | Create a 'ReducedSignal' for the given address and enqueue it.
 
@@ -131,15 +134,14 @@ BFS traversal.  Loops until the queue is empty.
 drainQ :: RM ()
 drainQ = do
   itemM <- popRootRecalcQ
-  stop <- traceSpanArgsTM
+  stop <- traceSpanRM
     "drainQ"
     fileTopValAddr
-    emptySpanValue
     ( do
         restQ <- rootRecalcQ <$> getRMContext
         itemMT <- tshow itemM
         restQT <- tshow (toList restQ)
-        return $ printf "popped item: %s, restQ: %s" itemMT (show restQT)
+        return $ emptyTracePreData{tpvArgs = Just $ printf "popped item: %s, restQ: %s" itemMT (show restQT)}
     )
     $ case itemM of
       Nothing -> return True
@@ -151,7 +153,7 @@ drainQ = do
             then findNeighbors gAddr Seq.empty
             else mkCyclicBFSState item
         unless (Seq.null next.bfsQ) $ do
-          rsQT <- tshow (toList next.bfsQ)
+          rsQT <- mapM (tshow . biGrpAddr) (toList next.bfsQ)
           debugInstStr
             "drainQ"
             fileTopValAddr
@@ -163,20 +165,29 @@ drainQ = do
 
 {- | Build a 'BFSState' for a cyclic (SCC) group.
 
-If created while the RC resolver was active, discover dependents;
-otherwise seed the queue with the item's group address alone.
+If created while the RC resolver was active, discover dependents; otherwise seed the queue with the item's group address alone.
 -}
 mkCyclicBFSState :: ReducedSignal -> RM BFSState
-mkCyclicBFSState item = traceSpanAdaptTM
+mkCyclicBFSState item = traceSpanWithRM
   "mkCyclicBFSState"
   item.addr
-  emptySpanValue
-  (const emptySpanValue)
+  emptyTracePreDataRM
+  (const (return (toJSON ())))
   $ do
     g <- depGraph <$> getRMContext
     if item.createdWithRCResolver
       then findNeighbors item.grpAddr Seq.empty
-      else return $ appendAddrsToBFSQ [item.grpAddr] Seq.empty g
+      else
+        return $
+          appendAddrsToBFSQ
+            [ BFSQItem
+                { biSrcAddr = item.grpAddr -- set to the SCC's own address since no one caused the recalculation.
+                , biSrcVers = 0
+                , biGrpAddr = item.grpAddr
+                }
+            ]
+            Seq.empty
+            g
 
 {- | State for the breadth-first traversal of re-calculation.
 
@@ -184,11 +195,20 @@ mkCyclicBFSState item = traceSpanAdaptTM
 O(log n) duplicate detection.
 -}
 data BFSState = BFSState
-  { bfsQ :: Seq.Seq GrpAddr
+  { bfsQ :: Seq.Seq BFSQItem
   -- ^ FIFO queue of groups to process.
+  -- The first element of the tuple is the source address and version that triggered the recalculation.
   , bfsQNodesSet :: Set.Set ValAddr
   -- ^ Nodes currently in the queue, for fast dedup.
   }
+
+data BFSQItem = BFSQItem
+  { biSrcAddr :: GrpAddr
+  , biSrcVers :: Int
+  -- ^ For now, the version is the first version of the source group that triggered the recalculation.
+  , biGrpAddr :: GrpAddr
+  }
+  deriving (Eq, Ord, Show)
 
 {- | Run BFS re-calculation over the groups in the queue.
 
@@ -199,12 +219,11 @@ recalculate the updated group.  Finally discover dependents and continue.
 runBFS :: BFSState -> RM ()
 runBFS state = case state.bfsQ of
   Seq.Empty -> return ()
-  (h Seq.:<| rest) -> do
-    cur <- getTopReducerGAddr h
-    recalcGroup cur
+  (item Seq.:<| rest) -> do
+    cur <- getTopReducerGAddr item.biGrpAddr
+    recalcGroup item{biGrpAddr = cur}
     updated' <- vertexAddrToGrpAddr (fst $ getGrpAddr cur)
-    -- If the group was restructured during recalculation (e.g., a new cycle
-    -- discovered), recalculate the updated group.
+    -- If the group was restructured during recalculation (e.g., a new cycle discovered), recalculate the updated group.
     when (updated' /= cur) $ do
       debugInstStr
         "runBFS"
@@ -214,7 +233,7 @@ runBFS state = case state.bfsQ of
             updated'T <- tshow updated'
             return $ printf "current gAddr %s is updated to %s during recalculation, need to recalculate it again" curT updated'T
         )
-      recalcGroup updated'
+      recalcGroup item{biGrpAddr = updated'}
     findNeighbors updated' rest >>= runBFS
 
 {- | Resolve the top-reducer group address for a 'GrpAddr'.
@@ -232,18 +251,18 @@ getTopReducerGAddr gaddr
         Just gAddr -> return gAddr
         Nothing -> return (GrpAddr (nodeVertexAddr, False))
 
-{- | Discover the dependent groups (\"neighbors\") of a group address and build
+{- | Discover the dependent groups ("neighbors") of a group address and build
 the next 'BFSState'.
 
 Only groups whose values have actually changed (determined by 'filterAffectedUses') are included.
 -}
-findNeighbors :: GrpAddr -> Seq.Seq GrpAddr -> RM BFSState
-findNeighbors cur restBFSQ = traceSpanAdaptTM
+findNeighbors :: GrpAddr -> Seq.Seq BFSQItem -> RM BFSState
+findNeighbors cur restBFSQ = traceSpanWithRM
   "findNeighbors"
   fileTopValAddr
-  emptySpanValue
+  emptyTracePreDataRM
   ( \a -> do
-      nextQ <- mapM tshow (toList a.bfsQ)
+      nextQ <- mapM (tshow . biGrpAddr) (toList a.bfsQ)
       let
         msg :: String
         msg = printf "next bfsQ: %s" (show nextQ)
@@ -259,7 +278,7 @@ findNeighbors cur restBFSQ = traceSpanAdaptTM
           ( \dep -> do
               let depAddr = trimCanonicalToRfb (getVertexAddr $ fst $ getGrpAddr dep)
                   uses = getUseGroups dep ng
-              filterAffectedUses depAddr uses
+              filterAffectedUses dep depAddr uses
           )
           deps
 
@@ -269,7 +288,7 @@ findNeighbors cur restBFSQ = traceSpanAdaptTM
       ( do
           curT <- tshow cur
           depsT <- mapM tshow deps
-          nextGAddrsT <- mapM tshow nextGAddrs
+          nextGAddrsT <- mapM (tshow . biGrpAddr) nextGAddrs
           return $ printf "current gAddr: %s, deps: %s, next gAddrs: %s" curT (show depsT) (show nextGAddrsT)
       )
 
@@ -278,29 +297,34 @@ findNeighbors cur restBFSQ = traceSpanAdaptTM
 
 {- | Filter use-groups to those affected by a change to the dependency.
 
-A group is affected if any of its member nodes are \"dirty\" — the
-dependency's version differs from the last version the group observed.
+A group is affected if any of its member nodes are "dirty" — the dependency's version differs from the last version the
+group observed.
 -}
-filterAffectedUses :: ReferableAddr -> [GrpAddr] -> RM [GrpAddr]
-filterAffectedUses depAddr =
-  filterM
-    ( \use -> do
+filterAffectedUses :: GrpAddr -> ReferableAddr -> [GrpAddr] -> RM [BFSQItem]
+filterAffectedUses srcAddr depAddr =
+  foldM
+    ( \acc use -> do
         useCanAddrs <- getCyclicGrpNodeAddrs use
-        foldM
-          ( \acc useCanAddr -> do
-              dirty <- checkIfDirty depAddr useCanAddr
-              return $ acc || dirty
-          )
-          False
-          useCanAddrs
+        rM <-
+          foldM
+            ( \innerAcc useCanAddr -> case innerAcc of
+                Just _ -> return innerAcc
+                _ -> checkIfDirty depAddr useCanAddr
+            )
+            Nothing
+            useCanAddrs
+        case rM of
+          Just vers -> return $ BFSQItem{biSrcAddr = srcAddr, biSrcVers = vers, biGrpAddr = use} : acc
+          Nothing -> return acc
     )
+    []
 
-{- | Check whether a use-site is \"dirty\" — the dependency's value has changed
+{- | Check whether a use-site is "dirty" — the dependency's value has changed
 since the last time this use-site dereferenced it.
 
 True when the use-site is an actual dependent /and/ the version has changed.
 -}
-checkIfDirty :: ReferableAddr -> VertexAddr -> RM Bool
+checkIfDirty :: ReferableAddr -> VertexAddr -> RM (Maybe Int)
 checkIfDirty depAddr useCanAddr = do
   extVal <- fetchValMust "checkIfDirty" (rfbAddrToAddr depAddr)
   lastDerefed <- queryLastDerefedVersion useCanAddr depAddr
@@ -324,13 +348,15 @@ checkIfDirty depAddr useCanAddr = do
             (show lastDerefed)
             (show actualUseCanAddrSetT)
     )
-  return $ useCanAddr `Set.member` actualUseCanAddrSet && Just extVal.version /= lastDerefed
+  if useCanAddr `Set.member` actualUseCanAddrSet && Just extVal.version /= lastDerefed
+    then return $ Just extVal.version
+    else return Nothing
 
 {- | Append group addresses to the BFS queue, skipping duplicates.
 
 Also builds the companion 'bfsQNodesSet' of all node addresses in the queue.
 -}
-appendAddrsToBFSQ :: [GrpAddr] -> Seq.Seq GrpAddr -> DepGraph -> BFSState
+appendAddrsToBFSQ :: [BFSQItem] -> Seq.Seq BFSQItem -> DepGraph -> BFSState
 appendAddrsToBFSQ addrs restBFSQ ng =
   let
     (newQ, _) =
@@ -345,7 +371,7 @@ appendAddrsToBFSQ addrs restBFSQ ng =
     newQSet =
       foldr
         ( \item acc ->
-            let nodes = getNodeAddrsInGrp item ng
+            let nodes = getNodeAddrsInGrp item.biGrpAddr ng
              in foldr Set.insert acc nodes
         )
         Set.empty
@@ -369,28 +395,27 @@ Acyclic: just recalc the node.
 SCC: recalc each member in turn, saving results in a local map and restoring afterward (later nodes in the SCC may
 overwrite earlier ones).
 -}
-recalcGroup :: GrpAddr -> RM ()
-recalcGroup (IsAcyclicGrpAddr node) = recalcNode node
-recalcGroup sccAddr = do
+recalcGroup :: BFSQItem -> RM ()
+recalcGroup BFSQItem{biSrcAddr, biSrcVers, biGrpAddr = IsAcyclicGrpAddr node} = recalcNode biSrcAddr biSrcVers node
+recalcGroup BFSQItem{biSrcAddr, biSrcVers, biGrpAddr} = do
   -- TODO: what if the RC is a dynamic field or a constraint?
   ng <- depGraph <$> getRMContext
   -- Nodes that are structural children of others in the same SCC represent
   -- sub-field reference cycles (pruned elsewhere).
-  let compAddrs = getElemAddrInGrp sccAddr ng
+  let compAddrs = getElemAddrInGrp biGrpAddr ng
 
-  traceSpanArgsTM
+  traceSpanRM
     "recalcCyclic"
     fileTopValAddr
-    emptySpanValue
     ( do
         compAddrStrs <- mapM tshow compAddrs
-        return $ printf "compAddrs: %s" (show compAddrStrs)
+        return $ emptyTracePreData{tpvArgs = Just $ printf "compAddrs: %s" (show compAddrStrs)}
     )
     $ do
       store <-
         foldM
           ( \accStore siAddr -> do
-              recalcRC siAddr
+              recalcRC biSrcAddr biSrcVers siAddr
               -- Save immediately: later nodes in this SCC may depend on it.
               v <- fetchValMust "recalcGroup" (vertexToAddr siAddr)
               debugInstStr
@@ -412,10 +437,10 @@ recalcGroup sccAddr = do
 Sets up the RC resolver with this node on the stack, runs the stack
 recalculation, then resets the resolver.
 -}
-recalcRC :: VertexAddr -> RM ()
-recalcRC siAddr = do
+recalcRC :: GrpAddr -> Int -> VertexAddr -> RM ()
+recalcRC srcAddr srcVers siAddr = do
   mapRCResolver (const $ RCResolver{stack = [siAddr], doneRCAddrs = [], resolving = True})
-  traceSpanTM "recalcRC" (vertexToAddr siAddr) emptySpanValue recalcRCStack
+  traceSpanNoPreRM "recalcRC" (vertexToAddr siAddr) (recalcRCStack srcAddr srcVers)
   mapRCResolver (const emptyRCResolver)
 
 {- | Process the RC resolver stack, recalculating each node in the cycle.
@@ -424,37 +449,38 @@ For each node on the stack: recalc it, then check if the stack grew
 (new cycle nodes discovered).  If so, recurse immediately; otherwise
 move the node to @doneRCAddrs@ and continue with the rest.
 -}
-recalcRCStack :: RM ()
-recalcRCStack = do
+recalcRCStack :: GrpAddr -> Int -> RM ()
+recalcRCStack srcAddr srcVers = do
   RCResolver{stack} <- getRCResolver
   case stack of
     [] -> return ()
     node : xs -> do
-      recalcNode node
+      recalcNode srcAddr srcVers node
       RCResolver{stack = stack', doneRCAddrs} <- getRCResolver
       -- Stack grew: new cycle nodes discovered, process them immediately.
       if length stack' > length stack
-        then recalcRCStack
+        then recalcRCStack srcAddr srcVers
         else do
           mapRCResolver $ \rs -> rs{stack = xs, doneRCAddrs = node : rs.doneRCAddrs}
           debugInstStr
             "recalcRCStack"
             (vertexToAddr node)
             (msprintfS "stack: %s, done: %s" [packFmtA (show xs), packFmtA (show $ node : doneRCAddrs)])
-          recalcRCStack
+          recalcRCStack srcAddr srcVers
 
 {- | Re-reduce a single node and propagate the change upward to the root.
 
 If the value is a struct, reducing it signals all its fields as reduced.
 Safe to call on an already-reduced node (version checks prevent redundancy).
 -}
-recalcNode :: VertexAddr -> RM ()
-recalcNode nodeVAddr = do
+recalcNode :: GrpAddr -> Int -> VertexAddr -> RM ()
+recalcNode srcAddr srcVers nodeVAddr = do
   let nodeAddr = vertexToAddr nodeVAddr
   vM <- fetchValFromStore "recalcNode" nodeAddr
   case vM of
     Nothing -> return ()
     Just v -> void $ traceSpanTermsRepTM "recalcNode" nodeAddr v $ do
+      markFlowEventEnd srcAddr srcVers
       r <- reduce nodeAddr v
       storeValUpToRootRecalc nodeAddr r -- propagate to root
       return r

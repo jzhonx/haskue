@@ -29,11 +29,7 @@ import Data.ByteString.Builder (
   string7,
  )
 import qualified Data.ByteString.Lazy as LB
-import Data.List.Split (splitOn)
-import qualified Data.Set as Set
 import qualified Data.Yaml as Yaml
-import Env (stMaxTreeDepth, stTraceEnable, stTraceExtraInfo, stTraceFilter)
-import qualified Env
 import Feature (fileTopValAddr)
 import Reduce (finalize, reduce)
 import Reduce.Core (storeBuiltinsAndPackages)
@@ -54,9 +50,7 @@ import Value.Export.JSON (buildJSON)
 data Config = Config
   { outputFormat :: String
   , ecDebugMode :: Bool
-  , ecTraceExec :: Bool
-  , ecTraceExtraInfo :: Bool
-  , ecTraceFilter :: String
+  , ecTraceConfig :: TraceConfig
   , ecTraceHandle :: Handle
   , ecMaxTreeDepth :: Int
   , ecFilePath :: String
@@ -67,9 +61,7 @@ emptyConfig =
   Config
     { outputFormat = ""
     , ecDebugMode = False
-    , ecTraceExec = False
-    , ecTraceExtraInfo = False
-    , ecTraceFilter = ""
+    , ecTraceConfig = emptyTraceConfig
     , ecTraceHandle = stdout
     , ecMaxTreeDepth = 0
     , ecFilePath = ""
@@ -132,10 +124,6 @@ strToCUEVal s conf = do
           Left errTk -> Left (show errTk)
           Right ts -> Right ts
       )
-  -- -- Print the tokens for debugging.
-  -- do
-  --   let tokenReps = map show tokens
-  --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
   e <- liftEither $ parseExpr tokens
   evalVal (transExprToVal e fileTopValAddr) conf
 
@@ -147,9 +135,6 @@ evalStrToVal s conf = do
           Left errTk -> Left (show errTk)
           Right ts -> Right ts
       )
-  -- do
-  --   let tokenReps = map show tokens
-  --   liftIO $ hPutStr stderr $ "Tokens: " ++ show tokenReps ++ "\n"
   e <- liftEither (parseSourceFile tokens)
   evalFile e conf
 
@@ -177,16 +162,6 @@ evalVal f conf = do
 
 evalValInner :: Config -> TextIndexer -> VNode -> ExceptT String IO (VNode, TextIndexer)
 evalValInner conf textIndexer raw = do
-  let config =
-        Env.Config
-          { stTraceEnable = ecTraceExec conf
-          , stTraceExtraInfo = ecTraceExtraInfo conf
-          , stTraceFilter =
-              let s = ecTraceFilter conf
-               in if null s then Set.empty else Set.fromList $ splitOn "," s
-          , stMaxTreeDepth = ecMaxTreeDepth conf
-          }
-
   (reducedRoot, finalized, _) <-
     runRWST
       ( do
@@ -214,7 +189,13 @@ evalValInner conf textIndexer raw = do
 
           return reducedTopVal
       )
-      (ReduceConfig{baseConfig = config, params = (emptyReduceParams{createCnstr = True})})
+      ( ReduceConfig
+          { traceConfig = ecTraceConfig conf
+          , maxTreeDepth = ecMaxTreeDepth conf
+          , debugMode = ecDebugMode conf
+          , params = (emptyReduceParams{createCnstr = True})
+          }
+      )
       (emptyContext (LB.hPut conf.ecTraceHandle))
         { Reduce.Monad.tIndexer = textIndexer
         }

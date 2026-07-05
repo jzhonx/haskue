@@ -52,9 +52,9 @@ if [[ "$1" == "run" ]]; then
   echo ""
   # Run the program with the input file and redirect the output to a log file.
   if [[ -z "$maxTreeDepth" ]]; then
-    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-extra-info --trace-output=_debug/trace.log $input 2> _debug/t.log
+    cabal run --project-file=cabal.project.debug haskue -- eval -d --trace --trace-output=_debug/trace.log $input 2> _debug/t.log
   else
-    cabal run haskue -- eval -d --trace --trace-filter="" --trace-print-extra-info --trace-output=_debug/trace.log --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
+    cabal run --project-file=cabal.project.debug haskue -- eval -d --trace --trace-output=_debug/trace.log --max-tree-depth $maxTreeDepth $input 2> _debug/t.log
   fi
 
   echo ""
@@ -70,7 +70,7 @@ if [[ "$1" == "runp" ]]; then
   input="${2:-_debug/_t.cue}"
   profileFlags="$3"
 
-  cabal run --enable-profiling haskue -- $input +RTS $profileFlags
+  cabal run --project-file=cabal.project.debug --enable-profiling haskue -- $input +RTS $profileFlags
 
   echo ""
 
@@ -78,7 +78,19 @@ if [[ "$1" == "runp" ]]; then
 fi
 
 if [[ "$1" == "build" ]]; then
-  cabal build --ghc-options="-O2 -fspecialise-aggressively"
+  cabal build --project-file=cabal.project.debug
+
+  echo ""
+
+  exit 0
+fi
+
+if [[ "$1" == "release" ]]; then
+  cabal install exe:haskue \
+    --project-file=cabal.project.release \
+    --builddir=dist-release \
+    --installdir=release \
+    --install-method=copy
 
   echo ""
 

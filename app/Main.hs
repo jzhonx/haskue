@@ -5,6 +5,7 @@ import qualified Data.ByteString as B
 import Data.ByteString.Builder (hPutBuilder)
 import Eval (Config (..), evalStr)
 import Options.Applicative
+import Reduce.Monad (TraceConfig (..))
 import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
 import Util.ShowTrace (runServer)
 
@@ -18,8 +19,7 @@ data Command
 data CommonConfig = CommonConfig
   { ccDebug :: Bool
   , ccTrace :: Bool
-  , ccTraceExtraInfo :: Bool
-  , ccTraceFilter :: String
+  , ccTraceDisableShowValue :: Bool
   , ccTraceOutput :: String
   , ccMaxTreeDepth :: Int
   }
@@ -49,14 +49,8 @@ commonOptions =
           <> help "trace execution"
       )
     <*> switch
-      ( long "trace-print-extra-info"
-          <> help "Print the extra info in trace output"
-      )
-    <*> option
-      str
-      ( long "trace-filter"
-          <> help "Filter for trace output. If empty, all traces are shown. Delimited by commas."
-          <> value "reduce"
+      ( long "trace-disable-show-value"
+          <> help "Whether to disable showing values in trace output"
       )
     <*> option
       str
@@ -75,35 +69,41 @@ mkTraceHandle :: String -> IO Handle
 mkTraceHandle "" = return stdout
 mkTraceHandle path = openFile path WriteMode
 
--- Convert ExportConfig to EvalConfig
+-- | Convert ExportConfig to EvalConfig
 toEvalConfig :: ExportConfig -> IO Config
 toEvalConfig exportConfig = do
-  tHandle <- mkTraceHandle (ccTraceOutput (exportCommon exportConfig))
+  let cconf = exportCommon exportConfig
+  tHandle <- mkTraceHandle (ccTraceOutput cconf)
   return $
     Config
       { outputFormat = exportFormat exportConfig
-      , ecDebugMode = ccDebug (exportCommon exportConfig)
-      , ecTraceExec = ccTrace (exportCommon exportConfig)
-      , ecTraceExtraInfo = ccTraceExtraInfo (exportCommon exportConfig)
-      , ecTraceFilter = ccTraceFilter (exportCommon exportConfig)
+      , ecDebugMode = ccDebug cconf
+      , ecTraceConfig =
+          TraceConfig
+            { stTraceEnable = ccTrace cconf
+            , stTraceDisableShowValue = ccTraceDisableShowValue cconf
+            }
       , ecTraceHandle = tHandle
-      , ecMaxTreeDepth = ccMaxTreeDepth (exportCommon exportConfig)
+      , ecMaxTreeDepth = ccMaxTreeDepth cconf
       , ecFilePath = exportFilePath exportConfig
       }
 
--- Convert EvalConfig to EvalConfig (identity with new structure)
+-- | Convert EvalConfig to EvalConfig (identity with new structure)
 toEvalConfigEval :: EvalConfig -> IO Config
 toEvalConfigEval evalConfig = do
-  tHandle <- mkTraceHandle (ccTraceOutput (evalCommon evalConfig))
+  let cconf = evalCommon evalConfig
+  tHandle <- mkTraceHandle (ccTraceOutput cconf)
   return $
     Config
       { outputFormat = "cue"
-      , ecDebugMode = ccDebug (evalCommon evalConfig)
-      , ecTraceExec = ccTrace (evalCommon evalConfig)
-      , ecTraceExtraInfo = ccTraceExtraInfo (evalCommon evalConfig)
-      , ecTraceFilter = ccTraceFilter (evalCommon evalConfig)
+      , ecDebugMode = ccDebug cconf
+      , ecTraceConfig =
+          TraceConfig
+            { stTraceEnable = ccTrace cconf
+            , stTraceDisableShowValue = ccTraceDisableShowValue cconf
+            }
       , ecTraceHandle = tHandle
-      , ecMaxTreeDepth = ccMaxTreeDepth (evalCommon evalConfig)
+      , ecMaxTreeDepth = ccMaxTreeDepth cconf
       , ecFilePath = evalFilePath evalConfig
       }
 

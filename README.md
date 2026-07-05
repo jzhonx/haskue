@@ -26,21 +26,58 @@ languages, and to make CUE's evaluation process easier to understand.
 - Definitions (`#foo`) and hidden fields (`_foo`) as first-class features
 - Structural cycles are not allowed
 
+## TODO
+
+* package/module system
+* built-in functions
+* default values in ellipsis
+* definitions and hidden fields fully implemented
 
 ## CLI Usage
 
+Currently, haskue supports `eval` and `export` commands that behave similarly to the CUE CLI.
+
 ```
-haskue export <file> [--out cue|json|yaml] [--debug] [--trace]
 haskue eval   <file>
-haskue show-trace <trace-file>
+haskue export <file> [--out cue|json|yaml] [--trace]
 ```
+
+We also provide a `--trace` option to print the evaluation trace of the value graph.
+
+### Example of using the trace
+
+Suppose we have a CUE file `example.cue` with the following content:
+
+```cue
+y: x
+x: {a: z}
+z: {b: 1 + 2}
+```
+
+Then running `haskue export example.cue --trace --trace-out=trace.json` will produce a `trace.json` file. We use the
+`show-trace` command to visualize the trace:
 
 ```sh
-haskue eval config.cue
-haskue export config.cue --out json
+$ haskue show-trace trace.json
+Opening the trace (trace.log) in the browser
+Open URL in browser: https://ui.perfetto.dev/#!/?url=http://127.0.0.1:9001/trace.log&referrer=open_trace_in_ui
 ```
 
+Clicking the link will open a browser window with the trace visualized in Perfetto.
+
+![Trace Example](./image/trace_example.png)
+
+Then we can use `wsad` to navigate the trace, and click on a node to see its details. In the example above, we can see
+that the after `x` getting evaluated, it triggers the re-evaluation of `y`, which is shown in the trace as a flow from
+`x` to `y`.
+
 ## How evaluation is implemented
+
+Evaluation of CUE values is interesting because there is no evaluation order as the CUE spec puts it.
+
+> As a consequence, order of evaluation is irrelevant, a property that is key to many of the constructs in the CUE language as well as the tooling layered on top of it.
+
+Here is a brief overview of how evaluation is implemented in haskue.
 
 After scanning and parsing, the CUE source is represented as an AST. The AST is then converted into a graph of nodes.
 Each node of the graph represents a value, which can be a primitive value, a struct, a list, an operation, or a

@@ -21,10 +21,6 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import DepGraph
-import Env (
-  Config (..),
-  emptyConfig,
- )
 import Feature
 import GHC.Generics (Generic)
 import GHC.Stack (callStack, prettyCallStack)
@@ -45,10 +41,25 @@ emptyReduceParams = ReduceParams{createCnstr = False}
 type RM = RWST ReduceConfig () Context (ExceptT String IO)
 
 data ReduceConfig = ReduceConfig
-  { baseConfig :: Config
+  { traceConfig :: TraceConfig
+  , debugMode :: Bool
+  , maxTreeDepth :: Int
   , params :: ReduceParams
   }
   deriving (Show)
+
+data TraceConfig = TraceConfig
+  { stTraceEnable :: !Bool
+  , stTraceDisableShowValue :: !Bool
+  }
+  deriving (Show)
+
+emptyTraceConfig :: TraceConfig
+emptyTraceConfig =
+  TraceConfig
+    { stTraceEnable = False
+    , stTraceDisableShowValue = False
+    }
 
 mapParams :: (ReduceParams -> ReduceParams) -> ReduceConfig -> ReduceConfig
 mapParams f r = r{params = f (params r)}
@@ -56,7 +67,9 @@ mapParams f r = r{params = f (params r)}
 emptyReduceConfig :: ReduceConfig
 emptyReduceConfig =
   ReduceConfig
-    { baseConfig = emptyConfig
+    { traceConfig = emptyTraceConfig
+    , maxTreeDepth = 0
+    , debugMode = False
     , params = emptyReduceParams
     }
 
@@ -90,6 +103,8 @@ data Context = Context
   , rcResolver :: !RCResolver
   , ctxTrace :: Trace
   , tIndexer :: TextIndexer
+  , flowIDMap :: Map.Map (GrpAddr, Int) Int
+  , flowIDCounter :: !Int
   }
 
 instance HasTrace Context where
@@ -144,6 +159,8 @@ emptyContext tPut =
     , rcResolver = emptyRCResolver
     , ctxTrace = emptyTrace tPut
     , tIndexer = emptyTextIndexer
+    , flowIDMap = Map.empty
+    , flowIDCounter = 0
     }
 
 throwFatal :: (HasCallStack) => String -> RM a
@@ -151,7 +168,6 @@ throwFatal msg = throwError $ msg ++ "\n" ++ prettyCallStack callStack
 
 -- Context
 
-{-# INLINE getRMContext #-}
 getRMContext :: RM Context
 getRMContext = get
 
@@ -186,7 +202,7 @@ setRMObjID newID = modify' $ \ctx -> ctx{ctxObjID = newID}
 treeDepthCheck :: ValAddr -> RM ()
 treeDepthCheck vc = do
   let depth = length $ addrToList vc
-  Config{stMaxTreeDepth = maxDepth} <- asks baseConfig
+  maxDepth <- asks maxTreeDepth
   let maxDepthVal = if maxDepth <= 0 then 1000 else maxDepth
   when (depth > maxDepthVal) $ throwFatal $ printf "tree depth exceeds max depth (%d)" maxDepthVal
 

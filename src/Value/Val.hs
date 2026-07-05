@@ -10,7 +10,7 @@
 
 module Value.Val where
 
-import Control.Monad.Except (runExcept)
+import Control.Monad.Except (MonadError, runExcept)
 import Control.Monad.Identity
 import Control.Monad.State.Strict (gets, modify')
 import qualified Data.ByteString.Char8 as BC
@@ -18,7 +18,6 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Env (ErrorEnv)
 import Exception (throwErrSt)
 import Feature (
   Selector (..),
@@ -28,6 +27,7 @@ import Feature (
   universalValAddr,
  )
 import GHC.Generics (Generic)
+import GHC.Stack (HasCallStack)
 import StringIndex (HasTextIndexer (..), TextIndex, TextIndexerMonad, getTextIndexer, strToTextIndex, textToTextIndex)
 import Syntax.AST (exprToOneLinerStr)
 import Syntax.Token (Location)
@@ -393,7 +393,7 @@ showValType t = case t of
   VUnknown -> "unknown"
   VFuncAddr _ -> "fnAddr"
 
-showValueType :: (ErrorEnv m) => Val -> m String
+showValueType :: (MonadError String m, HasCallStack) => Val -> m String
 showValueType t = case t of
   VAtom a -> case a of
     String _ -> return "string"

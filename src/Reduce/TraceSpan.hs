@@ -8,24 +8,31 @@
 
 module Reduce.TraceSpan where
 
+import Control.Monad (when)
 import Control.Monad.Reader (asks)
+import Control.Monad.State.Strict (gets, modify')
 import Data.Aeson (KeyValue (..), ToJSON, Value, toJSON)
 import Data.Aeson.Types (object)
-import qualified Data.Set as Set
+import qualified Data.Map as Map
 import qualified Data.Text as T
-import Env (Config (..))
+import DepGraph (GrpAddr, lookupGrpAddr)
 import Feature
 import Reduce.Monad (
   RM,
-  baseConfig,
+  TraceConfig (..),
+  debugMode,
+  depGraph,
+  flowIDCounter,
+  flowIDMap,
+  traceConfig,
  )
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (ttoJSON))
 import Text.Printf (printf)
-import Util.Trace (debugInstant, getTraceID, traceSpanExec, traceSpanStart)
+import Util.Trace (debugInstant, emitFlowEvent, getTraceID, traceSpanExec, traceSpanStart)
 import Value.Export.Debug
 
 data RMStartTraceArgs = RMStartTraceArgs
-  { cstaTraceID :: !Int
+  { cstaTraceID :: Maybe Int
   , cstaAddr :: !T.Text
   , cstaBefore :: !Value
   , cstaCustomVal :: !Value
@@ -34,12 +41,14 @@ data RMStartTraceArgs = RMStartTraceArgs
 
 instance ToJSON RMStartTraceArgs where
   toJSON cta =
-    object
-      [ "traceid" .= show (cstaTraceID cta)
-      , "addr" .= cstaAddr cta
+    object $
+      [ "addr" .= cstaAddr cta
       , "before" .= cstaBefore cta
-      , "ctm" .= cstaCustomVal cta
+      , "custom" .= cstaCustomVal cta
       ]
+        ++ case cstaTraceID cta of
+          Just tid -> ["traceid" .= show tid]
+          Nothing -> []
 
 newtype RMEndTraceArgs = RMEndTraceArgs
   { cetaResult :: Value
@@ -50,7 +59,7 @@ instance ToJSON RMEndTraceArgs where
   toJSON cta = object ["after" .= cetaResult cta]
 
 data RMInstantTraceArgs = RMInstantTraceArgs
-  { ctiTraceID :: !Int
+  { ctiTraceID :: Maybe Int
   , ctiAddr :: !T.Text
   , ctiCustomVal :: !Value
   }
@@ -58,58 +67,93 @@ data RMInstantTraceArgs = RMInstantTraceArgs
 
 instance ToJSON RMInstantTraceArgs where
   toJSON c =
-    object
-      [ "traceid" .= show (ctiTraceID c)
-      , "addr" .= ctiAddr c
-      , "ctm" .= ctiCustomVal c
+    object $
+      [ "addr" .= ctiAddr c
+      , "custom" .= ctiCustomVal c
       ]
+        ++ case ctiTraceID c of
+          Just tid -> ["traceid" .= show tid]
+          Nothing -> []
 
-whenTraceEnabled :: String -> RM a -> RM a -> RM a
-whenTraceEnabled name f traced = do
-  Config{stTraceEnable = traceEnable, stTraceFilter = tFilter} <- asks baseConfig
-  if traceEnable && (Set.null tFilter || Set.member name tFilter)
-    then traced
-    else f
+data TracePreData = TracePreData
+  { tpvVal :: Value
+  , tpvArgs :: Maybe String
+  }
 
-traceSpanTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> RM a -> RM a
-traceSpanTM name addr beforeM = traceAction name addr beforeM (return Nothing) ttoJSON
+emptyTracePreData :: TracePreData
+emptyTracePreData =
+  TracePreData
+    { tpvVal = toJSON ()
+    , tpvArgs = Nothing
+    }
 
-traceSpanArgsTM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM Value -> RM String -> RM a -> RM a
-traceSpanArgsTM name addr beforeM args = traceAction name addr beforeM (Just <$> args) ttoJSON
+mkTracePreDataWithOnlyVal :: Value -> TracePreData
+mkTracePreDataWithOnlyVal v = TracePreData{tpvVal = v, tpvArgs = Nothing}
 
-traceSpanAdaptTM :: String -> ValAddr -> RM Value -> (a -> RM Value) -> RM a -> RM a
-traceSpanAdaptTM name addr beforeM = traceAction name addr beforeM (return Nothing)
+traceSpanNoPreRM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM a -> RM a
+traceSpanNoPreRM name addr = traceSpanRM name addr emptyTracePreDataRM
 
-traceSpanArgsAdaptTM :: String -> ValAddr -> RM Value -> RM String -> (a -> RM Value) -> RM a -> RM a
-traceSpanArgsAdaptTM name addr beforeM args = traceAction name addr beforeM (Just <$> args)
+emptyTracePreDataRM :: RM TracePreData
+emptyTracePreDataRM = return emptyTracePreData
 
-traceSpanTermsRepTM :: (TermsRepShow a, TermsRepShow b) => String -> ValAddr -> a -> RM b -> RM b
+traceSpanRM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM TracePreData -> RM a -> RM a
+traceSpanRM name addr preData = traceSpanWithRM name addr preData ttoJSON
+
+traceSpanTermsRepTM ::
+  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b, TermsRepShow b) => String -> ValAddr -> a -> RM b -> RM b
 traceSpanTermsRepTM name addr a =
-  traceAction
+  traceSpanWithRM
     name
     addr
-    (termsRepToJSONWithAddr addr a)
-    (return Nothing)
-    (termsRepToJSONWithAddr addr)
+    ( do
+        debugMode <- asks debugMode
+        if debugMode
+          then do
+            rep <- termsRepToJSONWithAddr addr a
+            return $ mkTracePreDataWithOnlyVal rep
+          else do
+            v <- ttoJSON a
+            return $ mkTracePreDataWithOnlyVal v
+    )
+    ( \b -> do
+        debugMode <- asks debugMode
+        if debugMode
+          then termsRepToJSONWithAddr addr b
+          else ttoJSON b
+    )
 
-traceSpanTermsRepAnyTM :: (ToJSONWTIndexer b, TermsRepShow a) => String -> ValAddr -> a -> RM b -> RM b
-traceSpanTermsRepAnyTM name addr v = traceAction name addr (termsRepToJSONWithAddr addr v) (return Nothing) ttoJSON
+traceSpanTermsRepAnyTM ::
+  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b) => String -> ValAddr -> a -> RM b -> RM b
+traceSpanTermsRepAnyTM name addr a =
+  traceSpanWithRM
+    name
+    addr
+    ( do
+        debugMode <- asks debugMode
+        if debugMode
+          then do
+            rep <- termsRepToJSONWithAddr addr a
+            return $ mkTracePreDataWithOnlyVal rep
+          else do
+            v <- ttoJSON a
+            return $ mkTracePreDataWithOnlyVal v
+    )
+    ttoJSON
 
-traceAction :: String -> ValAddr -> RM Value -> RM (Maybe String) -> (b -> RM Value) -> RM b -> RM b
-traceAction name addr beforeM argsMGen jsonfyb f = whenTraceEnabled name f do
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
+traceSpanWithRM :: String -> ValAddr -> RM TracePreData -> (b -> RM Value) -> RM b -> RM b
+traceSpanWithRM name addr preDataM jsonfyb f = whenTraceEnabled name addr f do
+  debugMode <- asks debugMode
   addrS <- tshow addr
   trID <- getTraceID
-  let
-    header = T.pack $ printf "%s, at:%s" name addrS
+  let header = T.pack $ printf "%s, at:%s" name addrS
 
-  cstaBefore <- optValRM extraInfo beforeM
-  cstaCustomVal <- optValRM extraInfo (toJSON <$> argsMGen)
+  cstaBefore <- optValRM (tpvVal <$> preDataM)
+  cstaCustomVal <- optValRM (toJSON . tpvArgs <$> preDataM)
   traceSpanStart
     header
     ( toJSON $
         RMStartTraceArgs
-          { cstaTraceID = trID
+          { cstaTraceID = if debugMode then Just trID else Nothing
           , cstaAddr = addrS
           , cstaBefore = cstaBefore
           , cstaCustomVal = cstaCustomVal
@@ -117,15 +161,52 @@ traceAction name addr beforeM argsMGen jsonfyb f = whenTraceEnabled name f do
     )
 
   res <- f
-  cetaResult <- optValRM extraInfo (jsonfyb res)
+  cetaResult <- optValRM (jsonfyb res)
   traceSpanExec header (toJSON $ RMEndTraceArgs{cetaResult = cetaResult})
   return res
 
-optValRM :: Bool -> RM Value -> RM Value
-optValRM extraInfo f = if extraInfo then f else return $ object []
+whenTraceEnabled :: String -> ValAddr -> RM a -> RM a -> RM a
+whenTraceEnabled name _addr f traced = do
+  TraceConfig{stTraceEnable = traceEnable} <- asks traceConfig
+  debugMode <- asks debugMode
+  -- If debugMode is not enabled, we only trace the "reduce" and "recalc" functions.
+  if traceEnable && (debugMode || name == "reduce" || name == "recalc")
+    then traced
+    else f
 
-emptySpanValue :: RM Value
-emptySpanValue = return $ toJSON ()
+optValRM :: RM Value -> RM Value
+optValRM f = do
+  disableShowVal <- asks (stTraceDisableShowValue . traceConfig)
+  if not disableShowVal then f else return $ object []
+
+markFlowEventStart :: ValAddr -> Int -> RM ()
+markFlowEventStart addr vers = case addrIsVertex addr of
+  Just vAddr -> do
+    flowIDMap <- gets flowIDMap
+    flowIDCounter <- gets flowIDCounter
+    let newFlowID = flowIDCounter + 1
+    ng <- gets depGraph
+    let
+      r = lookupGrpAddr vAddr ng
+    case r of
+      Just grpAddr -> do
+        modify' $ \ctx -> ctx{flowIDMap = Map.insert (grpAddr, vers) newFlowID flowIDMap, flowIDCounter = newFlowID}
+
+        whenTraceEnabled "reduce" addr (return ()) $ emitFlowEvent "s" (T.pack $ printf "0x%x" newFlowID)
+      Nothing -> return ()
+  Nothing -> return ()
+
+markFlowEventEnd :: GrpAddr -> Int -> RM ()
+markFlowEventEnd addr vers = do
+  flowIDMap <- gets flowIDMap
+  case Map.lookup (addr, vers) flowIDMap of
+    Just flowID ->
+      whenTraceEnabled
+        "reduce"
+        fileTopValAddr
+        (return ())
+        $ emitFlowEvent "f" (T.pack $ printf "0x%x" flowID)
+    Nothing -> return ()
 
 -- === Debug instant traces ===
 
@@ -133,17 +214,19 @@ debugInstStr :: String -> ValAddr -> RM String -> RM ()
 debugInstStr name addr f = debugInst name addr (toJSON <$> f)
 
 debugInst :: String -> ValAddr -> RM Value -> RM ()
-debugInst name addr argsGen = whenTraceEnabled name (return ()) $ do
-  addrS <- tshow addr
-  trID <- getTraceID
-  extraInfo <- asks (stTraceExtraInfo . baseConfig)
-  ctiCustomVal <- optValRM extraInfo (toJSON <$> argsGen)
-  debugInstant
-    (T.pack name)
-    ( toJSON $
-        RMInstantTraceArgs
-          { ctiTraceID = trID
-          , ctiAddr = addrS
-          , ctiCustomVal = ctiCustomVal
-          }
-    )
+debugInst name addr argsGen = do
+  debugMode <- asks debugMode
+  when debugMode $
+    whenTraceEnabled name addr (return ()) $ do
+      addrS <- tshow addr
+      trID <- getTraceID
+      ctiCustomVal <- optValRM (toJSON <$> argsGen)
+      debugInstant
+        (T.pack name)
+        ( toJSON $
+            RMInstantTraceArgs
+              { ctiTraceID = if debugMode then Just trID else Nothing
+              , ctiAddr = addrS
+              , ctiCustomVal = ctiCustomVal
+              }
+        )

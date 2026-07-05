@@ -20,9 +20,10 @@ import Reduce.Monad (
  )
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
-  traceSpanTM,
+  mkTracePreDataWithOnlyVal,
+  traceSpanNoPreRM,
+  traceSpanRM,
+  traceSpanWithRM,
  )
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
@@ -31,14 +32,14 @@ import Value
 import Value.Export.Debug (termsRepToJSONWithAddr, valToStringTermsRep, vnToStringTermsRep)
 
 reduceDisj :: ValAddr -> Disj -> RM Val
-reduceDisj addr d = traceSpanTM "reduceDisj" addr emptySpanValue $ do
+reduceDisj addr d = traceSpanNoPreRM "reduceDisj" addr $ do
   -- We have to reduce all disjuncts because some of the disjuncts might be created by unifying, which could still have
   -- unknown value.
   d' <- vtmapM (applyAddrFOnVal reduceVal) addr d
   normalizeDisj addr d'
 
 resolveDisjOp :: DisjoinOp -> ValAddr -> RM Val
-resolveDisjOp disjOp addr = traceSpanTM "resolveDisjOp" addr emptySpanValue $ do
+resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
   let terms = toList $ djoTerms disjOp
   when (length terms < 2) $
     throwFatal $
@@ -68,36 +69,35 @@ resolveDisjOp disjOp addr = traceSpanTM "resolveDisjOp" addr emptySpanValue $ do
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
 normalizeDisj :: ValAddr -> Disj -> RM Val
-normalizeDisj addr d = do
-  traceSpanTM
-    "normalizeDisj"
-    addr
-    (termsRepToJSONWithAddr addr $ mkDisjVN d)
-    $ do
-      flattened <- flattenDisjunction d
-      final <- rewriteDisjuncts flattened addr
-      debugInstStr
-        "normalizeDisj"
-        addr
-        ( do
-            flattenedRep <- vnToStringTermsRep (mkDisjVN flattened)
-            rep <- vnToStringTermsRep (mkDisjVN final)
-            return $ printf "flattened: %s, final: %s" flattenedRep rep
-        )
-      if
-        | null final.dsjDisjuncts ->
-            let
-              unknowns = filter (\case VUnknown -> True; _ -> False) (toList flattened.dsjDisjuncts)
-              bottoms = filter (isJust . rtrBottom) (toList flattened.dsjDisjuncts)
-             in
-              if
-                | length unknowns == length flattened.dsjDisjuncts -> return VUnknown
-                | not (null bottoms) -> return $ head bottoms
-                | otherwise ->
-                    throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
-        -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
-        | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head (toList final.dsjDisjuncts)
-        | otherwise -> return $ VDisj final
+normalizeDisj addr d = traceSpanRM
+  "normalizeDisj"
+  addr
+  (mkTracePreDataWithOnlyVal <$> termsRepToJSONWithAddr addr (mkDisjVN d))
+  $ do
+    flattened <- flattenDisjunction d
+    final <- rewriteDisjuncts flattened addr
+    debugInstStr
+      "normalizeDisj"
+      addr
+      ( do
+          flattenedRep <- vnToStringTermsRep (mkDisjVN flattened)
+          rep <- vnToStringTermsRep (mkDisjVN final)
+          return $ printf "flattened: %s, final: %s" flattenedRep rep
+      )
+    if
+      | null final.dsjDisjuncts ->
+          let
+            unknowns = filter (\case VUnknown -> True; _ -> False) (toList flattened.dsjDisjuncts)
+            bottoms = filter (isJust . rtrBottom) (toList flattened.dsjDisjuncts)
+           in
+            if
+              | length unknowns == length flattened.dsjDisjuncts -> return VUnknown
+              | not (null bottoms) -> return $ head bottoms
+              | otherwise ->
+                  throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
+      -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
+      | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head (toList final.dsjDisjuncts)
+      | otherwise -> return $ VDisj final
 
 {- | Flatten the disjunction.
 
@@ -186,10 +186,10 @@ TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
 rewriteDisjuncts :: Disj -> ValAddr -> RM Disj
 rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) addr =
-  traceSpanAdaptTM
+  traceSpanWithRM
     "rewriteDisjuncts"
     addr
-    (termsRepToJSONWithAddr addr $ mkDisjVN idisj)
+    (mkTracePreDataWithOnlyVal <$> termsRepToJSONWithAddr addr (mkDisjVN idisj))
     (termsRepToJSONWithAddr addr . mkDisjVN)
     $ do
       (newIndexes, newDisjs) <- foldM go ([], []) (zip [0 ..] (toList disjuncts))

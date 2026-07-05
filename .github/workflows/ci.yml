@@ -1,0 +1,59 @@
+name: Haskell CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.12.1.0"
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal
+            dist-newstyle
+          key: >
+            ${{ runner.os }}-ghc-9.6.7-debug-${{
+            hashFiles('**/*.cabal', 'cabal.project.debug') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-9.6.7-debug-
+            ${{ runner.os }}-ghc-9.6.7-
+
+      - name: Install dependencies
+        run: |
+          cabal update
+          cabal build \
+            --project-file=cabal.project.debug \
+            --builddir=dist-newstyle \
+            --only-dependencies \
+            --enable-tests
+
+      - name: Build
+        run: |
+          cabal build \
+            --project-file=cabal.project.debug \
+            --builddir=dist-newstyle \
+            --enable-tests \
+            all
+
+      - name: Run tests
+        run: |
+          cabal test \
+            --project-file=cabal.project.debug \
+            --builddir=dist-newstyle \
+            all

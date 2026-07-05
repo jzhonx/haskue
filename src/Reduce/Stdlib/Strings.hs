@@ -9,7 +9,7 @@ import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Vector as V
 import Feature
 import Reduce.Monad (RM)
-import Reduce.TraceSpan (emptySpanValue, traceSpanTM)
+import Reduce.TraceSpan (traceSpanNoPreRM)
 import StringIndex (strToTextIndex)
 import Text.Printf (printf)
 import Value
@@ -71,12 +71,12 @@ joinBSs bs sep = BC.intercalate sep bs
 
 replace :: [Val] -> ValAddr -> RM Val
 replace [VAtom (String s), VAtom (String old), VAtom (String new), VAtom (Int n)] addr =
-  traceSpanTM "strings.Replace" addr emptySpanValue $
+  traceSpanNoPreRM "strings.Replace" addr $
     return $
       VAtom $
         String $
           replaceBS s old new (fromIntegral n)
-replace xs addr = traceSpanTM "strings.Replace" addr emptySpanValue $ do
+replace xs addr = traceSpanNoPreRM "strings.Replace" addr $ do
   let incompletes = map rtrIncomplete xs
   case listToMaybe $ catMaybes incompletes of
     Just _ -> return VUnknown

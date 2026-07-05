@@ -8,7 +8,6 @@ module Reduce.Reference where
 import Control.Monad (when)
 import Data.Aeson (ToJSON, object, toJSON)
 import Data.Foldable (toList)
-import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing, listToMaybe)
 import qualified Data.Text as T
 import DepGraph
@@ -19,18 +18,17 @@ import Reduce.Monad (
   depGraph,
   getRCResolver,
   getRMContext,
-  lastDerefs,
   mapRCResolver,
-  modifyRMContext,
   putRMContext,
   throwFatal,
  )
 import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore, storeLastDerefedVersion)
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanArgsTM,
-  traceSpanTM,
+  mkTracePreDataWithOnlyVal,
+  tpvArgs,
+  traceSpanNoPreRM,
+  traceSpanRM,
  )
 import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
 import Syntax.Token (Location (..))
@@ -51,13 +49,13 @@ The index should have a list of arguments where the first argument is the tree t
 arguments are the segments.
 -}
 deref :: ValAddr -> Reference -> RM DerefResult
-deref addr ref = traceSpanArgsTM
+deref addr ref = traceSpanRM
   "deref"
   addr
-  (termsRepToJSONWithAddr addr (Ref ref))
   ( do
+      beforeVal <- termsRepToJSONWithAddr addr (Ref ref)
       identT <- tshow ref.ident
-      return $ T.unpack identT
+      return $ (mkTracePreDataWithOnlyVal beforeVal){tpvArgs = Just $ T.unpack identT}
   )
   $ do
     m <- concreteRefSels ref
@@ -77,7 +75,7 @@ deref addr ref = traceSpanArgsTM
 -- | TODO: the value indexed should not be another reference. It should always be resolved.
 select :: ValueSelect -> ValAddr -> RM Val
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
-select vsel addr = traceSpanTM "select" addr emptySpanValue $ do
+select vsel addr = traceSpanNoPreRM "select" addr $ do
   vsFieldPathM <- concreteVSelSels vsel
   let
     tarVM = do
@@ -193,7 +191,7 @@ concreteVSelSels vs = do
 The env is to provide the context for the dereferencing the reference.
 -}
 getDstVal :: LocateParams -> ValAddr -> RM DerefResult
-getDstVal lp addr = traceSpanTM "getDstVal" addr emptySpanValue $ do
+getDstVal lp addr = traceSpanNoPreRM "getDstVal" addr $ do
   dr <- locateRef lp addr
   case dr of
     DerefResult{targetValue = Just tarV, targetAddr = Just tarAddr} -> do

@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.12.1.0"
+
+      - name: Cache Cabal
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal
+            dist-release
+          key: ${{ runner.os }}-release-${{ hashFiles('**/*.cabal', 'cabal.project.release') }}
+          restore-keys: |
+            ${{ runner.os }}-release-
+            ${{ runner.os }}-
+
+      - name: Build release binary
+        run: |
+          cabal update
+          cabal install exe:haskue \
+            --project-file=cabal.project.release \
+            --builddir=dist-release \
+            --installdir=release \
+            --install-method=copy
+
+      - name: Package
+        run: |
+          chmod +x release/haskue
+
+          mkdir package
+          cp release/haskue package/
+          cp LICENSE package/ || true
+          cp README.md package/ || true
+
+          tar czf haskue-linux-x86_64.tar.gz -C package .
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: haskue-linux-x86_64.tar.gz

@@ -16,7 +16,6 @@ extra-source-files: CHANGELOG.md
 library
     exposed-modules:  
         DepGraph,
-        Env,
         Eval,
         Exception,
         Feature,
@@ -66,7 +65,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -threaded
+    ghc-options: -Wall -Wpartial-fields -threaded
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -136,7 +135,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
-    ghc-options: -Wall -Wpartial-fields -O0 -ddump-simpl -ddump-to-file -dsuppress-coercions -fprof-late -rtsopts -threaded
+    ghc-options: -Wall -Wpartial-fields -rtsopts -threaded
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
@@ -158,7 +157,7 @@ Test-Suite haskue-unit-test
         text,
         aeson,
   default-language: Haskell2010
-  ghc-options: -Wall -Wpartial-fields -O0
+  ghc-options: -Wall -Wpartial-fields
   default-extensions:
       BlockArguments,
       DuplicateRecordFields,
@@ -173,29 +172,11 @@ Test-Suite haskue-unit-test
       RecordWildCards,
       ScopedTypeVariables,
 
-benchmark time
-  type: exitcode-stdio-1.0
-  main-is: FuncBenchMain.hs
-  hs-source-dirs: tests
-  ghc-options: -O2 -fprof-late -rtsopts
-  build-depends:
-      base,
-      criterion,
-      containers >= 0.6.7 && < 0.7,
-      haskue,
-      vector,
-      deepseq,
-      mtl,
-      text,
-     
-  default-language: Haskell2010
-
-
 benchmark memory
   type: exitcode-stdio-1.0
   main-is: MemBenchMain.hs
   hs-source-dirs: tests
-  ghc-options: -fprof-late -rtsopts
+  ghc-options: -rtsopts
   build-depends:
       base,
       weigh,
@@ -213,7 +194,7 @@ benchmark spec
   type: exitcode-stdio-1.0
   main-is: SpecBenchMain.hs
   hs-source-dirs: tests
-  ghc-options: -O2 -fprof-late -rtsopts -fspecialise-aggressively
+  ghc-options: -rtsopts
   build-depends:
       base,
       criterion,

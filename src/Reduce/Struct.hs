@@ -23,14 +23,17 @@ import Reduce.Monad (
   modifyRMContext,
  )
 import Reduce.Reference ()
-import Reduce.Store (copyVTermNode, setUnknownInStore, storeVal)
+import Reduce.Store (copyVTermNode, setUnknownInStore)
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
-  traceSpanArgsTM,
-  traceSpanTM,
+  emptyTracePreData,
+  emptyTracePreDataRM,
+  mkTracePreDataWithOnlyVal,
+  tpvArgs,
+  traceSpanNoPreRM,
+  traceSpanRM,
   traceSpanTermsRepTM,
+  traceSpanWithRM,
  )
 import Reduce.Unification (patMatchLabel)
 import StringIndex (
@@ -52,7 +55,7 @@ import Value.Export.Debug (
 import Value.Instances (posttravsVT, setSubVN)
 
 reduceStruct :: Struct -> ValAddr -> RM Val
-reduceStruct initStruct addr = traceSpanTM "reduceStruct" addr emptySpanValue $ do
+reduceStruct initStruct addr = traceSpanNoPreRM "reduceStruct" addr $ do
   r <-
     do
       whenStruct
@@ -189,18 +192,21 @@ checkLabelAllowed ::
   ValAddr ->
   RM Bool
 checkLabelAllowed baseLabels baseAllCnstrs newLabel addr =
-  traceSpanArgsTM
+  traceSpanRM
     "checkLabelAllowed"
     addr
-    emptySpanValue
     ( do
         newLabelT <- tshow newLabel
         return $
-          printf
-            "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s"
-            newLabelT
-            (show $ Set.toList baseLabels)
-            (show $ IntMap.toList baseAllCnstrs)
+          emptyTracePreData
+            { tpvArgs =
+                Just $
+                  printf
+                    "newLabel: %s, baseLabels: %s, baseAllCnstrs: %s"
+                    newLabelT
+                    (show $ Set.toList baseLabels)
+                    (show $ IntMap.toList baseAllCnstrs)
+            }
     )
     check
  where
@@ -456,10 +462,10 @@ forkCnstrVal fieldName cnstr structAddr = do
   let
     cnstrValAddr = appendSeg structAddr (mkPatternFeature (scsID cnstr) 1)
     fieldAddr = appendSeg structAddr (mkStringFeature fieldName)
-  traceSpanAdaptTM
+  traceSpanWithRM
     "forkCnstrVal"
     structAddr
-    (toJSON <$> cnstrsToFullTermsRep (scsValue cnstr))
+    (mkTracePreDataWithOnlyVal . toJSON <$> cnstrsToFullTermsRep (scsValue cnstr))
     termsRepToFullJSON
     $ case scsPatAlias cnstr of
       Nothing -> return $ vtmapT (\_ vt -> copyVTermNode cnstrValAddr fieldAddr vt) cnstrValAddr (scsValue cnstr)
@@ -528,10 +534,10 @@ For removed fields, they are not removed from the struct but marked as Unknown.
 -}
 removeAppliedObject :: Int -> Struct -> ValAddr -> RM (Struct, [(TextIndex, VNode)], [TextIndex])
 removeAppliedObject objID struct addr =
-  traceSpanAdaptTM
+  traceSpanWithRM
     "removeAppliedObject"
     addr
-    emptySpanValue
+    emptyTracePreDataRM
     ( \(s, fds, rmLabels) -> do
         sT <- T.pack <$> valToStringTermsRep (VStruct s)
         fdsT <-
@@ -569,10 +575,10 @@ removeAppliedObject objID struct addr =
 
 -- | Apply the additional constraint to the fields.
 applyCnstrToFields :: StructCnstr -> Struct -> ValAddr -> RM (Struct, [(TextIndex, VNode)])
-applyCnstrToFields cnstr struct addr = traceSpanAdaptTM
+applyCnstrToFields cnstr struct addr = traceSpanWithRM
   "applyCnstrToFields"
   addr
-  emptySpanValue
+  emptyTracePreDataRM
   ( \(s, fds) -> do
       sT <- tshow (mkStructVN s)
       fdsT <- mapM (mapM tshow) fds

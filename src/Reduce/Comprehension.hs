@@ -28,9 +28,9 @@ import Reduce.Monad (
 import Reduce.Store (lookupComprehBindingVal, withComprehBindings)
 import Reduce.TraceSpan (
   debugInstStr,
-  emptySpanValue,
-  traceSpanAdaptTM,
+  emptyTracePreDataRM,
   traceSpanTermsRepAnyTM,
+  traceSpanWithRM,
  )
 import Reduce.Unification (unifyVals)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), textIndexToBS)
@@ -41,7 +41,7 @@ import Value.Export.Debug (vnToFullStringTermsRep)
 import Value.Instances (posttravsVT)
 
 reduceCompreh :: ValAddr -> Comprehension -> RM (Val, Comprehension)
-reduceCompreh addr cph = traceSpanAdaptTM "reduceCompreh" addr emptySpanValue (const emptySpanValue) $ do
+reduceCompreh addr cph = traceSpanWithRM "reduceCompreh" addr emptyTracePreDataRM (const (return (object []))) $ do
   r <- comprehend addr cph
   let updatedCph = cph{args = r.cphargs}
   case r.res of
