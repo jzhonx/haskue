@@ -4,4 +4,3 @@ package *
   optimization: 2
   ghc-options:
     -split-sections
-    -optl-Wl,-dead_strip
