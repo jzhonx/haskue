@@ -18,8 +18,10 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: linux-x86_64
+            linker_options: "-optl-Wl,--gc-sections"
           - runner: macos-14
             target: darwin-aarch64
+            linker_options: "-optl-Wl,-dead_strip"
 
     runs-on: ${{ matrix.runner }}
 
@@ -47,7 +49,7 @@ jobs:
           cabal update
           cabal install exe:haskue \
             --project-file=cabal.project.release \
-            --ghc-options="-optl-Wl,--gc-sections" \
+            --ghc-options="${{ matrix.linker_options }}" \
             --builddir=dist-release \
             --installdir=release \
             --install-method=copy
