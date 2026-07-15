@@ -22,7 +22,7 @@ builtinFuncMap =
     <$> mapM
       ( \(name, f) -> do
           nameTI <- strToTextIndex name
-          let addr = appendSeg universalValAddr (mkStringFeature nameTI)
+          let addr = appendFeature universalValAddr (mkStringFeature nameTI)
           return (addr, f)
       )
       [ ("close", close)
@@ -68,7 +68,7 @@ and [arg] addr = case rtrList arg of
     | null vs.final -> return VTop
     | length vs.final == 1 -> return (V.head vs.final)
     | otherwise -> do
-        let vals = map (\(i, v) -> (appendSeg addr $ mkRegCnstrFeature i, v)) (zip [0 ..] $ V.toList vs.final)
+        let vals = map (\(i, v) -> (appendTermStep addr $ mkRegCnstrTermStep i, v)) (zip [0 ..] $ V.toList vs.final)
         v' <- unifyVals vals addr False
         reduceVal addr v'
   _ -> return arg

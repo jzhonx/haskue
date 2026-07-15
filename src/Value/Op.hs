@@ -10,7 +10,7 @@ module Value.Op where
 import Control.DeepSeq (NFData (..))
 import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
-import Feature (Feature, mkOpArgFeature)
+import Feature (TermStep, mkOpArgTermStep)
 import GHC.Generics (Generic)
 import Syntax.Token as Token
 import Value.Comprehension
@@ -30,10 +30,10 @@ data Op
   | FCall FuncCall
   deriving (Generic)
 
-getOpFArgs :: Op -> Seq.Seq (Feature, VNode)
+getOpFArgs :: Op -> Seq.Seq (TermStep, VNode)
 getOpFArgs op =
   let xs = getOpArgs op
-   in Seq.fromList $ zip (map mkOpArgFeature [0 ..]) (toList xs)
+   in Seq.fromList $ zip (map mkOpArgTermStep [0 ..]) (toList xs)
 
 getOpArgs :: Op -> Seq.Seq VNode
 getOpArgs (RegOp rop) = ropArgs rop

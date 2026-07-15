@@ -85,10 +85,31 @@ if [[ "$1" == "build" ]]; then
   exit 0
 fi
 
+if [[ "$1" == "test" ]]; then
+  cabal test --project-file=cabal.project.debug
+
+  echo ""
+
+  exit 0
+fi
+
 if [[ "$1" == "release" ]]; then
+  # Remove unused code sections with the platform's linker.
+  releaseGhcOptions=()
+  case "$(uname -s)" in
+    Darwin)
+      releaseGhcOptions+=(--ghc-options="-optl-Wl,-dead_strip")
+      ;;
+    Linux)
+      releaseGhcOptions+=(--ghc-options="-optl-Wl,--gc-sections")
+      ;;
+  esac
+
   cabal install exe:haskue \
     --project-file=cabal.project.release \
+    "${releaseGhcOptions[@]}" \
     --builddir=dist-release \
+    --overwrite-policy=always \
     --installdir=release \
     --install-method=copy
 

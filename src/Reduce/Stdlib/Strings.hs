@@ -22,8 +22,8 @@ funcMap = do
       ( \(name, f) -> do
           nameTI <- strToTextIndex name
           let
-            pkgAddr = appendSeg packageValAddr (mkStringFeature pkgTI)
-            addr = appendSeg pkgAddr (mkStringFeature nameTI)
+            pkgAddr = appendFeature packageValAddr (mkStringFeature pkgTI)
+            addr = appendFeature pkgAddr (mkStringFeature nameTI)
           return (addr, f)
       )
       [ ("Join", join)
@@ -126,9 +126,9 @@ replaceBS s old new n
     go remaining []
       | remaining > 0 = [repl]
       | otherwise = []
-    go remaining (chunk : chunks)
-      | remaining > 0 = repl : chunk : go (remaining - 1) chunks
-      | otherwise = chunk : go remaining chunks
+    go remaining (chunk : remainingChunks)
+      | remaining > 0 = repl : chunk : go (remaining - 1) remainingChunks
+      | otherwise = chunk : go remaining remainingChunks
 
   -- Splits a ByteString into UTF-8-sized chunks without validating encoding.
   utf8Chunks = unfoldUtf8

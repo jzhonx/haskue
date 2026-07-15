@@ -7,7 +7,7 @@ import qualified Data.Sequence as Seq
 import Feature
 import Reduce.Monad
 import Reduce.TraceSpan (debugInstStr)
-import StringIndex (ShowWTIndexer (..), TextIndex, strToTextIndex)
+import StringIndex (ShowWTIndexer (..), TextIndex)
 import Text.Printf (printf)
 import Util.Trace (debugInstant)
 import Value
@@ -36,7 +36,7 @@ fetchValFromStore hdr addr = do
 lookupIdentFromStore :: Feature -> CanonicalAddr -> CanonicalAddr -> RM (Maybe (VNode, ValAddr))
 lookupIdentFromStore identf diff addr = do
   let targetScopeAddr = trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr addr)
-      targetAddr = appendSeg targetScopeAddr identf
+      targetAddr = appendFeature targetScopeAddr identf
   vM <- fetchValFromStore "lookupIdentFromStore" targetAddr
   case vM of
     Just v -> return $ Just (v, targetAddr)

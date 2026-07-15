@@ -6,7 +6,6 @@
 module Value.Instances where
 
 import Control.DeepSeq (NFData (..))
-import Control.Monad.State.Strict (MonadState)
 import Data.Aeson (ToJSON (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -16,7 +15,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
 import GHC.Stack (HasCallStack)
-import StringIndex (HasTextIndexer, ShowWTIndexer (..), ToJSONWTIndexer (..))
+import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Syntax.AST (ASTNode (..))
 import Text.Printf (printf)
 import Value.Comprehension
@@ -202,29 +201,29 @@ deriving instance NFData ConstraintsSet
 -----
 
 mapMVectorWAddr ::
-  (Monad m) => (ValAddr -> a -> m a) -> (Int -> Feature) -> ValAddr -> V.Vector a -> m (V.Vector a)
+  (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> V.Vector a -> m (V.Vector a)
 mapMVectorWAddr f g p = V.imapM (\i !v -> f (appendSeg p (g i)) v)
 
-mapMSeqWAddr :: (Monad m) => (ValAddr -> a -> m a) -> (Int -> Feature) -> ValAddr -> Seq.Seq a -> m (Seq.Seq a)
+mapMSeqWAddr :: (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> m (Seq.Seq a)
 mapMSeqWAddr f g p = Seq.traverseWithIndex (\i !v -> f (appendSeg p (g i)) v)
 
 mapMIntMapWAddr ::
-  (Monad m) => (ValAddr -> a -> m a) -> (Int -> Feature) -> ValAddr -> IntMap.IntMap a -> m (IntMap.IntMap a)
+  (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> m (IntMap.IntMap a)
 mapMIntMapWAddr f g p = IntMap.traverseWithKey (\i !v -> f (appendSeg p (g i)) v)
 
-foldrVecWAddr :: (ValAddr -> a -> r) -> (Int -> Feature) -> ValAddr -> V.Vector a -> [r]
+foldrVecWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> V.Vector a -> [r]
 foldrVecWAddr f g p = V.ifoldr (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrSeqWAddr :: (ValAddr -> a -> r) -> (Int -> Feature) -> ValAddr -> Seq.Seq a -> [r]
+foldrSeqWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> [r]
 foldrSeqWAddr f g p = Seq.foldrWithIndex (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrSeqWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> Feature) -> ValAddr -> Seq.Seq a -> [r]
+foldrSeqWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> [r]
 foldrSeqWAddrConcat f g p = Seq.foldrWithIndex (\i !v acc -> f (appendSeg p (g i)) v ++ acc) []
 
-foldrIntMapWAddr :: (ValAddr -> a -> r) -> (Int -> Feature) -> ValAddr -> IntMap.IntMap a -> [r]
+foldrIntMapWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> [r]
 foldrIntMapWAddr f g p = IntMap.foldrWithKey (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrIntMapWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> Feature) -> ValAddr -> IntMap.IntMap a -> [r]
+foldrIntMapWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> [r]
 foldrIntMapWAddrConcat f g p = IntMap.foldrWithKey (\i !v acc -> f (appendSeg p (g i)) v ++ acc) []
 
 adaptVTMapQOnVNode :: (ValAddr -> VTermNode -> r) -> ValAddr -> VNode -> r
@@ -276,23 +275,23 @@ instance VTerm VNode where
 
 instance VTerm ConstraintsSet where
   vtmapQ f p c =
-    foldrSeqWAddrConcat (vtmapQ f) mkRegCnstrFeature p (static c)
-      ++ foldrIntMapWAddrConcat (vtmapQ f) mkDynCnstrFeature p (dynamic c)
+    foldrSeqWAddrConcat (vtmapQ f) (termStepToAddrSegment . mkRegCnstrTermStep) p (static c)
+      ++ foldrIntMapWAddrConcat (vtmapQ f) (termStepToAddrSegment . mkDynCnstrTermStep) p (dynamic c)
   vtmapM f p c = do
-    static' <- mapMSeqWAddr (vtmapM f) mkRegCnstrFeature p (static c)
-    dynamic' <- mapMIntMapWAddr (vtmapM f) mkDynCnstrFeature p (dynamic c)
+    static' <- mapMSeqWAddr (vtmapM f) (termStepToAddrSegment . mkRegCnstrTermStep) p (static c)
+    dynamic' <- mapMIntMapWAddr (vtmapM f) (termStepToAddrSegment . mkDynCnstrTermStep) p (dynamic c)
     return c{static = static', dynamic = dynamic'}
 
 instance VTerm Constraint where
   vtmapQ f p c = case c of
     ValCnstr vc -> [f p (VTVal vc.vcVal)]
     OpCnstr oc -> [f p (VTOp oc.ocOp)]
-    StructEmbedCnstr xs -> foldrSeqWAddrConcat (vtmapQ f) mkRegCnstrFeature p xs
+    StructEmbedCnstr xs -> foldrSeqWAddrConcat (vtmapQ f) (termStepToAddrSegment . mkRegCnstrTermStep) p xs
   vtmapM f p c = case c of
     ValCnstr vc -> do
       vn' <- f p (VTVal vc.vcVal)
       return $ vtValOr (\v -> ValCnstr vc{vcVal = v}) c vn'
-    StructEmbedCnstr xs -> StructEmbedCnstr <$> mapMSeqWAddr (vtmapM f) mkRegCnstrFeature p xs
+    StructEmbedCnstr xs -> StructEmbedCnstr <$> mapMSeqWAddr (vtmapM f) (termStepToAddrSegment . mkRegCnstrTermStep) p xs
     OpCnstr oc -> do
       ovt' <- f p (VTOp oc.ocOp)
       case ovt' of
@@ -301,20 +300,21 @@ instance VTerm Constraint where
         _ -> return c
 
 instance VTerm ConstraintSeq where
-  vtmapQ f = foldrSeqWAddrConcat (vtmapQ f) mkRegCnstrFeature
-  vtmapM f = mapMSeqWAddr (vtmapM f) mkRegCnstrFeature
+  vtmapQ f = foldrSeqWAddrConcat (vtmapQ f) (termStepToAddrSegment . mkRegCnstrTermStep)
+  vtmapM f = mapMSeqWAddr (vtmapM f) (termStepToAddrSegment . mkRegCnstrTermStep)
 
 instance VTerm Struct where
   vtmapQ f p s =
     let
-      nf = appendSeg p
       fieldQs = Map.foldrWithKey (\k v acc -> vtmapQ f (nf (mkStringFeature k)) v ++ acc) [] (stcFields s)
       bindingQs = Map.foldrWithKey (\k v acc -> f (nf (mkLetFeature k)) (VTVNode v) : acc) [] (stcBindings s)
       dynFieldQs = concatMap (vtmapQ f p) (stcDynFields s)
       cnstrQs = concatMap (vtmapQ f p) (stcCnstrs s)
-      embedValQs = maybe [] (\ev -> [f (nf mkEmbedValueFeature) (VTVal ev)]) (stcEmbedVal s)
+      embedValQs = maybe [] (\ev -> [f (appendTermStep p embedValueTermStep) (VTVal ev)]) (stcEmbedVal s)
      in
       fieldQs ++ bindingQs ++ dynFieldQs ++ cnstrQs ++ embedValQs
+   where
+    nf = appendFeature p
   vtmapM f p s = do
     stcBindings' <-
       Map.traverseWithKey
@@ -331,7 +331,7 @@ instance VTerm Struct where
       Nothing -> return Nothing
       Just ev ->
         Just <$> do
-          r <- f (nf mkEmbedValueFeature) (VTVal ev)
+          r <- f (appendTermStep p embedValueTermStep) (VTVal ev)
           return $ vtValOr id ev r
     return
       s
@@ -342,7 +342,7 @@ instance VTerm Struct where
         , stcEmbedVal = stcEmbedVal'
         }
    where
-    nf = appendSeg p
+    nf = appendFeature p
 
 instance VTerm Field where
   vtmapQ f p field = [f p (VTVNode $ ssfValue field)]
@@ -354,41 +354,41 @@ instance VTerm DynamicField where
   vtmapQ f p df =
     f (nf 0) (VTVNode $ dsfLabel df) : vtmapQ f p (dsfValue df)
    where
-    nf i = appendSeg p (mkDynFieldFeature (dsfID df) i)
+    nf i = appendTermStep p (mkDynFieldTermStep (dsfID df) i)
   vtmapM f p df@DynamicField{dsfLabel, dsfValue} = do
     dsfLabel' <- adaptVTMapMOnVNode f (nf 0) dsfLabel
     dsfValue' <- vtmapM f (nf 1) dsfValue
     return df{dsfLabel = dsfLabel', dsfValue = dsfValue'}
    where
-    nf i = appendSeg p (mkDynFieldFeature (dsfID df) i)
+    nf i = appendTermStep p (mkDynFieldTermStep (dsfID df) i)
 
 instance VTerm StructCnstr where
   vtmapQ f p cnstr =
     f (nf 0) (VTVNode $ scsPattern cnstr) : vtmapQ f p (scsValue cnstr)
    where
-    nf i = appendSeg p (mkPatternFeature (scsID cnstr) i)
+    nf i = appendTermStep p (mkPatternTermStep (scsID cnstr) i)
   vtmapM f p cnstr = do
     scsPattern' <- adaptVTMapMOnVNode f (nf 0) (scsPattern cnstr)
     scsValue' <- vtmapM f (nf 1) (scsValue cnstr)
     return cnstr{scsPattern = scsPattern', scsValue = scsValue'}
    where
-    nf i = appendSeg p (mkPatternFeature (scsID cnstr) i)
+    nf i = appendTermStep p (mkPatternTermStep (scsID cnstr) i)
 
 instance VTerm List where
   vtmapQ f p lst =
-    foldrVecWAddr (adaptVTMapQOnVNode f) mkListStoreIdxFeature p (store lst)
-      ++ foldrVecWAddr (adaptVTMapQOnVal f) mkListIdxFeature p (final lst)
+    foldrVecWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkListStoreIdxTermStep) p (store lst)
+      ++ foldrVecWAddr (adaptVTMapQOnVal f) (featureToAddrSegment . mkListIdxFeature) p (final lst)
 
   vtmapM f p lst = do
-    store' <- mapMVectorWAddr (adaptVTMapMOnVNode f) mkListStoreIdxFeature p (store lst)
-    final' <- mapMVectorWAddr (adaptVTMapMOnVal f) mkListIdxFeature p (final lst)
+    store' <- mapMVectorWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkListStoreIdxTermStep) p (store lst)
+    final' <- mapMVectorWAddr (adaptVTMapMOnVal f) (featureToAddrSegment . mkListIdxFeature) p (final lst)
     return lst{store = store', final = final'}
 
 instance VTerm Disj where
-  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVal f) mkDisjFeature p (dsjDisjuncts dj)
+  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts dj)
 
   vtmapM f p d = do
-    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVal f) mkDisjFeature p (dsjDisjuncts d)
+    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts d)
     return d{dsjDisjuncts = dsjDisjuncts'}
 
 instance VTerm Op where
@@ -409,40 +409,40 @@ instance VTerm Op where
   vtmapM f p (FCall func) = FCall <$> vtmapM f p func
 
 appendMutArgF :: ValAddr -> Int -> ValAddr
-appendMutArgF p i = appendSeg p (mkOpArgFeature i)
+appendMutArgF p i = appendTermStep p (mkOpArgTermStep i)
 
 instance VTerm RegularOp where
-  vtmapQ f p rop = foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p (ropArgs rop)
+  vtmapQ f p rop = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (ropArgs rop)
   vtmapM f p rop = do
-    ropArgs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (ropArgs rop)
+    ropArgs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (ropArgs rop)
     return rop{ropArgs = ropArgs'}
 
 instance VTerm Reference where
-  vtmapQ f p ref = foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p (selectors ref)
+  vtmapQ f p ref = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (selectors ref)
   vtmapM f p ref = do
-    selectors' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (selectors ref)
+    selectors' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (selectors ref)
     return ref{selectors = selectors'}
 
 instance VTerm ValueSelect where
   vtmapQ f p (ValueSelect i b xs _) =
-    adaptVTMapQOnVNode f (appendSeg p (mkObjectFeature i)) b
-      : foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p xs
+    adaptVTMapQOnVNode f (appendTermStep p (mkObjectTermStep i)) b
+      : foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p xs
   vtmapM f p (ValueSelect i b xs typs) = do
-    b' <- adaptVTMapMOnVNode f (appendSeg p (mkObjectFeature i)) b
-    xs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p xs
+    b' <- adaptVTMapMOnVNode f (appendTermStep p (mkObjectTermStep i)) b
+    xs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p xs
     return $ ValueSelect i b' xs' typs
 
 instance VTerm Comprehension where
   vtmapQ f p c =
     Seq.foldrWithIndex
-      (\i arg acc -> adaptVTMapQOnVNode f (appendSeg p (mkRegCnstrFeature i)) (getValFromIterClause arg) : acc)
+      (\i arg acc -> adaptVTMapQOnVNode f (appendTermStep p (mkRegCnstrTermStep i)) (getValFromIterClause arg) : acc)
       []
       c.args
   vtmapM f p c = do
     args' <-
       Seq.traverseWithIndex
         ( \i arg -> do
-            v' <- adaptVTMapMOnVNode f (appendSeg p (mkRegCnstrFeature i)) (getValFromIterClause arg)
+            v' <- adaptVTMapMOnVNode f (appendTermStep p (mkRegCnstrTermStep i)) (getValFromIterClause arg)
             return $ setValInIterClause v' arg
         )
         c.args
@@ -465,15 +465,15 @@ instance VTerm DisjoinOp where
     return djo{djoTerms = djoTerms'}
 
 instance VTerm Interpolation where
-  vtmapQ f p itp = foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p (itpExprs itp)
+  vtmapQ f p itp = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (itpExprs itp)
   vtmapM f p itp = do
-    itpExprs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (itpExprs itp)
+    itpExprs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (itpExprs itp)
     return itp{itpExprs = itpExprs'}
 
 instance VTerm FuncCall where
-  vtmapQ f p func = foldrSeqWAddr (adaptVTMapQOnVNode f) mkOpArgFeature p (fnFrame func)
+  vtmapQ f p func = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (fnFrame func)
   vtmapM f p func = do
-    fnFrame' <- mapMSeqWAddr (adaptVTMapMOnVNode f) mkOpArgFeature p (fnFrame func)
+    fnFrame' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (fnFrame func)
     return func{fnFrame = fnFrame'}
 
 pretravsVTM :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> VTermNode -> m VTermNode
@@ -494,30 +494,30 @@ pretravsVTQ k f p x = foldl k (f p x) (vtmapQ (pretravsVTQ k f) p x)
 
 The sub tree should already exist in the parent tree.
 -}
-setSubVN :: (HasCallStack) => Feature -> VNode -> VNode -> Maybe VNode
-setSubVN f subVN parVN = do
-  origSubVN <- getSubVN f parVN
-  case (fetchLabelType f, parVN) of
-    (StringLabelType, IsStruct parStruct) ->
+setSubVN :: (HasCallStack) => AddrSegment -> VNode -> VNode -> Maybe VNode
+setSubVN seg subVN parVN = do
+  origSubVN <- getSubVN seg parVN
+  case (addrSegmentTag seg, parVN) of
+    (StringTag, IsStruct parStruct) ->
       let
-        newStruct = updateStructFieldVN (getTextIndexFromFeature f) subVN parStruct
+        newStruct = updateStructFieldVN (getTextIndexFromFeature feature) subVN parStruct
        in
         ret origSubVN $ VStruct newStruct
-    (PatternLabelType, IsStruct parStruct) ->
-      let (i, j) = getPatternIndexesFromFeature f
+    (PatternTag, IsStruct parStruct) ->
+      let (i, _) = getPatternIndexesFromTermStep termStep
        in ret origSubVN $ VStruct (mapStructCnstrByID i (const subVN) parStruct)
-    (DynFieldLabelType, IsStruct parStruct) ->
-      let (i, j) = getDynFieldIndexesFromFeature f
+    (DynFieldTag, IsStruct parStruct) ->
+      let (i, _) = getDynFieldIndexesFromTermStep termStep
        in ret origSubVN $ VStruct (mapStructDynFieldByID i (const subVN) parStruct)
-    (LetLabelType, IsStruct parStruct) ->
-      ret origSubVN $ VStruct (mapStructLet (getTextIndexFromFeature f) (const subVN) parStruct)
-    (EmbedValueLabelType, IsStruct parStruct) -> ret origSubVN $ VStruct (parStruct{stcEmbedVal = Just subVN.value})
-    (ListStoreIdxLabelType, IsList l) ->
-      let i = fetchIndex f in ret origSubVN $ VList $ updateListStoreAt i (const subVN) l
-    (ListIdxLabelType, IsList l) ->
-      let i = fetchIndex f in ret origSubVN $ VList $ updateListFinalAt i (const $ value subVN) l
-    (DisjLabelType, IsDisj d) ->
-      let i = fetchIndex f
+    (LetTag, IsStruct parStruct) ->
+      ret origSubVN $ VStruct (mapStructLet (getTextIndexFromFeature feature) (const subVN) parStruct)
+    (EmbedValueTag, IsStruct parStruct) -> ret origSubVN $ VStruct (parStruct{stcEmbedVal = Just subVN.value})
+    (ListStoreIdxTag, IsList l) ->
+      let i = termStepIndex termStep in ret origSubVN $ VList $ updateListStoreAt i (const subVN) l
+    (ListIdxTag, IsList l) ->
+      let i = featureIndex feature in ret origSubVN $ VList $ updateListFinalAt i (const $ value subVN) l
+    (DisjTag, IsDisj d) ->
+      let i = termStepIndex termStep
        in Just $
             parVN
               { value = VDisj $ d{dsjDisjuncts = Seq.update i subVN.value (dsjDisjuncts d)}
@@ -525,9 +525,11 @@ setSubVN f subVN parVN = do
                 -- original subVN.value to determine whether we need to update the version of the parent node.
                 version = if subVN.value /= origSubVN.value then parVN.version + 1 else parVN.version
               }
-    (FileTopLabelType, _) -> Nothing
+    (FileTopTag, _) -> Nothing
     _ -> Nothing
  where
+  feature = fromJust $ addrSegmentToFeature seg
+  termStep = fromJust $ addrSegmentToTermStep seg
   ret origSubVN x =
     Just $
       parVN
@@ -535,24 +537,27 @@ setSubVN f subVN parVN = do
         , version = if subVN.version > origSubVN.version then parVN.version + 1 else parVN.version
         }
 
-getSubVN :: (HasCallStack) => Feature -> VNode -> Maybe VNode
-getSubVN f t = case (fetchLabelType f, t) of
+getSubVN :: (HasCallStack) => AddrSegment -> VNode -> Maybe VNode
+getSubVN seg t = case (addrSegmentTag seg, t) of
   -- Root segment always returns the same tree.
-  (FileTopLabelType, _) -> Just t
-  (StringLabelType, IsStruct struct)
-    | Just sf <- lookupStructField (getTextIndexFromFeature f) struct -> Just $ ssfValue sf
-  (LetLabelType, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature f) struct
-  (PatternLabelType, IsStruct struct) ->
-    let (i, j) = getPatternIndexesFromFeature f
+  (FileTopTag, _) -> Just t
+  (StringTag, IsStruct struct)
+    | Just sf <- lookupStructField (getTextIndexFromFeature feature) struct -> Just $ ssfValue sf
+  (LetTag, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature feature) struct
+  (PatternTag, IsStruct struct) ->
+    let (i, _) = getPatternIndexesFromTermStep termStep
      in scsPattern <$> stcCnstrs struct IntMap.!? i
-  (DynFieldLabelType, IsStruct struct) ->
-    let (i, j) = getDynFieldIndexesFromFeature f
+  (DynFieldTag, IsStruct struct) ->
+    let (i, _) = getDynFieldIndexesFromTermStep termStep
      in dsfLabel <$> stcDynFields struct IntMap.!? i
-  (EmbedValueLabelType, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
-  (ListStoreIdxLabelType, IsList l) -> getListStoreAt (fetchIndex f) l
-  (ListIdxLabelType, IsList l) -> mkValVN <$> getListFinalAt (fetchIndex f) l
-  (DisjLabelType, IsDisj d) -> mkValVN <$> dsjDisjuncts d Seq.!? fetchIndex f
+  (EmbedValueTag, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
+  (ListStoreIdxTag, IsList l) -> getListStoreAt (termStepIndex termStep) l
+  (ListIdxTag, IsList l) -> mkValVN <$> getListFinalAt (featureIndex feature) l
+  (DisjTag, IsDisj d) -> mkValVN <$> dsjDisjuncts d Seq.!? termStepIndex termStep
   _ -> Nothing
+ where
+  feature = fromJust $ addrSegmentToFeature seg
+  termStep = fromJust $ addrSegmentToTermStep seg
 
 getSubVNByAddr :: ValAddr -> VNode -> Maybe VNode
 getSubVNByAddr addr = go (addrToList addr)

@@ -38,13 +38,18 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       -- we only need to finalize the fields of the struct.
       stcFields' <-
         Map.traverseWithKey
-          (\k v -> vtmapM (applyAddrFOnVN finalizeInner) (appendSeg addr $ mkStringFeature k) v)
+          (\k v -> vtmapM (applyAddrFOnVN finalizeInner) (appendFeature addr $ mkStringFeature k) v)
           (stcFields s)
       let s' = s{stcFields = stcFields'}
       return $ setVNodeValue (VStruct s') topV
     IsList l -> do
       -- We only need to finalize the final part of the list.
-      final' <- mapMVectorWAddr (\p v -> value <$> finalizeInner p (mkValVN v)) mkListIdxFeature addr (final l)
+      final' <-
+        mapMVectorWAddr
+          (\p v -> value <$> finalizeInner p (mkValVN v))
+          (featureToAddrSegment . mkListIdxFeature)
+          addr
+          (final l)
       let l' = l{final = final'}
       return $ setVNodeValue (VList l') topV
     IsDisj d -> do

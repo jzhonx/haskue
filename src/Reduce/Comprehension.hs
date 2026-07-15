@@ -105,7 +105,7 @@ comprehend comprehAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
     let
       args = accIctx.cphargs
       arg = fromJust $ args Seq.!? i
-      clauseCnstrAddr = appendSeg comprehAddr (mkRegCnstrFeature i)
+      clauseCnstrAddr = appendTermStep comprehAddr (mkRegCnstrTermStep i)
       traceMsg :: String -> String
       traceMsg title = printf "comoprhArg %s_clause_%d" title i
     case arg of

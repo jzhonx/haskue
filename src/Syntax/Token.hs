@@ -75,8 +75,10 @@ data TokenType
   | MultiLineString -- """hello\nworld"""
   | Bytes -- 'hello'
   | MultiLineBytes -- '''hello\nworld'''
-  | Interpolation -- "abc\(", the end of an interpolation is always "\("
-  | InterpolationEnd -- ")..."
+  | Interpolation -- ...abc\(, the end of an interpolation is always "\("
+  | InterpolationEnd -- )...
+  | BytesInterpolation -- ...abc\( inside a bytes literal
+  | BytesInterpolationEnd -- )... inside a bytes literal
   | Int -- 42
   | Float -- 3.14
   | Bool -- true or false

@@ -19,16 +19,19 @@ import Feature (
   ValAddr (..),
   addrIsCanonical,
   addrIsVertex,
-  appendSeg,
+  appendFeature,
+  appendTermStep,
   canonicalToAddr,
   collapseToCanonical,
   emptyValAddr,
+  featureToAddrSegment,
   mkListIdxFeature,
-  mkListStoreIdxFeature,
-  mkObjectFeature,
-  mkOpArgFeature,
-  mkRegCnstrFeature,
+  mkListStoreIdxTermStep,
+  mkObjectTermStep,
+  mkOpArgTermStep,
+  mkRegCnstrTermStep,
   mkStringFeature,
+  termStepToAddrSegment,
   universalValAddr,
  )
 import Reduce.Builtin (builtinFuncMap)
@@ -199,7 +202,7 @@ reduceDynCnstrs count addr dynCnstrs = traceSpanWithRM
     (revL, revPairs, info) <-
       foldM
         ( \(acc, accL, accInfo) (i, cnstrs) -> do
-            let p = addr `appendSeg` mkRegCnstrFeature i
+            let p = addr `appendTermStep` mkRegCnstrTermStep i
             (cnstrs', revPairs, info) <- foldCnstrsSeqM (reduceConstraint count) p cnstrs
             return
               ( (i, cnstrs') : acc
@@ -287,7 +290,7 @@ foldCnstrsSeqM ::
 foldCnstrsSeqM f addr constraints =
   foldM
     ( \(accSeq, accL, accInfo) (i, c) -> do
-        let p = addr `appendSeg` mkRegCnstrFeature i
+        let p = addr `appendTermStep` mkRegCnstrTermStep i
         (nc, nv, info) <- f p c
         return
           ( accSeq Seq.|> nc
@@ -396,10 +399,15 @@ reduceOp addr oc = case oc.ocOp of
             )
       _ -> throwFatal "function call with empty frame"
   VSelect vs -> do
-    let baseAddr = canonicalToAddr $ collapseToCanonical $ appendSeg addr (mkObjectFeature vs.bvID)
+    let baseAddr = canonicalToAddr $ collapseToCanonical $ appendTermStep addr (mkObjectTermStep vs.bvID)
     -- The base of the vselect should be fully reduced so that we have full info about its sub fields.
     v' <- reduce baseAddr vs.base
-    xs' <- mapMSeqWAddr reduceConstraintsInCnstrs mkOpArgFeature addr (iSelectors vs)
+    xs' <-
+      mapMSeqWAddr
+        reduceConstraintsInCnstrs
+        (termStepToAddrSegment . mkOpArgTermStep)
+        addr
+        (iSelectors vs)
     let vs' = vs{base = v', iSelectors = xs'}
     reduceNoUnify addr (oc{ocOp = VSelect vs'})
   _ -> do
@@ -491,13 +499,18 @@ signalReduced = sendToRootRecalcQ
 storeBuiltinsAndPackages :: RM ()
 storeBuiltinsAndPackages = do
   builtins <- builtinValues
-  mapM_ (\(ti, v) -> storeVal (appendSeg universalValAddr (mkStringFeature ti)) (mkValVN v)) builtins
+  mapM_ (\(ti, v) -> storeVal (appendFeature universalValAddr (mkStringFeature ti)) (mkValVN v)) builtins
   m <- funcFlatMap
   mapM_ (\(addr, _) -> storeVal addr (mkValVN (VFuncAddr addr))) (Map.toList m)
 
 reduceList :: List -> ValAddr -> RM Val
 reduceList l addr = traceSpanNoPreRM "reduceList" addr do
-  updstore <- mapMVectorWAddr reduce mkListStoreIdxFeature addr (store l)
+  updstore <-
+    mapMVectorWAddr
+      reduce
+      (termStepToAddrSegment . mkListStoreIdxTermStep)
+      addr
+      (store l)
   (revR, isReady) <-
     V.foldM
       ( \(acc, isReadyAcc) sub -> do
@@ -535,7 +548,7 @@ reduceList l addr = traceSpanNoPreRM "reduceList" addr do
                       signalReduced p
                 _ -> return ()
             )
-            mkListIdxFeature
+            (featureToAddrSegment . mkListIdxFeature)
             addr
             finalV
         return finalV
@@ -560,7 +573,7 @@ resolveInterpolation l args = do
               | Just s <- rtrString r -> return $ (`BC.append` s) <$> accRes
               | Just bs <- rtrBytes r -> return $ (`BC.append` bs) <$> accRes
               | Just i <- rtrInt r -> return $ (`BC.append` (BC.pack $ show i)) <$> accRes
-              | Just b <- rtrBool r -> return $ (`BC.append` (BC.pack $ show b)) <$> accRes
+              | Just b <- rtrBool r -> return $ (`BC.append` (if b then "true" else "false")) <$> accRes
               | Just f <- rtrFloat r -> return $ (`BC.append` (BC.pack $ show f)) <$> accRes
               | Just _ <- rtrBottom r -> return $ Left r
               | VDisj _ <- r -> return $ Left r

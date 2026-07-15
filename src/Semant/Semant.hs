@@ -184,7 +184,7 @@ transStructLit literal@(StructLit _ decls _) addr = inStructScope decls addr $ d
 
   -- If the struct literal has embedded fields, the constraints for the struct and the embedded fields will be stored in
   -- an additional constraint.
-  let structCnstrsAddr = if embedCnt > 0 then addr `appendSeg` mkRegCnstrFeature 0 else addr
+  let structCnstrsAddr = if embedCnt > 0 then addr `appendTermStep` mkRegCnstrTermStep 0 else addr
   elems <- mapM (\x -> transDecl x (embedCnt > 0) structCnstrsAddr) (reverse revRes)
   let struct = foldl (flip insertElemToStruct) (emptyStruct{stcID = sid}) elems
   -- If the result has embedded fields, then mark the embedded fields as embedded.
@@ -209,7 +209,7 @@ strLitSegsToStr segs addr isBytes = do
           UnicodeChars x ->
             return (Just x, accItpSegs, accItpExprs)
           InterpolationExpr _ e -> do
-            t <- transExpr e (addr `appendSeg` mkOpArgFeature (length accItpExprs))
+            t <- transExpr e (addr `appendTermStep` mkOpArgTermStep (length accItpExprs))
             -- First append the current string segment to the accumulator if the current string segment exists, then
             -- append the interpolation segment. Finally reset the current string segment to Nothing.
             return
@@ -232,7 +232,7 @@ strLitSegsToStr segs addr isBytes = do
 transDecl :: DeclWithEmbedIndex -> Bool -> ValAddr -> TM StructElemAdder
 transDecl decli hasEmbeds structAddr = case decli of
   EmbedDecl idx ed -> do
-    v <- transEmbedding False ed (structAddr `appendSeg` mkRegCnstrFeature idx)
+    v <- transEmbedding False ed (structAddr `appendTermStep` mkRegCnstrTermStep idx)
     return $ EmbedSAdder v
   RegDecl decl -> case decl of
     EllipsisExpr (Ellipsis _ cM) ->
@@ -241,7 +241,7 @@ transDecl decli hasEmbeds structAddr = case decli of
         (\_ -> throwFatal "default constraints are not implemented yet")
         cM
     FieldDecl (AST.Field ls e) ->
-      let declAddr = if hasEmbeds then structAddr `appendSeg` mkRegCnstrFeature 0 else structAddr
+      let declAddr = if hasEmbeds then structAddr `appendTermStep` mkRegCnstrTermStep 0 else structAddr
        in transFDeclLabels ls e declAddr
     DeclLet (LetClause _ ident binde) -> do
       idIdx <- identTokenToTextIndex ident
@@ -264,10 +264,10 @@ transEmbedding
   addr = do
     cid <- allocObjID
     args <-
-      mapM (\(j, c) -> transClause c (addr `appendSeg` mkRegCnstrFeature j)) (zip [1 ..] cls)
-    gev <- transExpr ge (addr `appendSeg` mkRegCnstrFeature 0)
+      mapM (\(j, c) -> transClause c (addr `appendTermStep` mkRegCnstrTermStep j)) (zip [1 ..] cls)
+    gev <- transExpr ge (addr `appendTermStep` mkRegCnstrTermStep 0)
     let vs = ComprehArgIf (trDataEToVNode gev) : args
-    sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
+    sv <- transStructLit lit (addr `appendTermStep` mkRegCnstrTermStep (length vs))
     return
       $ exprTrDataE
         (getNodeLoc compreh)
@@ -283,15 +283,15 @@ transEmbedding
       Just j -> Just <$> identTokenToTextIndex j
       Nothing -> return Nothing
     cid <- allocObjID
-    let forClsAddr = addr `appendSeg` mkRegCnstrFeature 0
+    let forClsAddr = addr `appendTermStep` mkRegCnstrTermStep 0
     inClauseScope iIdx jIdxM forClsAddr $ do
       args <-
         mapM
-          (\(j, c) -> transClause c (addr `appendSeg` mkRegCnstrFeature j))
+          (\(j, c) -> transClause c (addr `appendTermStep` mkRegCnstrTermStep j))
           (zip [1 ..] cls)
       fev <- transExpr fe forClsAddr
       let vs = ComprehArgFor iIdx jIdxM (trDataEToVNode fev) : args
-      sv <- transStructLit lit (addr `appendSeg` mkRegCnstrFeature (length vs))
+      sv <- transStructLit lit (addr `appendTermStep` mkRegCnstrTermStep (length vs))
       return
         $ exprTrDataE
           (getNodeLoc compreh)
@@ -339,26 +339,26 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       case ln of
         (toIDentLabel -> Just key) -> do
           keyIdx <- identTokenToTextIndex key
-          tr <- vgen (structAddr `appendSeg` mkStringFeature keyIdx)
+          tr <- vgen (structAddr `appendFeature` mkStringFeature keyIdx)
           return $ StaticSAdder keyIdx attr tr
         (toDynLabel -> Just se) -> do
           oid <- allocObjID
-          selTree <- trDataEToVNode <$> transExpr se (structAddr `appendSeg` mkDynFieldFeature oid 0)
-          val <- trDataEToCnstrsSeq <$> vgen (structAddr `appendSeg` mkDynFieldFeature oid 1)
+          selTree <- trDataEToVNode <$> transExpr se (structAddr `appendTermStep` mkDynFieldTermStep oid 0)
+          val <- trDataEToCnstrsSeq <$> vgen (structAddr `appendTermStep` mkDynFieldTermStep oid 1)
           return $
             DynamicSAdder
               oid
               (DynamicField{dsfID = oid, dsfAttr = attr, dsfLabel = selTree, dsfLabelIsInterp = False, dsfValue = val})
         (toSStrLabel -> Just (SimpleStringLit _ segs)) -> do
           oid <- allocObjID
-          rE <- strLitSegsToStr segs (structAddr `appendSeg` mkDynFieldFeature oid 0) False
+          rE <- strLitSegsToStr segs (structAddr `appendTermStep` mkDynFieldTermStep oid 0) False
           case rE of
             Right str -> do
               strIdx <- textToTextIndex str
-              tr <- vgen (structAddr `appendSeg` mkStringFeature strIdx)
+              tr <- vgen (structAddr `appendFeature` mkStringFeature strIdx)
               return $ StaticSAdder strIdx attr tr
             Left t -> do
-              val <- trDataEToCnstrsSeq <$> vgen (structAddr `appendSeg` mkDynFieldFeature oid 1)
+              val <- trDataEToCnstrsSeq <$> vgen (structAddr `appendTermStep` mkDynFieldTermStep oid 1)
               return $
                 DynamicSAdder
                   oid
@@ -376,7 +376,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
         Just tk -> Just <$> identTokenToTextIndex tk
         Nothing -> return Nothing
       cnstrid <- getEnvID
-      let cnstrValAddr = structAddr `appendSeg` mkPatternFeature cnstrid 1
+      let cnstrValAddr = structAddr `appendTermStep` mkPatternTermStep cnstrid 1
       -- We use the original alias identifier without the suffix here so that the alias can be looked up in the scope.
       -- However, for the adder we need to use the suffixed alias identifier.
       -- {
@@ -385,7 +385,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       --           ^-----^ -- This is the cnstrval scope. The alias is defined for this scope.
       ---}
       inPatternCnstrValScope aliasIdxM cnstrValAddr $ do
-        pat <- trDataEToVNode <$> transExpr pe (structAddr `appendSeg` mkPatternFeature cnstrid 0)
+        pat <- trDataEToVNode <$> transExpr pe (structAddr `appendTermStep` mkPatternTermStep cnstrid 0)
         cs <- trDataEToCnstrsSeq <$> vgen cnstrValAddr
         cnstrvid <- getEnvID
         updatedAliasIdxM <- case aliasIdxM of
@@ -463,7 +463,10 @@ transListLit loc (EmbeddingList es _) addr = do
             <$> transEmbedding
               True
               e
-              (addr `appendValAddr` addrFromList [mkListStoreIdxFeature i, mkRegCnstrFeature 0])
+              ( addr
+                  `appendTermStep` mkListStoreIdxTermStep i
+                  `appendTermStep` mkRegCnstrTermStep 0
+              )
       )
       (zip [0 ..] es)
   return $ exprTrDataE loc $ TrValue $ VList $ mkList xs
@@ -504,9 +507,9 @@ transPrimExpr e addr = case e of
   (PrimExprSelector primExpr _ sel) -> transSelector primExpr sel addr
   (PrimExprIndex primExpr _ idx _) -> transIndex primExpr idx addr
   (PrimExprSlice primExpr _ startM _ endM _) -> do
-    opd <- transPrimExpr primExpr (addr `appendSeg` mkOpArgFeature 0)
+    opd <- transPrimExpr primExpr (addr `appendTermStep` mkOpArgTermStep 0)
     let genArgs argEs = do
-          sliceIdxes <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature (i + 1))) (zip [0 ..] argEs)
+          sliceIdxes <- mapM (\(i, ae) -> transExpr ae (addr `appendTermStep` mkOpArgTermStep (i + 1))) (zip [0 ..] argEs)
           return $ opd : sliceIdxes
         loc = getNodeLoc e
     case (startM, endM) of
@@ -521,8 +524,8 @@ transPrimExpr e addr = case e of
         args <- genArgs [start, end]
         mkSliceFunc "slice" loc args
   (PrimExprArguments primExpr _ aes _) -> do
-    p <- transPrimExpr primExpr (addr `appendSeg` mkOpArgFeature 0)
-    args <- mapM (\(i, ae) -> transExpr ae (addr `appendSeg` mkOpArgFeature i)) (zip [1 ..] aes)
+    p <- transPrimExpr primExpr (addr `appendTermStep` mkOpArgTermStep 0)
+    args <- mapM (\(i, ae) -> transExpr ae (addr `appendTermStep` mkOpArgTermStep i)) (zip [1 ..] aes)
     return $
       exprTrDataE
         (getNodeLoc e)
@@ -537,7 +540,7 @@ transPrimExpr e addr = case e of
 mkSliceFunc :: String -> Location -> [TrDataE] -> TM TrDataE
 mkSliceFunc sliceFName loc args = do
   ti <- strToTextIndex sliceFName
-  let funcAddr = appendSeg universalValAddr (mkStringFeature ti)
+  let funcAddr = appendFeature universalValAddr (mkStringFeature ti)
   return $
     exprTrDataE loc $
       TrOp $
@@ -574,7 +577,7 @@ getPrimaryExprValAddr pe addr = case pe of
   PrimExprSlice{} -> return (addr, 0)
   _ -> do
     oid <- allocObjID
-    return (addr `appendSeg` mkObjectFeature oid, oid)
+    return (addr `appendTermStep` mkObjectTermStep oid, oid)
 
 transIndex :: PrimaryExpr -> Expression -> ValAddr -> TM TrDataE
 transIndex pe e addr = do
@@ -589,17 +592,17 @@ getSelCons addr (oprnd, isIndex) = case trData oprnd of
   TrOp (Ref ref) -> do
     let n = length ref.selectors
     return
-      ( appendSeg addr (mkOpArgFeature n)
+      ( appendTermStep addr (mkOpArgTermStep n)
       , \_ sel -> oprnd{trData = TrOp (Ref $ appendRefArg (trDataEToVNode sel) isIndex ref)}
       )
   TrOp (VSelect vs) -> do
     let n = length vs.iSelectors
     return
-      ( appendSeg addr (mkOpArgFeature n)
+      ( appendTermStep addr (mkOpArgTermStep n)
       , \_ sel -> oprnd{trData = TrOp (VSelect $ appendValueSelectArg (trDataEToVNode sel) isIndex vs)}
       )
   _ -> do
-    let selAddr = appendSeg addr (mkOpArgFeature 0)
+    let selAddr = appendTermStep addr (mkOpArgTermStep 0)
     return
       ( selAddr
       , \i sel ->
@@ -619,7 +622,7 @@ getSelCons addr (oprnd, isIndex) = case trData oprnd of
 -- | Evaluates the unary operator.
 transUnaryOp :: Token -> UnaryExpr -> ValAddr -> TM TrDataE
 transUnaryOp op e addr = do
-  r <- transUnaryExpr e (addr `appendSeg` mkOpArgFeature 0)
+  r <- transUnaryExpr e (addr `appendTermStep` mkOpArgTermStep 0)
   return $ exprTrDataE op.tkLoc $ TrOp $ mkUnaryOp op.tkType (trDataEToVNode r)
 
 {- | order of arguments is important for disjunctions.
@@ -636,7 +639,7 @@ transBinary Unify e1 e2 addr = do
   res <-
     mapM
       ( \(i, e) -> do
-          r <- transExpr e (addr `appendSeg` mkRegCnstrFeature i)
+          r <- transExpr e (addr `appendTermStep` mkRegCnstrTermStep i)
           case trDataEToCnstr r of
             Just cnstr -> return cnstr
             Nothing -> throwFatal "unexpected constraints"
@@ -644,8 +647,8 @@ transBinary Unify e1 e2 addr = do
       (zip [0 ..] exprs)
   return $ exprTrDataE (getNodeLoc e1) $ TrCnstrs $ Seq.fromList res
 transBinary op e1 e2 addr = do
-  lv <- trDataEToVNode <$> transExpr e1 (appendSeg addr (mkOpArgFeature 0))
-  rv <- trDataEToVNode <$> transExpr e2 (appendSeg addr (mkOpArgFeature 1))
+  lv <- trDataEToVNode <$> transExpr e1 (appendTermStep addr (mkOpArgTermStep 0))
+  rv <- trDataEToVNode <$> transExpr e2 (appendTermStep addr (mkOpArgTermStep 1))
   return $ exprTrDataE (getNodeLoc e1) $ TrOp (mkBinaryOp op lv rv)
 
 flattenUnify :: Expression -> DList.DList Expression -> DList.DList Expression
@@ -674,7 +677,7 @@ transDisj e1 e2 addr = do
       acc1 = flattenDisj e1 DList.empty
       terms = DList.toList $ flattenDisj e2 acc1
 
-  res <- mapM (\(i, e) -> parseTerm e (addr `appendSeg` mkOpArgFeature i)) (zip [0 ..] terms)
+  res <- mapM (\(i, e) -> parseTerm e (addr `appendTermStep` mkOpArgTermStep i)) (zip [0 ..] terms)
   return $ exprTrDataE (getNodeLoc e1) $ TrOp $ mkDisjoinOpFromList res
 
 {- | Flattens the disjunction expression into a list of terms.
@@ -781,11 +784,11 @@ lookupIdentInEnv name topEnv env = do
       , clausesDepth = env.clausesDepth
       , identType = t
       , identFeat = identFeat
-      , identAddr = env.envAddr `appendSeg` identFeat
+      , identAddr = env.envAddr `appendFeature` identFeat
       , resolvedIdentAddr =
           if env.clausesDepth > 0
             then ToTargetScopeDiff $ collapseToCanonical $ trimPrefixAddr env.envAddr topEnv.envAddr
-            else ResolvedIdentFromTop $ collapseToCanonicalForm $ env.envAddr `appendSeg` identFeat
+            else ResolvedIdentFromTop $ collapseToCanonicalForm $ env.envAddr `appendFeature` identFeat
       }
 
 -- | Lookup the identifier in the environments.

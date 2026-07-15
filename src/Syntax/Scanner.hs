@@ -154,6 +154,7 @@ insertComma cM = do
         Bytes -> True
         MultiLineBytes -> True
         InterpolationEnd -> True -- Interpolation end is part of string literals.
+        BytesInterpolationEnd -> True -- Interpolation end is part of bytes literals.
         RParen -> True
         RBrace -> True
         RSquare -> True
@@ -199,6 +200,7 @@ addTokenTransLit f g = modify $ \s ->
       , lparens = case tType of
           LParen -> tk.tkLoc : lparens s
           Interpolation -> tk.tkLoc : lparens s
+          BytesInterpolation -> tk.tkLoc : lparens s
           RParen -> case lparens s of
             [] -> lparens s -- We will report the missing left parenthesis in the parser.
             (_ : ls) -> ls
@@ -479,7 +481,7 @@ scanByteSeq tryClose closeTkType b = do
     Nothing -> addInvalidToken (const "Unterminated string literal")
     Just c | c == '\\' -> do
       nextCh <- peekNext
-      let isBytes = closeTkType == Bytes || closeTkType == MultiLineBytes
+      let isBytes = closeTkType `elem` [Bytes, MultiLineBytes, BytesInterpolationEnd]
       case nextCh of
         Nothing -> addInvalidToken (const "Unterminated escape sequence")
         Just nextC -> case nextC of
@@ -496,11 +498,11 @@ scanByteSeq tryClose closeTkType b = do
           '"' -> escapeNamed '"'
           '(' -> do
             void $ advance >> advance
-            addTokenTransLit (const Interpolation) (const $ toStrict $ toLazyByteString b)
+            addTokenTransLit (const $ if isBytes then BytesInterpolation else Interpolation) (const $ toStrict $ toLazyByteString b)
             curLParens <- gets lparens
             scanItplEnd (length curLParens)
             -- After finishing the interpolation, we need to start a new partition.
-            scanByteSeq tryClose InterpolationEnd mempty
+            scanByteSeq tryClose (if isBytes then BytesInterpolationEnd else InterpolationEnd) mempty
           'u' -> do
             void $ advance >> advance
             readHexDigits 4 >>= \case

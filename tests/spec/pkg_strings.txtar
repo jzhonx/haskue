@@ -6,3 +6,16 @@ x: strings.Join(["a", "b", "c"], ".")
 -- exp --
 x: "a.b.c"
 
+-- pkg_strings_replace --
+import "strings"
+
+firstTwo: strings.Replace("foo foo foo", "foo", "bar", 2)
+all: strings.Replace("foo foo", "foo", "bar", -1)
+none: strings.Replace("foo", "foo", "bar", 0)
+emptyOldUTF8: strings.Replace("世界", "", ".", -1)
+
+-- exp --
+firstTwo: "bar bar foo"
+all: "bar bar"
+none: "foo"
+emptyOldUTF8: ".世.界."

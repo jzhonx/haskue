@@ -52,3 +52,15 @@ x1: 6
 x2: 3
 x3: 2
 
+-- len_bytes_and_empty_values --
+emptyBytes: len('')
+utf8Bytes: len('Hellø')
+emptyList: len([])
+closedList: len([1, 2, 3])
+openList: len([1, 2, ...])
+-- exp --
+emptyBytes: 0
+utf8Bytes: 6
+emptyList: 0
+closedList: 3
+openList: 2

@@ -231,7 +231,7 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
             (show selsT)
     )
   case headSeg identAddr of
-    Just seg | seg == packageFeature -> do
+    Just seg | seg == rootToAddrSegment packageRoot -> do
       let pkgFuncAddr = appendValAddr identAddr (fieldPathToAddr sels)
       resM <- fetchValFromStore "locateRef" pkgFuncAddr
       case resM of
@@ -316,8 +316,8 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
       targetRfbAddr = trimCanonicalToRfb $ collapseToCanonical targetAddr
       -- If the ref is a conjunct argument or a sole value of a referable feature, we can treat it as a cycle.
       refIsAConjunct = case lastSeg refAddr of
-        Just seg | isFeatureConstraint seg -> True
-        Just seg | isFeatureReferable seg -> True
+        Just seg | isConstraintSegment seg -> True
+        Just seg | isSegmentReferable seg -> True
         _ -> False
 
       res =
@@ -387,25 +387,26 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
 descend :: ValAddr -> VNode -> [Selector] -> (ValAddr, VNode, [Selector])
 descend p x [] = (p, x, [])
 descend p x (sel : rs) =
-  let f = selToTASeg sel
-      r = getSubVN f x
+  let feature = selectorToFeature sel
+      r = getSubVN (featureToAddrSegment feature) x
    in case r of
         Nothing -> case x of
           -- If no sub val can be found, but the current value is a disjunction, we can try to find the sub val in the
           -- default disjuncts.
           IsDisj d
             | Just dft <- rtrDisjDefVal d ->
-                let djF = mkDisjFeature (head d.dsjDefIndexes) in descend (appendSeg p djF) (mkValVN dft) (sel : rs)
+                let djStep = mkDisjTermStep (head d.dsjDefIndexes)
+                 in descend (appendTermStep p djStep) (mkValVN dft) (sel : rs)
           _ -> (p, x, sel : rs)
-        Just subX -> descend (appendSeg p f) subX rs
+        Just subX -> descend (appendFeature p feature) subX rs
 
 addrHasDef :: ValAddr -> RM Bool
 addrHasDef p = do
   xs <-
     mapM
-      ( \f -> case f of
-          FeatureType StringLabelType -> do
-            t <- tshow f
+      ( \seg -> case addrSegmentToFeature seg of
+          Just feature | featureTag feature == StringTag -> do
+            t <- tshow feature
             return $ fromMaybe False $ do
               typ <- getFieldType (T.unpack t)
               return $ typ == SFTDefinition

@@ -16,7 +16,14 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
-import Feature (ValAddr (..), appendSeg, fileBlockFeature, fileTopValAddr, mkListStoreIdxFeature)
+import Feature (
+  ValAddr (..),
+  appendTermStep,
+  fileBlockFeature,
+  fileTopValAddr,
+  mkListStoreIdxTermStep,
+  termStepToAddrSegment,
+ )
 import GHC.Generics (Generic)
 import Reduce.Monad (RM, emptyContext, emptyReduceConfig)
 import StringIndex (TextIndex (..))
@@ -119,13 +126,24 @@ imapM2B = func' "V.imapMViaListIdentity" f testV
 vtmapTB :: Weigh ()
 vtmapTB = func' "vtmapT" f testV
  where
-  f v = runIdentity $ mapMVectorWAddr (\_ v -> return v) mkListStoreIdxFeature fileTopValAddr v
+  f v =
+    runIdentity $
+      mapMVectorWAddr
+        (\_ v -> return v)
+        (termStepToAddrSegment . mkListStoreIdxTermStep)
+        fileTopValAddr
+        v
 
 vtmapVectorMRMB :: Weigh ()
 vtmapVectorMRMB = io "vtmapVectorMRM" f testV
  where
   f v = do
-    let action = mapMVectorWAddr idm mkListStoreIdxFeature fileTopValAddr v
+    let action =
+          mapMVectorWAddr
+            idm
+            (termStepToAddrSegment . mkListStoreIdxTermStep)
+            fileTopValAddr
+            v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -158,7 +176,7 @@ vtmapMRMViaMutB = io "vtmapMRMViaMut" f testV
         mv <- V.thaw v
         forM_ [0 .. MV.length mv - 1] $ \i -> do
           v <- MV.read mv i
-          v' <- idm (appendSeg fileTopValAddr (mkListStoreIdxFeature i)) v
+          v' <- idm (appendTermStep fileTopValAddr (mkListStoreIdxTermStep i)) v
           MV.write mv i v'
         V.unsafeFreeze mv
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
@@ -171,7 +189,12 @@ vtmapSeqMRMB :: Weigh ()
 vtmapSeqMRMB = io "vtmapSeqMRM" f testSeq
  where
   f v = do
-    let action = mapMSeqWAddr idm mkListStoreIdxFeature fileTopValAddr v
+    let action =
+          mapMSeqWAddr
+            idm
+            (termStepToAddrSegment . mkListStoreIdxTermStep)
+            fileTopValAddr
+            v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
@@ -182,7 +205,7 @@ traverseWithKeyRMB :: Weigh ()
 traverseWithKeyRMB = io "Map.traverseWithKey" f testMap
  where
   f v = do
-    let action = Map.traverseWithKey (\k !v -> idm (appendSeg fileTopValAddr (mkListStoreIdxFeature k)) v) v
+    let action = Map.traverseWithKey (\k !v -> idm (appendTermStep fileTopValAddr (mkListStoreIdxTermStep k)) v) v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 

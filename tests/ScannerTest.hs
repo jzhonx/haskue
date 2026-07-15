@@ -17,6 +17,7 @@ tests =
     , commaInsertionTests
     , commentTests
     , multilineStringTests
+    , interpolationTests
     , complexExampleTests
     , edgeCaseTests
     , errorCaseTests
@@ -33,13 +34,11 @@ assertTokensEqual msg actual expected =
     -- Only compare type and literal, ignore location
     actual' =
       map
-        ( \t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t}
-        )
+        (\t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t})
         actual
     expected' =
       map
-        ( \t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t}
-        )
+        (\t -> Token{tkType = tkType t, tkLoc = (Location{line = 0, column = 0, filePath = Nothing}), tkLiteral = tkLiteral t})
         expected
    in
     assertEqual msg expected' actual'
@@ -299,6 +298,33 @@ multilineStringTests =
               , mkT EOF ""
               ]
          in assertTokensEqual "Multiline with newlines" actual expected
+    ]
+
+-- Interpolation token tests
+interpolationTests :: TestTree
+interpolationTests =
+  testGroup
+    "Interpolation"
+    [ testCase "String interpolation" $
+        let actual = getTokens (BC.pack "\"a\\(x)b\"")
+            expected =
+              [ mkT Interpolation "a"
+              , mkT Identifier "x"
+              , mkT InterpolationEnd "b"
+              , mkT Comma ","
+              , mkT EOF ""
+              ]
+         in assertTokensEqual "String interpolation" actual expected
+    , testCase "Bytes interpolation" $
+        let actual = getTokens (BC.pack "'a\\(x)b'")
+            expected =
+              [ mkT BytesInterpolation "a"
+              , mkT Identifier "x"
+              , mkT BytesInterpolationEnd "b"
+              , mkT Comma ","
+              , mkT EOF ""
+              ]
+         in assertTokensEqual "Bytes interpolation" actual expected
     ]
 
 -- Complex example tests

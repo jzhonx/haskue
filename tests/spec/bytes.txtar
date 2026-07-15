@@ -74,3 +74,19 @@ x: '''
 	
 	'''
 
+-- bytes_operators --
+concat: 'foo' + 'bar'
+eq: 'foo' == 'foo'
+ne: 'foo' != 'bar'
+lt: 'a' < 'b'
+le: 'a' <= 'a'
+gt: 'b' > 'a'
+ge: 'b' >= 'b'
+-- exp --
+concat: 'foobar'
+eq: true
+ne: true
+lt: true
+le: true
+gt: true
+ge: true

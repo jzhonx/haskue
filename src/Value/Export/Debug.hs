@@ -14,20 +14,20 @@ import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Feature (
   ValAddr,
   fileTopValAddr,
-  mkDisjFeature,
-  mkDynFieldFeature,
+  mkDisjTermStep,
+  mkDynFieldTermStep,
   mkLetFeature,
   mkListIdxFeature,
-  mkListStoreIdxFeature,
-  mkOpArgFeature,
-  mkPatternFeature,
-  mkRegCnstrFeature,
+  mkListStoreIdxTermStep,
+  mkOpArgTermStep,
+  mkPatternTermStep,
+  mkRegCnstrTermStep,
   mkStringFeature,
  )
 import StringIndex (ShowWTIndexer (..), TextIndexerMonad)
@@ -35,7 +35,7 @@ import Text.Printf (printf)
 import Value.Comprehension
 import Value.Disj
 import Value.DisjoinOp
-import Value.Instances
+import Value.Instances ()
 import Value.List
 import Value.Op
 import Value.Reference
@@ -109,8 +109,8 @@ instance ToJSON TermsRep where
       ( ["__t" .= mergeInfo info]
           ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
           ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfContent f of
-              TermRepContentScalar s -> toJSON s
-              TermRepContentRegular r -> toJSON r
+                TermRepContentScalar s -> toJSON s
+                TermRepContentRegular r -> toJSON r
              | f <- fields
              ]
       )
@@ -226,14 +226,14 @@ valToTermsRep vn opt = case vn of
   VStruct struct -> buildRepValStruct struct opt
   VList vs ->
     let
-      sfields = zipWith (\j v -> (show (mkListStoreIdxFeature j), mempty, v)) [0 ..] (toList vs.store)
+      sfields = zipWith (\j v -> (show (mkListStoreIdxTermStep j), mempty, v)) [0 ..] (toList vs.store)
       ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, mkValVN v)) [0 ..] (toList vs.final)
      in
       do
         fields <- valPairsToTermRepList (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
   VDisj d ->
-    let djFields = zipWith (\j x -> (show $ mkDisjFeature j, mempty, mkValVN x)) [0 ..] (toList $ dsjDisjuncts d)
+    let djFields = zipWith (\j x -> (show $ mkDisjTermStep j, mempty, mkValVN x)) [0 ..] (toList $ dsjDisjuncts d)
      in do
           fields <- valPairsToTermRepList djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
@@ -251,7 +251,7 @@ cnstrsToTermsRep constraints opt = do
   l <-
     mapM
       ( \(i, c) -> do
-          fT <- T.unpack <$> tshow (mkRegCnstrFeature i)
+          fT <- T.unpack <$> tshow (mkRegCnstrTermStep i)
           cont <- cnstrToTermsRep c opt
           case c of
             ValCnstr{} ->
@@ -311,7 +311,7 @@ opToTermsRep op opt = do
         terms =
           zipWith
             ( \j v ->
-                (show (mkOpArgFeature j), if dstMarked v then ",*" else "", dstValue v)
+                (show (mkOpArgTermStep j), if dstMarked v then ",*" else "", dstValue v)
             )
             [0 ..]
             (toList $ djoTerms d)
@@ -335,7 +335,7 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (j, dsf) -> do
               tfv <- buildValueTermRepNodeContent (dsfLabel dsf) opt
-              return $ TermRep{trfLabel = show (mkDynFieldFeature j 0), trfAttr = "", trfContent = tfv} : acc
+              return $ TermRep{trfLabel = show (mkDynFieldTermStep j 0), trfAttr = "", trfContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
@@ -343,7 +343,7 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (j, dsf) -> do
               tfv <- buildCnstrSeqTermRepNodeContent (dsfValue dsf) opt
-              return $ TermRep{trfLabel = show (mkDynFieldFeature j 1), trfAttr = "", trfContent = tfv} : acc
+              return $ TermRep{trfLabel = show (mkDynFieldTermStep j 1), trfAttr = "", trfContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
@@ -353,7 +353,7 @@ buildRepValStruct struct opt =
               tfv <- buildValueTermRepNodeContent (scsPattern k) opt
               return $
                 TermRep
-                  (show (mkPatternFeature j 0))
+                  (show (mkPatternTermStep j 0))
                   ""
                   tfv
           )
@@ -364,7 +364,7 @@ buildRepValStruct struct opt =
               tfv <- buildCnstrSeqTermRepNodeContent (scsValue k) opt
               return $
                 TermRep
-                  (show (mkPatternFeature j 1))
+                  (show (mkPatternTermStep j 1))
                   ""
                   tfv
           )

@@ -60,12 +60,14 @@ reduceStruct initStruct addr = traceSpanNoPreRM "reduceStruct" addr $ do
     do
       whenStruct
         ( \s -> do
-            let nf = appendSeg addr
-            stcBindings' <- Map.traverseWithKey (\k v -> reduce (nf $ mkLetFeature k) v) (stcBindings s)
+            stcBindings' <-
+              Map.traverseWithKey
+                (\k v -> reduce (appendFeature addr $ mkLetFeature k) v)
+                (stcBindings s)
             stcDynFields' <-
               mapM
                 ( \df -> do
-                    dsfLabel' <- reduce (nf (mkDynFieldFeature (dsfID df) 0)) (dsfLabel df)
+                    dsfLabel' <- reduce (appendTermStep addr $ mkDynFieldTermStep (dsfID df) 0) (dsfLabel df)
                     return df{dsfLabel = dsfLabel'}
                 )
                 (stcDynFields s)
@@ -73,18 +75,18 @@ reduceStruct initStruct addr = traceSpanNoPreRM "reduceStruct" addr $ do
               mapM
                 ( \cnstr -> do
                     do
-                      scsPattern' <- reduce (nf (mkPatternFeature (scsID cnstr) 0)) (scsPattern cnstr)
+                      scsPattern' <- reduce (appendTermStep addr $ mkPatternTermStep (scsID cnstr) 0) (scsPattern cnstr)
                       return cnstr{scsPattern = scsPattern'}
                 )
                 (stcCnstrs s)
             stcFields' <-
               Map.traverseWithKey
-                (\k v -> vtmapM (applyAddrFOnVN reduce) (nf $ mkStringFeature k) v)
+                (\k v -> vtmapM (applyAddrFOnVN reduce) (appendFeature addr $ mkStringFeature k) v)
                 (stcFields s)
             stcEmbedVal' <- case stcEmbedVal s of
               Nothing -> return Nothing
               Just ev -> do
-                Just <$> reduceVal (nf mkEmbedValueFeature) ev
+                Just <$> reduceVal (appendTermStep addr embedValueTermStep) ev
             return
               ( VStruct $
                   s
@@ -100,14 +102,14 @@ reduceStruct initStruct addr = traceSpanNoPreRM "reduceStruct" addr $ do
       >>= whenStruct
         ( \s ->
             foldM
-              (\acc i -> handleSObjChange (appendSeg addr (mkDynFieldFeature i 0)) acc)
+              (\acc i -> handleSObjChange (appendTermStep addr (mkDynFieldTermStep i 0)) acc)
               (VStruct s)
               (IntMap.keys $ stcDynFields s)
         )
       >>= whenStruct
         ( \s ->
             foldM
-              (\acc i -> handleSObjChange (appendSeg addr (mkPatternFeature i 0)) acc)
+              (\acc i -> handleSObjChange (appendTermStep addr (mkPatternTermStep i 0)) acc)
               (VStruct s)
               (IntMap.keys $ stcCnstrs s)
         )
@@ -228,8 +230,8 @@ checkLabelAllowed baseLabels baseAllCnstrs newLabel addr =
 
 handleSObjChange :: ValAddr -> Val -> RM Val
 handleSObjChange subValAddr parentV@(VStruct struct) = case lastSeg subValAddr of
-  Just seg@(FeatureType DynFieldLabelType) -> go seg
-  Just seg@(FeatureType PatternLabelType) -> go seg
+  Just seg | addrSegmentTag seg == DynFieldTag -> go seg
+  Just seg | addrSegmentTag seg == PatternTag -> go seg
   _ -> return parentV
  where
   go seg = do
@@ -251,11 +253,11 @@ handleSObjChange _ v = return v
 
 Returns the affected labels and removed labels.
 -}
-handleSObjChangeInner :: Feature -> Struct -> ValAddr -> Val -> RM (Val, [(ValAddr, VNode)])
-handleSObjChangeInner seg struct structAddr structV = case seg of
+handleSObjChangeInner :: AddrSegment -> Struct -> ValAddr -> Val -> RM (Val, [(ValAddr, VNode)])
+handleSObjChangeInner seg struct structAddr structV = case addrSegmentTag seg of
   -- If the sub value is an error, propagate the error to the struct.
-  FeatureType DynFieldLabelType -> do
-    let (i, _) = getDynFieldIndexesFromFeature seg
+  DynFieldTag -> do
+    let (i, _) = getDynFieldIndexesFromTermStep termStep
     (removed, removedAffected, removedLabels) <- removeAppliedObject i struct structAddr
     removeChangedSubFields (genAddrs structAddr (map fst removedAffected ++ removedLabels)) structAddr
 
@@ -285,10 +287,10 @@ handleSObjChangeInner seg struct structAddr structV = case seg of
           (msprintfS "-: %s, +: %s" [packFmtA (map fst removedAffected), packFmtA addAffLabels])
 
         return (VStruct newS, genAddrVals structAddr (removedAffected ++ newVals))
-  FeatureType PatternLabelType -> do
+  PatternTag -> do
     -- Constrain all fields with the new constraint if it exists.
     let
-      (i, _) = getPatternIndexesFromFeature seg
+      (i, _) = getPatternIndexesFromTermStep termStep
       cnstr = stcCnstrs struct IntMap.! i
     -- New constraint might have the following effects:
     -- A. It matches fewer fields than the previous constraint with narrower constraints.
@@ -318,8 +320,9 @@ handleSObjChangeInner seg struct structAddr structV = case seg of
     return (VStruct newStruct, genAddrVals structAddr affectedPairs)
   _ -> return (structV, [])
  where
-  genAddrs baseAddr = map (\name -> appendSeg baseAddr (mkStringFeature name))
-  genAddrVals baseAddr = map (\(name, v) -> (appendSeg baseAddr (mkStringFeature name), v))
+  termStep = fromJust $ addrSegmentToTermStep seg
+  genAddrs baseAddr = map (\name -> appendFeature baseAddr (mkStringFeature name))
+  genAddrVals baseAddr = map (\(name, v) -> (appendFeature baseAddr (mkStringFeature name), v))
 
 {- | Make all sub fields of changed fields Unknown.
 
@@ -460,8 +463,8 @@ bindFieldWithCnstr name field cnstr structAddr = do
 forkCnstrVal :: TextIndex -> StructCnstr -> ValAddr -> RM ConstraintSeq
 forkCnstrVal fieldName cnstr structAddr = do
   let
-    cnstrValAddr = appendSeg structAddr (mkPatternFeature (scsID cnstr) 1)
-    fieldAddr = appendSeg structAddr (mkStringFeature fieldName)
+    cnstrValAddr = appendTermStep structAddr (mkPatternTermStep (scsID cnstr) 1)
+    fieldAddr = appendFeature structAddr (mkStringFeature fieldName)
   traceSpanWithRM
     "forkCnstrVal"
     structAddr
@@ -472,7 +475,7 @@ forkCnstrVal fieldName cnstr structAddr = do
       Just aliasIdx -> do
         fieldNameT <- textIndexToBS fieldName
         let realNameV = VAtom $ String fieldNameT
-            aliasAddr = appendSeg cnstrValAddr (mkLetFeature aliasIdx)
+            aliasAddr = appendFeature cnstrValAddr (mkLetFeature aliasIdx)
         debugInstStr
           "forkCnstrVal"
           structAddr
@@ -504,6 +507,7 @@ replaceAlias aliasAddr fieldNameT topAddr sq =
                                 ValueSelect
                                   { bvID = 0 -- It should not be referenced.
                                   , iSelectors = ref.selectors
+                                  , iSelectorTypes = ref.selectorTypes
                                   , base = mkValVN alias
                                   }
                            in VTOp (VSelect newIndx)

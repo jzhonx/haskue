@@ -600,8 +600,7 @@ sccDFS v = do
             foldr
               ( \addr accMetaMap ->
                   -- Mark all nodes in the SCC as not on stack.
-                  ( HashMap.adjust (\m -> m{dnmOnStack = False}) addr accMetaMap
-                  )
+                  (HashMap.adjust (\m -> m{dnmOnStack = False}) addr accMetaMap)
               )
               (tsMetaMap ts)
               curNodes
@@ -643,7 +642,7 @@ isSufIrredParent parent child =
    in
     isParentPrefix
       && ( let diff = trimPrefixAddr parentAddr childAddr
-               rest = V.filter isFeatureReferable diff.vFeatures
+               rest = V.filter isSegmentReferable diff.vSegments
             in not (V.null rest)
          )
 

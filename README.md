@@ -17,6 +17,12 @@ and lazy evaluation.
 This project is an attempt to implement CUE in Haskell, to explore the similarities between the two
 languages, and to make CUE's evaluation process easier to understand.
 
+## AI-assisted development
+
+The core evaluator was designed and implemented primarily by hand, with AI-powered autocomplete used as a development aid.
+
+Some test cases and standard-library code were drafted or implemented with the assistance of coding agents. All AI-assisted changes are reviewed, tested, and maintained by the project author.
+
 ## Limitations
 
 - Package/module system (basic import parsing exists, but loading and resolution are not)
@@ -70,6 +76,7 @@ Clicking the link will open a browser window with the trace visualized in Perfet
 Then we can use `wsad` to navigate the trace, and click on a node to see its details. In the example above, we can see
 that the after `x` getting evaluated, it triggers the re-evaluation of `y`, which is shown in the trace as a flow from
 `x` to `y`.
+
 
 ## How evaluation is implemented
 

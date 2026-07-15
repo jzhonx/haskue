@@ -30,3 +30,25 @@ y: 3
 a: 1
 b: 2
 
+-- index_struct_and_references --
+structByLiteral: source["foo"]
+structByReference: source[key]
+listByReference: values[position]
+source: {
+    foo: 42
+    "x-y": 4
+}
+key: "foo"
+values: [10, 20, 30]
+position: 1
+-- exp --
+structByLiteral: 42
+structByReference: 42
+listByReference: 20
+source: {
+    foo: 42
+    x-y: 4
+}
+key: "foo"
+values: [10, 20, 30]
+position: 1

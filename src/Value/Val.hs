@@ -22,7 +22,7 @@ import Exception (throwErrSt)
 import Feature (
   Selector (..),
   ValAddr,
-  appendSeg,
+  appendFeature,
   mkStringFeature,
   universalValAddr,
  )
@@ -428,4 +428,4 @@ builtinFuncAddrTable = do
  where
   gen name = do
     nameTI <- strToTextIndex name
-    return (nameTI, appendSeg universalValAddr (mkStringFeature nameTI))
+    return (nameTI, appendFeature universalValAddr (mkStringFeature nameTI))

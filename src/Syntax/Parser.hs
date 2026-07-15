@@ -437,7 +437,7 @@ simpleStringLit =
       return $ SimpleStringLit st.tkLoc segs
   )
     <|> ( do
-            (startST, segs) <- interpolation
+            (startST, segs) <- interpolation Token.Interpolation Token.InterpolationEnd
             return $ SimpleStringLit startST.tkLoc segs
         )
 
@@ -449,7 +449,7 @@ multiLineStringLit =
       return $ MultiLineStringLit st.tkLoc segs
   )
     <|> ( do
-            (startST, segs) <- interpolation
+            (startST, segs) <- interpolation Token.Interpolation Token.InterpolationEnd
             return $ MultiLineStringLit startST.tkLoc segs
         )
 
@@ -461,7 +461,7 @@ simpleBytesLit =
       return $ SimpleBytesLit st.tkLoc segs
   )
     <|> ( do
-            (startST, segs) <- interpolation
+            (startST, segs) <- interpolation Token.BytesInterpolation Token.BytesInterpolationEnd
             return $ SimpleBytesLit startST.tkLoc segs
         )
 
@@ -473,21 +473,21 @@ multiLineBytesLit =
       return $ MultiLineBytesLit st.tkLoc segs
   )
     <|> ( do
-            (startST, segs) <- interpolation
+            (startST, segs) <- interpolation Token.BytesInterpolation Token.BytesInterpolationEnd
             return $ MultiLineBytesLit startST.tkLoc segs
         )
 
-interpolation :: Parser (Token, [StringLitSeg])
-interpolation = do
-  startST <- accept Token.Interpolation <?> "failed to parse string interpolation"
+interpolation :: TokenType -> TokenType -> Parser (Token, [StringLitSeg])
+interpolation interpolationType interpolationEndType = do
+  startST <- accept interpolationType <?> "failed to parse interpolation"
   startE <- expr
   let segs = [AST.UnicodeChars (tkLiteral startST), InterpolationExpr startST.tkLoc startE]
   rest <- many $ do
-    st <- accept Token.Interpolation <?> "failed to parse string interpolation after interpolation segment"
+    st <- accept interpolationType <?> "failed to parse interpolation after interpolation segment"
     e <- expr
     return [AST.UnicodeChars (tkLiteral st), InterpolationExpr st.tkLoc e]
   end <- do
-    endSt <- accept Token.InterpolationEnd <?> "failed to parse end of string interpolation"
+    endSt <- accept interpolationEndType <?> "failed to parse end of interpolation"
     return $ AST.UnicodeChars (tkLiteral endSt)
   return (startST, segs ++ concat rest ++ [end])
 

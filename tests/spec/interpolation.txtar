@@ -1,0 +1,37 @@
+-- interpolation_scalar_types --
+message: "bool=\(truth), int=\(count), float=\(ratio), bytes=\(raw)"
+truth: true
+count: 42
+ratio: 1.5
+raw: 'ok'
+-- exp --
+message: "bool=true, int=42, float=1.5, bytes=ok"
+truth: true
+count: 42
+ratio: 1.5
+raw: 'ok'
+
+-- interpolation_bytes --
+message: 'bool=\(truth), int=\(count), string=\(text)'
+truth: false
+count: 42
+text: "ok"
+-- exp --
+message: 'bool=false, int=42, string=ok'
+truth: false
+count: 42
+text: "ok"
+
+-- interpolation_bytes_incomplete --
+message: 'before=\(source.value),after'
+source: {}
+-- exp --
+message: 'before=\(source.value),after'
+source: {}
+
+-- interpolation_string_incomplete --
+message: "before=\(source.value),after"
+source: {}
+-- exp --
+message: "before=\(source.value),after"
+source: {}
