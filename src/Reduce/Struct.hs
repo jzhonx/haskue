@@ -54,7 +54,7 @@ import Value.Export.Debug (
  )
 import Value.Instances (posttravsVT, setSubVN)
 
-reduceStruct :: Struct -> ValAddr -> RM Val
+reduceStruct :: Struct -> EvalAddr -> RM Val
 reduceStruct initStruct addr = traceSpanNoPreRM "reduceStruct" addr $ do
   r <-
     do
@@ -122,7 +122,7 @@ whenStruct f v = do
     -- The struct might have been turned to another type due to embedding or reducing fields.
     _ -> return v
 
-validateStructPerm :: ValAddr -> Struct -> RM Val
+validateStructPerm :: EvalAddr -> Struct -> RM Val
 validateStructPerm addr struct = traceSpanTermsRepTM "validateStructPerm" addr (VStruct struct) $
   do
     r <-
@@ -151,7 +151,7 @@ A struct must be provided so that dynamic fields and constraints can be found.
 
 It constructs the allowing labels and constraints and checks if the joining labels are allowed.
 -}
-validatePermItem :: Struct -> PermItem -> ValAddr -> RM (Maybe Bottom)
+validatePermItem :: Struct -> PermItem -> EvalAddr -> RM (Maybe Bottom)
 validatePermItem struct pitem addr = do
   labelMs <- mapM convertLabel $ Set.toList $ piLabels pitem
   opLabelMs <- mapM convertLabel $ Set.toList $ piOpLabels pitem
@@ -191,7 +191,7 @@ checkLabelAllowed ::
   Set.Set TextIndex ->
   IntMap.IntMap StructCnstr ->
   TextIndex ->
-  ValAddr ->
+  EvalAddr ->
   RM Bool
 checkLabelAllowed baseLabels baseAllCnstrs newLabel addr =
   traceSpanRM
@@ -228,14 +228,14 @@ checkLabelAllowed baseLabels baseAllCnstrs newLabel addr =
           False
           (IntMap.elems baseAllCnstrs)
 
-handleSObjChange :: ValAddr -> Val -> RM Val
-handleSObjChange subValAddr parentV@(VStruct struct) = case lastSeg subValAddr of
+handleSObjChange :: EvalAddr -> Val -> RM Val
+handleSObjChange subEvalAddr parentV@(VStruct struct) = case lastSeg subEvalAddr of
   Just seg | addrSegmentTag seg == DynFieldTag -> go seg
   Just seg | addrSegmentTag seg == PatternTag -> go seg
   _ -> return parentV
  where
   go seg = do
-    let structAddr = fromJust $ initValAddr subValAddr
+    let structAddr = fromJust $ initEvalAddr subEvalAddr
     traceSpanTermsRepTM (printf "handleSObjChange, seg: %s" (show seg)) structAddr parentV $ do
       (parentV', affectedPairs) <- handleSObjChangeInner seg struct structAddr parentV
       foldM
@@ -253,7 +253,7 @@ handleSObjChange _ v = return v
 
 Returns the affected labels and removed labels.
 -}
-handleSObjChangeInner :: AddrSegment -> Struct -> ValAddr -> Val -> RM (Val, [(ValAddr, VNode)])
+handleSObjChangeInner :: AddrSegment -> Struct -> EvalAddr -> Val -> RM (Val, [(EvalAddr, VNode)])
 handleSObjChangeInner seg struct structAddr structV = case addrSegmentTag seg of
   -- If the sub value is an error, propagate the error to the struct.
   DynFieldTag -> do
@@ -332,7 +332,7 @@ Unknown by default.
 Suppose we have an old value {a: {b: 1, c: 2}} and the new value is {a: {b: 1}}. All references that reference the a.c
 field should be updated to Unknown since the field is removed.
 -}
-removeChangedSubFields :: [ValAddr] -> ValAddr -> RM ()
+removeChangedSubFields :: [EvalAddr] -> EvalAddr -> RM ()
 removeChangedSubFields affected structAddr =
   mapM_
     ( \afFieldAddr -> do
@@ -377,7 +377,7 @@ removeChangedSubFields affected structAddr =
 It returns a pair which contains reduced string and the newly created/updated field.
 -}
 dynFieldToStatic ::
-  Map.Map TextIndex Field -> DynamicField -> ValAddr -> RM (Either VNode (Maybe (TextIndex, Field)))
+  Map.Map TextIndex Field -> DynamicField -> EvalAddr -> RM (Either VNode (Maybe (TextIndex, Field)))
 dynFieldToStatic fields df addr
   | Just name <- rtrString (value label) = do
       nidx <- textToTextIndex name
@@ -422,7 +422,7 @@ dynToField df sfM = case sfM of
 
 Returns the new field. If the field is not matched with the pattern, it returns the original field.
 -}
-constrainFieldWithCnstrs :: TextIndex -> Field -> [StructCnstr] -> ValAddr -> RM (Field, Bool)
+constrainFieldWithCnstrs :: TextIndex -> Field -> [StructCnstr] -> EvalAddr -> RM (Field, Bool)
 constrainFieldWithCnstrs name field cnstrs structAddr =
   foldM
     ( \(accField, accMatched) cnstr -> do
@@ -441,7 +441,7 @@ The field should not have been applied with the constraint before.
 
 It can run in any kind of node.
 -}
-bindFieldWithCnstr :: TextIndex -> Field -> StructCnstr -> ValAddr -> RM (Field, Bool)
+bindFieldWithCnstr :: TextIndex -> Field -> StructCnstr -> EvalAddr -> RM (Field, Bool)
 bindFieldWithCnstr name field cnstr structAddr = do
   let selPattern = scsPattern cnstr
 
@@ -460,10 +460,10 @@ bindFieldWithCnstr name field cnstr structAddr = do
         newField = field{ssfValue = op}
       return (newField, True)
 
-forkCnstrVal :: TextIndex -> StructCnstr -> ValAddr -> RM ConstraintSeq
+forkCnstrVal :: TextIndex -> StructCnstr -> EvalAddr -> RM ConstraintSeq
 forkCnstrVal fieldName cnstr structAddr = do
   let
-    cnstrValAddr = appendTermStep structAddr (mkPatternTermStep (scsID cnstr) 1)
+    cnstrEvalAddr = appendTermStep structAddr (mkPatternTermStep (scsID cnstr) 1)
     fieldAddr = appendFeature structAddr (mkStringFeature fieldName)
   traceSpanWithRM
     "forkCnstrVal"
@@ -471,11 +471,11 @@ forkCnstrVal fieldName cnstr structAddr = do
     (mkTracePreDataWithOnlyVal . toJSON <$> cnstrsToFullTermsRep (scsValue cnstr))
     termsRepToFullJSON
     $ case scsPatAlias cnstr of
-      Nothing -> return $ vtmapT (\_ vt -> copyVTermNode cnstrValAddr fieldAddr vt) cnstrValAddr (scsValue cnstr)
+      Nothing -> return $ vtmapT (\_ vt -> copyVTermNode cnstrEvalAddr fieldAddr vt) cnstrEvalAddr (scsValue cnstr)
       Just aliasIdx -> do
         fieldNameT <- textIndexToBS fieldName
         let realNameV = VAtom $ String fieldNameT
-            aliasAddr = appendFeature cnstrValAddr (mkLetFeature aliasIdx)
+            aliasAddr = appendFeature cnstrEvalAddr (mkLetFeature aliasIdx)
         debugInstStr
           "forkCnstrVal"
           structAddr
@@ -486,10 +486,10 @@ forkCnstrVal fieldName cnstr structAddr = do
               , packFmtA (mkValVN realNameV)
               ]
           )
-        replaced <- replaceAlias aliasAddr fieldNameT cnstrValAddr (scsValue cnstr)
-        return $ vtmapT (\_ vt -> copyVTermNode cnstrValAddr fieldAddr vt) cnstrValAddr replaced
+        replaced <- replaceAlias aliasAddr fieldNameT cnstrEvalAddr (scsValue cnstr)
+        return $ vtmapT (\_ vt -> copyVTermNode cnstrEvalAddr fieldAddr vt) cnstrEvalAddr replaced
 
-replaceAlias :: ValAddr -> BC.ByteString -> ValAddr -> ConstraintSeq -> RM ConstraintSeq
+replaceAlias :: EvalAddr -> BC.ByteString -> EvalAddr -> ConstraintSeq -> RM ConstraintSeq
 replaceAlias aliasAddr fieldNameT topAddr sq =
   do
     let
@@ -518,7 +518,7 @@ replaceAlias aliasAddr fieldNameT topAddr sq =
     return sq'
 
 -- | Filter the names that are matched with the constraint's pattern.
-filterMatchedNames :: StructCnstr -> [TextIndex] -> ValAddr -> RM [TextIndex]
+filterMatchedNames :: StructCnstr -> [TextIndex] -> EvalAddr -> RM [TextIndex]
 filterMatchedNames cnstr labels addr =
   foldM
     ( \acc name -> do
@@ -536,7 +536,7 @@ This is done by re-applying existing objects except the one that is removed beca
 
 For removed fields, they are not removed from the struct but marked as Unknown.
 -}
-removeAppliedObject :: Int -> Struct -> ValAddr -> RM (Struct, [(TextIndex, VNode)], [TextIndex])
+removeAppliedObject :: Int -> Struct -> EvalAddr -> RM (Struct, [(TextIndex, VNode)], [TextIndex])
 removeAppliedObject objID struct addr =
   traceSpanWithRM
     "removeAppliedObject"
@@ -578,7 +578,7 @@ removeAppliedObject objID struct addr =
       return (res, map (\(x, y) -> (x, ssfValue y)) updatedFields, removedLabels)
 
 -- | Apply the additional constraint to the fields.
-applyCnstrToFields :: StructCnstr -> Struct -> ValAddr -> RM (Struct, [(TextIndex, VNode)])
+applyCnstrToFields :: StructCnstr -> Struct -> EvalAddr -> RM (Struct, [(TextIndex, VNode)])
 applyCnstrToFields cnstr struct addr = traceSpanWithRM
   "applyCnstrToFields"
   addr

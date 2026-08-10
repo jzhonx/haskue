@@ -31,14 +31,14 @@ import Util.Format (msprintfS, packFmtA)
 import Value
 import Value.Export.Debug (termsRepToJSONWithAddr, valToStringTermsRep, vnToStringTermsRep)
 
-reduceDisj :: ValAddr -> Disj -> RM Val
+reduceDisj :: EvalAddr -> Disj -> RM Val
 reduceDisj addr d = traceSpanNoPreRM "reduceDisj" addr $ do
   -- We have to reduce all disjuncts because some of the disjuncts might be created by unifying, which could still have
   -- unknown value.
   d' <- vtmapM (applyAddrFOnVal reduceVal) addr d
   normalizeDisj addr d'
 
-resolveDisjOp :: DisjoinOp -> ValAddr -> RM Val
+resolveDisjOp :: DisjoinOp -> EvalAddr -> RM Val
 resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
   let terms = toList $ djoTerms disjOp
   when (length terms < 2) $
@@ -68,7 +68,7 @@ resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
 4. If the disjunct is left with only one element, return the value.
 5. If the disjunct is left with no elements, return the first bottom it found.
 -}
-normalizeDisj :: ValAddr -> Disj -> RM Val
+normalizeDisj :: EvalAddr -> Disj -> RM Val
 normalizeDisj addr d = traceSpanRM
   "normalizeDisj"
   addr
@@ -123,7 +123,7 @@ flattenDisjunction :: Disj -> RM Disj
 flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   debugInstStr
     "flattenDisjunction"
-    emptyValAddr
+    emptyEvalAddr
     ( do
         reps <- mapM valToStringTermsRep (toList disjuncts)
         return $ printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes)
@@ -141,7 +141,7 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   flatten (accIs, accDs) (origIdx, t) = do
     debugInstStr
       "flattenDisjunction"
-      emptyValAddr
+      emptyEvalAddr
       ( do
           vT <- tshow t
           return $ printf "At %s, val: %s" (show origIdx) (show vT)
@@ -184,7 +184,7 @@ Rewrite includes:
 
 TODO: consider make t an instance of Ord and use Set to remove duplicates.
 -}
-rewriteDisjuncts :: Disj -> ValAddr -> RM Disj
+rewriteDisjuncts :: Disj -> EvalAddr -> RM Disj
 rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts}) addr =
   traceSpanWithRM
     "rewriteDisjuncts"
@@ -266,7 +266,7 @@ procMarkedTerms terms = do
   let hasMarked = any dstMarked terms
   debugInstStr
     "procMarkedTerms"
-    emptyValAddr
+    emptyEvalAddr
     ( do
         termReps <- mapM tshow terms
         return $ printf "terms: %s, hasMarked: %s" (show termReps) (show hasMarked)

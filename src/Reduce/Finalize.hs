@@ -25,11 +25,11 @@ After the value is reduced to the fixpoint, we need to do some finalization work
 1. Validate all constraints.
 2. Pop up bottoms.
 -}
-finalize :: ValAddr -> VNode -> RM VNode
+finalize :: EvalAddr -> VNode -> RM VNode
 finalize addr root = traceSpanTermsRepTM "finalize" addr root $ finalizeInner addr root
 
 -- | Finalize the value by traversing the val tree in a post-order way.
-finalizeInner :: ValAddr -> VNode -> RM VNode
+finalizeInner :: EvalAddr -> VNode -> RM VNode
 finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
   -- First traverse the sub values.
   -- We do not traverse the constraints.
@@ -89,7 +89,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
 It creates a validate function, and then evaluates the function. Notice that the validator will be assigned to the
 constraint in the propValUp.
 -}
-validateCnstr :: ValAddr -> VNode -> RM VNode
+validateCnstr :: EvalAddr -> VNode -> RM VNode
 validateCnstr addr v = traceSpanTermsRepTM "validateCnstr" addr v $ do
   -- Run the validator in a forced reduce args mode.
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or

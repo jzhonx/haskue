@@ -16,14 +16,14 @@ import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import Feature (
-  ValAddr (..),
+  EvalAddr (..),
   addrIsCanonical,
   addrIsVertex,
   appendFeature,
   appendTermStep,
   canonicalToAddr,
   collapseToCanonical,
-  emptyValAddr,
+  emptyEvalAddr,
   featureToAddrSegment,
   mkListIdxFeature,
   mkListStoreIdxTermStep,
@@ -32,7 +32,7 @@ import Feature (
   mkRegCnstrTermStep,
   mkStringFeature,
   termStepToAddrSegment,
-  universalValAddr,
+  universalEvalAddr,
  )
 import Reduce.Builtin (builtinFuncMap)
 import Reduce.Comprehension (reduceCompreh)
@@ -83,7 +83,7 @@ import Value.Export.Debug (
 import Value.Instances (foldrVecWAddr, mapMSeqWAddr, mapMVectorWAddr, pretravsVTQ)
 
 -- | Reduce the tree to the lowest form.
-reduce :: ValAddr -> VNode -> RM VNode
+reduce :: EvalAddr -> VNode -> RM VNode
 reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
   debugInst
     "pre reduce"
@@ -117,11 +117,11 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
   return vn'
 
 -- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.
-reduceConstraints :: ValAddr -> VNode -> Bool -> RM VNode
+reduceConstraints :: EvalAddr -> VNode -> Bool -> RM VNode
 reduceConstraints addr vn stopAfterOneIter = reduceConstraintsSetFix stopAfterOneIter 0 addr vn
 
 -- | Reduce the constraints of a VNode when encountering VNode in reducing constraints.
-reduceConstraintsInCnstrs :: ValAddr -> VNode -> RM VNode
+reduceConstraintsInCnstrs :: EvalAddr -> VNode -> RM VNode
 reduceConstraintsInCnstrs addr vn@VNode{value = v, constraints} = do
   (v', staticCnstrs', dyn', info) <- reduceCnstrsInner 0 False addr constraints.static constraints.dynamic
   let
@@ -132,7 +132,7 @@ reduceConstraintsInCnstrs addr vn@VNode{value = v, constraints} = do
 
   return vn'
 
-reduceConstraintsSetFix :: Bool -> Int -> ValAddr -> VNode -> RM VNode
+reduceConstraintsSetFix :: Bool -> Int -> EvalAddr -> VNode -> RM VNode
 reduceConstraintsSetFix stopAfterOneIter count addr vn@VNode{value = v, constraints} = do
   (v', constraints', info) <- traceSpanWithRM
     (printf "reduceConstraintsSetFix %d" count)
@@ -169,7 +169,7 @@ reduceConstraintsSetFix stopAfterOneIter count addr vn@VNode{value = v, constrai
 reduceCnstrsInner ::
   Int ->
   Bool ->
-  ValAddr ->
+  EvalAddr ->
   ConstraintSeq ->
   IntMap.IntMap ConstraintSeq ->
   RM (Val, ConstraintSeq, IntMap.IntMap ConstraintSeq, CnstrInfo)
@@ -190,9 +190,9 @@ reduceCnstrsInner count isEmbed addr staticCnstrs dynCnstrs = traceSpanWithRM
 
 reduceDynCnstrs ::
   Int ->
-  ValAddr ->
+  EvalAddr ->
   IntMap.IntMap ConstraintSeq ->
-  RM (IntMap.IntMap ConstraintSeq, [(ValAddr, Val)], CnstrInfo)
+  RM (IntMap.IntMap ConstraintSeq, [(EvalAddr, Val)], CnstrInfo)
 reduceDynCnstrs count addr dynCnstrs = traceSpanWithRM
   (printf "foldDynCnstrsM %d" count)
   addr
@@ -218,7 +218,7 @@ reduceDynCnstrs count addr dynCnstrs = traceSpanWithRM
 
 It reduces every conjunct node it finds.
 -}
-reduceConstraint :: Int -> ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)
+reduceConstraint :: Int -> EvalAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)
 reduceConstraint count addr constraint = traceSpanWithRM
   (printf "reduceConstraint %d" count)
   addr
@@ -262,7 +262,7 @@ reduceConstraint count addr constraint = traceSpanWithRM
         let s = show cnstrsRep
         throwFatal $ printf "unexpected non-struct constraint in StructEmbedCnstr, constraints: %s" s
 
-discoverRefCyclesForOp :: ValAddr -> Constraint -> CnstrInfo
+discoverRefCyclesForOp :: EvalAddr -> Constraint -> CnstrInfo
 discoverRefCyclesForOp addr (OpCnstr oc) =
   pretravsVTQ
     mergeCnstrInfo
@@ -275,7 +275,7 @@ discoverRefCyclesForOp addr (OpCnstr oc) =
     (VTOp oc.ocOp)
 discoverRefCyclesForOp _ _ = emptyCnstrInfo
 
-mergeReducedCnstrs :: [(ValAddr, Val)] -> Bool -> ValAddr -> RM Val
+mergeReducedCnstrs :: [(EvalAddr, Val)] -> Bool -> EvalAddr -> RM Val
 mergeReducedCnstrs revPairs isEmbed addr =
   if
     | length revPairs > 1 -> unifyVals (reverse revPairs) addr isEmbed
@@ -283,10 +283,10 @@ mergeReducedCnstrs revPairs isEmbed addr =
     | otherwise -> return VUnknown
 
 foldCnstrsSeqM ::
-  (ValAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)) ->
-  ValAddr ->
+  (EvalAddr -> Constraint -> RM (Constraint, Val, CnstrInfo)) ->
+  EvalAddr ->
   ConstraintSeq ->
-  RM (ConstraintSeq, [(ValAddr, Val)], CnstrInfo)
+  RM (ConstraintSeq, [(EvalAddr, Val)], CnstrInfo)
 foldCnstrsSeqM f addr constraints =
   foldM
     ( \(accSeq, accL, accInfo) (i, c) -> do
@@ -304,9 +304,9 @@ foldCnstrsSeqM f addr constraints =
     (zip [0 ..] (toList constraints))
 
 data CnstrInfo = CnstrInfo
-  { atomCnstrs :: [(ValAddr, Val)]
+  { atomCnstrs :: [(EvalAddr, Val)]
   , incompleteCnstrs :: !Int
-  , refCycles :: [ValAddr]
+  , refCycles :: [EvalAddr]
   }
   deriving (Show)
 
@@ -349,13 +349,13 @@ instance ToJSONWTIndexer CnstrInfo where
 emptyCnstrInfo :: CnstrInfo
 emptyCnstrInfo = CnstrInfo{atomCnstrs = [], incompleteCnstrs = 0, refCycles = []}
 
-mkAtomCnstrInfo :: ValAddr -> Atom -> CnstrInfo
+mkAtomCnstrInfo :: EvalAddr -> Atom -> CnstrInfo
 mkAtomCnstrInfo addr a = emptyCnstrInfo{atomCnstrs = [(addr, VAtom a)]}
 
 mkInCompleteCnstr :: CnstrInfo
 mkInCompleteCnstr = emptyCnstrInfo{incompleteCnstrs = 1}
 
-mkRefCycleCnstr :: ValAddr -> CnstrInfo
+mkRefCycleCnstr :: EvalAddr -> CnstrInfo
 mkRefCycleCnstr addr = emptyCnstrInfo{refCycles = [addr]}
 
 mergeCnstrInfo :: CnstrInfo -> CnstrInfo -> CnstrInfo
@@ -366,13 +366,13 @@ mergeCnstrInfo c1 c2 =
     , refCycles = refCycles c1 ++ refCycles c2
     }
 
-funcFlatMap :: RM (Map.Map ValAddr ([Val] -> ValAddr -> RM Val))
+funcFlatMap :: RM (Map.Map EvalAddr ([Val] -> EvalAddr -> RM Val))
 funcFlatMap = do
   b <- builtinFuncMap
   s <- LibStrings.funcMap
   return $ Map.union b s
 
-reduceOp :: ValAddr -> OpConstraint -> RM (Val, Constraint)
+reduceOp :: EvalAddr -> OpConstraint -> RM (Val, Constraint)
 reduceOp addr oc = case oc.ocOp of
   Compreh compreh -> do
     (r, cph') <- reduceCompreh addr compreh
@@ -414,7 +414,7 @@ reduceOp addr oc = case oc.ocOp of
     op' <- vtmapM (applyAddrFOnVN reduceConstraintsInCnstrs) addr oc.ocOp
     reduceNoUnify addr (oc{ocOp = op'})
 
-reduceNoUnify :: ValAddr -> OpConstraint -> RM (Val, Constraint)
+reduceNoUnify :: EvalAddr -> OpConstraint -> RM (Val, Constraint)
 reduceNoUnify addr oc = case oc.ocOp of
   Ref ref -> do
     let (_, isReady) = retrieveArgs oc.ocOp
@@ -453,7 +453,7 @@ reduceNoUnify addr oc = case oc.ocOp of
     return (r, OpCnstr oc)
   _ -> throwFatal "reduceOp: unsupported mutable op"
 
-handleRefRes :: DerefResult -> ValAddr -> Location -> Reference -> RM (Val, Constraint)
+handleRefRes :: DerefResult -> EvalAddr -> Location -> Reference -> RM (Val, Constraint)
 handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr = riAddr} _ loc ref = do
   let
     updatedRef :: Reference
@@ -469,7 +469,7 @@ handleRefRes DerefResult{targetValue, targetAddr, isRefCycle, resolvedIdentAddr 
     Nothing -> return (VUnknown, OpCnstr (OpConstraint{ocOp = Ref newRef, ocLoc = loc}))
     Just result -> return (value result, OpCnstr (OpConstraint{ocOp = Ref newRef, ocLoc = loc}))
 
-reduceVal :: ValAddr -> Val -> RM Val
+reduceVal :: EvalAddr -> Val -> RM Val
 reduceVal addr v = do
   case v of
     VStruct s -> reduceStruct s addr
@@ -487,23 +487,23 @@ retrieveArgs op =
                 VTVNode vn -> Right vn
                 _ -> Left ()
           )
-          emptyValAddr
+          emptyEvalAddr
           op
    in case sequence args of
         Left _ -> error "retrieveArgs: unexpected non-VNode child in op"
         Right xs -> (xs, all (isJust . rtrValue . value) xs)
 
-signalReduced :: ValAddr -> RM ()
+signalReduced :: EvalAddr -> RM ()
 signalReduced = sendToRootRecalcQ
 
 storeBuiltinsAndPackages :: RM ()
 storeBuiltinsAndPackages = do
   builtins <- builtinValues
-  mapM_ (\(ti, v) -> storeVal (appendFeature universalValAddr (mkStringFeature ti)) (mkValVN v)) builtins
+  mapM_ (\(ti, v) -> storeVal (appendFeature universalEvalAddr (mkStringFeature ti)) (mkValVN v)) builtins
   m <- funcFlatMap
   mapM_ (\(addr, _) -> storeVal addr (mkValVN (VFuncAddr addr))) (Map.toList m)
 
-reduceList :: List -> ValAddr -> RM Val
+reduceList :: List -> EvalAddr -> RM Val
 reduceList l addr = traceSpanNoPreRM "reduceList" addr do
   updstore <-
     mapMVectorWAddr

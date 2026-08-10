@@ -131,7 +131,7 @@ emptyLastDerefed :: LastDerefed
 emptyLastDerefed = LastDerefed{ldUseToDep = Map.empty, ldDepToUse = Map.empty}
 
 data ReducedSignal = ReducedSignal
-  { addr :: ValAddr
+  { addr :: EvalAddr
   , rfbAddr :: ReferableAddr
   , grpAddr :: GrpAddr
   , createdWithRCResolver :: Bool
@@ -199,7 +199,7 @@ setRMObjID newID = modify' $ \ctx -> ctx{ctxObjID = newID}
 
 -- VNode depth check
 
-treeDepthCheck :: ValAddr -> RM ()
+treeDepthCheck :: EvalAddr -> RM ()
 treeDepthCheck vc = do
   let depth = length $ addrToList vc
   maxDepth <- asks maxTreeDepth

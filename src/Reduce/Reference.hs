@@ -48,7 +48,7 @@ The return value will not be another reference.
 The index should have a list of arguments where the first argument is the tree to be indexed, and the rest of the
 arguments are the segments.
 -}
-deref :: ValAddr -> Reference -> RM DerefResult
+deref :: EvalAddr -> Reference -> RM DerefResult
 deref addr ref = traceSpanRM
   "deref"
   addr
@@ -65,7 +65,7 @@ deref addr ref = traceSpanRM
         if ref.resolvedIdentType == ITIterBinding
           then do
             vn <- fetchComprehBindingVal (fromJust ref.resolvedComprehClauseIdx) ref.ident
-            let (_, tar, _) = descend fileTopValAddr vn (getSelectors sels)
+            let (_, tar, _) = descend fileTopEvalAddr vn (getSelectors sels)
             return $ mkIterVarDR tar
           else do
             let
@@ -73,7 +73,7 @@ deref addr ref = traceSpanRM
             getDstVal lparams addr
 
 -- | TODO: the value indexed should not be another reference. It should always be resolved.
-select :: ValueSelect -> ValAddr -> RM Val
+select :: ValueSelect -> EvalAddr -> RM Val
 -- in-place expression, like ({}).a, or regular functions. Notice the selector must exist.
 select vsel addr = traceSpanNoPreRM "select" addr $ do
   vsFieldPathM <- concreteVSelSels vsel
@@ -91,9 +91,9 @@ select vsel addr = traceSpanNoPreRM "select" addr $ do
 
 data DerefResult = DerefResult
   { targetValue :: Maybe VNode
-  , targetAddr :: Maybe ValAddr
+  , targetAddr :: Maybe EvalAddr
   , isIdentIterVal :: Bool
-  , resolvedIdentAddr :: Maybe ValAddr
+  , resolvedIdentAddr :: Maybe EvalAddr
   , isRefCycle :: !Bool
   }
   deriving (Show)
@@ -133,7 +133,7 @@ selsNotReady =
     , isRefCycle = False
     }
 
-mkRegDR :: ValAddr -> ValAddr -> VNode -> DerefResult
+mkRegDR :: EvalAddr -> EvalAddr -> VNode -> DerefResult
 mkRegDR identAddr addr v =
   DerefResult
     { targetValue = Just v
@@ -143,7 +143,7 @@ mkRegDR identAddr addr v =
     , isRefCycle = False
     }
 
-mkPartialFound :: ValAddr -> ValAddr -> DerefResult
+mkPartialFound :: EvalAddr -> EvalAddr -> DerefResult
 mkPartialFound identAddr addr =
   DerefResult
     { targetValue = Nothing
@@ -153,7 +153,7 @@ mkPartialFound identAddr addr =
     , isRefCycle = False
     }
 
-mkRefCycleDR :: ValAddr -> ValAddr -> Maybe VNode -> DerefResult
+mkRefCycleDR :: EvalAddr -> EvalAddr -> Maybe VNode -> DerefResult
 mkRefCycleDR identAddr addr v =
   DerefResult
     { targetValue = v
@@ -190,7 +190,7 @@ concreteVSelSels vs = do
 
 The env is to provide the context for the dereferencing the reference.
 -}
-getDstVal :: LocateParams -> ValAddr -> RM DerefResult
+getDstVal :: LocateParams -> EvalAddr -> RM DerefResult
 getDstVal lp addr = traceSpanNoPreRM "getDstVal" addr $ do
   dr <- locateRef lp addr
   case dr of
@@ -211,7 +211,7 @@ data LocateParams
 
 The path must start with a locatable ident.
 -}
-locateRef :: LocateParams -> ValAddr -> RM DerefResult
+locateRef :: LocateParams -> EvalAddr -> RM DerefResult
 locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
   let identAddr = case resolvedIdentAddr of
         ResolvedIdentFromTop addr -> addr
@@ -232,7 +232,7 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
     )
   case headSeg identAddr of
     Just seg | seg == rootToAddrSegment packageRoot -> do
-      let pkgFuncAddr = appendValAddr identAddr (fieldPathToAddr sels)
+      let pkgFuncAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
       resM <- fetchValFromStore "locateRef" pkgFuncAddr
       case resM of
         Just resV -> return $ mkRegDR identAddr pkgFuncAddr resV
@@ -248,7 +248,7 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
       identVM <- fetchValFromStore "locateRef" identAddr
       case identVM of
         Nothing -> do
-          let potentialTarAddr = appendValAddr identAddr (fieldPathToAddr sels)
+          let potentialTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
           rcRes <- handleRefSelforSub identAddr potentialTarAddr (mkValVN VUnknown)
           case rcRes of
             Just r -> return r
@@ -278,7 +278,7 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
 
           if not (null unmatchedSels)
             then do
-              let potentialTarAddr = appendValAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
+              let potentialTarAddr = appendEvalAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
               rcRes <- handleRefSelforSub identAddr potentialTarAddr (mkValVN VUnknown)
               case rcRes of
                 Just r -> return r
@@ -384,7 +384,7 @@ locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
                   return $ Just $ mkPartialFound identAddr targetAddr
     Nothing -> return Nothing
 
-descend :: ValAddr -> VNode -> [Selector] -> (ValAddr, VNode, [Selector])
+descend :: EvalAddr -> VNode -> [Selector] -> (EvalAddr, VNode, [Selector])
 descend p x [] = (p, x, [])
 descend p x (sel : rs) =
   let feature = selectorToFeature sel
@@ -400,7 +400,7 @@ descend p x (sel : rs) =
           _ -> (p, x, sel : rs)
         Just subX -> descend (appendFeature p feature) subX rs
 
-addrHasDef :: ValAddr -> RM Bool
+addrHasDef :: EvalAddr -> RM Bool
 addrHasDef p = do
   xs <-
     mapM
@@ -425,7 +425,7 @@ TODO: update the notification graph with the new dependency, not always insert.
 
 Also check if any of the dependent of the current ref forms a cycle with the target address.
 -}
-watch :: ValAddr -> ValAddr -> RM ()
+watch :: EvalAddr -> EvalAddr -> RM ()
 watch tarAddr refAddr = do
   when (isNothing $ addrIsRfbAddr tarAddr) $
     throwFatal $
@@ -464,7 +464,7 @@ watch tarAddr refAddr = do
 
 The tree cursor is the target cursor without the copied raw value.
 -}
-copyConcrete :: ValAddr -> ValAddr -> VNode -> RM VNode
+copyConcrete :: EvalAddr -> EvalAddr -> VNode -> RM VNode
 copyConcrete tarAddr addr tarV = do
   let vt = copyVTermNode tarAddr addr (VTVNode tarV)
   let v = vtVNodeOr id tarV vt
@@ -491,7 +491,7 @@ copyConcrete tarAddr addr tarV = do
     )
   return r
 
-checkRefDef :: ValAddr -> VNode -> RM VNode
+checkRefDef :: EvalAddr -> VNode -> RM VNode
 checkRefDef tarAddr val = do
   -- Check if the referenced value has recurClose.
   -- let recurClose = isRecurClosed val
@@ -500,7 +500,7 @@ checkRefDef tarAddr val = do
     then return $ markRecurClosed tarAddr val
     else return val
 
-markRecurClosed :: ValAddr -> VNode -> VNode
+markRecurClosed :: EvalAddr -> VNode -> VNode
 markRecurClosed topAddr topV = vtVNodeOr id topV (pretravsVT mark topAddr (VTVNode topV))
  where
   -- Create a tree cursor based on the value.

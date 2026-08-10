@@ -23,7 +23,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
 data DepGraph = DepGraph
-  { nodesByUseFunc :: Map.Map VertexAddr [ValAddr]
+  { nodesByUseFunc :: Map.Map VertexAddr [EvalAddr]
   -- ^ Groups lists of dependent vertex IDs by their function addresses.
   -- If the function does not have an argument, it maps to itself.
   -- For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
@@ -191,13 +191,13 @@ instance Show RefVertex where
 instance ShowWTIndexer RefVertex
 
 data VIDMapping = VIDMapping
-  { vidToAddr :: HashMap.HashMap Int ValAddr
-  , addrToVid :: HashMap.HashMap ValAddr Int
+  { vidToAddr :: HashMap.HashMap Int EvalAddr
+  , addrToVid :: HashMap.HashMap EvalAddr Int
   , nextVid :: Int
   }
   deriving (Eq, Generic, NFData)
 
-getVID :: ValAddr -> VIDMapping -> (Int, Maybe VIDMapping)
+getVID :: EvalAddr -> VIDMapping -> (Int, Maybe VIDMapping)
 getVID addr m =
   case HashMap.lookup addr (addrToVid m) of
     Just vid -> (vid, Nothing)
@@ -214,10 +214,10 @@ getVID addr m =
                 }
           )
 
-getAddrFromVID :: Int -> VIDMapping -> Maybe ValAddr
+getAddrFromVID :: Int -> VIDMapping -> Maybe EvalAddr
 getAddrFromVID vid m = HashMap.lookup vid (vidToAddr m)
 
-getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> ValAddr
+getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> EvalAddr
 getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
   Just addr -> addr
   Nothing -> error $ printf "VID %d not found in VIDMapping" vid
@@ -235,8 +235,8 @@ getVertexAddrFromIVMust iv = getVertexAddrFromVIDMust (getExprVertex iv)
 defaultVIDMapping :: VIDMapping
 defaultVIDMapping =
   VIDMapping
-    { vidToAddr = HashMap.fromList [(rootVID, fileTopValAddr)]
-    , addrToVid = HashMap.fromList [(fileTopValAddr, rootVID)]
+    { vidToAddr = HashMap.fromList [(rootVID, fileTopEvalAddr)]
+    , addrToVid = HashMap.fromList [(fileTopEvalAddr, rootVID)]
     , nextVid = rootVID + 1
     }
 
@@ -275,7 +275,7 @@ getElemAddrInGrp gaddr ng = case ( do
   (gaddrID, _) = getVID (vertexToAddr addr) ng.vidMapping
 
 -- | Get all node addresses of a given group address in the propagation graph.
-getNodeAddrsInGrp :: GrpAddr -> DepGraph -> [ValAddr]
+getNodeAddrsInGrp :: GrpAddr -> DepGraph -> [EvalAddr]
 getNodeAddrsInGrp gaddr ng =
   let irredAddrs = getElemAddrInGrp gaddr ng
    in Set.toList $
@@ -287,7 +287,7 @@ getNodeAddrsInGrp gaddr ng =
           Set.empty
           irredAddrs
 
-getNodeAddrsByFunc :: VertexAddr -> DepGraph -> [ValAddr]
+getNodeAddrsByFunc :: VertexAddr -> DepGraph -> [EvalAddr]
 getNodeAddrsByFunc funcAddr ng = Map.findWithDefault [] funcAddr ng.nodesByUseFunc
 
 -- | Get all use components of a given component address in the propagation graph.
@@ -330,7 +330,7 @@ Some cases:
 1. sub-field RC: x: x.f. Resolving "x.f.g" gets dependency relationships: /x/f/g -> /x/f, /x/f -> /x.
     From the x -> x.f.g we get /x -> /x/f/g. So we have a cycle, which contains /x, /x/f, /x/f/g.
 -}
-addNewDepToNG :: (HasCallStack) => ValAddr -> ReferableAddr -> DepGraph -> DepGraph
+addNewDepToNG :: (HasCallStack) => EvalAddr -> ReferableAddr -> DepGraph -> DepGraph
 addNewDepToNG use dep =
   execState
     ( do
@@ -385,7 +385,7 @@ hasPathInCG from to ng = dfs from Set.empty
 updateCGraph2 :: (HasCallStack) => DepGraph -> DepGraph
 updateCGraph2 g = undefined
 
-liftGetVIDForG :: ValAddr -> State DepGraph Int
+liftGetVIDForG :: EvalAddr -> State DepGraph Int
 liftGetVIDForG addr = state $ \g ->
   let (i, newM) = getVID addr g.vidMapping
    in case newM of
@@ -393,7 +393,7 @@ liftGetVIDForG addr = state $ \g ->
         Nothing -> (i, g)
 
 -- | Remove all edges from the dependency graph that match the given predicate on the use vertex.
-delDGEdgesByUseMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> DepGraph
+delDGEdgesByUseMatch :: (HasCallStack) => (EvalAddr -> Bool) -> DepGraph -> DepGraph
 delDGEdgesByUseMatch useMatch =
   execState
     ( do
@@ -408,7 +408,7 @@ delDGEdgesByUseMatch useMatch =
 
 It returns a list of (dependency, use) pairs that match the predicate.
 -}
-queryUsesByDepMatch :: (HasCallStack) => (ValAddr -> Bool) -> DepGraph -> [(ValAddr, ValAddr)]
+queryUsesByDepMatch :: (HasCallStack) => (EvalAddr -> Bool) -> DepGraph -> [(EvalAddr, EvalAddr)]
 queryUsesByDepMatch depMatch =
   evalState
     ( do
@@ -428,7 +428,7 @@ queryUsesByDepMatch depMatch =
   depMatchAdapt :: VIDMapping -> RefVertex -> Bool
   depMatchAdapt m x = depMatch (getAddrFromVIDMust (getRefVertex x) m)
 
-queryUsesByDep :: (HasCallStack) => ReferableAddr -> DepGraph -> [ValAddr]
+queryUsesByDep :: (HasCallStack) => ReferableAddr -> DepGraph -> [EvalAddr]
 queryUsesByDep dep ng = map snd $ queryUsesByDepMatch (== rfbAddrToAddr dep) ng
 
 -- | Update the component graph based on the current propagation graph.
@@ -642,11 +642,11 @@ isSufIrredParent parent child =
    in
     isParentPrefix
       && ( let diff = trimPrefixAddr parentAddr childAddr
-               rest = V.filter isSegmentReferable diff.vSegments
+               rest = V.filter isSegmentReferable diff.evalAddrSegments
             in not (V.null rest)
          )
 
-liftGetVIDForTS :: ValAddr -> State TarjanState Int
+liftGetVIDForTS :: EvalAddr -> State TarjanState Int
 liftGetVIDForTS addr = state $ \ts ->
   let (i, newM) = getVID addr ts.tsVIDMapping
    in case newM of

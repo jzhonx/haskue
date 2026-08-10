@@ -90,17 +90,17 @@ emptyTracePreData =
 mkTracePreDataWithOnlyVal :: Value -> TracePreData
 mkTracePreDataWithOnlyVal v = TracePreData{tpvVal = v, tpvArgs = Nothing}
 
-traceSpanNoPreRM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM a -> RM a
+traceSpanNoPreRM :: (ToJSONWTIndexer a) => String -> EvalAddr -> RM a -> RM a
 traceSpanNoPreRM name addr = traceSpanRM name addr emptyTracePreDataRM
 
 emptyTracePreDataRM :: RM TracePreData
 emptyTracePreDataRM = return emptyTracePreData
 
-traceSpanRM :: (ToJSONWTIndexer a) => String -> ValAddr -> RM TracePreData -> RM a -> RM a
+traceSpanRM :: (ToJSONWTIndexer a) => String -> EvalAddr -> RM TracePreData -> RM a -> RM a
 traceSpanRM name addr preData = traceSpanWithRM name addr preData ttoJSON
 
 traceSpanTermsRepTM ::
-  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b, TermsRepShow b) => String -> ValAddr -> a -> RM b -> RM b
+  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b, TermsRepShow b) => String -> EvalAddr -> a -> RM b -> RM b
 traceSpanTermsRepTM name addr a =
   traceSpanWithRM
     name
@@ -123,7 +123,7 @@ traceSpanTermsRepTM name addr a =
     )
 
 traceSpanTermsRepAnyTM ::
-  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b) => String -> ValAddr -> a -> RM b -> RM b
+  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b) => String -> EvalAddr -> a -> RM b -> RM b
 traceSpanTermsRepAnyTM name addr a =
   traceSpanWithRM
     name
@@ -140,7 +140,7 @@ traceSpanTermsRepAnyTM name addr a =
     )
     ttoJSON
 
-traceSpanWithRM :: String -> ValAddr -> RM TracePreData -> (b -> RM Value) -> RM b -> RM b
+traceSpanWithRM :: String -> EvalAddr -> RM TracePreData -> (b -> RM Value) -> RM b -> RM b
 traceSpanWithRM name addr preDataM jsonfyb f = whenTraceEnabled name addr f do
   debugMode <- asks debugMode
   addrS <- tshow addr
@@ -165,7 +165,7 @@ traceSpanWithRM name addr preDataM jsonfyb f = whenTraceEnabled name addr f do
   traceSpanExec header (toJSON $ RMEndTraceArgs{cetaResult = cetaResult})
   return res
 
-whenTraceEnabled :: String -> ValAddr -> RM a -> RM a -> RM a
+whenTraceEnabled :: String -> EvalAddr -> RM a -> RM a -> RM a
 whenTraceEnabled name _addr f traced = do
   TraceConfig{stTraceEnable = traceEnable} <- asks traceConfig
   debugMode <- asks debugMode
@@ -179,7 +179,7 @@ optValRM f = do
   disableShowVal <- asks (stTraceDisableShowValue . traceConfig)
   if not disableShowVal then f else return $ object []
 
-markFlowEventStart :: ValAddr -> Int -> RM ()
+markFlowEventStart :: EvalAddr -> Int -> RM ()
 markFlowEventStart addr vers = case addrIsVertex addr of
   Just vAddr -> do
     flowIDMap <- gets flowIDMap
@@ -203,17 +203,17 @@ markFlowEventEnd addr vers = do
     Just flowID ->
       whenTraceEnabled
         "reduce"
-        fileTopValAddr
+        fileTopEvalAddr
         (return ())
         $ emitFlowEvent "f" (T.pack $ printf "0x%x" flowID)
     Nothing -> return ()
 
 -- === Debug instant traces ===
 
-debugInstStr :: String -> ValAddr -> RM String -> RM ()
+debugInstStr :: String -> EvalAddr -> RM String -> RM ()
 debugInstStr name addr f = debugInst name addr (toJSON <$> f)
 
-debugInst :: String -> ValAddr -> RM Value -> RM ()
+debugInst :: String -> EvalAddr -> RM Value -> RM ()
 debugInst name addr argsGen = do
   debugMode <- asks debugMode
   when debugMode $

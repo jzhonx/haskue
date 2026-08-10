@@ -16,13 +16,13 @@ import Text.Printf (printf)
 import Value
 import Prelude hiding (and, or)
 
-builtinFuncMap :: RM (Map.Map ValAddr ([Val] -> ValAddr -> RM Val))
+builtinFuncMap :: RM (Map.Map EvalAddr ([Val] -> EvalAddr -> RM Val))
 builtinFuncMap =
   Map.fromList
     <$> mapM
       ( \(name, f) -> do
           nameTI <- strToTextIndex name
-          let addr = appendFeature universalValAddr (mkStringFeature nameTI)
+          let addr = appendFeature universalEvalAddr (mkStringFeature nameTI)
           return (addr, f)
       )
       [ ("close", close)
@@ -35,7 +35,7 @@ builtinFuncMap =
       ]
 
 -- | Closes a struct when the tree has struct.
-close :: [Val] -> ValAddr -> RM Val
+close :: [Val] -> EvalAddr -> RM Val
 close [arg] _ = return $ closeConcrete arg
 close args _ = return $ mkBottomVal $ printf "close function expects exactly 1 argument, got %d" (length args)
 
@@ -52,7 +52,7 @@ closeConcrete a =
       _ -> VUnknown
     _ -> mkBottomVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
-or :: [Val] -> ValAddr -> RM Val
+or :: [Val] -> EvalAddr -> RM Val
 or [arg] addr = case rtrList arg of
   Just vs -> do
     let vals = V.toList vs.final
@@ -61,7 +61,7 @@ or [arg] addr = case rtrList arg of
   _ -> return arg
 or args _ = return $ mkBottomVal $ printf "or function expects exactly 1 argument, got %d" (length args)
 
-and :: [Val] -> ValAddr -> RM Val
+and :: [Val] -> EvalAddr -> RM Val
 and [arg] addr = case rtrList arg of
   Just vs
     | not vs.isFinalReady -> return VUnknown
@@ -74,14 +74,14 @@ and [arg] addr = case rtrList arg of
   _ -> return arg
 and args _ = return $ mkBottomVal $ printf "and function expects exactly 1 argument, got %d" (length args)
 
-len :: [Val] -> ValAddr -> RM Val
+len :: [Val] -> EvalAddr -> RM Val
 len [rtrList -> Just vs] _ = return $ VAtom $ Int $ fromIntegral $ V.length vs.final
 len [rtrString -> Just str] _ = return $ VAtom $ Int $ fromIntegral $ BC.length str
 len [rtrBytes -> Just bs] _ = return $ VAtom $ Int $ fromIntegral $ BC.length bs
 len [arg] _ = return $ mkBottomVal $ printf "cannot use %s as argument to len" (show arg)
 len args _ = return $ mkBottomVal $ printf "len function expects exactly 1 argument, got %d" (length args)
 
-sliceWith :: String -> [Val] -> ValAddr -> RM Val
+sliceWith :: String -> [Val] -> EvalAddr -> RM Val
 sliceWith _ [_] _ = return $ mkBottomVal "slice expects at least 1 argument"
 sliceWith name (opd : rest) addr = case name of
   "slice" -> slice opd (Just $ head args) (Just $ args !! 1) addr
@@ -92,7 +92,7 @@ sliceWith name (opd : rest) addr = case name of
   args = toList rest
 sliceWith _ _ _ = throwFatal "unexpected error in sliceWith: should have been handled by semantics"
 
-slice :: Val -> Maybe Val -> Maybe Val -> ValAddr -> RM Val
+slice :: Val -> Maybe Val -> Maybe Val -> EvalAddr -> RM Val
 slice opd (Just ls) (Just rs) _ =
   case ( do
           l <- fetchSliceOprand opd

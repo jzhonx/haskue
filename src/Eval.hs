@@ -30,7 +30,7 @@ import Data.ByteString.Builder (
  )
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Yaml as Yaml
-import Feature (fileTopValAddr)
+import Feature (fileTopEvalAddr)
 import Reduce (finalize, reduce)
 import Reduce.Core (storeBuiltinsAndPackages)
 import Reduce.Monad
@@ -125,7 +125,7 @@ strToCUEVal s conf = do
           Right ts -> Right ts
       )
   e <- liftEither $ parseExpr tokens
-  evalVal (transExprToVal e fileTopValAddr) conf
+  evalVal (transExprToVal e fileTopEvalAddr) conf
 
 evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalStrToVal s conf = do
@@ -139,7 +139,7 @@ evalStrToVal s conf = do
   evalFile e conf
 
 evalFile :: SourceFile -> Config -> ExceptT String IO (VNode, TextIndexer)
-evalFile sf conf = evalVal (transSourceFile sf fileTopValAddr) conf
+evalFile sf conf = evalVal (transSourceFile sf fileTopEvalAddr) conf
 
 evalVal :: TM VNode -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalVal f conf = do
@@ -175,11 +175,11 @@ evalValInner conf textIndexer raw = do
             local
               (mapParams (\p -> p{createCnstr = True}))
               ( do
-                  void $ reduce fileTopValAddr raw
+                  void $ reduce fileTopEvalAddr raw
                   recalc
-                  fetchValMust "eval" fileTopValAddr
+                  fetchValMust "eval" fileTopEvalAddr
               )
-          reducedTopVal <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopValAddr topVal)
+          reducedTopVal <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
 
           when (ecDebugMode conf) $ do
             rep <- vnToFullStringTermsRep reducedTopVal

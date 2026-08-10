@@ -18,8 +18,8 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Feature (
-  ValAddr,
-  fileTopValAddr,
+  EvalAddr,
+  fileTopEvalAddr,
   mkDisjTermStep,
   mkDynFieldTermStep,
   mkLetFeature,
@@ -73,12 +73,12 @@ defaultTermsRepOption = TermsRepOption{troptRecur = False}
 recurShowTermsRepOption :: TermsRepOption
 recurShowTermsRepOption = TermsRepOption{troptRecur = True}
 
-toTermsRepWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m TermsRep
+toTermsRepWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => EvalAddr -> a -> m TermsRep
 toTermsRepWithAddr addr a = do
-  let isRoot = addr == fileTopValAddr
+  let isRoot = addr == fileTopEvalAddr
   toTermsRep a (defaultTermsRepOption{troptRecur = isRoot})
 
-termsRepToJSONWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => ValAddr -> a -> m Value
+termsRepToJSONWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => EvalAddr -> a -> m Value
 termsRepToJSONWithAddr addr a = do
   rep <- toTermsRepWithAddr addr a
   return $ toJSON rep

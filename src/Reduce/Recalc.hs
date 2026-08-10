@@ -62,19 +62,19 @@ recalc = do
   q <- rootRecalcQ <$> getRMContext
   debugInstStr
     "recalc"
-    fileTopValAddr
+    fileTopEvalAddr
     ( do
         qT <- tshow (toList q)
         return $ printf "starting queue: %s" qT
     )
 
-  traceSpanNoPreRM "recalc" fileTopValAddr drainQ
+  traceSpanNoPreRM "recalc" fileTopEvalAddr drainQ
 
 {- | Create a 'ReducedSignal' for the given address and enqueue it.
 
 Does nothing if the address is not referable.
 -}
-sendToRootRecalcQ :: ValAddr -> RM ()
+sendToRootRecalcQ :: EvalAddr -> RM ()
 sendToRootRecalcQ addr = do
   itemM <- createReducedSignal addr
   debugInstStr
@@ -92,7 +92,7 @@ sendToRootRecalcQ addr = do
 
 Returns 'Nothing' for non-referable addresses.
 -}
-createReducedSignal :: ValAddr -> RM (Maybe ReducedSignal)
+createReducedSignal :: EvalAddr -> RM (Maybe ReducedSignal)
 createReducedSignal addr = do
   case addrIsRfbAddr addr of
     Nothing -> return Nothing
@@ -136,7 +136,7 @@ drainQ = do
   itemM <- popRootRecalcQ
   stop <- traceSpanRM
     "drainQ"
-    fileTopValAddr
+    fileTopEvalAddr
     ( do
         restQ <- rootRecalcQ <$> getRMContext
         itemMT <- tshow itemM
@@ -156,7 +156,7 @@ drainQ = do
           rsQT <- mapM (tshow . biGrpAddr) (toList next.bfsQ)
           debugInstStr
             "drainQ"
-            fileTopValAddr
+            fileTopEvalAddr
             (msprintfS "new popped item: %s, bfsQ: %s" [packFmtA item, packFmtA rsQT])
           runBFS next
         return False
@@ -198,7 +198,7 @@ data BFSState = BFSState
   { bfsQ :: Seq.Seq BFSQItem
   -- ^ FIFO queue of groups to process.
   -- The first element of the tuple is the source address and version that triggered the recalculation.
-  , bfsQNodesSet :: Set.Set ValAddr
+  , bfsQNodesSet :: Set.Set EvalAddr
   -- ^ Nodes currently in the queue, for fast dedup.
   }
 
@@ -227,7 +227,7 @@ runBFS state = case state.bfsQ of
     when (updated' /= cur) $ do
       debugInstStr
         "runBFS"
-        fileTopValAddr
+        fileTopEvalAddr
         ( do
             curT <- tshow cur
             updated'T <- tshow updated'
@@ -259,7 +259,7 @@ Only groups whose values have actually changed (determined by 'filterAffectedUse
 findNeighbors :: GrpAddr -> Seq.Seq BFSQItem -> RM BFSState
 findNeighbors cur restBFSQ = traceSpanWithRM
   "findNeighbors"
-  fileTopValAddr
+  fileTopEvalAddr
   emptyTracePreDataRM
   ( \a -> do
       nextQ <- mapM (tshow . biGrpAddr) (toList a.bfsQ)
@@ -284,7 +284,7 @@ findNeighbors cur restBFSQ = traceSpanWithRM
 
     debugInstStr
       "findNeighbors"
-      fileTopValAddr
+      fileTopEvalAddr
       ( do
           curT <- tshow cur
           depsT <- mapM tshow deps
@@ -332,7 +332,7 @@ checkIfDirty depAddr useCanAddr = do
   let actualUseCanAddrSet = Set.fromList (map (trimCanonicalToVertex . collapseToCanonical) $ queryUsesByDep depAddr ng)
   debugInstStr
     "checkIfDirty"
-    fileTopValAddr
+    fileTopEvalAddr
     ( do
         userCanAddrT <- tshow useCanAddr
         depAddrT <- tshow depAddr
@@ -406,7 +406,7 @@ recalcGroup BFSQItem{biSrcAddr, biSrcVers, biGrpAddr} = do
 
   traceSpanRM
     "recalcCyclic"
-    fileTopValAddr
+    fileTopEvalAddr
     ( do
         compAddrStrs <- mapM tshow compAddrs
         return $ emptyTracePreData{tpvArgs = Just $ printf "compAddrs: %s" (show compAddrStrs)}
@@ -420,7 +420,7 @@ recalcGroup BFSQItem{biSrcAddr, biSrcVers, biGrpAddr} = do
               v <- fetchValMust "recalcGroup" (vertexToAddr siAddr)
               debugInstStr
                 "recalcCyclic"
-                fileTopValAddr
+                fileTopEvalAddr
                 (msprintfS "recalcCyclic %s done, fetch done, v: %s" [packFmtA siAddr, packFmtA v])
               return (Map.insert siAddr v accStore)
           )
@@ -490,7 +490,7 @@ recalcNode srcAddr srcVers nodeVAddr = do
 At each level, disjunctions are normalized and struct permissions validated.
 May enqueue new items into the root recalc queue via 'propValUp'.
 -}
-storeValUpToRootRecalc :: ValAddr -> VNode -> RM ()
+storeValUpToRootRecalc :: EvalAddr -> VNode -> RM ()
 storeValUpToRootRecalc addr v = do
   storeVal addr v
   parentM <- propValUp addr v
@@ -529,7 +529,7 @@ The parent is always acyclic since structural containment is a tree relationship
 -}
 getAncGrpFromAddr :: VertexAddr -> Maybe GrpAddr
 getAncGrpFromAddr raddr
-  | fileTopValAddr == vertexToAddr raddr = Nothing
+  | fileTopEvalAddr == vertexToAddr raddr = Nothing
   | otherwise = do
       let parentAddr =
             topReducerToVertexAddr $

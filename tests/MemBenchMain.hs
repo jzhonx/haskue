@@ -17,10 +17,10 @@ import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
 import Feature (
-  ValAddr (..),
+  EvalAddr (..),
   appendTermStep,
   fileBlockFeature,
-  fileTopValAddr,
+  fileTopEvalAddr,
   mkListStoreIdxTermStep,
   termStepToAddrSegment,
  )
@@ -131,7 +131,7 @@ vtmapTB = func' "vtmapT" f testV
       mapMVectorWAddr
         (\_ v -> return v)
         (termStepToAddrSegment . mkListStoreIdxTermStep)
-        fileTopValAddr
+        fileTopEvalAddr
         v
 
 vtmapVectorMRMB :: Weigh ()
@@ -142,12 +142,12 @@ vtmapVectorMRMB = io "vtmapVectorMRM" f testV
           mapMVectorWAddr
             idm
             (termStepToAddrSegment . mkListStoreIdxTermStep)
-            fileTopValAddr
+            fileTopEvalAddr
             v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 vtmapMRMViaListB :: Weigh ()
@@ -163,7 +163,7 @@ vtmapMRMViaListB = io "vtmapMRMViaList" f testV
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 vtmapMRMViaMutB :: Weigh ()
@@ -176,13 +176,13 @@ vtmapMRMViaMutB = io "vtmapMRMViaMut" f testV
         mv <- V.thaw v
         forM_ [0 .. MV.length mv - 1] $ \i -> do
           v <- MV.read mv i
-          v' <- idm (appendTermStep fileTopValAddr (mkListStoreIdxTermStep i)) v
+          v' <- idm (appendTermStep fileTopEvalAddr (mkListStoreIdxTermStep i)) v
           MV.write mv i v'
         V.unsafeFreeze mv
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 vtmapSeqMRMB :: Weigh ()
@@ -193,23 +193,23 @@ vtmapSeqMRMB = io "vtmapSeqMRM" f testSeq
           mapMSeqWAddr
             idm
             (termStepToAddrSegment . mkListStoreIdxTermStep)
-            fileTopValAddr
+            fileTopEvalAddr
             v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 traverseWithKeyRMB :: Weigh ()
 traverseWithKeyRMB = io "Map.traverseWithKey" f testMap
  where
   f v = do
-    let action = Map.traverseWithKey (\k !v -> idm (appendTermStep fileTopValAddr (mkListStoreIdxTermStep k)) v) v
+    let action = Map.traverseWithKey (\k !v -> idm (appendTermStep fileTopEvalAddr (mkListStoreIdxTermStep k)) v) v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 pretravsValB :: Weigh ()
@@ -218,22 +218,22 @@ pretravsValB = io "pretravsVT" f testStruct
   f v = do
     let
       action :: RM VNode
-      action = return $ pretravsVT idm fileTopValAddr v
+      action = return $ pretravsVT idm fileTopEvalAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> VNode
+  idm :: EvalAddr -> VNode -> VNode
   idm _ v = v
 
 pretravsValMRMB :: Weigh ()
 pretravsValMRMB = io "pretravsVTM" f testStruct
  where
   f v = do
-    let action = pretravsVTM idm fileTopValAddr v
+    let action = pretravsVTM idm fileTopEvalAddr v
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 posttravsVCB :: Weigh ()
@@ -248,7 +248,7 @@ posttravsVCB = io "posttravsVC" f testStruct
     result <- runExceptT $ runRWST action emptyReduceConfig (emptyContext noopTraceSink)
     pure $ fmap (\(vals, _, _) -> vals) result
 
-  idm :: ValAddr -> VNode -> RM VNode
+  idm :: EvalAddr -> VNode -> RM VNode
   idm _ v = return v
 
 noopTraceSink :: LB.ByteString -> IO ()

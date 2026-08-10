@@ -14,7 +14,7 @@ import StringIndex (strToTextIndex)
 import Text.Printf (printf)
 import Value
 
-funcMap :: RM (Map.Map ValAddr ([Val] -> ValAddr -> RM Val))
+funcMap :: RM (Map.Map EvalAddr ([Val] -> EvalAddr -> RM Val))
 funcMap = do
   pkgTI <- strToTextIndex "strings"
   Map.fromList
@@ -22,7 +22,7 @@ funcMap = do
       ( \(name, f) -> do
           nameTI <- strToTextIndex name
           let
-            pkgAddr = appendFeature packageValAddr (mkStringFeature pkgTI)
+            pkgAddr = appendFeature packageEvalAddr (mkStringFeature pkgTI)
             addr = appendFeature pkgAddr (mkStringFeature nameTI)
           return (addr, f)
       )
@@ -30,7 +30,7 @@ funcMap = do
       , ("Replace", replace)
       ]
 
-withConcreteArgs :: [Val] -> ValAddr -> ([Val] -> ValAddr -> RM Val) -> RM Val
+withConcreteArgs :: [Val] -> EvalAddr -> ([Val] -> EvalAddr -> RM Val) -> RM Val
 withConcreteArgs args addr f = case fetchConcreteArgs args of
   Left v -> return v
   Right concreteArgs -> f concreteArgs addr
@@ -57,7 +57,7 @@ fetchStringArgs = mapM isString
        in
         Left $ mkBottomVal msg
 
-join :: [Val] -> ValAddr -> RM Val
+join :: [Val] -> EvalAddr -> RM Val
 join [VList l, VAtom (String sep)] _
   | not l.isFinalReady = return VUnknown
   | otherwise = do
@@ -69,7 +69,7 @@ join _ _ = return $ mkBottomVal "wrong type of arguments to Join"
 joinBSs :: [BC.ByteString] -> BC.ByteString -> BC.ByteString
 joinBSs bs sep = BC.intercalate sep bs
 
-replace :: [Val] -> ValAddr -> RM Val
+replace :: [Val] -> EvalAddr -> RM Val
 replace [VAtom (String s), VAtom (String old), VAtom (String new), VAtom (Int n)] addr =
   traceSpanNoPreRM "strings.Replace" addr $
     return $

@@ -20,11 +20,11 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
 import Feature (
+  EvalAddr,
   Selector (..),
-  ValAddr,
   appendFeature,
   mkStringFeature,
-  universalValAddr,
+  universalEvalAddr,
  )
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
@@ -42,13 +42,13 @@ import Value.Reference
 import Value.Struct
 
 class VTerm a where
-  vtmapT :: (ValAddr -> VTermNode -> VTermNode) -> ValAddr -> a -> a
+  vtmapT :: (EvalAddr -> VTermNode -> VTermNode) -> EvalAddr -> a -> a
   vtmapT f p v = runIdentity $ vtmapM (\np nv -> return $ f np nv) p v
-  vtmapQ :: (ValAddr -> VTermNode -> r) -> ValAddr -> a -> [r]
+  vtmapQ :: (EvalAddr -> VTermNode -> r) -> EvalAddr -> a -> [r]
 
   -- It does mapM on the immediate children of the term.
   -- If there is no child, no mapping is performed and the original term is returned.
-  vtmapM :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> a -> m a
+  vtmapM :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> a -> m a
 
 data VTermNode
   = VTVal Val
@@ -71,11 +71,11 @@ vtVNodeOr :: (VNode -> a) -> a -> VTermNode -> a
 vtVNodeOr f _ (VTVNode v) = f v
 vtVNodeOr _ a _ = a
 
-applyAddrFOnVN :: (Applicative f) => (ValAddr -> VNode -> f VNode) -> ValAddr -> VTermNode -> f VTermNode
+applyAddrFOnVN :: (Applicative f) => (EvalAddr -> VNode -> f VNode) -> EvalAddr -> VTermNode -> f VTermNode
 applyAddrFOnVN f p (VTVNode v) = VTVNode <$> f p v
 applyAddrFOnVN _ _ x = pure x
 
-applyAddrFOnVal :: (Applicative f) => (ValAddr -> Val -> f Val) -> ValAddr -> VTermNode -> f VTermNode
+applyAddrFOnVal :: (Applicative f) => (EvalAddr -> Val -> f Val) -> EvalAddr -> VTermNode -> f VTermNode
 applyAddrFOnVal f p (VTVal v) = VTVal <$> f p v
 applyAddrFOnVal _ _ x = pure x
 
@@ -90,7 +90,7 @@ data Val
   | VDisj Disj
   | VUnknown
   | -- | VFuncAddr is a variant of Unknown but it represents a function address.
-    VFuncAddr ValAddr
+    VFuncAddr EvalAddr
   deriving (Generic)
 
 data Constraint
@@ -421,11 +421,11 @@ builtinValues = do
     return (nameTI, v)
 
 -- | built-in functions
-builtinFuncAddrTable :: (TextIndexerMonad s m) => m [(TextIndex, ValAddr)]
+builtinFuncAddrTable :: (TextIndexerMonad s m) => m [(TextIndex, EvalAddr)]
 builtinFuncAddrTable = do
   let builtins = ["close", "or", "and", "len"]
   mapM gen builtins
  where
   gen name = do
     nameTI <- strToTextIndex name
-    return (nameTI, appendFeature universalValAddr (mkStringFeature nameTI))
+    return (nameTI, appendFeature universalEvalAddr (mkStringFeature nameTI))

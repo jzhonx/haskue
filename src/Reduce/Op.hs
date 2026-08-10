@@ -70,7 +70,7 @@ resolveUnaryOp op vn = do
 
 -- * Regular Binary Ops
 
-resolveRegBinOp :: TokenType -> VNode -> VNode -> ValAddr -> RM Val
+resolveRegBinOp :: TokenType -> VNode -> VNode -> EvalAddr -> RM Val
 resolveRegBinOp op vn1 vn2 _ = resolveRegBinDir op (L, vn1) (R, vn2)
 
 resolveRegBinDir :: TokenType -> (BinOpDirect, VNode) -> (BinOpDirect, VNode) -> RM Val

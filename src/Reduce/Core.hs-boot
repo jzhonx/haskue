@@ -2,11 +2,11 @@
 
 module Reduce.Core where
 
-import Feature (ValAddr)
+import Feature (EvalAddr)
 import Reduce.Monad
 import Value.Val (VNode, Val)
 
-reduce :: ValAddr -> VNode -> RM VNode
-reduceVal :: ValAddr -> Val -> RM Val
-reduceConstraintsInCnstrs :: ValAddr -> VNode -> RM VNode
-signalReduced :: ValAddr -> RM ()
+reduce :: EvalAddr -> VNode -> RM VNode
+reduceVal :: EvalAddr -> Val -> RM Val
+reduceConstraintsInCnstrs :: EvalAddr -> VNode -> RM VNode
+signalReduced :: EvalAddr -> RM ()

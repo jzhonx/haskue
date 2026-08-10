@@ -6,7 +6,7 @@ module Value.Reference where
 
 import Control.DeepSeq (NFData)
 import qualified Data.Sequence as Seq
-import Feature (CanonicalAddr, Feature, ValAddr)
+import Feature (CanonicalAddr, EvalAddr, Feature)
 import GHC.Generics (Generic)
 import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Val
@@ -22,7 +22,7 @@ data Reference = Reference
   , resolvedIdentType :: RefIdentType
   , resolvedIdentAddr :: ResolvedIdentAddr
   -- ^ The resolved address of the identifier.
-  , resolvedFullAddr :: Maybe ValAddr
+  , resolvedFullAddr :: Maybe EvalAddr
   -- ^ The resolved full address of the reference.
   , resolvedComprehClauseIdx :: Maybe Int
   -- ^ The resolved comprehension binding of the reference, represented as (comprehension depth, identifier).
@@ -37,7 +37,7 @@ data RefIdentType
   deriving (Eq, Show, Generic, NFData)
 
 data ResolvedIdentAddr
-  = ResolvedIdentFromTop ValAddr
+  = ResolvedIdentFromTop EvalAddr
   | ToTargetScopeDiff CanonicalAddr
   deriving (Eq, Show, Generic, NFData)
 

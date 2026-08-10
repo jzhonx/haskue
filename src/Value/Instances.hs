@@ -201,48 +201,48 @@ deriving instance NFData ConstraintsSet
 -----
 
 mapMVectorWAddr ::
-  (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> V.Vector a -> m (V.Vector a)
+  (Monad m) => (EvalAddr -> a -> m a) -> (Int -> AddrSegment) -> EvalAddr -> V.Vector a -> m (V.Vector a)
 mapMVectorWAddr f g p = V.imapM (\i !v -> f (appendSeg p (g i)) v)
 
-mapMSeqWAddr :: (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> m (Seq.Seq a)
+mapMSeqWAddr :: (Monad m) => (EvalAddr -> a -> m a) -> (Int -> AddrSegment) -> EvalAddr -> Seq.Seq a -> m (Seq.Seq a)
 mapMSeqWAddr f g p = Seq.traverseWithIndex (\i !v -> f (appendSeg p (g i)) v)
 
 mapMIntMapWAddr ::
-  (Monad m) => (ValAddr -> a -> m a) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> m (IntMap.IntMap a)
+  (Monad m) => (EvalAddr -> a -> m a) -> (Int -> AddrSegment) -> EvalAddr -> IntMap.IntMap a -> m (IntMap.IntMap a)
 mapMIntMapWAddr f g p = IntMap.traverseWithKey (\i !v -> f (appendSeg p (g i)) v)
 
-foldrVecWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> V.Vector a -> [r]
+foldrVecWAddr :: (EvalAddr -> a -> r) -> (Int -> AddrSegment) -> EvalAddr -> V.Vector a -> [r]
 foldrVecWAddr f g p = V.ifoldr (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrSeqWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> [r]
+foldrSeqWAddr :: (EvalAddr -> a -> r) -> (Int -> AddrSegment) -> EvalAddr -> Seq.Seq a -> [r]
 foldrSeqWAddr f g p = Seq.foldrWithIndex (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrSeqWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> AddrSegment) -> ValAddr -> Seq.Seq a -> [r]
+foldrSeqWAddrConcat :: (EvalAddr -> a -> [r]) -> (Int -> AddrSegment) -> EvalAddr -> Seq.Seq a -> [r]
 foldrSeqWAddrConcat f g p = Seq.foldrWithIndex (\i !v acc -> f (appendSeg p (g i)) v ++ acc) []
 
-foldrIntMapWAddr :: (ValAddr -> a -> r) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> [r]
+foldrIntMapWAddr :: (EvalAddr -> a -> r) -> (Int -> AddrSegment) -> EvalAddr -> IntMap.IntMap a -> [r]
 foldrIntMapWAddr f g p = IntMap.foldrWithKey (\i !v acc -> f (appendSeg p (g i)) v : acc) []
 
-foldrIntMapWAddrConcat :: (ValAddr -> a -> [r]) -> (Int -> AddrSegment) -> ValAddr -> IntMap.IntMap a -> [r]
+foldrIntMapWAddrConcat :: (EvalAddr -> a -> [r]) -> (Int -> AddrSegment) -> EvalAddr -> IntMap.IntMap a -> [r]
 foldrIntMapWAddrConcat f g p = IntMap.foldrWithKey (\i !v acc -> f (appendSeg p (g i)) v ++ acc) []
 
-adaptVTMapQOnVNode :: (ValAddr -> VTermNode -> r) -> ValAddr -> VNode -> r
+adaptVTMapQOnVNode :: (EvalAddr -> VTermNode -> r) -> EvalAddr -> VNode -> r
 adaptVTMapQOnVNode f p v = f p (VTVNode v)
 
-adaptVTMapQOnVal :: (ValAddr -> VTermNode -> r) -> ValAddr -> Val -> r
+adaptVTMapQOnVal :: (EvalAddr -> VTermNode -> r) -> EvalAddr -> Val -> r
 adaptVTMapQOnVal f p vn = f p (VTVal vn)
 
-adaptVTMapMOnVNode :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> VNode -> m VNode
+adaptVTMapMOnVNode :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> VNode -> m VNode
 adaptVTMapMOnVNode f p v = do
   vt' <- f p (VTVNode v)
   return $ vtVNodeOr id v vt'
 
-adaptVTMapMOnVal :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> Val -> m Val
+adaptVTMapMOnVal :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> Val -> m Val
 adaptVTMapMOnVal f p v = do
   vt' <- f p (VTVal v)
   return $ vtValOr id v vt'
 
-adaptVTMapTOnVal :: (ValAddr -> VTermNode -> VTermNode) -> ValAddr -> VNode -> VNode
+adaptVTMapTOnVal :: (EvalAddr -> VTermNode -> VTermNode) -> EvalAddr -> VNode -> VNode
 adaptVTMapTOnVal f p v =
   let vt' = f p (VTVNode v)
    in vtVNodeOr id v vt'
@@ -408,7 +408,7 @@ instance VTerm Op where
   vtmapM f p (Itp itp) = Itp <$> vtmapM f p itp
   vtmapM f p (FCall func) = FCall <$> vtmapM f p func
 
-appendMutArgF :: ValAddr -> Int -> ValAddr
+appendMutArgF :: EvalAddr -> Int -> EvalAddr
 appendMutArgF p i = appendTermStep p (mkOpArgTermStep i)
 
 instance VTerm RegularOp where
@@ -476,18 +476,18 @@ instance VTerm FuncCall where
     fnFrame' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (fnFrame func)
     return func{fnFrame = fnFrame'}
 
-pretravsVTM :: (Monad m) => (ValAddr -> VTermNode -> m VTermNode) -> ValAddr -> VTermNode -> m VTermNode
+pretravsVTM :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> VTermNode -> m VTermNode
 pretravsVTM f p x = do
   x' <- f p x
   vtmapM (pretravsVTM f) p x'
 
-pretravsVT :: (ValAddr -> VTermNode -> VTermNode) -> ValAddr -> VTermNode -> VTermNode
+pretravsVT :: (EvalAddr -> VTermNode -> VTermNode) -> EvalAddr -> VTermNode -> VTermNode
 pretravsVT f p x = let x' = f p x in vtmapT (pretravsVT f) p x'
 
-posttravsVT :: (ValAddr -> VTermNode -> VTermNode) -> ValAddr -> VTermNode -> VTermNode
+posttravsVT :: (EvalAddr -> VTermNode -> VTermNode) -> EvalAddr -> VTermNode -> VTermNode
 posttravsVT f p x = let x' = vtmapT (posttravsVT f) p x in f p x'
 
-pretravsVTQ :: (r -> r -> r) -> (ValAddr -> VTermNode -> r) -> ValAddr -> VTermNode -> r
+pretravsVTQ :: (r -> r -> r) -> (EvalAddr -> VTermNode -> r) -> EvalAddr -> VTermNode -> r
 pretravsVTQ k f p x = foldl k (f p x) (vtmapQ (pretravsVTQ k f) p x)
 
 {- | Set the sub tree with the given segment and new tree.
@@ -559,7 +559,7 @@ getSubVN seg t = case (addrSegmentTag seg, t) of
   feature = fromJust $ addrSegmentToFeature seg
   termStep = fromJust $ addrSegmentToTermStep seg
 
-getSubVNByAddr :: ValAddr -> VNode -> Maybe VNode
+getSubVNByAddr :: EvalAddr -> VNode -> Maybe VNode
 getSubVNByAddr addr = go (addrToList addr)
  where
   go [] v = Just v

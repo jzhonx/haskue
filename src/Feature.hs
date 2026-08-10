@@ -61,7 +61,7 @@ isFieldPathEmpty (Selectors []) = True
 isFieldPathEmpty _ = False
 
 -- | Convert concrete selectors to semantic feature segments.
-fieldPathToAddr :: Selectors -> ValAddr
+fieldPathToAddr :: Selectors -> EvalAddr
 fieldPathToAddr (Selectors sels) = addrFromList $ map (featureToAddrSegment . selectorToFeature) sels
 
 selectorToFeature :: Selector -> Feature
@@ -419,20 +419,18 @@ instance Show BinOpDirect where
   show L = "L"
   show R = "R"
 
--- | A full, root-to-leaf address to a value.
-newtype ValAddr = ValAddr
-  { vSegments :: V.Vector AddrSegment
+-- | A full, root-to-leaf logical address in the evaluator namespace.
+newtype EvalAddr = EvalAddr
+  { evalAddrSegments :: V.Vector AddrSegment
   }
   deriving stock (Eq, Ord, Generic)
   deriving anyclass (NFData)
 
--- Keep the existing debug representation stable while exposing the clearer
--- 'vSegments' field to callers.
-instance Show ValAddr where
-  show (ValAddr a) = "ValAddr {vFeatures = " ++ show a ++ "}"
+instance Show EvalAddr where
+  show (EvalAddr a) = "EvalAddr {evalAddrSegments = " ++ show a ++ "}"
 
-instance ShowWTIndexer ValAddr where
-  tshow (ValAddr a)
+instance ShowWTIndexer EvalAddr where
+  tshow (EvalAddr a)
     | V.null a = return "."
     | isFileTopSegment (a V.! 0) = do
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList $ V.drop 1 a)
@@ -441,120 +439,120 @@ instance ShowWTIndexer ValAddr where
         x <- mapM (\x -> T.unpack <$> tshow x) (V.toList a)
         return $ T.pack $ intercalate "/" x
 
-instance Hashable ValAddr where
-  hashWithSalt salt (ValAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
+instance Hashable EvalAddr where
+  hashWithSalt salt (EvalAddr a) = (V.foldl' (\h f -> hashWithSalt h f) salt a)
 
-instance ToJSON ValAddr where
+instance ToJSON EvalAddr where
   toJSON a = toJSON (show a)
 
-instance ToJSONWTIndexer ValAddr where
+instance ToJSONWTIndexer EvalAddr where
   ttoJSON a = do
     s <- tshow a
     return $ toJSON s
 
-mkValAddr :: V.Vector AddrSegment -> ValAddr
-mkValAddr = ValAddr
+mkEvalAddr :: V.Vector AddrSegment -> EvalAddr
+mkEvalAddr = EvalAddr
 
-emptyValAddr :: ValAddr
-emptyValAddr = mkValAddr V.empty
+emptyEvalAddr :: EvalAddr
+emptyEvalAddr = mkEvalAddr V.empty
 
-fileTopValAddr :: ValAddr
-fileTopValAddr = mkValAddr (V.singleton $ rootToAddrSegment fileTopRoot)
+fileTopEvalAddr :: EvalAddr
+fileTopEvalAddr = mkEvalAddr (V.singleton $ rootToAddrSegment fileTopRoot)
 
-universalValAddr :: ValAddr
-universalValAddr = mkValAddr (V.singleton $ rootToAddrSegment universalRoot)
+universalEvalAddr :: EvalAddr
+universalEvalAddr = mkEvalAddr (V.singleton $ rootToAddrSegment universalRoot)
 
-packageValAddr :: ValAddr
-packageValAddr = mkValAddr (V.singleton $ rootToAddrSegment packageRoot)
+packageEvalAddr :: EvalAddr
+packageEvalAddr = mkEvalAddr (V.singleton $ rootToAddrSegment packageRoot)
 
-isValAddrEmpty :: ValAddr -> Bool
-isValAddrEmpty a = V.null (vSegments a)
+isEvalAddrEmpty :: EvalAddr -> Bool
+isEvalAddrEmpty a = V.null (evalAddrSegments a)
 
-addrFromList :: [AddrSegment] -> ValAddr
-addrFromList segs = mkValAddr (V.fromList segs)
+addrFromList :: [AddrSegment] -> EvalAddr
+addrFromList segs = mkEvalAddr (V.fromList segs)
 
 -- | This is mostly used for testing purpose.
-addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m ValAddr
+addrFromStringList :: (MonadState s m, HasTextIndexer s) => [String] -> m EvalAddr
 addrFromStringList segs = do
   xs <- mapM strToStringFeature segs
-  return $ mkValAddr (V.fromList $ map featureToAddrSegment xs)
+  return $ mkEvalAddr (V.fromList $ map featureToAddrSegment xs)
 
-addrToList :: ValAddr -> [AddrSegment]
-addrToList (ValAddr a) = V.toList a
+addrToList :: EvalAddr -> [AddrSegment]
+addrToList (EvalAddr a) = V.toList a
 
-appendSeg :: ValAddr -> AddrSegment -> ValAddr
-appendSeg (ValAddr a) seg = mkValAddr (V.snoc a seg)
+appendSeg :: EvalAddr -> AddrSegment -> EvalAddr
+appendSeg (EvalAddr a) seg = mkEvalAddr (V.snoc a seg)
 
-appendRoot :: ValAddr -> Root -> ValAddr
+appendRoot :: EvalAddr -> Root -> EvalAddr
 appendRoot addr = appendSeg addr . rootToAddrSegment
 
-appendFeature :: ValAddr -> Feature -> ValAddr
+appendFeature :: EvalAddr -> Feature -> EvalAddr
 appendFeature addr = appendSeg addr . featureToAddrSegment
 
-appendTermStep :: ValAddr -> TermStep -> ValAddr
+appendTermStep :: EvalAddr -> TermStep -> EvalAddr
 appendTermStep addr = appendSeg addr . termStepToAddrSegment
 
 -- | Append the root-to-leaf segments of the new address to the old address.
-appendValAddr ::
+appendEvalAddr ::
   -- | old addr
-  ValAddr ->
+  EvalAddr ->
   -- | new addr to be appended to the old addr
-  ValAddr ->
-  ValAddr
-appendValAddr (ValAddr old) (ValAddr new) = mkValAddr (old V.++ new)
+  EvalAddr ->
+  EvalAddr
+appendEvalAddr (EvalAddr old) (EvalAddr new) = mkEvalAddr (old V.++ new)
 
 -- | Get the parent addr of a addr by removing the last segment.
-initValAddr :: ValAddr -> Maybe ValAddr
-initValAddr (ValAddr a)
+initEvalAddr :: EvalAddr -> Maybe EvalAddr
+initEvalAddr (EvalAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ mkValAddr (V.init a)
+  | otherwise = Just $ mkEvalAddr (V.init a)
 
 -- | Get the tail addr of a addr, excluding the head segment.
-tailValAddr :: ValAddr -> Maybe ValAddr
-tailValAddr (ValAddr a)
+tailEvalAddr :: EvalAddr -> Maybe EvalAddr
+tailEvalAddr (EvalAddr a)
   | V.null a = Nothing
-  | otherwise = Just $ mkValAddr (V.tail a)
+  | otherwise = Just $ mkEvalAddr (V.tail a)
 
 -- | Get the last segment of a addr.
-lastSeg :: ValAddr -> Maybe AddrSegment
-lastSeg (ValAddr a)
+lastSeg :: EvalAddr -> Maybe AddrSegment
+lastSeg (EvalAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.last a
 
 -- | Get the head segment of a addr.
-headSeg :: ValAddr -> Maybe AddrSegment
-headSeg (ValAddr a)
+headSeg :: EvalAddr -> Maybe AddrSegment
+headSeg (EvalAddr a)
   | V.null a = Nothing
   | otherwise = Just $ V.head a
 
 -- | Trim all the segments that are after the first matching segment, including the matching segment.
-trimFirstMatchToEnd :: (AddrSegment -> Bool) -> ValAddr -> ValAddr
-trimFirstMatchToEnd f (ValAddr xs) =
+trimFirstMatchToEnd :: (AddrSegment -> Bool) -> EvalAddr -> EvalAddr
+trimFirstMatchToEnd f (EvalAddr xs) =
   let firstMatchIdx = V.findIndex f xs
    in case firstMatchIdx of
-        Just idx -> ValAddr $ V.take idx xs
-        Nothing -> ValAddr xs
+        Just idx -> EvalAddr $ V.take idx xs
+        Nothing -> EvalAddr xs
 
 -- | Trim all the segments that are before the last matching segment, not including the matching segment.
-trimBeginToLastMatch :: (AddrSegment -> Bool) -> ValAddr -> ValAddr
-trimBeginToLastMatch f (ValAddr xs) =
+trimBeginToLastMatch :: (AddrSegment -> Bool) -> EvalAddr -> EvalAddr
+trimBeginToLastMatch f (EvalAddr xs) =
   let lastMatchIdx = V.findIndexR f xs
    in case lastMatchIdx of
-        Just idx -> ValAddr $ V.drop idx xs
-        Nothing -> ValAddr xs
+        Just idx -> EvalAddr $ V.drop idx xs
+        Nothing -> EvalAddr xs
 
-trimFirstObjToEnd :: ValAddr -> ValAddr
+trimFirstObjToEnd :: EvalAddr -> EvalAddr
 trimFirstObjToEnd = trimFirstMatchToEnd isObjectSegment
 
-trimBeginToLastObj :: ValAddr -> ValAddr
+trimBeginToLastObj :: EvalAddr -> EvalAddr
 trimBeginToLastObj = trimBeginToLastMatch isObjectSegment
 
 {- | Check if addr x is a prefix of addr y.
 
 For example, isPrefix (a.b) (a.b.c.d) = True, isPrefix (a.b.c) (a.b) = False.
 -}
-isPrefix :: ValAddr -> ValAddr -> Bool
-isPrefix (ValAddr x) (ValAddr y) = isSegVPrefix x y
+isPrefix :: EvalAddr -> EvalAddr -> Bool
+isPrefix (EvalAddr x) (EvalAddr y) = isSegVPrefix x y
 
 isSegVPrefix :: V.Vector AddrSegment -> V.Vector AddrSegment -> Bool
 isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
@@ -564,13 +562,13 @@ isSegVPrefix x y = V.length x <= V.length y && V.and (V.zipWith (==) x y)
 If the second addr is not a prefix of the first addr or the first addr is shorter than the second addr, then the
 first addr is returned.
 -}
-trimPrefixAddr :: ValAddr -> ValAddr -> ValAddr
-trimPrefixAddr pre@(ValAddr pa) x@(ValAddr xa)
+trimPrefixAddr :: EvalAddr -> EvalAddr -> EvalAddr
+trimPrefixAddr pre@(EvalAddr pa) x@(EvalAddr xa)
   | not (isPrefix pre x) = x
-  | otherwise = mkValAddr (V.drop (V.length pa) xa)
+  | otherwise = mkEvalAddr (V.drop (V.length pa) xa)
 
-isSuffix :: ValAddr -> ValAddr -> Bool
-isSuffix (ValAddr x) (ValAddr y) = isSegVSuffix x y
+isSuffix :: EvalAddr -> EvalAddr -> Bool
+isSuffix (EvalAddr x) (EvalAddr y) = isSegVSuffix x y
 
 {- | Check if the first features are a suffix of the second features.
 
@@ -579,10 +577,10 @@ For example, isSegVSuffix (c.d) (a.b.c.d) = True, isSegVSuffix (b.c) (a.b) = Fal
 isSegVSuffix :: V.Vector AddrSegment -> V.Vector AddrSegment -> Bool
 isSegVSuffix x y = isSegVPrefix (V.reverse x) (V.reverse y)
 
-trimSuffixAddr :: ValAddr -> ValAddr -> ValAddr
-trimSuffixAddr suf@(ValAddr sa) x@(ValAddr xa)
+trimSuffixAddr :: EvalAddr -> EvalAddr -> EvalAddr
+trimSuffixAddr suf@(EvalAddr sa) x@(EvalAddr xa)
   | not (isSuffix suf x) = x
-  | otherwise = mkValAddr (V.take (V.length xa - V.length sa) xa)
+  | otherwise = mkEvalAddr (V.take (V.length xa - V.length sa) xa)
 
 {- | CanonicalAddr is an addr that ends with an irreducible segment.
 
@@ -594,7 +592,7 @@ For example,
 
 The addr of the b is /x/fa0/fa0/b, which is not all irreducible.
 -}
-newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: ValAddr}
+newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: EvalAddr}
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (NFData, ToJSON, ToJSONWTIndexer, ToJSONKey)
 
@@ -613,32 +611,32 @@ isSegmentNonCanonical seg = case addrSegmentTag seg of
 isSegmentCanonical :: AddrSegment -> Bool
 isSegmentCanonical = not . isSegmentNonCanonical
 
-addrIsCanonical :: ValAddr -> Maybe CanonicalAddr
-addrIsCanonical (ValAddr xs) =
+addrIsCanonical :: EvalAddr -> Maybe CanonicalAddr
+addrIsCanonical (EvalAddr xs) =
   let hasReducible = V.any isSegmentNonCanonical xs
    in if hasReducible
         then Nothing
-        else Just $ CanonicalAddr $ ValAddr xs
+        else Just $ CanonicalAddr $ EvalAddr xs
 
-collapseToCanonical :: ValAddr -> CanonicalAddr
-collapseToCanonical (ValAddr xs) = CanonicalAddr $ ValAddr (V.filter (not . isSegmentNonCanonical) xs)
+collapseToCanonical :: EvalAddr -> CanonicalAddr
+collapseToCanonical (EvalAddr xs) = CanonicalAddr $ EvalAddr (V.filter (not . isSegmentNonCanonical) xs)
 
-collapseToCanonicalForm :: ValAddr -> ValAddr
+collapseToCanonicalForm :: EvalAddr -> EvalAddr
 collapseToCanonicalForm addr = canonicalToAddr $ collapseToCanonical addr
 
-genWoObjCanonical :: ValAddr -> CanonicalAddr
+genWoObjCanonical :: EvalAddr -> CanonicalAddr
 genWoObjCanonical addr = CanonicalAddr (trimFirstMatchToEnd isSegmentNonCanonical addr)
 
-genWoObjCanonicalForm :: ValAddr -> ValAddr
+genWoObjCanonicalForm :: EvalAddr -> EvalAddr
 genWoObjCanonicalForm addr = canonicalToAddr $ genWoObjCanonical addr
 
-canonicalToAddr :: CanonicalAddr -> ValAddr
+canonicalToAddr :: CanonicalAddr -> EvalAddr
 canonicalToAddr (CanonicalAddr v) = v
 
 initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
-initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initValAddr v)
+initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initEvalAddr v)
 
-assembleIdentCanonical :: CanonicalAddr -> Feature -> ValAddr -> ValAddr
+assembleIdentCanonical :: CanonicalAddr -> Feature -> EvalAddr -> EvalAddr
 assembleIdentCanonical diff feat addr =
   let
     -- If the last seg is dj
@@ -647,7 +645,7 @@ assembleIdentCanonical diff feat addr =
     canParAddrM = initCanonical canAddr
     identScopeAddr = case canParAddrM of
       Just canParAddr -> trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr canParAddr)
-      Nothing -> fileTopValAddr
+      Nothing -> fileTopEvalAddr
     identAddr = appendFeature identScopeAddr feat
    in
     identAddr
@@ -678,7 +676,7 @@ isSegmentReferable seg = case addrSegmentTag seg of
   FileTopTag -> True
   _ -> False
 
-rfbAddrToAddr :: ReferableAddr -> ValAddr
+rfbAddrToAddr :: ReferableAddr -> EvalAddr
 rfbAddrToAddr (ReferableAddr c) = canonicalToAddr c
 
 rfbAddrToCanonical :: ReferableAddr -> CanonicalAddr
@@ -691,7 +689,7 @@ rfbAddrToTopReducer (ReferableAddr c) = TopReducerAddr c
 rfbAddrToVertex :: ReferableAddr -> VertexAddr
 rfbAddrToVertex (ReferableAddr c) = VertexAddr c
 
-addrIsRfbAddr :: ValAddr -> Maybe ReferableAddr
+addrIsRfbAddr :: EvalAddr -> Maybe ReferableAddr
 addrIsRfbAddr addr = do
   c <- addrIsCanonical addr
   lseg <- lastSeg (canonicalToAddr c)
@@ -700,10 +698,10 @@ addrIsRfbAddr addr = do
     else Nothing
 
 trimCanonicalToRfb :: CanonicalAddr -> ReferableAddr
-trimCanonicalToRfb (CanonicalAddr (ValAddr xs)) =
+trimCanonicalToRfb (CanonicalAddr (EvalAddr xs)) =
   let revxs = V.reverse xs
       rest = V.dropWhile (not . isSegmentReferable) revxs
-   in ReferableAddr (CanonicalAddr (ValAddr $ V.reverse rest))
+   in ReferableAddr (CanonicalAddr (EvalAddr $ V.reverse rest))
 
 {- | Vertex differs from Canonical in that disjunct is not considered a legal ending. A disjunct is part of its parent
 vertex.
@@ -721,15 +719,15 @@ isSegmentVertex seg = case addrSegmentTag seg of
   _ -> isSegmentCanonical seg
 
 trimCanonicalToVertex :: CanonicalAddr -> VertexAddr
-trimCanonicalToVertex (CanonicalAddr (ValAddr xs)) =
+trimCanonicalToVertex (CanonicalAddr (EvalAddr xs)) =
   let revxs = V.reverse xs
       rest = V.dropWhile (not . isSegmentVertex) revxs
-   in VertexAddr (CanonicalAddr (ValAddr $ V.reverse rest))
+   in VertexAddr (CanonicalAddr (EvalAddr $ V.reverse rest))
 
-vertexToAddr :: VertexAddr -> ValAddr
+vertexToAddr :: VertexAddr -> EvalAddr
 vertexToAddr (VertexAddr c) = canonicalToAddr c
 
-addrIsVertex :: ValAddr -> Maybe VertexAddr
+addrIsVertex :: EvalAddr -> Maybe VertexAddr
 addrIsVertex addr = do
   c <- addrIsCanonical addr
   lseg <- lastSeg (canonicalToAddr c)
@@ -758,12 +756,12 @@ trimCanonicalToTopReducer :: CanonicalAddr -> TopReducerAddr
 trimCanonicalToTopReducer (CanonicalAddr xs) =
   TopReducerAddr $ CanonicalAddr $ trimFirstMatchToEnd (not . isSegmentTopReducer) xs
 
-topReducerToAddr :: TopReducerAddr -> ValAddr
+topReducerToAddr :: TopReducerAddr -> EvalAddr
 topReducerToAddr (TopReducerAddr c) = canonicalToAddr c
 
-addrIsTopReducer :: ValAddr -> Maybe TopReducerAddr
+addrIsTopReducer :: EvalAddr -> Maybe TopReducerAddr
 addrIsTopReducer addr = do
-  c@(CanonicalAddr (ValAddr xs)) <- addrIsCanonical addr
+  c@(CanonicalAddr (EvalAddr xs)) <- addrIsCanonical addr
   let isAllTopReducer = V.all isSegmentTopReducer xs
   if isAllTopReducer
     then return $ TopReducerAddr c

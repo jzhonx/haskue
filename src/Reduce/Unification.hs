@@ -57,7 +57,7 @@ data ConjOpd = ConjOpd
   { dir :: BinOpDirect
   , coVal :: Val
   -- ^ This tree cursor of the conjunct.
-  , coAddr :: ValAddr
+  , coAddr :: EvalAddr
   , embType :: EmbedType
   }
 
@@ -95,8 +95,7 @@ showUTreeList (x : xs) =
   show x
     <> "\n"
     <> foldl
-      ( \acc y -> acc <> show y <> "\n"
-      )
+      (\acc y -> acc <> show y <> "\n")
       ""
       xs
 
@@ -113,7 +112,7 @@ If RC can not be cancelled, then the result is Nothing.
 
 The order of the unification is the same as the order of the trees.
 -}
-unifyVals :: [(ValAddr, Val)] -> ValAddr -> Bool -> RM Val
+unifyVals :: [(EvalAddr, Val)] -> EvalAddr -> Bool -> RM Val
 unifyVals ps addr isEmbedUnify = traceSpanRM
   "unifyVals"
   addr
@@ -142,11 +141,11 @@ The new conjuncts are not necessarily ready.
 
 The order of the operands is preserved.
 -}
-unifyConjOpds :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
+unifyConjOpds :: ConjOpd -> ConjOpd -> EvalAddr -> RM Val
 unifyConjOpds co1@(ConjOpd{dir = L}) co2 = unifyOrderedConjOpds co1 co2
 unifyConjOpds co1@(ConjOpd{dir = R}) co2 = unifyOrderedConjOpds co2 co1
 
-unifyOrderedConjOpds :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
+unifyOrderedConjOpds :: ConjOpd -> ConjOpd -> EvalAddr -> RM Val
 unifyOrderedConjOpds co1 co2 addr = do
   let xs = do
         v1 <- rtrValue co1.coVal
@@ -157,7 +156,7 @@ unifyOrderedConjOpds co1 co2 addr = do
     Nothing -> return VUnknown
 
 -- | Merge a list of processed tree cursors into one tree.
-mergeVals :: [(ValAddr, Val)] -> ValAddr -> Bool -> RM Val
+mergeVals :: [(EvalAddr, Val)] -> EvalAddr -> Bool -> RM Val
 mergeVals tcs addr isEmbedUnify = traceSpanRM
   (printf "mergeVals %s" (if isEmbedUnify then "embed" :: String else ""))
   addr
@@ -232,7 +231,7 @@ dereferenced. If the reference is evaluated to a struct, the struct will be a ra
 
 opAddr is not necessarily equal to the parent of one of the tree cursors if the function is directly called.
 -}
-mergeBinUTrees :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
+mergeBinUTrees :: ConjOpd -> ConjOpd -> EvalAddr -> RM Val
 mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
   r <- traceSpanRM
     "mergeBinUTrees"
@@ -279,14 +278,14 @@ mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
     )
   return r
 
-mergeLeftTop :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
+mergeLeftTop :: ConjOpd -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftTop co1 co2 addr = do
   let t2 = coVal co2
   case t2 of
     VStruct s2 | co1 `isEmbeddedIn` co2 -> mergeLeftStruct (s2, co2) co1 addr
     _ -> return t2
 
-mergeLeftAtom :: (Atom, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
+mergeLeftAtom :: (Atom, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftAtom (v1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) addr =
   traceSpanNoPreRM "mergeLeftAtom" addr $ do
     case (v1, t2) of
@@ -318,7 +317,7 @@ mergeLeftAtom (v1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) 
   amismatch :: (Show a) => a -> a -> Val
   amismatch x y = VBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
 
-mergeLeftBound :: (Bounds, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
+mergeLeftBound :: (Bounds, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftBound (b1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) addr = do
   case t2 of
     VAtom ta2 -> do
@@ -553,7 +552,7 @@ mergeBounds db1@(d1, b1) db2@(_, b2) = case b1 of
   newOrdBounds = if d1 == L then [b1, b2] else [b2, b1]
 
 -- | mergeLeftOther is the sink of the unification process.
-mergeLeftOther :: ConjOpd -> ConjOpd -> ValAddr -> RM Val
+mergeLeftOther :: ConjOpd -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftOther co1 co2 _ = returnNotUnifiable co1 co2
 
 returnNotUnifiable :: ConjOpd -> ConjOpd -> RM Val
@@ -567,7 +566,7 @@ returnNotUnifiable (ConjOpd{coVal = t1, dir = d1}) (ConjOpd{coVal = t2}) = do
     ty <- showValueType y
     return $ mkBottomVal $ printf "%s can not be unified with %s" tx ty
 
-mergeLeftStruct :: (Struct, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
+mergeLeftStruct :: (Struct, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftStruct (s1, co1) co2 addr
   -- If the left struct is an empty struct with a non-struct embedded value, e.g. {embedded_val}.
   -- we merge the embedded value with the right value.
@@ -606,7 +605,7 @@ The s1 is made the left struct, and s2 is made the right struct.
 For closedness, unification only generates a closed struct but not a recursively closed struct since to close a struct
 recursively, the only way is to reference the struct via a #ident.
 -}
-mergeStructs :: (Struct, ConjOpd) -> (Struct, ConjOpd) -> ValAddr -> RM Val
+mergeStructs :: (Struct, ConjOpd) -> (Struct, ConjOpd) -> EvalAddr -> RM Val
 mergeStructs (s1, co1@ConjOpd{dir = L}) (s2, co2) addr = traceSpanWithRM
   "mergeStructs"
   addr
@@ -711,7 +710,7 @@ mergeField sf1 sf2 =
 If a node is a mutable node, we do not return its tree node sub nodes, instead, return the sub nodes of the mutable.
 This is because the sub nodes of the tree node is not reduced and will be rewritten by the mutable.
 -}
-mergeLeftDisj :: (Disj, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
+mergeLeftDisj :: (Disj, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftDisj (dj1, co1) co2@(ConjOpd{coVal = t2}) addr = do
   case t2 of
     VDisj dj2 -> mergeDisjWithDisj (dj1, co1) (dj2, co2) addr
@@ -724,7 +723,7 @@ mergeLeftDisj (dj1, co1) co2@(ConjOpd{coVal = t2}) addr = do
 -- {x: 42} & (close({}) | int) // error because close({}) is not embedded.
 -- {x: 42, (close({}) | int)} // ok because close({}) is embedded.
 -- In current CUE's implementation, CUE puts the fields of the single value first.
-mergeDisjWithVal :: (Disj, ConjOpd) -> ConjOpd -> ValAddr -> RM Val
+mergeDisjWithVal :: (Disj, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeDisjWithVal (dj1, _ut1@(ConjOpd{dir = fstDir})) _ut2 addr = traceSpanNoPreRM "mergeDisjWithVal" addr $ do
   let
     uts1 = utsFromDisjs _ut1 dj1
@@ -750,7 +749,7 @@ U0: ⟨v1⟩ & ⟨v2⟩         => ⟨v1&v2⟩
 U1: ⟨v1, d1⟩ & ⟨v2⟩     => ⟨v1&v2, d1&v2⟩
 U2: ⟨v1, d1⟩ & ⟨v2, d2⟩ => ⟨v1&v2, d1&d2⟩
 -}
-mergeDisjWithDisj :: (Disj, ConjOpd) -> (Disj, ConjOpd) -> ValAddr -> RM Val
+mergeDisjWithDisj :: (Disj, ConjOpd) -> (Disj, ConjOpd) -> EvalAddr -> RM Val
 mergeDisjWithDisj (dj1, _ut1@(ConjOpd{dir = fstDir})) (dj2, _ut2) addr =
   traceSpanNoPreRM "mergeDisjWithDisj" addr $ do
     let
@@ -813,7 +812,7 @@ removeIncompleteDisjuncts defIdxes ts =
 
 The pattern is expected to be an Atom or a Bounds.
 -}
-patMatchLabel :: VNode -> TextIndex -> ValAddr -> RM Bool
+patMatchLabel :: VNode -> TextIndex -> EvalAddr -> RM Bool
 patMatchLabel pat tidx addr = traceSpanWithRM "patMatchLabel" addr (return emptyTracePreData) (return . toJSON) $ do
   -- Retrieve the atom or bounds from the pattern.
   let vM = listToMaybe $ catMaybes [rtrAtom (value pat) >>= Just . mkAtomVN, rtrBounds pat >>= Just . mkBoundsVN]

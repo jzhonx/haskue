@@ -40,7 +40,7 @@ import Value
 import Value.Export.Debug (vnToFullStringTermsRep)
 import Value.Instances (posttravsVT)
 
-reduceCompreh :: ValAddr -> Comprehension -> RM (Val, Comprehension)
+reduceCompreh :: EvalAddr -> Comprehension -> RM (Val, Comprehension)
 reduceCompreh addr cph = traceSpanWithRM "reduceCompreh" addr emptyTracePreDataRM (const (return (object []))) $ do
   r <- comprehend addr cph
   let updatedCph = cph{args = r.cphargs}
@@ -97,7 +97,7 @@ The rules are:
 3. For the mutable arguments reducing, arguments will always have the address format of compreh_add/clause_seg or
   compreh_add/clause_seg/embed_seg/clause_seg.
 -}
-comprehend :: ValAddr -> Comprehension -> RM IterCtx
+comprehend :: EvalAddr -> Comprehension -> RM IterCtx
 comprehend comprehAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
  where
   comprhArg :: Int -> IterCtx -> RM IterCtx
@@ -220,7 +220,7 @@ forkTemplate v@VNode{constraints} = case v of
 
 Selectors might not be ready.
 -}
-replaceIterValRefs :: ValAddr -> VNode -> RM VNode
+replaceIterValRefs :: EvalAddr -> VNode -> RM VNode
 replaceIterValRefs tmplAddr tmplV = do
   bindings <- comprehBindings <$> getRMContext
   debugInstStr
@@ -345,7 +345,7 @@ instance ToJSONWTIndexer IterCtx where
 emptyIterCtx :: IterCtx
 emptyIterCtx = IterCtx{iterCnt = 0, res = Right [], incomplete = False, cphargs = Seq.empty}
 
-tshowBindings :: Map.Map ValAddr Val -> RM T.Text
+tshowBindings :: Map.Map EvalAddr Val -> RM T.Text
 tshowBindings binds = do
   pairs <-
     mapM

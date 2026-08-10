@@ -43,7 +43,7 @@ import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
 
-transSourceFile :: SourceFile -> ValAddr -> TM VNode
+transSourceFile :: SourceFile -> EvalAddr -> TM VNode
 transSourceFile (SourceFile imports decls) addr = do
   universalEnv <- mkUniversalEnv
   pckEnv <- transImports imports
@@ -58,7 +58,7 @@ transImports imps = do
     Environment
       { envid = 0
       , envType = EnvTypeStruct
-      , envAddr = packageValAddr
+      , envAddr = packageEvalAddr
       , names = Map.fromList $ map (\k -> (k, (ITField, False))) pkgs
       , nameFeatMap = Map.fromList $ map (\k -> (k, mkStringFeature k)) pkgs
       , clausesDepth = 0
@@ -67,7 +67,7 @@ transImports imps = do
 transImport :: ImportSpec -> TM TextIndex
 transImport (ImportSpec _ path) = textToTextIndex path.tkLiteral
 
-transExprToVal :: Expression -> ValAddr -> TM VNode
+transExprToVal :: Expression -> EvalAddr -> TM VNode
 transExprToVal e addr = do
   universalEnv <- mkUniversalEnv
   modify' $ mapEnvs (const $ Environments [universalEnv])
@@ -121,14 +121,14 @@ Every trans* function should return a tree cursor that is at the same level as t
 For example, if the addr of the input tree is {a: b: {}} with cursor pointing to the {}, and label being c, the output
 tree should be { a: b: {c: 42} }, with the cursor pointing to the {c: 42}.
 -}
-transExpr :: Expression -> ValAddr -> TM TrDataE
+transExpr :: Expression -> EvalAddr -> TM TrDataE
 transExpr e addr = do
   r <- case e of
     (Unary ue) -> transUnaryExpr ue addr
     (Binary op e1 e2) -> transBinary op.tkType e1 e2 addr
   return r{trLoc = getNodeLoc e}
 
-transLiteral :: Literal -> ValAddr -> TM TrDataE
+transLiteral :: Literal -> EvalAddr -> TM TrDataE
 transLiteral (LitStruct s) addr = transStructLit s addr
 transLiteral (LitList (ListLit loc l _)) addr = transListLit loc l addr
 transLiteral literal@(LitBasic a) addr
@@ -170,7 +170,7 @@ data DeclWithEmbedIndex
   | -- | The index should start from 1 because the first is reserved for the struct literal itself.
     EmbedDecl Int Embedding
 
-transStructLit :: StructLit -> ValAddr -> TM TrDataE
+transStructLit :: StructLit -> EvalAddr -> TM TrDataE
 transStructLit literal@(StructLit _ decls _) addr = inStructScope decls addr $ do
   sid <- getEnvID
   let (revRes, embedCnt) =
@@ -200,7 +200,7 @@ transStructLit literal@(StructLit _ decls _) addr = inStructScope decls addr $ d
           (ValCnstr (ValConstraint{vcVal = VStruct struct, vcLoc = getNodeLoc literal}) Seq.<| embedCnstrs)
     else return $ exprTrDataE (getNodeLoc literal) $ TrValue (VStruct struct)
 
-strLitSegsToStr :: [StringLitSeg] -> ValAddr -> Bool -> TM (Either Op BC.ByteString)
+strLitSegsToStr :: [StringLitSeg] -> EvalAddr -> Bool -> TM (Either Op BC.ByteString)
 strLitSegsToStr segs addr isBytes = do
   -- TODO: efficiency
   (asM, aSegs, aExprs) <-
@@ -229,7 +229,7 @@ strLitSegsToStr segs addr isBytes = do
     | otherwise -> throwFatal $ printf "invalid simple string literal: %s" (show segs)
 
 -- | Evaluates a declaration.
-transDecl :: DeclWithEmbedIndex -> Bool -> ValAddr -> TM StructElemAdder
+transDecl :: DeclWithEmbedIndex -> Bool -> EvalAddr -> TM StructElemAdder
 transDecl decli hasEmbeds structAddr = case decli of
   EmbedDecl idx ed -> do
     v <- transEmbedding False ed (structAddr `appendTermStep` mkRegCnstrTermStep idx)
@@ -256,7 +256,7 @@ identTokenToTextIndex tk = case tk.tkType of
   Token.Identifier -> textToTextIndex tk.tkLiteral
   _ -> throwFatal $ printf "expected identifier token, got %s" (show tk)
 
-transEmbedding :: Bool -> Embedding -> ValAddr -> TM TrDataE
+transEmbedding :: Bool -> Embedding -> EvalAddr -> TM TrDataE
 transEmbedding _ (EmbeddingAlias (AliasExpr _ e)) addr = transExpr e addr
 transEmbedding
   isListCompreh
@@ -299,7 +299,7 @@ transEmbedding
         $ Compreh
         $ mkComprehension cid isListCompreh vs (trDataEToVNode sv)
 
-transClause :: Clause -> ValAddr -> TM ComprehArg
+transClause :: Clause -> EvalAddr -> TM ComprehArg
 transClause c clAddr = case c of
   ClauseStart (GuardClause _ e) -> do
     t <- trDataEToVNode <$> transExpr e clAddr
@@ -319,7 +319,7 @@ transClause c clAddr = case c of
       return $ ComprehArgLet idIdx lt
 
 -- TODO: statically make sure l2's address is correct. l2 could be unified with not-yet-discovered labels.
-transFDeclLabels :: [Label] -> AliasExpr -> ValAddr -> TM StructElemAdder
+transFDeclLabels :: [Label] -> AliasExpr -> EvalAddr -> TM StructElemAdder
 transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
   case lbls of
     [] -> throwFatal "empty labels"
@@ -332,7 +332,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       let struct = insertElemToStruct sf2 (emptyStruct{stcID = sid})
       return $ exprTrDataE (getNodeLoc l2) $ TrValue (VStruct struct)
  where
-  mkAdderWithValGen :: Label -> (ValAddr -> TM TrDataE) -> TM StructElemAdder
+  mkAdderWithValGen :: Label -> (EvalAddr -> TM TrDataE) -> TM StructElemAdder
   mkAdderWithValGen (Label le) vgen = case le of
     LabelName ln c -> do
       let attr = LabelAttr{lbAttrCnstr = cnstrFrom c, lbAttrIsIdent = isVar ln}
@@ -376,7 +376,7 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
         Just tk -> Just <$> identTokenToTextIndex tk
         Nothing -> return Nothing
       cnstrid <- getEnvID
-      let cnstrValAddr = structAddr `appendTermStep` mkPatternTermStep cnstrid 1
+      let cnstrEvalAddr = structAddr `appendTermStep` mkPatternTermStep cnstrid 1
       -- We use the original alias identifier without the suffix here so that the alias can be looked up in the scope.
       -- However, for the adder we need to use the suffixed alias identifier.
       -- {
@@ -384,9 +384,9 @@ transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
       -- \^---------------^ -- the whole pattern value is a constraint scope
       --           ^-----^ -- This is the cnstrval scope. The alias is defined for this scope.
       ---}
-      inPatternCnstrValScope aliasIdxM cnstrValAddr $ do
+      inPatternCnstrValScope aliasIdxM cnstrEvalAddr $ do
         pat <- trDataEToVNode <$> transExpr pe (structAddr `appendTermStep` mkPatternTermStep cnstrid 0)
-        cs <- trDataEToCnstrsSeq <$> vgen cnstrValAddr
+        cs <- trDataEToCnstrsSeq <$> vgen cnstrEvalAddr
         cnstrvid <- getEnvID
         updatedAliasIdxM <- case aliasIdxM of
           Just origIdx -> Just <$> modifyTISuffix cnstrvid origIdx
@@ -453,7 +453,7 @@ insertElemToStruct adder struct = case adder of
   (LetSAdder name val) -> insertStructLet name val struct
   _ -> struct
 
-transListLit :: Location -> ElementList -> ValAddr -> TM TrDataE
+transListLit :: Location -> ElementList -> EvalAddr -> TM TrDataE
 transListLit loc (EllipsisList _) _ = return $ exprTrDataE loc $ TrValue $ VList $ mkList []
 transListLit loc (EmbeddingList es _) addr = do
   xs <-
@@ -471,12 +471,12 @@ transListLit loc (EmbeddingList es _) addr = do
       (zip [0 ..] es)
   return $ exprTrDataE loc $ TrValue $ VList $ mkList xs
 
-transUnaryExpr :: UnaryExpr -> ValAddr -> TM TrDataE
+transUnaryExpr :: UnaryExpr -> EvalAddr -> TM TrDataE
 transUnaryExpr ue addr = case ue of
   Primary primExpr -> transPrimExpr primExpr addr
   UnaryOp op e -> transUnaryOp op e addr
 
-transPrimExpr :: PrimaryExpr -> ValAddr -> TM TrDataE
+transPrimExpr :: PrimaryExpr -> EvalAddr -> TM TrDataE
 transPrimExpr e addr = case e of
   (PrimExprOperand op) -> case op of
     OpLiteral lit -> transLiteral lit addr
@@ -540,7 +540,7 @@ transPrimExpr e addr = case e of
 mkSliceFunc :: String -> Location -> [TrDataE] -> TM TrDataE
 mkSliceFunc sliceFName loc args = do
   ti <- strToTextIndex sliceFName
-  let funcAddr = appendFeature universalValAddr (mkStringFeature ti)
+  let funcAddr = appendFeature universalEvalAddr (mkStringFeature ti)
   return $
     exprTrDataE loc $
       TrOp $
@@ -554,11 +554,11 @@ Parameters:
 - sel is the segment.
 - addr is the addr to the current expression that contains the segment.
 For example, { a: b: x.y }
-If the field is "y", and the addr is "a.b", expr is "x.y", the structValAddr is "x".
+If the field is "y", and the addr is "a.b", expr is "x.y", the structEvalAddr is "x".
 -}
-transSelector :: PrimaryExpr -> Syntax.AST.Selector -> ValAddr -> TM TrDataE
+transSelector :: PrimaryExpr -> Syntax.AST.Selector -> EvalAddr -> TM TrDataE
 transSelector pe astSel addr = do
-  (oprdAddr, oid) <- getPrimaryExprValAddr pe addr
+  (oprdAddr, oid) <- getPrimaryExprEvalAddr pe addr
   oprnd <- transPrimExpr pe oprdAddr
   (selAddr, selVGen) <- getSelCons addr (oprnd, False)
   let f sel = selVGen oid (mkAtomTrDataE (getNodeLoc pe) (String sel))
@@ -570,8 +570,8 @@ transSelector pe astSel addr = do
         Left _ -> throwFatal "selector should not have interpolation"
         Right str -> return $ f str
 
-getPrimaryExprValAddr :: PrimaryExpr -> ValAddr -> TM (ValAddr, Int)
-getPrimaryExprValAddr pe addr = case pe of
+getPrimaryExprEvalAddr :: PrimaryExpr -> EvalAddr -> TM (EvalAddr, Int)
+getPrimaryExprEvalAddr pe addr = case pe of
   PrimExprIndex{} -> return (addr, 0)
   PrimExprSelector{} -> return (addr, 0)
   PrimExprSlice{} -> return (addr, 0)
@@ -579,15 +579,15 @@ getPrimaryExprValAddr pe addr = case pe of
     oid <- allocObjID
     return (addr `appendTermStep` mkObjectTermStep oid, oid)
 
-transIndex :: PrimaryExpr -> Expression -> ValAddr -> TM TrDataE
+transIndex :: PrimaryExpr -> Expression -> EvalAddr -> TM TrDataE
 transIndex pe e addr = do
-  (oprdAddr, oid) <- getPrimaryExprValAddr pe addr
+  (oprdAddr, oid) <- getPrimaryExprEvalAddr pe addr
   oprnd <- transPrimExpr pe oprdAddr
   (selAddr, selVGen) <- getSelCons addr (oprnd, True)
   sel <- transExpr e selAddr
   return $ selVGen oid sel
 
-getSelCons :: ValAddr -> (TrDataE, Bool) -> TM (ValAddr, Int -> TrDataE -> TrDataE)
+getSelCons :: EvalAddr -> (TrDataE, Bool) -> TM (EvalAddr, Int -> TrDataE -> TrDataE)
 getSelCons addr (oprnd, isIndex) = case trData oprnd of
   TrOp (Ref ref) -> do
     let n = length ref.selectors
@@ -620,7 +620,7 @@ getSelCons addr (oprnd, isIndex) = case trData oprnd of
       )
 
 -- | Evaluates the unary operator.
-transUnaryOp :: Token -> UnaryExpr -> ValAddr -> TM TrDataE
+transUnaryOp :: Token -> UnaryExpr -> EvalAddr -> TM TrDataE
 transUnaryOp op e addr = do
   r <- transUnaryExpr e (addr `appendTermStep` mkOpArgTermStep 0)
   return $ exprTrDataE op.tkLoc $ TrOp $ mkUnaryOp op.tkType (trDataEToVNode r)
@@ -629,7 +629,7 @@ transUnaryOp op e addr = do
 
 left is always before right.
 -}
-transBinary :: TokenType -> Expression -> Expression -> ValAddr -> TM TrDataE
+transBinary :: TokenType -> Expression -> Expression -> EvalAddr -> TM TrDataE
 -- disjunction is a special case because some of the operators can only be valid when used with disjunction.
 transBinary Disjoin e1 e2 addr = transDisj e1 e2 addr
 transBinary Unify e1 e2 addr = do
@@ -664,7 +664,7 @@ level or the next level, we can peek the left operand to determine the address f
 the current disjOp as an accumulator, which means we apply the right operand to the accumulating disjunction operator
 that is on the left side.
 -}
-transDisj :: Expression -> Expression -> ValAddr -> TM TrDataE
+transDisj :: Expression -> Expression -> EvalAddr -> TM TrDataE
 transDisj e1 e2 addr = do
   let parseTerm e eAddr = case e of
         Unary (UnaryOp (tkType -> Token.Multiply) se) -> do
@@ -754,7 +754,7 @@ data IdentLookupResult = IdentLookupResult
   , clausesDepth :: Int
   , identType :: RefIdentType
   , identFeat :: Feature
-  , identAddr :: ValAddr
+  , identAddr :: EvalAddr
   , resolvedIdentAddr :: ResolvedIdentAddr
   -- ^ The address difference to the top environment.
   -- When using, we must get the canonical address of the current address and subtract the resolvedIdentAddr to get the
@@ -868,14 +868,14 @@ lbRedeclErr name = do
   nameStr <- tshow name
   semanticError $ printf "%s redeclared in same scope" (show nameStr)
 
-inStructScope :: [Declaration] -> ValAddr -> TM a -> TM a
+inStructScope :: [Declaration] -> EvalAddr -> TM a -> TM a
 inStructScope decls addr action = do
   enterStructScope decls addr
   result <- action
   leaveStructScope
   return result
 
-enterStructScope :: [Declaration] -> ValAddr -> TM ()
+enterStructScope :: [Declaration] -> EvalAddr -> TM ()
 enterStructScope decls addr = do
   sid <- allocObjID
   modify' $ mapEnvs (pushBlock sid EnvTypeStruct addr)
@@ -931,14 +931,14 @@ For example, [X=constraint]: value, a new environment is created for evaluating 
             ^---------------------^
               scope for evaluating "value"
 -}
-inPatternCnstrValScope :: Maybe TextIndex -> ValAddr -> TM StructElemAdder -> TM StructElemAdder
+inPatternCnstrValScope :: Maybe TextIndex -> EvalAddr -> TM StructElemAdder -> TM StructElemAdder
 inPatternCnstrValScope aliasIdxM addr action = do
   enterPatternCnstrValScope aliasIdxM addr
   result <- action
   leavePatternCnstrValScope
   return result
 
-enterPatternCnstrValScope :: Maybe TextIndex -> ValAddr -> TM ()
+enterPatternCnstrValScope :: Maybe TextIndex -> EvalAddr -> TM ()
 enterPatternCnstrValScope aliasIdxM addr = do
   fid <- allocObjID
   modify' $ mapEnvs (pushBlock fid EnvTypeCnstr addr)
@@ -952,7 +952,7 @@ leavePatternCnstrValScope = do
   let (_, restEnvs) = popBlock envs
   modify' $ mapEnvs (const restEnvs)
 
-enterClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM ()
+enterClauseScope :: TextIndex -> Maybe TextIndex -> EvalAddr -> TM ()
 enterClauseScope iIdx jIdxM addr = do
   fid <- allocObjID
   modify' $ mapEnvs (pushBlock fid EnvTypeClause addr)
@@ -967,7 +967,7 @@ leaveClauseScope = do
   let (_, restEnvs) = popBlock envs
   modify' $ mapEnvs (const restEnvs)
 
-inClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM a -> TM a
+inClauseScope :: TextIndex -> Maybe TextIndex -> EvalAddr -> TM a -> TM a
 inClauseScope iIdx jIdxM addr action = do
   enterClauseScope iIdx jIdxM addr
   cid <- getEnvID
@@ -985,7 +985,7 @@ inClauseScope iIdx jIdxM addr action = do
 
 The reason is that clause arguments can be nested, and we want to keep the outer clause scope active.
 -}
-inSubClauseScope :: TextIndex -> Maybe TextIndex -> ValAddr -> TM a -> TM a
+inSubClauseScope :: TextIndex -> Maybe TextIndex -> EvalAddr -> TM a -> TM a
 inSubClauseScope iIdx jIdxM addr action = do
   enterClauseScope iIdx jIdxM addr
   action
@@ -1019,7 +1019,7 @@ data EnvType = EnvTypeStruct | EnvTypeClause | EnvTypeCnstr
 data Environment = Environment
   { envid :: !Int
   , envType :: EnvType
-  , envAddr :: ValAddr
+  , envAddr :: EvalAddr
   , names :: Map.Map TextIndex (RefIdentType, Bool)
   -- ^ names maps identifiers to
   --  (1) their addresses,
@@ -1078,7 +1078,7 @@ mkUniversalEnv = do
     Environment
       { envid = 0
       , envType = EnvTypeStruct
-      , envAddr = universalValAddr
+      , envAddr = universalEvalAddr
       , names = names
       , nameFeatMap = Map.mapWithKey (\k _ -> mkStringFeature k) names
       , clausesDepth = 0
@@ -1099,7 +1099,7 @@ getTopEnv (Environments envs) = case envs of
   [] -> Nothing
   (env : _) -> Just env
 
-pushBlock :: Int -> EnvType -> ValAddr -> Environments -> Environments
+pushBlock :: Int -> EnvType -> EvalAddr -> Environments -> Environments
 pushBlock envid typ addr e@(Environments envs) =
   let
     newClausesDepth =

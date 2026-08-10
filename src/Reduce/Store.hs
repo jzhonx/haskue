@@ -13,7 +13,7 @@ import Util.Trace (debugInstant)
 import Value
 import Value.Instances (posttravsVT, setSubVN)
 
-fetchValMust :: String -> ValAddr -> RM VNode
+fetchValMust :: String -> EvalAddr -> RM VNode
 fetchValMust hdr addr = do
   mv <- fetchValFromStore hdr addr
   case mv of
@@ -24,7 +24,7 @@ fetchValMust hdr addr = do
       debugInstant "fetchValMust" (object ["addr" .= addrT, "msg" .= hdr])
       throwFatal msg
 
-fetchValFromStore :: String -> ValAddr -> RM (Maybe VNode)
+fetchValFromStore :: String -> EvalAddr -> RM (Maybe VNode)
 fetchValFromStore hdr addr = do
   store <- vStore <$> getRMContext
   case addrIsVertex addr of
@@ -33,7 +33,7 @@ fetchValFromStore hdr addr = do
       addrT <- tshow addr
       throwFatal $ printf "%s cannot fetch value for non-suffix-irreducible addr: %s" hdr addrT
 
-lookupIdentFromStore :: Feature -> CanonicalAddr -> CanonicalAddr -> RM (Maybe (VNode, ValAddr))
+lookupIdentFromStore :: Feature -> CanonicalAddr -> CanonicalAddr -> RM (Maybe (VNode, EvalAddr))
 lookupIdentFromStore identf diff addr = do
   let targetScopeAddr = trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr addr)
       targetAddr = appendFeature targetScopeAddr identf
@@ -42,7 +42,7 @@ lookupIdentFromStore identf diff addr = do
     Just v -> return $ Just (v, targetAddr)
     Nothing -> return Nothing
 
-storeVal :: ValAddr -> VNode -> RM ()
+storeVal :: EvalAddr -> VNode -> RM ()
 storeVal addr v = do
   store <- vStore <$> getRMContext
   case addrIsVertex addr of
@@ -52,7 +52,7 @@ storeVal addr v = do
     Nothing -> return ()
 
 -- | Set the value to Unknown for the value with the address.
-setUnknownInStore :: ValAddr -> RM ()
+setUnknownInStore :: EvalAddr -> RM ()
 setUnknownInStore addr = do
   store <- vStore <$> getRMContext
   case addrIsVertex addr of
@@ -65,13 +65,13 @@ setUnknownInStore addr = do
       modifyRMContext $ \ctx -> ctx{vStore = newStore}
     Nothing -> return ()
 
-propValUp :: ValAddr -> VNode -> RM (Maybe (ValAddr, VNode))
+propValUp :: EvalAddr -> VNode -> RM (Maybe (EvalAddr, VNode))
 propValUp addr vn
-  | fileTopValAddr == addr = return Nothing
+  | fileTopEvalAddr == addr = return Nothing
   | otherwise = do
       let
         subF = fromJust $ lastSeg addr
-        parentAddr = fromJust $ initValAddr addr
+        parentAddr = fromJust $ initEvalAddr addr
       parentVN <- fetchValMust "propValUp" parentAddr
       let newParentVNM = setSubVN subF vn parentVN
       case newParentVNM of
@@ -131,7 +131,7 @@ It makes references that point to the value inside the target value point to the
 
 All the values in the copied value will be put into the store with their addresses.
 -}
-copyVTermNode :: ValAddr -> ValAddr -> VTermNode -> VTermNode
+copyVTermNode :: EvalAddr -> EvalAddr -> VTermNode -> VTermNode
 copyVTermNode srcAddr dstAddr =
   posttravsVT
     ( \_ x ->
@@ -146,7 +146,7 @@ copyVTermNode srcAddr dstAddr =
                 let rest = trimPrefixAddr srcAddr resIdentAddr
                     -- The destination address should be normalized to get rid of any constraint arguments.
                     normDstAddr = collapseToCanonicalForm dstAddr
-                    newIdentAddr = appendValAddr normDstAddr rest
+                    newIdentAddr = appendEvalAddr normDstAddr rest
                     newRef = ref{resolvedIdentAddr = ResolvedIdentFromTop newIdentAddr}
                  in VTOp (Ref newRef)
           _ -> x
