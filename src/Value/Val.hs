@@ -20,6 +20,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
 import Feature (
+  AddrSegment,
   EvalAddr,
   Selector (..),
   appendFeature,
@@ -50,10 +51,22 @@ class VTerm a where
   -- If there is no child, no mapping is performed and the original term is returned.
   vtmapM :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> a -> m a
 
+  -- | Get the immediate child selected by one address segment.
+  getChildVT :: AddrSegment -> a -> Maybe VTermNode
+  getChildVT _ _ = Nothing
+
+  -- | Replace an existing immediate child selected by one address segment.
+  --
+  -- This operation only reconstructs the containing term.  It does not update
+  -- 'VNode' versions.
+  setChildVT :: AddrSegment -> VTermNode -> a -> Maybe a
+  setChildVT _ _ _ = Nothing
+
 data VTermNode
   = VTVal Val
   | VTOp Op
   | VTVNode VNode
+  | VTConstraintSeq ConstraintSeq
   deriving (Generic)
 
 pattern IsRef :: Op -> Reference -> VTermNode

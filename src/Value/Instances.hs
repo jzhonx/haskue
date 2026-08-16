@@ -251,9 +251,20 @@ instance VTerm VTermNode where
   vtmapQ f p (VTVal vn) = vtmapQ f p vn
   vtmapQ f p (VTVNode v) = vtmapQ f p v
   vtmapQ f p (VTOp op) = vtmapQ f p op
+  vtmapQ f p (VTConstraintSeq constraints) = vtmapQ f p constraints
   vtmapM f p (VTVal vn) = VTVal <$> vtmapM f p vn
   vtmapM f p (VTVNode v) = VTVNode <$> vtmapM f p v
   vtmapM f p (VTOp op) = VTOp <$> vtmapM f p op
+  vtmapM f p (VTConstraintSeq constraints) = VTConstraintSeq <$> vtmapM f p constraints
+  getChildVT segment (VTVal value) = getChildVT segment value
+  getChildVT segment (VTVNode node) = getChildVT segment node
+  getChildVT segment (VTOp op) = getChildVT segment op
+  getChildVT segment (VTConstraintSeq constraints) = getChildVT segment constraints
+  setChildVT segment child (VTVal value) = VTVal <$> setChildVT segment child value
+  setChildVT segment child (VTVNode node) = VTVNode <$> setChildVT segment child node
+  setChildVT segment child (VTOp op) = VTOp <$> setChildVT segment child op
+  setChildVT segment child (VTConstraintSeq constraints) =
+    VTConstraintSeq <$> setChildVT segment child constraints
 
 instance VTerm Val where
   vtmapQ f p (VStruct s) = vtmapQ f p s
@@ -264,6 +275,14 @@ instance VTerm Val where
   vtmapM f p (VList l) = VList <$> vtmapM f p l
   vtmapM f p (VDisj d) = VDisj <$> vtmapM f p d
   vtmapM _ _ a = return a
+  getChildVT segment (VStruct struct) = getChildVT segment struct
+  getChildVT segment (VList list) = getChildVT segment list
+  getChildVT segment (VDisj disj) = getChildVT segment disj
+  getChildVT _ _ = Nothing
+  setChildVT segment child (VStruct struct) = VStruct <$> setChildVT segment child struct
+  setChildVT segment child (VList list) = VList <$> setChildVT segment child list
+  setChildVT segment child (VDisj disj) = VDisj <$> setChildVT segment child disj
+  setChildVT _ _ _ = Nothing
 
 instance VTerm VNode where
   vtmapQ f p v =
@@ -272,6 +291,46 @@ instance VTerm VNode where
     value' <- f p (VTVal $ value v)
     constraints' <- vtmapM f p (constraints v)
     return v{value = vtValOr id (value v) value', constraints = constraints'}
+  getChildVT segment node = case addrSegmentTag segment of
+    ConstraintTag -> getChildVT segment node.constraints
+    DynCnstrTag -> getChildVT segment node.constraints
+    OpArgTag -> getSoleOpChild segment node
+    ObjectTag -> getSoleOpChild segment node
+    _ -> getChildVT segment node.value
+  setChildVT segment child node = case addrSegmentTag segment of
+    ConstraintTag -> do
+      constraints' <- setChildVT segment child node.constraints
+      return node{constraints = constraints'}
+    DynCnstrTag -> do
+      constraints' <- setChildVT segment child node.constraints
+      return node{constraints = constraints'}
+    OpArgTag -> setSoleOpChild segment child node
+    ObjectTag -> setSoleOpChild segment child node
+    _ -> do
+      value' <- setChildVT segment child node.value
+      return node{value = value'}
+
+getSoleOpChild :: AddrSegment -> VNode -> Maybe VTermNode
+getSoleOpChild segment node = do
+  opConstraint <- soleOpConstraintVT node
+  getChildVT segment opConstraint.ocOp
+
+setSoleOpChild :: AddrSegment -> VTermNode -> VNode -> Maybe VNode
+setSoleOpChild segment child node = do
+  opConstraint <- soleOpConstraintVT node
+  op' <- setChildVT segment child opConstraint.ocOp
+  return
+    node
+      { constraints =
+          node.constraints
+            { static = Seq.singleton $ OpCnstr opConstraint{ocOp = op'}
+            }
+      }
+
+soleOpConstraintVT :: VNode -> Maybe OpConstraint
+soleOpConstraintVT node = case node.constraints.static of
+  OpCnstr opConstraint Seq.:<| Seq.Empty -> Just opConstraint
+  _ -> Nothing
 
 instance VTerm ConstraintsSet where
   vtmapQ f p c =
@@ -281,6 +340,27 @@ instance VTerm ConstraintsSet where
     static' <- mapMSeqWAddr (vtmapM f) (termStepToAddrSegment . mkRegCnstrTermStep) p (static c)
     dynamic' <- mapMIntMapWAddr (vtmapM f) (termStepToAddrSegment . mkDynCnstrTermStep) p (dynamic c)
     return c{static = static', dynamic = dynamic'}
+  getChildVT segment constraints = case addrSegmentTag segment of
+    ConstraintTag -> do
+      (_, constraint) <- lookupSeqBySegment ConstraintTag segment constraints.static
+      return $ constraintToVT constraint
+    DynCnstrTag -> do
+      key <- termStepIndexFor DynCnstrTag segment
+      VTConstraintSeq <$> IntMap.lookup key constraints.dynamic
+    _ -> Nothing
+  setChildVT segment child constraints = case addrSegmentTag segment of
+    ConstraintTag -> do
+      (index, original) <- lookupSeqBySegment ConstraintTag segment constraints.static
+      replacement <- replaceConstraintVT child original
+      return constraints{static = Seq.update index replacement constraints.static}
+    DynCnstrTag -> do
+      key <- termStepIndexFor DynCnstrTag segment
+      _ <- IntMap.lookup key constraints.dynamic
+      case child of
+        VTConstraintSeq replacement ->
+          return constraints{dynamic = IntMap.insert key replacement constraints.dynamic}
+        _ -> Nothing
+    _ -> Nothing
 
 instance VTerm Constraint where
   vtmapQ f p c = case c of
@@ -302,6 +382,31 @@ instance VTerm Constraint where
 instance VTerm ConstraintSeq where
   vtmapQ f = foldrSeqWAddrConcat (vtmapQ f) (termStepToAddrSegment . mkRegCnstrTermStep)
   vtmapM f = mapMSeqWAddr (vtmapM f) (termStepToAddrSegment . mkRegCnstrTermStep)
+  getChildVT segment constraints = do
+    (_, constraint) <- lookupSeqBySegment ConstraintTag segment constraints
+    return $ constraintToVT constraint
+  setChildVT segment child constraints = do
+    (index, original) <- lookupSeqBySegment ConstraintTag segment constraints
+    replacement <- replaceConstraintVT child original
+    return $ Seq.update index replacement constraints
+
+constraintToVT :: Constraint -> VTermNode
+constraintToVT constraint = case constraint of
+  ValCnstr valConstraint -> VTVal valConstraint.vcVal
+  OpCnstr opConstraint -> VTOp opConstraint.ocOp
+  StructEmbedCnstr constraints -> VTConstraintSeq constraints
+
+replaceConstraintVT :: VTermNode -> Constraint -> Maybe Constraint
+replaceConstraintVT replacement original = case (replacement, original) of
+  (VTVal value, ValCnstr valConstraint) ->
+    Just $ ValCnstr valConstraint{vcVal = value}
+  (VTOp op, OpCnstr opConstraint) ->
+    Just $ OpCnstr opConstraint{ocOp = op}
+  (VTVal value, OpCnstr opConstraint) ->
+    Just $ ValCnstr ValConstraint{vcLoc = opConstraint.ocLoc, vcVal = value}
+  (VTConstraintSeq constraints, StructEmbedCnstr _) ->
+    Just $ StructEmbedCnstr constraints
+  _ -> Nothing
 
 instance VTerm Struct where
   vtmapQ f p s =
@@ -343,6 +448,61 @@ instance VTerm Struct where
         }
    where
     nf = appendFeature p
+  getChildVT segment struct = case addrSegmentTag segment of
+    StringTag -> do
+      feature <- addrSegmentToFeature segment
+      field <- lookupStructField (getTextIndexFromFeature feature) struct
+      return $ VTVNode field.ssfValue
+    LetTag -> do
+      feature <- addrSegmentToFeature segment
+      VTVNode <$> lookupStructLet (getTextIndexFromFeature feature) struct
+    PatternTag -> do
+      step <- addrSegmentToTermStep segment
+      let (identifier, _) = getPatternIndexesFromTermStep step
+      constraint <- struct.stcCnstrs IntMap.!? identifier
+      getChildVT segment constraint
+    DynFieldTag -> do
+      step <- addrSegmentToTermStep segment
+      let (identifier, _) = getDynFieldIndexesFromTermStep step
+      field <- struct.stcDynFields IntMap.!? identifier
+      getChildVT segment field
+    EmbedValueTag -> VTVal <$> struct.stcEmbedVal
+    _ -> Nothing
+  setChildVT segment child struct = case addrSegmentTag segment of
+    StringTag -> do
+      feature <- addrSegmentToFeature segment
+      let key = getTextIndexFromFeature feature
+      field <- lookupStructField key struct
+      case child of
+        VTVNode replacement ->
+          return struct{stcFields = Map.insert key field{ssfValue = replacement} struct.stcFields}
+        _ -> Nothing
+    LetTag -> do
+      feature <- addrSegmentToFeature segment
+      let key = getTextIndexFromFeature feature
+      _ <- lookupStructLet key struct
+      case child of
+        VTVNode replacement ->
+          return struct{stcBindings = Map.insert key replacement struct.stcBindings}
+        _ -> Nothing
+    PatternTag -> do
+      step <- addrSegmentToTermStep segment
+      let (identifier, _) = getPatternIndexesFromTermStep step
+      constraint <- struct.stcCnstrs IntMap.!? identifier
+      replacement <- setChildVT segment child constraint
+      return struct{stcCnstrs = IntMap.insert identifier replacement struct.stcCnstrs}
+    DynFieldTag -> do
+      step <- addrSegmentToTermStep segment
+      let (identifier, _) = getDynFieldIndexesFromTermStep step
+      field <- struct.stcDynFields IntMap.!? identifier
+      replacement <- setChildVT segment child field
+      return struct{stcDynFields = IntMap.insert identifier replacement struct.stcDynFields}
+    EmbedValueTag -> do
+      _ <- struct.stcEmbedVal
+      case child of
+        VTVal replacement -> return struct{stcEmbedVal = Just replacement}
+        _ -> Nothing
+    _ -> Nothing
 
 instance VTerm Field where
   vtmapQ f p field = [f p (VTVNode $ ssfValue field)]
@@ -361,6 +521,28 @@ instance VTerm DynamicField where
     return df{dsfLabel = dsfLabel', dsfValue = dsfValue'}
    where
     nf i = appendTermStep p (mkDynFieldTermStep (dsfID df) i)
+  getChildVT segment field
+    | addrSegmentTag segment == DynFieldTag = do
+        step <- addrSegmentToTermStep segment
+        let (identifier, selector) = getDynFieldIndexesFromTermStep step
+        if identifier /= field.dsfID
+          then Nothing
+          else case selector of
+            0 -> Just $ VTVNode field.dsfLabel
+            1 -> Just $ VTConstraintSeq field.dsfValue
+            _ -> Nothing
+    | otherwise = Nothing
+  setChildVT segment child field
+    | addrSegmentTag segment == DynFieldTag = do
+        step <- addrSegmentToTermStep segment
+        let (identifier, selector) = getDynFieldIndexesFromTermStep step
+        if identifier /= field.dsfID
+          then Nothing
+          else case (selector, child) of
+            (0, VTVNode label) -> Just field{dsfLabel = label}
+            (1, VTConstraintSeq constraints) -> Just field{dsfValue = constraints}
+            _ -> Nothing
+    | otherwise = Nothing
 
 instance VTerm StructCnstr where
   vtmapQ f p cnstr =
@@ -373,6 +555,28 @@ instance VTerm StructCnstr where
     return cnstr{scsPattern = scsPattern', scsValue = scsValue'}
    where
     nf i = appendTermStep p (mkPatternTermStep (scsID cnstr) i)
+  getChildVT segment constraint
+    | addrSegmentTag segment == PatternTag = do
+        step <- addrSegmentToTermStep segment
+        let (identifier, selector) = getPatternIndexesFromTermStep step
+        if identifier /= constraint.scsID
+          then Nothing
+          else case selector of
+            0 -> Just $ VTVNode constraint.scsPattern
+            1 -> Just $ VTConstraintSeq constraint.scsValue
+            _ -> Nothing
+    | otherwise = Nothing
+  setChildVT segment child constraint
+    | addrSegmentTag segment == PatternTag = do
+        step <- addrSegmentToTermStep segment
+        let (identifier, selector) = getPatternIndexesFromTermStep step
+        if identifier /= constraint.scsID
+          then Nothing
+          else case (selector, child) of
+            (0, VTVNode patternNode) -> Just constraint{scsPattern = patternNode}
+            (1, VTConstraintSeq constraints) -> Just constraint{scsValue = constraints}
+            _ -> Nothing
+    | otherwise = Nothing
 
 instance VTerm List where
   vtmapQ f p lst =
@@ -383,6 +587,30 @@ instance VTerm List where
     store' <- mapMVectorWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkListStoreIdxTermStep) p (store lst)
     final' <- mapMVectorWAddr (adaptVTMapMOnVal f) (featureToAddrSegment . mkListIdxFeature) p (final lst)
     return lst{store = store', final = final'}
+  getChildVT segment list = case addrSegmentTag segment of
+    ListStoreIdxTag -> do
+      step <- addrSegmentToTermStep segment
+      VTVNode <$> list.store V.!? termStepIndex step
+    ListIdxTag -> do
+      feature <- addrSegmentToFeature segment
+      VTVal <$> list.final V.!? featureIndex feature
+    _ -> Nothing
+  setChildVT segment child list = case addrSegmentTag segment of
+    ListStoreIdxTag -> do
+      step <- addrSegmentToTermStep segment
+      let index = termStepIndex step
+      _ <- list.store V.!? index
+      case child of
+        VTVNode replacement -> return list{store = list.store V.// [(index, replacement)]}
+        _ -> Nothing
+    ListIdxTag -> do
+      feature <- addrSegmentToFeature segment
+      let index = featureIndex feature
+      _ <- list.final V.!? index
+      case child of
+        VTVal replacement -> return list{final = list.final V.// [(index, replacement)]}
+        _ -> Nothing
+    _ -> Nothing
 
 instance VTerm Disj where
   vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts dj)
@@ -390,6 +618,15 @@ instance VTerm Disj where
   vtmapM f p d = do
     dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts d)
     return d{dsjDisjuncts = dsjDisjuncts'}
+  getChildVT segment disj = do
+    (_, value) <- lookupSeqBySegment DisjTag segment disj.dsjDisjuncts
+    return $ VTVal value
+  setChildVT segment child disj = do
+    (index, _) <- lookupSeqBySegment DisjTag segment disj.dsjDisjuncts
+    case child of
+      VTVal replacement ->
+        return disj{dsjDisjuncts = Seq.update index replacement disj.dsjDisjuncts}
+      _ -> Nothing
 
 instance VTerm Op where
   vtmapQ f p (RegOp rop) = vtmapQ f p rop
@@ -407,6 +644,20 @@ instance VTerm Op where
   vtmapM f p (DisjOp d) = DisjOp <$> vtmapM f p d
   vtmapM f p (Itp itp) = Itp <$> vtmapM f p itp
   vtmapM f p (FCall func) = FCall <$> vtmapM f p func
+  getChildVT segment (RegOp regular) = getChildVT segment regular
+  getChildVT segment (Ref reference) = getChildVT segment reference
+  getChildVT segment (VSelect select) = getChildVT segment select
+  getChildVT segment (Compreh comprehension) = getChildVT segment comprehension
+  getChildVT segment (DisjOp disjoin) = getChildVT segment disjoin
+  getChildVT segment (Itp interpolation) = getChildVT segment interpolation
+  getChildVT segment (FCall function) = getChildVT segment function
+  setChildVT segment child (RegOp regular) = RegOp <$> setChildVT segment child regular
+  setChildVT segment child (Ref reference) = Ref <$> setChildVT segment child reference
+  setChildVT segment child (VSelect select) = VSelect <$> setChildVT segment child select
+  setChildVT segment child (Compreh comprehension) = Compreh <$> setChildVT segment child comprehension
+  setChildVT segment child (DisjOp disjoin) = DisjOp <$> setChildVT segment child disjoin
+  setChildVT segment child (Itp interpolation) = Itp <$> setChildVT segment child interpolation
+  setChildVT segment child (FCall function) = FCall <$> setChildVT segment child function
 
 appendMutArgF :: EvalAddr -> Int -> EvalAddr
 appendMutArgF p i = appendTermStep p (mkOpArgTermStep i)
@@ -416,12 +667,20 @@ instance VTerm RegularOp where
   vtmapM f p rop = do
     ropArgs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (ropArgs rop)
     return rop{ropArgs = ropArgs'}
+  getChildVT segment regular = getVNodeSeqChild OpArgTag segment regular.ropArgs
+  setChildVT segment child regular = do
+    args' <- setVNodeSeqChild OpArgTag segment child regular.ropArgs
+    return regular{ropArgs = args'}
 
 instance VTerm Reference where
   vtmapQ f p ref = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (selectors ref)
   vtmapM f p ref = do
     selectors' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (selectors ref)
     return ref{selectors = selectors'}
+  getChildVT segment reference = getVNodeSeqChild OpArgTag segment reference.selectors
+  setChildVT segment child reference = do
+    selectors' <- setVNodeSeqChild OpArgTag segment child reference.selectors
+    return reference{selectors = selectors'}
 
 instance VTerm ValueSelect where
   vtmapQ f p (ValueSelect i b xs _) =
@@ -431,6 +690,26 @@ instance VTerm ValueSelect where
     b' <- adaptVTMapMOnVNode f (appendTermStep p (mkObjectTermStep i)) b
     xs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p xs
     return $ ValueSelect i b' xs' typs
+  getChildVT segment select = case addrSegmentTag segment of
+    ObjectTag -> do
+      identifier <- termStepIndexFor ObjectTag segment
+      if identifier == select.bvID
+        then Just $ VTVNode select.base
+        else Nothing
+    OpArgTag -> getVNodeSeqChild OpArgTag segment select.iSelectors
+    _ -> Nothing
+  setChildVT segment child select = case addrSegmentTag segment of
+    ObjectTag -> do
+      identifier <- termStepIndexFor ObjectTag segment
+      if identifier /= select.bvID
+        then Nothing
+        else case child of
+          VTVNode replacement -> Just select{base = replacement}
+          _ -> Nothing
+    OpArgTag -> do
+      selectors' <- setVNodeSeqChild OpArgTag segment child select.iSelectors
+      return select{iSelectors = selectors'}
+    _ -> Nothing
 
 instance VTerm Comprehension where
   vtmapQ f p c =
@@ -447,6 +726,18 @@ instance VTerm Comprehension where
         )
         c.args
     return c{args = args'}
+  getChildVT segment comprehension = do
+    (_, argument) <- lookupSeqBySegment ConstraintTag segment comprehension.args
+    return $ VTVNode $ getValFromIterClause argument
+  setChildVT segment child comprehension = do
+    (index, argument) <- lookupSeqBySegment ConstraintTag segment comprehension.args
+    case child of
+      VTVNode replacement ->
+        return
+          comprehension
+            { args = Seq.update index (setValInIterClause replacement argument) comprehension.args
+            }
+      _ -> Nothing
 
 instance VTerm DisjoinOp where
   vtmapQ f p d =
@@ -463,18 +754,58 @@ instance VTerm DisjoinOp where
         )
         (djoTerms djo)
     return djo{djoTerms = djoTerms'}
+  getChildVT segment disjoin = do
+    (_, term) <- lookupSeqBySegment OpArgTag segment disjoin.djoTerms
+    return $ VTVNode term.dstValue
+  setChildVT segment child disjoin = do
+    (index, term) <- lookupSeqBySegment OpArgTag segment disjoin.djoTerms
+    case child of
+      VTVNode replacement ->
+        return disjoin{djoTerms = Seq.update index term{dstValue = replacement} disjoin.djoTerms}
+      _ -> Nothing
 
 instance VTerm Interpolation where
   vtmapQ f p itp = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (itpExprs itp)
   vtmapM f p itp = do
     itpExprs' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (itpExprs itp)
     return itp{itpExprs = itpExprs'}
+  getChildVT segment interpolation = getVNodeSeqChild OpArgTag segment interpolation.itpExprs
+  setChildVT segment child interpolation = do
+    expressions' <- setVNodeSeqChild OpArgTag segment child interpolation.itpExprs
+    return interpolation{itpExprs = expressions'}
 
 instance VTerm FuncCall where
   vtmapQ f p func = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (fnFrame func)
   vtmapM f p func = do
     fnFrame' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkOpArgTermStep) p (fnFrame func)
     return func{fnFrame = fnFrame'}
+  getChildVT segment function = getVNodeSeqChild OpArgTag segment function.fnFrame
+  setChildVT segment child function = do
+    frame' <- setVNodeSeqChild OpArgTag segment child function.fnFrame
+    return function{fnFrame = frame'}
+
+getVNodeSeqChild :: SegmentTag -> AddrSegment -> Seq.Seq VNode -> Maybe VTermNode
+getVNodeSeqChild expectedTag segment children = do
+  (_, child) <- lookupSeqBySegment expectedTag segment children
+  return $ VTVNode child
+
+setVNodeSeqChild :: SegmentTag -> AddrSegment -> VTermNode -> Seq.Seq VNode -> Maybe (Seq.Seq VNode)
+setVNodeSeqChild expectedTag segment child children = do
+  (index, _) <- lookupSeqBySegment expectedTag segment children
+  case child of
+    VTVNode replacement -> Just $ Seq.update index replacement children
+    _ -> Nothing
+
+lookupSeqBySegment :: SegmentTag -> AddrSegment -> Seq.Seq a -> Maybe (Int, a)
+lookupSeqBySegment expectedTag segment values = do
+  index <- termStepIndexFor expectedTag segment
+  value <- values Seq.!? index
+  return (index, value)
+
+termStepIndexFor :: SegmentTag -> AddrSegment -> Maybe Int
+termStepIndexFor expectedTag segment
+  | addrSegmentTag segment == expectedTag = termStepIndex <$> addrSegmentToTermStep segment
+  | otherwise = Nothing
 
 pretravsVTM :: (Monad m) => (EvalAddr -> VTermNode -> m VTermNode) -> EvalAddr -> VTermNode -> m VTermNode
 pretravsVTM f p x = do

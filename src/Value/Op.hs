@@ -44,6 +44,32 @@ getOpArgs (DisjOp d) = fmap dstValue (djoTerms d)
 getOpArgs (Itp itp) = itpExprs itp
 getOpArgs (FCall f) = fnFrame f
 
+{- | Update one of the child nodes exposed by 'getOpArgs'.
+
+Returns 'Nothing' when the index is out of bounds.  Every constructor keeps
+its non-argument metadata unchanged.
+-}
+updateOpArg :: Int -> VNode -> Op -> Maybe Op
+updateOpArg index child op = case op of
+  RegOp regular -> RegOp . (\args' -> regular{ropArgs = args'}) <$> updateSeq index child regular.ropArgs
+  Ref ref -> Ref . (\args' -> ref{selectors = args'}) <$> updateSeq index child ref.selectors
+  VSelect select -> VSelect . (\args' -> select{iSelectors = args'}) <$> updateSeq index child select.iSelectors
+  Compreh compreh -> do
+    argument <- compreh.args Seq.!? index
+    let argument' = setValInIterClause child argument
+    return $ Compreh compreh{args = Seq.update index argument' compreh.args}
+  DisjOp disjoin -> do
+    term <- disjoin.djoTerms Seq.!? index
+    let term' = term{dstValue = child}
+    return $ DisjOp disjoin{djoTerms = Seq.update index term' disjoin.djoTerms}
+  Itp interpolation -> Itp . (\args' -> interpolation{itpExprs = args'}) <$> updateSeq index child interpolation.itpExprs
+  FCall function -> FCall . (\args' -> function{fnFrame = args'}) <$> updateSeq index child function.fnFrame
+
+updateSeq :: Int -> a -> Seq.Seq a -> Maybe (Seq.Seq a)
+updateSeq index child children = do
+  _ <- children Seq.!? index
+  return $ Seq.update index child children
+
 -- | RegularOp is a tree node that represents a function.
 data RegularOp = RegularOp
   { ropName :: String

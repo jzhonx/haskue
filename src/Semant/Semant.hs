@@ -94,6 +94,11 @@ trDataEToVNode :: TrDataE -> VNode
 trDataEToVNode d =
   let v = case trData d of
         TrValue x -> mkValCnstrVN d.trLoc x
+        -- TODO: Operation children are currently translated relative to the
+        -- operation address (A/fa_i), but mkOpVN stores the operation as
+        -- static constraint 0 and reduction later visits it at A/c_0/fa_i.
+        -- Align semantic translation and constraint traversal so every
+        -- operation argument has one canonical EvalAddr.
         TrOp op -> mkOpVN d.trLoc op
         TrCnstrs cs -> emptyVNode{constraints = emptyConstraintsSet{static = cs}}
         TrStructEmbed cs -> emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (StructEmbedCnstr cs)}}

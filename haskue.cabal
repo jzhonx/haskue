@@ -24,6 +24,7 @@ library
         Reduce.Comprehension,
         Reduce.Core,
         Reduce.Disjunction,
+        Reduce.EvalTree,
         Reduce.Monad,
         Reduce.Finalize,
         Reduce.Op,
@@ -142,8 +143,10 @@ Test-Suite haskue-unit-test
   hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
+    EvalTreeTest,
     ScannerTest,
     SpecTest,
+    VTermTest,
   build-depends:
         base,
         tasty >= 0.7,
@@ -156,6 +159,7 @@ Test-Suite haskue-unit-test
         directory,
         text,
         aeson,
+        vector,
   default-language: Haskell2010
   ghc-options: -Wall -Wpartial-fields
   default-extensions:
