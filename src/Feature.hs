@@ -257,27 +257,8 @@ mkDisjTermStep i = mkTermStep i DisjTag
 mkOpArgTermStep :: Int -> TermStep
 mkOpArgTermStep index = mkTermStep index OpArgTag
 
-data CnstrType
-  = RegCnstrT
-  | PatternCnstrT
-  deriving (Eq, Ord, Enum)
-
-mkConstraintTermStep :: Int -> CnstrType -> Int -> TermStep
-mkConstraintTermStep i cnstrType selector = mkTermStep combined ConstraintTag
- where
-  -- The bitmap:
-  --  0-18: index
-  --  19-21: cnstrType
-  --  22-23: selector
-  -- The constrType has 8 possible values, so we can use 3 bits to store it.
-  cnstrTypeBits = fromEnum cnstrType `shiftL` 19
-  -- Selector has maximum 4 possible values, so we can use 2 bits to store it.
-  selectorBits = selector .&. 0x00000003 `shiftL` 22
-  shiftedSelector = selectorBits .|. cnstrTypeBits
-  combined = i .|. shiftedSelector
-
 mkRegCnstrTermStep :: Int -> TermStep
-mkRegCnstrTermStep i = mkConstraintTermStep i RegCnstrT 0
+mkRegCnstrTermStep i = mkTermStep i ConstraintTag
 
 {- | The first is the ObjectID, the second indicates the i-th in the dynamic field.
 
