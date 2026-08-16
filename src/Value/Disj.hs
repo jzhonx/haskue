@@ -15,8 +15,8 @@ It is only created during reducing a disjunction operation (DisjOp).
 data Disj = Disj
   { dsjDefIndexes :: [Int]
   -- ^ Default disjunct indices.
-  , dsjDisjuncts :: Seq.Seq Val
-  -- ^ Disjuncts should not have values of type Disj or Bottom.
+  , dsjDisjuncts :: Seq.Seq VNode
+  -- ^ Disjunct nodes should not have values of type Disj or Bottom.
   -- It should have at least two disjuncts.
   -- It is a result of reducing a disjunction operation. Each time a reduction is done, a new disjunct is created. It
   -- means that the dependency should be cleared before reducing a disjunction operation.
@@ -24,7 +24,7 @@ data Disj = Disj
   deriving (Generic)
 
 -- | Get the default disjuncts from the disjunction.
-defDisjunctsFromDisj :: Disj -> [Val]
+defDisjunctsFromDisj :: Disj -> [VNode]
 defDisjunctsFromDisj (Disj{dsjDefIndexes = indexes, dsjDisjuncts = disjuncts}) =
   map (\i -> disjuncts `Seq.index` i) indexes
 

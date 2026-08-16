@@ -311,7 +311,7 @@ rtrDisjDefVal d =
   let dfs = defDisjunctsFromDisj d
    in if
         | null dfs -> Nothing
-        | length dfs == 1 -> Just (head dfs)
+        | length dfs == 1 -> Just (head dfs).value
         | otherwise -> Just $ VDisj $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
 
 -- = Helpers =

@@ -112,8 +112,8 @@ buildValExprExt t = case t of
             (toList l.store)
     return $ AST.litCons $ AST.LitList $ AST.ListLit emptyLoc (AST.EmbeddingList ls Nothing) emptyLoc
   VDisj dj
-    | null (rtrDisjDefVal dj) -> disjunctsToAST (toList $ dsjDisjuncts dj)
-    | otherwise -> disjunctsToAST (defDisjunctsFromDisj dj)
+    | null (rtrDisjDefVal dj) -> disjunctsToAST (map value $ toList $ dsjDisjuncts dj)
+    | otherwise -> disjunctsToAST (map value $ defDisjunctsFromDisj dj)
   VUnknown -> do
     isDebug <- asks isDebug
     if isDebug

@@ -13,7 +13,7 @@ import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Feature
-import {-# SOURCE #-} Reduce.Core (reduceVal)
+import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Monad (
   RM,
   throwFatal,
@@ -29,13 +29,13 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
-import Value.Export.Debug (termsRepToJSONWithAddr, valToStringTermsRep, vnToStringTermsRep)
+import Value.Export.Debug (termsRepToJSONWithAddr, vnToStringTermsRep)
 
 reduceDisj :: EvalAddr -> Disj -> RM Val
 reduceDisj addr d = traceSpanNoPreRM "reduceDisj" addr $ do
   -- We have to reduce all disjuncts because some of the disjuncts might be created by unifying, which could still have
   -- unknown value.
-  d' <- vtmapM (applyAddrFOnVal reduceVal) addr d
+  d' <- vtmapM (applyAddrFOnVN reduce) addr d
   normalizeDisj addr d'
 
 resolveDisjOp :: DisjoinOp -> EvalAddr -> RM Val
@@ -50,7 +50,7 @@ resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
     "resolveDisjOp"
     addr
     ( do
-        disjunctTs <- mapM valToStringTermsRep disjuncts
+        disjunctTs <- mapM vnToStringTermsRep disjuncts
         msprintfS "disjuncts: %s" [packFmtA disjunctTs]
     )
   if null disjuncts
@@ -87,16 +87,16 @@ normalizeDisj addr d = traceSpanRM
     if
       | null final.dsjDisjuncts ->
           let
-            unknowns = filter (\case VUnknown -> True; _ -> False) (toList flattened.dsjDisjuncts)
-            bottoms = filter (isJust . rtrBottom) (toList flattened.dsjDisjuncts)
+            unknowns = filter (\case VNode{value = VUnknown} -> True; _ -> False) (toList flattened.dsjDisjuncts)
+            bottoms = filter (isJust . rtrBottom . value) (toList flattened.dsjDisjuncts)
            in
             if
               | length unknowns == length flattened.dsjDisjuncts -> return VUnknown
-              | not (null bottoms) -> return $ head bottoms
+              | not (null bottoms) -> return $ (head bottoms).value
               | otherwise ->
                   throwFatal $ printf "normalizeDisj: no disjuncts left in %s" (show flattened.dsjDisjuncts)
       -- When there is only one disjunct and the disjunct is not default, the disjunction is converted to the disjunct.
-      | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ head (toList final.dsjDisjuncts)
+      | length final.dsjDisjuncts == 1 && null (dsjDefIndexes final) -> return $ (head $ toList final.dsjDisjuncts).value
       | otherwise -> return $ VDisj final
 
 {- | Flatten the disjunction.
@@ -125,7 +125,7 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
     "flattenDisjunction"
     emptyEvalAddr
     ( do
-        reps <- mapM valToStringTermsRep (toList disjuncts)
+        reps <- mapM vnToStringTermsRep (toList disjuncts)
         return $ printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes)
     )
 
@@ -137,7 +137,7 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
   -- Suppose we are processing the ith disjunct, and we have accumulated the disjuncts xs.
   -- If the ith disjunct is not a disjunction, then we can just add it to the disjuncts. We also need to add the index
   -- to the default indexes if it belongs to the default disjunction.
-  flatten :: ([Int], [Val]) -> (Int, Val) -> RM ([Int], [Val])
+  flatten :: ([Int], [VNode]) -> (Int, VNode) -> RM ([Int], [VNode])
   flatten (accIs, accDs) (origIdx, t) = do
     debugInstStr
       "flattenDisjunction"
@@ -146,7 +146,7 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
           vT <- tshow t
           return $ printf "At %s, val: %s" (show origIdx) (show vT)
       )
-    case rtrDisj t of
+    case rtrDisj t.value of
       Just sub -> do
         Disj{dsjDefIndexes = subDefIndexes, dsjDisjuncts = subDisjs} <- flattenDisjunction sub
         let
@@ -198,24 +198,24 @@ rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts})
   defValues = map (disjuncts `Seq.index`) dfIdxes
   origDefIdxesSet = Set.fromList dfIdxes
 
-  discardDisjunct = isJust . rtrBottom
+  discardDisjunct = isJust . rtrBottom . value
 
-  go :: ([Int], [Val]) -> (Int, Val) -> RM ([Int], [Val])
+  go :: ([Int], [VNode]) -> (Int, VNode) -> RM ([Int], [VNode])
   go (accIs, accDisjs) (idx, v) = do
-    case v of
+    case v.value of
       -- FIXME: is the following case possible?
-      VStruct Struct{stcEmbedVal = Just ev} -> updateDisjuncts (accIs, accDisjs) (idx, ev)
+      VStruct Struct{stcEmbedVal = Just ev} -> updateDisjuncts (accIs, accDisjs) (idx, v{value = ev})
       _ -> updateDisjuncts (accIs, accDisjs) (idx, v)
 
-  updateDisjuncts :: ([Int], [Val]) -> (Int, Val) -> RM ([Int], [Val])
+  updateDisjuncts :: ([Int], [VNode]) -> (Int, VNode) -> RM ([Int], [VNode])
   updateDisjuncts (accIs, accXs) (idx, x) = do
     let
       -- A disjunct is new if it is not in the accumulated disjuncts and it is not a Unknown disjunct.
       -- A Unknown disjunct indicates it is still unknown.
-      isNewDisj = not (x `elem` accXs) && x /= VUnknown
+      isNewDisj = not (x `elem` accXs) && x.value /= VUnknown
       -- If the disjunct is equal to the default value. Note that it does not mean the disjunct is the original default
       -- value.
-      isValEqDef = x `elem` defValues && x /= VUnknown
+      isValEqDef = x `elem` defValues && x.value /= VUnknown
       -- The disjunct is kept if all of the following conditions are met:
       -- 1. it is not a bottom disjunct.
       -- 2. it is a new disjunct
@@ -235,7 +235,7 @@ rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts})
       addr
       ( do
           xT <- tshow x
-          xRep <- valToStringTermsRep x
+          xRep <- vnToStringTermsRep x
           return $
             printf
               "At %s, disjunct: %s, isDiscarded: %s isValEqDef: %s, keepDisjunct: %s, isDefIndex: %s, v: %s"
@@ -260,7 +260,7 @@ M1: *⟨v⟩    => ⟨v, v⟩     introduce identical default for marked term
 M2: *⟨v, d⟩ => ⟨v, d⟩     keep existing defaults for marked term
 M3:  ⟨v, d⟩ => ⟨v⟩        strip existing defaults from unmarked term
 -}
-procMarkedTerms :: [DisjTerm] -> RM [Val]
+procMarkedTerms :: [DisjTerm] -> RM [VNode]
 procMarkedTerms terms = do
   -- disjoin operation allows incompleteness.
   let hasMarked = any dstMarked terms
@@ -274,32 +274,41 @@ procMarkedTerms terms = do
   return $
     foldr
       ( \term accDisjuncts ->
-          let v = value $ dstValue term
-           in if
-                -- Apply Rule M1 and M2
-                | hasMarked && dstMarked term ->
-                    VDisj
-                      ( maybe
-                          -- Rule M1
-                          (emptyDisj{dsjDefIndexes = [0], dsjDisjuncts = Seq.singleton v})
-                          ( \d ->
-                              if null (dsjDefIndexes d)
-                                -- Rule M1
-                                then d{dsjDefIndexes = [0 .. length (dsjDisjuncts d)]}
-                                -- Rule M2
-                                else d
+          let
+            node = dstValue term
+            v = node.value
+           in
+            if
+              -- Apply Rule M1 and M2
+              | hasMarked && dstMarked term ->
+                  node
+                    { value =
+                        VDisj
+                          ( maybe
+                              -- Rule M1
+                              (emptyDisj{dsjDefIndexes = [0], dsjDisjuncts = Seq.singleton node})
+                              ( \d ->
+                                  if null (dsjDefIndexes d)
+                                    -- Rule M1
+                                    then d{dsjDefIndexes = [0 .. length (dsjDisjuncts d)]}
+                                    -- Rule M2
+                                    else d
+                              )
+                              (rtrDisj v)
                           )
+                    }
+                    : accDisjuncts
+              -- Apply Rule M0 and M3
+              | hasMarked ->
+                  node
+                    { value =
+                        maybe
+                          v
+                          (\d -> VDisj $ d{dsjDefIndexes = []})
                           (rtrDisj v)
-                      )
-                      : accDisjuncts
-                -- Apply Rule M0 and M3
-                | hasMarked ->
-                    maybe
-                      v
-                      (\d -> VDisj $ d{dsjDefIndexes = []})
-                      (rtrDisj v)
-                      : accDisjuncts
-                | otherwise -> v : accDisjuncts
+                    }
+                    : accDisjuncts
+              | otherwise -> node : accDisjuncts
       )
       []
       terms

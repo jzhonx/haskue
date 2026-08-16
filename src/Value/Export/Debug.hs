@@ -233,7 +233,7 @@ valToTermsRep vn opt = case vn of
         fields <- valPairsToTermRepList (sfields ++ ffields) opt
         return $ consRep ([], [], fields)
   VDisj d ->
-    let djFields = zipWith (\j x -> (show $ mkDisjTermStep j, mempty, mkValVN x)) [0 ..] (toList $ dsjDisjuncts d)
+    let djFields = zipWith (\j x -> (show $ mkDisjTermStep j, mempty, x)) [0 ..] (toList $ dsjDisjuncts d)
      in do
           fields <- valPairsToTermRepList djFields opt
           return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)

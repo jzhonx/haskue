@@ -48,7 +48,7 @@ closeConcrete a =
     -- This is the current behavior of close for non-struct values.
     -- If the value is a disjunction, we do not close the disjunction itself.
     VDisj dj -> case defDisjunctsFromDisj dj of
-      [x] -> x
+      [x] -> x.value
       _ -> VUnknown
     _ -> mkBottomVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
 
@@ -56,7 +56,7 @@ or :: [Val] -> EvalAddr -> RM Val
 or [arg] addr = case rtrList arg of
   Just vs -> do
     let vals = V.toList vs.final
-        dj = emptyDisj{dsjDisjuncts = Seq.fromList vals}
+        dj = emptyDisj{dsjDisjuncts = Seq.fromList $ map mkValVN vals}
     reduceVal addr (VDisj dj)
   _ -> return arg
 or args _ = return $ mkBottomVal $ printf "or function expects exactly 1 argument, got %d" (length args)

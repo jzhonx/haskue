@@ -19,6 +19,7 @@ tests =
     , testCase "struct exposes VNode, Val, and constraint-sequence children" testStructChildren
     , testCase "operations use their structural segment tags" testOpChildren
     , testCase "VNode forwards direct operation children through its sole constraint" testDirectOpChildren
+    , testCase "disjunction exposes versioned VNode children" testDisjChildren
     , testCase "missing and mismatched children are rejected" testInvalidChildren
     ]
 
@@ -90,6 +91,14 @@ testDirectOpChildren = do
   let selectNode = mkOpVN emptyLoc selectOp
   assertVNode selectBase $ getChildVT objectSegment (VTVNode selectNode)
 
+testDisjChildren :: Assertion
+testDisjChildren = do
+  let term = VTVal $ VDisj emptyDisj{dsjDisjuncts = Seq.singleton constraintRoot}
+  assertVNode constraintRoot $ getChildVT disjSegment term
+
+  updated <- requireJust $ setChildVT disjSegment (VTVNode newNode) term
+  assertVNode newNode $ getChildVT disjSegment updated
+
 testInvalidChildren :: Assertion
 testInvalidChildren = do
   assertNothing $ getChildVT missingFieldSegment (VTVal $ VStruct fixtureStruct)
@@ -102,6 +111,7 @@ assertVNode expected actual = case actual of
   Just (VTVNode node) -> do
     node.value @?= expected.value
     node.version @?= expected.version
+    node.constraints @?= expected.constraints
   _ -> assertFailure "expected a VTVNode child"
 
 assertVTVal :: Val -> Maybe VTermNode -> Assertion
@@ -159,9 +169,10 @@ dynamicValueSegment = termStepToAddrSegment $ mkDynFieldTermStep dynamicID 1
 patternNodeSegment = termStepToAddrSegment $ mkPatternTermStep patternID 0
 patternValueSegment = termStepToAddrSegment $ mkPatternTermStep patternID 1
 
-opArgSegment, objectSegment :: AddrSegment
+opArgSegment, objectSegment, disjSegment :: AddrSegment
 opArgSegment = termStepToAddrSegment $ mkOpArgTermStep 0
 objectSegment = termStepToAddrSegment $ mkObjectTermStep selectID
+disjSegment = termStepToAddrSegment $ mkDisjTermStep 0
 
 oldValue, newValue :: Val
 oldValue = VAtom $ Int 10

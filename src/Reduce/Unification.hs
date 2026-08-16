@@ -772,7 +772,7 @@ utsFromDisjs :: ConjOpd -> Disj -> [ConjOpd]
 utsFromDisjs co =
   vtmapQ
     ( \p vt -> case vt of
-        VTVal v -> co{coVal = v, coAddr = p}
+        VTVNode v -> co{coVal = v.value, coAddr = p}
         _ -> error "unexpected vt in utsFromDisjs"
     )
     co.coAddr
@@ -789,7 +789,12 @@ treeFromMatrix (lDefIndexes, rDefIndexes) (m, n) matrix = do
         (ls, rs) -> concatMap (\i -> map (+ (i * n)) rs) ls
       disjuncts = concat matrix
       (newDefIndexes, newDisjuncts) = removeIncompleteDisjuncts defIndexes disjuncts
-  return $ VDisj $ emptyDisj{dsjDefIndexes = newDefIndexes, dsjDisjuncts = Seq.fromList newDisjuncts}
+  return $
+    VDisj $
+      emptyDisj
+        { dsjDefIndexes = newDefIndexes
+        , dsjDisjuncts = Seq.fromList $ map mkValVN newDisjuncts
+        }
 
 -- | TODO: efficient implementation
 removeIncompleteDisjuncts :: [Int] -> [Val] -> ([Int], [Val])

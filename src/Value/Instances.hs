@@ -612,18 +612,18 @@ instance VTerm List where
     _ -> Nothing
 
 instance VTerm Disj where
-  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts dj)
+  vtmapQ f p dj = foldrSeqWAddr (adaptVTMapQOnVNode f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts dj)
 
   vtmapM f p d = do
-    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVal f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts d)
+    dsjDisjuncts' <- mapMSeqWAddr (adaptVTMapMOnVNode f) (termStepToAddrSegment . mkDisjTermStep) p (dsjDisjuncts d)
     return d{dsjDisjuncts = dsjDisjuncts'}
   getChildVT segment disj = do
-    (_, value) <- lookupSeqBySegment DisjTag segment disj.dsjDisjuncts
-    return $ VTVal value
+    (_, node) <- lookupSeqBySegment DisjTag segment disj.dsjDisjuncts
+    return $ VTVNode node
   setChildVT segment child disj = do
     (index, _) <- lookupSeqBySegment DisjTag segment disj.dsjDisjuncts
     case child of
-      VTVal replacement ->
+      VTVNode replacement ->
         return disj{dsjDisjuncts = Seq.update index replacement disj.dsjDisjuncts}
       _ -> Nothing
 
@@ -861,7 +861,6 @@ isValueOnlySegment :: AddrSegment -> Bool
 isValueOnlySegment segment = case addrSegmentTag segment of
   EmbedValueTag -> True
   ListIdxTag -> True
-  DisjTag -> True
   _ -> False
 
 getSubVNByAddr :: EvalAddr -> VNode -> Maybe VNode

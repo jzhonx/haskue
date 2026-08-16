@@ -53,7 +53,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
       let l' = l{final = final'}
       return $ setVNodeValue (VList l') topV
     IsDisj d -> do
-      d' <- vtmapM (applyAddrFOnVal $ \p v -> value <$> finalizeInner p (mkValVN v)) addr d
+      d' <- vtmapM (applyAddrFOnVN finalizeInner) addr d
       return $ setVNodeValue (VDisj d') topV
     _ -> return topV
   simplify addr v'
