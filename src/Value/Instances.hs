@@ -14,7 +14,6 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Feature
-import GHC.Stack (HasCallStack)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Syntax.AST (ASTNode (..))
 import Text.Printf (printf)
@@ -825,70 +824,45 @@ pretravsVTQ k f p x = foldl k (f p x) (vtmapQ (pretravsVTQ k f) p x)
 
 The sub tree should already exist in the parent tree.
 -}
-setSubVN :: (HasCallStack) => AddrSegment -> VNode -> VNode -> Maybe VNode
-setSubVN seg subVN parVN = do
-  origSubVN <- getSubVN seg parVN
-  case (addrSegmentTag seg, parVN) of
-    (StringTag, IsStruct parStruct) ->
-      let
-        newStruct = updateStructFieldVN (getTextIndexFromFeature feature) subVN parStruct
-       in
-        ret origSubVN $ VStruct newStruct
-    (PatternTag, IsStruct parStruct) ->
-      let (i, _) = getPatternIndexesFromTermStep termStep
-       in ret origSubVN $ VStruct (mapStructCnstrByID i (const subVN) parStruct)
-    (DynFieldTag, IsStruct parStruct) ->
-      let (i, _) = getDynFieldIndexesFromTermStep termStep
-       in ret origSubVN $ VStruct (mapStructDynFieldByID i (const subVN) parStruct)
-    (LetTag, IsStruct parStruct) ->
-      ret origSubVN $ VStruct (mapStructLet (getTextIndexFromFeature feature) (const subVN) parStruct)
-    (EmbedValueTag, IsStruct parStruct) -> ret origSubVN $ VStruct (parStruct{stcEmbedVal = Just subVN.value})
-    (ListStoreIdxTag, IsList l) ->
-      let i = termStepIndex termStep in ret origSubVN $ VList $ updateListStoreAt i (const subVN) l
-    (ListIdxTag, IsList l) ->
-      let i = featureIndex feature in ret origSubVN $ VList $ updateListFinalAt i (const $ value subVN) l
-    (DisjTag, IsDisj d) ->
-      let i = termStepIndex termStep
-       in Just $
-            parVN
-              { value = VDisj $ d{dsjDisjuncts = Seq.update i subVN.value (dsjDisjuncts d)}
-              , -- Since the disjuncts are values and they have no versions, we need to compare the subVN.value with the
-                -- original subVN.value to determine whether we need to update the version of the parent node.
-                version = if subVN.value /= origSubVN.value then parVN.version + 1 else parVN.version
-              }
-    (FileTopTag, _) -> Nothing
-    _ -> Nothing
- where
-  feature = fromJust $ addrSegmentToFeature seg
-  termStep = fromJust $ addrSegmentToTermStep seg
-  ret origSubVN x =
-    Just $
-      parVN
-        { value = x
-        , version = if subVN.version > origSubVN.version then parVN.version + 1 else parVN.version
-        }
+setSubVN :: AddrSegment -> VNode -> VNode -> Maybe VNode
+setSubVN segment replacement parent
+  | addrSegmentTag segment == FileTopTag = Nothing
+  | otherwise = do
+      original <- getChildVT segment parent
+      (replacementTerm, advanced) <- replacementVNodeTerm segment replacement original
+      parent' <- setChildVT segment replacementTerm parent
+      return $
+        if advanced
+          then parent'{version = parent.version + 1}
+          else parent'
 
-getSubVN :: (HasCallStack) => AddrSegment -> VNode -> Maybe VNode
-getSubVN seg t = case (addrSegmentTag seg, t) of
-  -- Root segment always returns the same tree.
-  (FileTopTag, _) -> Just t
-  (StringTag, IsStruct struct)
-    | Just sf <- lookupStructField (getTextIndexFromFeature feature) struct -> Just $ ssfValue sf
-  (LetTag, IsStruct struct) -> lookupStructLet (getTextIndexFromFeature feature) struct
-  (PatternTag, IsStruct struct) ->
-    let (i, _) = getPatternIndexesFromTermStep termStep
-     in scsPattern <$> stcCnstrs struct IntMap.!? i
-  (DynFieldTag, IsStruct struct) ->
-    let (i, _) = getDynFieldIndexesFromTermStep termStep
-     in dsfLabel <$> stcDynFields struct IntMap.!? i
-  (EmbedValueTag, IsStruct struct) -> mkValVN <$> stcEmbedVal struct
-  (ListStoreIdxTag, IsList l) -> getListStoreAt (termStepIndex termStep) l
-  (ListIdxTag, IsList l) -> mkValVN <$> getListFinalAt (featureIndex feature) l
-  (DisjTag, IsDisj d) -> mkValVN <$> dsjDisjuncts d Seq.!? termStepIndex termStep
-  _ -> Nothing
- where
-  feature = fromJust $ addrSegmentToFeature seg
-  termStep = fromJust $ addrSegmentToTermStep seg
+getSubVN :: AddrSegment -> VNode -> Maybe VNode
+getSubVN segment parent
+  | addrSegmentTag segment == FileTopTag = Just parent
+  | otherwise = getChildVT segment parent >>= childTermVNode segment
+
+childTermVNode :: AddrSegment -> VTermNode -> Maybe VNode
+childTermVNode _ (VTVNode node) = Just node
+childTermVNode segment (VTVal value)
+  | isValueOnlySegment segment = Just $ mkValVN value
+childTermVNode _ _ = Nothing
+
+replacementVNodeTerm :: AddrSegment -> VNode -> VTermNode -> Maybe (VTermNode, Bool)
+replacementVNodeTerm _ replacement (VTVNode original) =
+  Just (VTVNode replacement, replacement.version > original.version)
+replacementVNodeTerm segment replacement (VTVal original)
+  | isValueOnlySegment segment =
+      -- Value-only children do not retain a VNode version, so compare their
+      -- values to decide whether the parent version must advance.
+      Just (VTVal replacement.value, replacement.value /= original)
+replacementVNodeTerm _ _ _ = Nothing
+
+isValueOnlySegment :: AddrSegment -> Bool
+isValueOnlySegment segment = case addrSegmentTag segment of
+  EmbedValueTag -> True
+  ListIdxTag -> True
+  DisjTag -> True
+  _ -> False
 
 getSubVNByAddr :: EvalAddr -> VNode -> Maybe VNode
 getSubVNByAddr addr = go (addrToList addr)
