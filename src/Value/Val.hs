@@ -18,7 +18,6 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Exception (throwErrSt)
 import EvalAddr (
   AddrSegment,
   EvalAddr,
@@ -27,6 +26,7 @@ import EvalAddr (
   mkStringFeature,
   universalEvalAddr,
  )
+import Exception (throwErrSt)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import StringIndex (HasTextIndexer (..), TextIndex, TextIndexerMonad, getTextIndexer, strToTextIndex, textToTextIndex)

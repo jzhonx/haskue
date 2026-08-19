@@ -95,26 +95,26 @@ sliceWith _ _ _ = throwFatal "unexpected error in sliceWith: should have been ha
 slice :: Val -> Maybe Val -> Maybe Val -> EvalAddr -> RM Val
 slice opd (Just ls) (Just rs) _ =
   case ( do
-          l <- fetchSliceOprand opd
-          ls' <- fetchSliceIdx ls
-          rs' <- fetchSliceIdx rs
-          return (l, ls', rs')
+           l <- fetchSliceOprand opd
+           ls' <- fetchSliceIdx ls
+           rs' <- fetchSliceIdx rs
+           return (l, ls', rs')
        ) of
     Right (l, ls', rs') -> return $ VList $ sliceList ls' rs' l
     Left v -> return v
 slice opd (Just ls) Nothing _ =
   case ( do
-          l <- fetchSliceOprand opd
-          ls' <- fetchSliceIdx ls
-          return (l, ls')
+           l <- fetchSliceOprand opd
+           ls' <- fetchSliceIdx ls
+           return (l, ls')
        ) of
     Right (l, ls') -> return $ VList $ sliceList ls' maxBound l
     Left v -> return v
 slice opd Nothing (Just rs) _ =
   case ( do
-          l <- fetchSliceOprand opd
-          rs' <- fetchSliceIdx rs
-          return (l, rs')
+           l <- fetchSliceOprand opd
+           rs' <- fetchSliceIdx rs
+           return (l, rs')
        ) of
     Right (l, rs') -> return $ VList $ sliceList 0 rs' l
     Left v -> return v

@@ -761,9 +761,10 @@ data IdentLookupResult = IdentLookupResult
   , identFeat :: Feature
   , identAddr :: EvalAddr
   , resolvedIdentAddr :: ResolvedIdentAddr
-  -- ^ The address difference to the top environment.
-  -- When using, we must get the canonical address of the current address and subtract the resolvedIdentAddr to get the
-  -- target address.
+  {- ^ The address difference to the top environment.
+  When using, we must get the canonical address of the current address and subtract the resolvedIdentAddr to get the
+  target address.
+  -}
   }
 
 getTopEnvMust :: TM Environment
@@ -1026,12 +1027,13 @@ data Environment = Environment
   , envType :: EnvType
   , envAddr :: EvalAddr
   , names :: Map.Map TextIndex (RefIdentType, Bool)
-  -- ^ names maps identifiers to
-  --  (1) their addresses,
-  --  (2) their types (field, let binding, or iter binding),
-  --  (3) a boolean indicating whether it is referenced.
-  -- Notice the identifiers should not have suffix for let bindings so that the references in the sub tree can refer to
-  -- them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
+  {- ^ names maps identifiers to
+  (1) their addresses,
+  (2) their types (field, let binding, or iter binding),
+  (3) a boolean indicating whether it is referenced.
+  Notice the identifiers should not have suffix for let bindings so that the references in the sub tree can refer to
+  them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
+  -}
   , nameFeatMap :: Map.Map TextIndex Feature
   -- ^ nameFeatMap is used to store the mapping from identifier to its corresponding feature.
   , clausesDepth :: !Int

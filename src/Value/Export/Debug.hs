@@ -109,8 +109,8 @@ instance ToJSON TermsRep where
       ( ["__t" .= mergeInfo info]
           ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
           ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfContent f of
-                TermRepContentScalar s -> toJSON s
-                TermRepContentRegular r -> toJSON r
+                 TermRepContentScalar s -> toJSON s
+                 TermRepContentRegular r -> toJSON r
              | f <- fields
              ]
       )
@@ -147,46 +147,46 @@ termsRepToStringWIdent toff (TermsRep info extraMetas fields) =
   "("
     <> mergeInfo info
     <> ( if null fields
-          then mempty
-          else
-            -- we need to add a newline for the fields block.
-            "\n"
-              <> foldl
-                ( \acc (TermRep label a sub) ->
-                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
-                     in acc
-                          <> pre
-                          <> ( case sub of
-                                TermRepContentScalar s -> s
-                                TermRepContentRegular r ->
-                                  termsRepToStringWIdent
-                                    (length pre)
-                                    r
-                             )
-                          <> ")"
-                          <> "\n"
-                )
-                mempty
-                fields
-              -- reserve spaces for the closing parenthesis.
-              <> replicate toff ' '
+           then mempty
+           else
+             -- we need to add a newline for the fields block.
+             "\n"
+               <> foldl
+                 ( \acc (TermRep label a sub) ->
+                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
+                      in acc
+                           <> pre
+                           <> ( case sub of
+                                  TermRepContentScalar s -> s
+                                  TermRepContentRegular r ->
+                                    termsRepToStringWIdent
+                                      (length pre)
+                                      r
+                              )
+                           <> ")"
+                           <> "\n"
+                 )
+                 mempty
+                 fields
+               -- reserve spaces for the closing parenthesis.
+               <> replicate toff ' '
        )
     <> ( if null extraMetas
-          then mempty
-          else
-            "\n"
-              <> foldl
-                ( \acc (label, lmeta) ->
-                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
-                     in acc
-                          <> pre
-                          <> lmeta
-                          <> ")"
-                          <> "\n"
-                )
-                mempty
-                extraMetas
-              <> replicate toff ' '
+           then mempty
+           else
+             "\n"
+               <> foldl
+                 ( \acc (label, lmeta) ->
+                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
+                      in acc
+                           <> pre
+                           <> lmeta
+                           <> ")"
+                           <> "\n"
+                 )
+                 mempty
+                 extraMetas
+               <> replicate toff ' '
        )
     <> ")"
 

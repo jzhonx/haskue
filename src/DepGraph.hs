@@ -24,10 +24,11 @@ import Text.Printf (printf)
 
 data DepGraph = DepGraph
   { nodesByUseFunc :: Map.Map VertexAddr [EvalAddr]
-  -- ^ Groups lists of dependent vertex IDs by their function addresses.
-  -- If the function does not have an argument, it maps to itself.
-  -- For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
-  -- Or /a -> [/a] if /a is a reference.
+  {- ^ Groups lists of dependent vertex IDs by their function addresses.
+  If the function does not have an argument, it maps to itself.
+  For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
+  Or /a -> [/a] if /a is a reference.
+  -}
   , vgraph :: VGraph
   , cgraph :: CGraph
   -- ^ The component graph representing the strongly connected components (SCCs) of the propagation graph.
@@ -60,8 +61,9 @@ mapCGraph f ng = ng{cgraph = f (cgraph ng)}
 
 data VGraph = VGraph
   { vEdges :: HashMap.HashMap RefVertex [ExprVertex]
-  -- ^ The propagation edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
-  -- The irreducible edges are used to compute the strongly connected components (SCCs) in the propagation graph.
+  {- ^ The propagation edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
+  The irreducible edges are used to compute the strongly connected components (SCCs) in the propagation graph.
+  -}
   , vVertexes :: Set.Set ExprVertex
   }
   deriving (Eq, Generic, NFData)
@@ -116,8 +118,9 @@ data CGraph = CGraph
   , repToComps :: HashMap.HashMap ExprVertex (Set.Set ExprVertex, Bool)
   -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
   , compToRep :: HashMap.HashMap ExprVertex (ExprVertex, Bool)
-  -- ^ Maps from an expression address to its SCC representative address.
-  -- The Bool indicates whether the SCC is cyclic.
+  {- ^ Maps from an expression address to its SCC representative address.
+  The Bool indicates whether the SCC is cyclic.
+  -}
   }
   deriving (Eq, Generic, NFData)
 
@@ -265,8 +268,8 @@ rootVID = 0
 -- | Get the component addresses of a given group address in the propagation graph.
 getElemAddrInGrp :: GrpAddr -> DepGraph -> [VertexAddr]
 getElemAddrInGrp gaddr ng = case ( do
-                                    (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
-                                    HashMap.lookup baseID (repToComps ng.cgraph)
+                                     (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
+                                     HashMap.lookup baseID (repToComps ng.cgraph)
                                  ) of
   Nothing -> []
   Just (comps, _) -> map (`getVertexAddrFromIVMust` ng.vidMapping) (Set.toList comps)
@@ -622,9 +625,10 @@ getNeighbors v = do
 
 data NeighborType
   = RegularNeighbor
-  | -- | RCNeighbor means the neighbor is added through a child-to-parent edge.
-    -- If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
-    -- back to the original node, this edge can be ignored.
+  | {- | RCNeighbor means the neighbor is added through a child-to-parent edge.
+    If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
+    back to the original node, this edge can be ignored.
+    -}
     RCNeighbor
   deriving (Eq, Show)
 

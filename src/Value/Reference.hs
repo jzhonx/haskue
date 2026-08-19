@@ -17,8 +17,9 @@ data Reference = Reference
   , identFeat :: Feature
   , selectors :: Seq.Seq VNode
   , selectorTypes :: Seq.Seq Bool
-  -- ^ selectorTypes stores the type of each selector, where True means index select (e.g. `a[0]`) and False means field
-  -- select (e.g. `a.b`).
+  {- ^ selectorTypes stores the type of each selector, where True means index select (e.g. `a[0]`) and False means field
+  select (e.g. `a.b`).
+  -}
   , resolvedIdentType :: RefIdentType
   , resolvedIdentAddr :: ResolvedIdentAddr
   -- ^ The resolved address of the identifier.

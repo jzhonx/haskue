@@ -26,8 +26,8 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Debug.Trace (trace)
-import Exception (throwErrSt)
 import EvalAddr (removeTISuffix)
+import Exception (throwErrSt)
 import StringIndex (TextIndex, TextIndexer, textIndexToBS, textToTextIndex)
 import qualified Syntax.AST as AST
 import Syntax.Scanner (isByteStringIdentifier)

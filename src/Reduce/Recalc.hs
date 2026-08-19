@@ -196,8 +196,9 @@ O(log n) duplicate detection.
 -}
 data BFSState = BFSState
   { bfsQ :: Seq.Seq BFSQItem
-  -- ^ FIFO queue of groups to process.
-  -- The first element of the tuple is the source address and version that triggered the recalculation.
+  {- ^ FIFO queue of groups to process.
+  The first element of the tuple is the source address and version that triggered the recalculation.
+  -}
   , bfsQNodesSet :: Set.Set EvalAddr
   -- ^ Nodes currently in the queue, for fast dedup.
   }
