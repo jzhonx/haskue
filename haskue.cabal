@@ -24,7 +24,6 @@ library
         Reduce.Comprehension,
         Reduce.Core,
         Reduce.Disjunction,
-        Reduce.EvalTree,
         Reduce.Monad,
         Reduce.Finalize,
         Reduce.Op,
@@ -143,7 +142,6 @@ Test-Suite haskue-unit-test
   hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
-    EvalTreeTest,
     ScannerTest,
     SpecTest,
     VTermTest,
