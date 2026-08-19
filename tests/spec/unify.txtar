@@ -161,3 +161,19 @@ f: {
     v: string
 }
 
+-- unify11 --
+// This tests fixed-point evaluation solves the sub field reference. 
+x: y: {
+	z: {a: 1}
+
+} & x.y.z
+-- exp --
+x: {
+    y: {
+        z: {
+            a: 1
+        }
+        a: 1
+    }
+}
+

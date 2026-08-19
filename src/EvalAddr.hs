@@ -41,6 +41,11 @@ instance Show Selectors where
   show :: Selectors -> String
   show (Selectors sels) = intercalate "." (map show sels)
 
+instance ShowWTIndexer Selectors where
+  tshow (Selectors sels) = do
+    selStrs <- mapM tshow sels
+    return $ T.intercalate "." selStrs
+
 instance ShowWTIndexer Selector where
   tshow (StringSel s) = tshow s
   tshow (IntSel i) = return $ T.pack $ show i
@@ -60,9 +65,15 @@ isFieldPathEmpty :: Selectors -> Bool
 isFieldPathEmpty (Selectors []) = True
 isFieldPathEmpty _ = False
 
--- | Convert concrete selectors to semantic feature segments.
+{- | Convert concrete selectors to semantic feature segments.
+
+TODO: rename selectorsToAddr
+-}
 fieldPathToAddr :: Selectors -> EvalAddr
-fieldPathToAddr (Selectors sels) = addrFromList $ map (featureToAddrSegment . selectorToFeature) sels
+fieldPathToAddr sels = addrFromList $ selectorsToAddrSegments sels
+
+selectorsToAddrSegments :: Selectors -> [AddrSegment]
+selectorsToAddrSegments (Selectors sels) = map (featureToAddrSegment . selectorToFeature) sels
 
 selectorToFeature :: Selector -> Feature
 selectorToFeature (StringSel s) = mkStringFeature s
@@ -608,6 +619,7 @@ collapseToCanonicalForm addr = canonicalToAddr $ collapseToCanonical addr
 genWoObjCanonical :: EvalAddr -> CanonicalAddr
 genWoObjCanonical addr = CanonicalAddr (trimFirstMatchToEnd isSegmentNonCanonical addr)
 
+-- | TODO: not used
 genWoObjCanonicalForm :: EvalAddr -> EvalAddr
 genWoObjCanonicalForm addr = canonicalToAddr $ genWoObjCanonical addr
 
@@ -699,6 +711,7 @@ isSegmentVertex seg = case addrSegmentTag seg of
   DisjTag -> False
   _ -> isSegmentCanonical seg
 
+-- | TODO: trimRight?
 trimCanonicalToVertex :: CanonicalAddr -> VertexAddr
 trimCanonicalToVertex (CanonicalAddr (EvalAddr xs)) =
   let revxs = V.reverse xs

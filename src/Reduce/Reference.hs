@@ -13,6 +13,7 @@ import qualified Data.Text as T
 import DepGraph
 import EvalAddr
 import Reduce.Monad (
+  Context (..),
   RCResolver (..),
   RM,
   depGraph,
@@ -24,6 +25,7 @@ import Reduce.Monad (
  )
 import Reduce.Store (copyVTermNode, fetchComprehBindingVal, fetchValFromStore, storeLastDerefedVersion)
 import Reduce.TraceSpan (
+  debugInst,
   debugInstStr,
   mkTracePreDataWithOnlyVal,
   tpvArgs,
@@ -65,7 +67,10 @@ deref addr ref = traceSpanRM
         if ref.resolvedIdentType == ITIterBinding
           then do
             vn <- fetchComprehBindingVal (fromJust ref.resolvedComprehClauseIdx) ref.ident
-            let (_, tar, _) = descend fileTopEvalAddr vn (getSelectors sels)
+            (_, tarM) <- descend fileTopEvalAddr vn sels
+            tar <- case tarM of
+              Nothing -> throwFatal "deref: cannot find iter binding"
+              Just v -> return v
             return $ mkIterVarDR tar
           else do
             let
@@ -240,113 +245,139 @@ locatePkgFunc identAddr sels = do
 -- | Locate the ident and the remaining selectors in a non-package tree.
 locateRefInTree :: EvalAddr -> Selectors -> EvalAddr -> RM DerefResult
 locateRefInTree identAddr sels refAddr = do
-  identVM <- fetchValFromStore "locateRef" identAddr
-  case identVM of
+  rcResM <- isSelRefOrSub identAddr sels refAddr
+  case rcResM of
+    Just rcRes -> return rcRes
     Nothing -> do
-      -- The ident is not resolved yet; try a self/sub cycle, otherwise watch and report partial.
-      let potentialTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
-      trySelfSubElseWatch identAddr potentialTarAddr (mkValVN VUnknown) refAddr (mkPartialFound identAddr potentialTarAddr)
-    Just identV -> locateResolved identAddr identV sels refAddr
+      identVM <- fetchValFromStore "locateRef" identAddr
+      case identVM of
+        Nothing -> do
+          -- The ident is not resolved yet
+          let potentialTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
+          watch potentialTarAddr refAddr
+          return (mkPartialFound identAddr potentialTarAddr)
+        Just identV -> locateIdentResolved identAddr identV sels refAddr
 
 -- | The ident is resolved; descend along the selectors against its value.
-locateResolved :: EvalAddr -> VNode -> Selectors -> EvalAddr -> RM DerefResult
-locateResolved identAddr identV sels refAddr = do
-  -- The ref is non-empty, so the rest must be a valid addr.
-  let (matchedAddr, matchedV, unmatchedSels) = descend identAddr identV (getSelectors sels)
-  debugInstStr "locateRef" refAddr (debugDescend identAddr matchedAddr identV sels unmatchedSels)
-  if not (null unmatchedSels)
-    then do
-      -- Some selectors remain unresolved; try a self/sub cycle, otherwise watch and report
-      -- a partial (or bottom) result.
-      let potentialTarAddr = appendEvalAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels))
-      trySelfSubElseWatch
-        identAddr
-        potentialTarAddr
-        (mkValVN VUnknown)
-        refAddr
-        ( case identV of
-            IsBottom _ -> mkRegDR identAddr potentialTarAddr identV
-            _ -> mkPartialFound identAddr potentialTarAddr
-        )
-    else do
-      rcRes <- isSelRefOrSub identAddr matchedAddr matchedV refAddr
-      resolveRCRes <- resolveRCValue identAddr matchedAddr matchedV refAddr
+locateIdentResolved :: EvalAddr -> VNode -> Selectors -> EvalAddr -> RM DerefResult
+locateIdentResolved identAddr identV sels refAddr = do
+  (targetAddr, matchedVM) <- descend identAddr identV sels
+  case matchedVM of
+    Nothing -> do
+      -- Some selectors cannot be matched, we can watch the target addr and return a partial result.
+      watch targetAddr refAddr
+      return (mkPartialFound identAddr targetAddr)
+    Just matchedV -> do
+      resolveRCRes <- resolveRCValue identAddr targetAddr matchedV refAddr
       debugInstStr "locateRef" refAddr (debugResolve resolveRCRes)
-      -- We first check if the target is self or a sub field of the self. Then handle the RC case.
-      -- Notice the order matters.
-      case listToMaybe $ catMaybes [rcRes, resolveRCRes] of
+      case resolveRCRes of
         -- No need to watch since the target is self or a sub field of self, or the target value is RC-resolvable
         -- which we have already watched before.
         Just lr -> return lr
         -- The target value is not RC-resolvable, we can return it directly.
         _ -> do
-          watch matchedAddr refAddr
-          return $ mkRegDR identAddr matchedAddr matchedV
-
-{- | Try to treat the target as a self or sub-field-of-self reference cycle. If it is not
-such a cycle, watch the target and return the given not-found result instead.
--}
-trySelfSubElseWatch :: EvalAddr -> EvalAddr -> VNode -> EvalAddr -> DerefResult -> RM DerefResult
-trySelfSubElseWatch identAddr tarAddr tarV refAddr notFoundRes = do
-  rcRes <- isSelRefOrSub identAddr tarAddr tarV refAddr
-  case rcRes of
-    Just r -> return r
-    Nothing -> do
-      watch tarAddr refAddr
-      return notFoundRes
+          watch targetAddr refAddr
+          return $ mkRegDR identAddr targetAddr matchedV
 
 {- | If the ref references itself or a sub field of itself, treat it as a reference cycle.
 
 We could be in a field, dynamic field, or constraint, so we trim the addresses to their
 corresponding suffix forms before doing the prefix check.
 -}
-isSelRefOrSub :: EvalAddr -> EvalAddr -> VNode -> EvalAddr -> RM (Maybe DerefResult)
-isSelRefOrSub identAddr targetAddr targetV refAddr = do
-  let
-    refCanAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
-    targetRfbAddr = trimCanonicalToRfb $ collapseToCanonical targetAddr
-    -- If the ref is a conjunct argument or a sole value of a referable feature, we can treat it as a cycle.
-    refIsAConjunct = case lastSeg refAddr of
-      Just seg | isConstraintSegment seg -> True
-      Just seg | isSegmentReferable seg -> True
-      _ -> False
-
-    res =
-      if isPrefix (vertexToAddr refCanAddr) (rfbAddrToAddr targetRfbAddr)
+isSelRefOrSub :: EvalAddr -> Selectors -> EvalAddr -> RM (Maybe DerefResult)
+isSelRefOrSub identAddr selectors refAddr = do
+  -- We should filter out constraint segments since cycle detection should be based on the referable segments only.
+  let refVertexAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
+  (res, restSelsM) <- case descendSels identAddr refVertexAddr selectors of
+    Just (targetAddr, selfRef, restSels) -> do
+      debugInst
+        "isSelRefOrSub"
+        refAddr
+        ( do
+            store <- vStore <$> getRMContext
+            ttoJSON store
+        )
+      let
+        refNormAddr = vertexToAddr refVertexAddr
+        -- If the ident is a sub field of the ref, we should start from the identAddr instead of the refAddr.
+        startAddr = if isPrefix refNormAddr identAddr then identAddr else refNormAddr
+        derefResCons = mkRefCycleDR identAddr targetAddr
+      startVM <- fetchValFromStore "isSelRefOrSub" startAddr
+      -- If the target is a self reference, no need to descend the value.
+      if selfRef
         then
-          let rcVal =
-                -- If we are referencing ourself as a conjunct, we can directly treat it a top.
-                -- It also handles the case like a: a & v1 | v2, where a is a conjunct in a disjunction.
-                if vertexToAddr refCanAddr == rfbAddrToAddr targetRfbAddr && refIsAConjunct
-                  then case targetV of
-                    -- If the target value is already an atom, we can return it. This addresses the atom constraint
-                    -- case.
-                    IsAtom _ -> Just targetV
-                    IsBottom _ -> Just targetV
-                    _ -> Just (mkValVN VTop)
-                  else case targetV of
-                    IsUnknown -> Nothing
-                    _ -> Just targetV
-           in Just $ mkRefCycleDR identAddr targetAddr rcVal
-        else Nothing
+          let rcVal = case startVM of
+                -- If the target value is already an atom, we can return it. This addresses the atom constraint
+                -- case.
+                Just (IsAtom _) -> startVM
+                Just (IsBottom _) -> startVM
+                _ -> Just (mkValVN VTop)
+           in return (Just $ derefResCons rcVal, Just restSels)
+        else case startVM of
+          Nothing -> return (Just $ derefResCons Nothing, Just restSels)
+          Just startV -> do
+            (_, targetVM) <- descend startAddr startV restSels
+            let rcVal = case targetVM of
+                  Just IsUnknown -> Nothing
+                  Just targetV -> Just targetV
+                  _ -> Nothing
+            return (Just $ derefResCons rcVal, Just restSels)
+    _ -> return (Nothing, Nothing)
+
   debugInstStr
     "locateRef"
     refAddr
     ( do
-        refCanAddrT <- tshow refCanAddr
-        targetRfbAddrT <- tshow targetRfbAddr
-        targetVT <- tshow targetV
+        identAddrT <- tshow identAddr
+        refVertexAddrT <- tshow refVertexAddr
+        restSelsT <- mapM tshow restSelsM
         resT <- tshow res
         return $
           printf
-            "checking if target is a sub field of ref. refCanAddr: %s, targetRfbAddr: %s, refIsAConjunct: %s, targetV: %s, res: %s"
-            (show refCanAddrT)
-            (show targetRfbAddrT)
-            (show refIsAConjunct)
-            targetVT
+            ( "checking if target is a sub field of ref."
+                ++ " identAddr: %s, refVertexAddr: %s, restSels: %s, res: %s"
+            )
+            (show identAddrT)
+            (show refVertexAddrT)
+            (show restSelsT)
             resT
     )
   return res
+
+{- | descendSels is like descend, but it operates on the segments of the address instead of the value.
+
+The first argument is the diff between the identAddr and the refAddr.
+It returns Nothing if the selectors cannot be fully matched against the segments.
+It returns (the matched segments plus the remaining selectors,
+              whether the target is a self reference, and the remaining selectors).
+-}
+descendSels :: EvalAddr -> VertexAddr -> Selectors -> Maybe (EvalAddr, Bool, Selectors)
+descendSels identAddr refVertexAddr selectors
+  | isPrefix identAddr refAddr = case go (addrToList (trimPrefixAddr identAddr refAddr)) (getSelectors selectors) [] of
+      Just (segs, rs) -> Just (appendEvalAddr identAddr (addrFromList segs), null rs, Selectors rs)
+      Nothing -> Nothing
+  -- If the identAddr is a sub field of the refAddr, it is a sub-field reference.
+  -- For example, a: {b: true, if b {}}
+  | isPrefix (vertexToAddr refVertexAddr) identAddr =
+      Just (appendEvalAddr identAddr (fieldPathToAddr selectors), False, selectors)
+  | otherwise = Nothing
+ where
+  refAddr = vertexToAddr refVertexAddr
+  -- The first argument is the diff between the identAddr and the refAddr.
+  -- It returns Nothing if the selectors cannot be fully matched against the segments.
+  -- It returns the matched segments plus the remaining selectors.
+  go :: [AddrSegment] -> [Selector] -> [AddrSegment] -> Maybe ([AddrSegment], [Selector])
+  go [] sels revAcc = Just (reverse revAcc ++ selectorsToAddrSegments (Selectors sels), sels)
+  go (seg : rs) sels revAcc
+    -- If the segment is a disjunction, we can treat it as a match since we can assume that the we are reducing the
+    -- disjunct
+    | addrSegmentTag seg == DisjTag = go rs sels revAcc
+    | Just _ <- addrSegmentToFeature seg, null sels = Nothing
+    | Just feature <- addrSegmentToFeature seg
+    , sel : ss <- sels
+    , feature == selectorToFeature sel =
+        go rs ss (seg : revAcc)
+    | otherwise = Nothing
 
 {- | Check whether the target is currently being resolved by the reference-cycle resolver.
 
@@ -397,18 +428,18 @@ debugAssemble identAddr resolvedIdentAddr sels = do
 
 -- | Trace message after descending the selectors.
 debugDescend :: EvalAddr -> EvalAddr -> VNode -> Selectors -> [Selector] -> RM String
-debugDescend identAddr matchedAddr identV sels unmatchedSels = do
+debugDescend startAddr matchedAddr startV sels unmatchedSels = do
   matchedAddrT <- tshow matchedAddr
-  identVT <- show <$> toTermsRepWithAddr identAddr identV
+  startVT <- show <$> toTermsRepWithAddr startAddr startV
   selsT <- mapM tshow (getSelectors sels)
   unmatchedSelsT <- mapM tshow unmatchedSels
   return $
     printf
-      "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, identV: %s, unmatchedSels: %s"
+      "before fetch, fieldPath: %s, matchedAddr: %s, sel: %s, startV: %s, unmatchedSels: %s"
       (show sels)
       matchedAddrT
       (show selsT)
-      identVT
+      startVT
       (show unmatchedSelsT)
 
 -- | Trace message after the RC checks.
@@ -417,21 +448,30 @@ debugResolve resolveRCRes = do
   resolveRCResT <- tshow resolveRCRes
   return $ printf "after isSelRefOrSub and resolveRCValue, resolveRes: %s" resolveRCResT
 
-descend :: EvalAddr -> VNode -> [Selector] -> (EvalAddr, VNode, [Selector])
-descend p x [] = (p, x, [])
-descend p x (sel : rs) =
-  let feature = selectorToFeature sel
-      r = getSubVN (featureToAddrSegment feature) x
-   in case r of
-        Nothing -> case x of
-          -- If no sub val can be found, but the current value is a disjunction, we can try to find the sub val in the
-          -- default disjuncts.
-          IsDisj d
-            | Just dft <- rtrDisjDefVal d ->
-                let djStep = mkDisjTermStep (head d.dsjDefIndexes)
-                 in descend (appendTermStep p djStep) (mkValVN dft) (sel : rs)
-          _ -> (p, x, sel : rs)
-        Just subX -> descend (appendFeature p feature) subX rs
+descend :: EvalAddr -> VNode -> Selectors -> RM (EvalAddr, Maybe VNode)
+descend startAddr start selectors = do
+  let (matchedAddr, matchedV, unmatchedSels) = go startAddr start (getSelectors selectors)
+  msg <- debugDescend startAddr matchedAddr start selectors unmatchedSels
+  debugInstStr "descend" startAddr (return msg)
+  if null unmatchedSels
+    then return (matchedAddr, Just matchedV)
+    else return (appendEvalAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels)), Nothing)
+ where
+  go :: EvalAddr -> VNode -> [Selector] -> (EvalAddr, VNode, [Selector])
+  go p x [] = (p, x, [])
+  go p x (sel : rs) =
+    let feature = selectorToFeature sel
+        r = getSubVN (featureToAddrSegment feature) x
+     in case r of
+          Nothing -> case x of
+            -- If no sub val can be found, but the current value is a disjunction, we can try to find the sub val in the
+            -- default disjuncts.
+            IsDisj d
+              | Just dft <- rtrDisjDefVal d ->
+                  let djStep = mkDisjTermStep (head d.dsjDefIndexes)
+                   in go (appendTermStep p djStep) (mkValVN dft) (sel : rs)
+            _ -> (p, x, sel : rs)
+          Just subX -> go (appendFeature p feature) subX rs
 
 addrHasDef :: EvalAddr -> RM Bool
 addrHasDef p = do
@@ -465,6 +505,16 @@ watch tarAddr refAddr = do
       printf "watch: target addr %s is not suffix-referable" (show tarAddr)
   let
     tarRfbAddr = trimCanonicalToRfb $ collapseToCanonical tarAddr
+    refVertexAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
+
+  when (isPrefix (vertexToAddr refVertexAddr) (rfbAddrToAddr tarRfbAddr)) $ do
+    refVertexAddrT <- tshow refVertexAddr
+    tarRfbAddrT <- tshow tarRfbAddr
+    throwFatal $
+      printf
+        "watch: target addr %s is a sub field of ref addr %s, should not watch to avoid a self-dependency"
+        tarRfbAddrT
+        refVertexAddrT
 
   ctx <- getRMContext
   let
