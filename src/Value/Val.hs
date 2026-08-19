@@ -55,10 +55,11 @@ class VTerm a where
   getChildVT :: AddrSegment -> a -> Maybe VTermNode
   getChildVT _ _ = Nothing
 
-  -- | Replace an existing immediate child selected by one address segment.
-  --
-  -- This operation only reconstructs the containing term.  It does not update
-  -- 'VNode' versions.
+  {- | Replace an existing immediate child selected by one address segment.
+
+  This operation only reconstructs the containing term.  It does not update
+  'VNode' versions.
+  -}
   setChildVT :: AddrSegment -> VTermNode -> a -> Maybe a
   setChildVT _ _ _ = Nothing
 
@@ -311,7 +312,7 @@ rtrDisjDefVal d =
   let dfs = defDisjunctsFromDisj d
    in if
         | null dfs -> Nothing
-        | length dfs == 1 -> Just (head dfs).value
+        | length dfs == 1 -> Just (value $ head dfs)
         | otherwise -> Just $ VDisj $ emptyDisj{dsjDisjuncts = Seq.fromList dfs}
 
 -- = Helpers =

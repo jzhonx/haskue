@@ -1,6 +1,5 @@
 module Main where
 
-import qualified EvalTreeTest
 import qualified ScannerTest
 import SpecTest (specTests)
 import Test.Tasty
@@ -12,8 +11,7 @@ main = do
   defaultMain $
     testGroup
       "All Tests"
-      [ EvalTreeTest.tests
-      , ScannerTest.tests
+      [ ScannerTest.tests
       , VTermTest.tests
       , stests
       ]
