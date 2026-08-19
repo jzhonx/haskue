@@ -19,12 +19,6 @@ if [[ "$1" == "ce" ]]; then
   exit 0
 fi
 
-if [[ "$1" == "cr" ]]; then
-  input="${2:-_debug/_t.cue}"
-  cabal run haskue -- -d $input
-  exit 0
-fi
-
 if [[ "$1" == "cmp" ]]; then
   # if the input is empty, use the path, _debug/_t.cue
   input="${2:-_debug/_t.cue}"
@@ -33,13 +27,13 @@ if [[ "$1" == "cmp" ]]; then
   cue eval $input
   echo "---- HASKUE ----"
   echo ""
-  cabal run haskue -- $input
+  cabal run --project-file=cabal.project.debug haskue -- $input
   exit 0
 fi
 
 # If the first argument is "show", run the file server and exit
 if [[ "$1" == "show" ]]; then
-  cabal run haskue -- show-trace _debug/trace.log
+  cabal run --project-file=cabal.project.debug haskue -- show-trace _debug/trace.log
   exit 0
 fi
 
@@ -48,7 +42,7 @@ if [[ "$1" == "run" ]]; then
   input="${2:-_debug/_t.cue}"
   maxTreeDepth="$3"
 
-  cabal build
+  cabal build --project-file=cabal.project.debug exe:haskue
   echo ""
   # Run the program with the input file and redirect the output to a log file.
   if [[ -z "$maxTreeDepth" ]]; then
