@@ -18,7 +18,7 @@ import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Debug.Trace (trace)
-import Feature
+import EvalAddr
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import StringIndex (
   HasTextIndexer (..),

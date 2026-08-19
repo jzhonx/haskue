@@ -16,7 +16,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Debug.Trace
-import Feature
+import EvalAddr
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import StringIndex (ShowWTIndexer (..))

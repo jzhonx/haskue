@@ -8,7 +8,7 @@ module Reduce.Finalize where
 
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
-import Feature
+import EvalAddr
 import Reduce.Core (reduce)
 import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (RM)

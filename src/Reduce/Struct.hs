@@ -14,7 +14,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import DepGraph (delDGEdgesByUseMatch, queryUsesByDepMatch)
-import Feature
+import EvalAddr
 import {-# SOURCE #-} Reduce.Core (reduce, reduceVal, signalReduced)
 import Reduce.Monad (
   RM,

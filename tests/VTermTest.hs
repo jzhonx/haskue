@@ -3,7 +3,7 @@ module VTermTest (tests) where
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
-import Feature
+import EvalAddr
 import StringIndex (TextIndex (..))
 import Syntax.Token (emptyLoc)
 import Test.Tasty

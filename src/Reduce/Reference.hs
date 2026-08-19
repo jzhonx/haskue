@@ -11,7 +11,7 @@ import Data.Foldable (toList)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing, listToMaybe)
 import qualified Data.Text as T
 import DepGraph
-import Feature
+import EvalAddr
 import Reduce.Monad (
   RCResolver (..),
   RM,

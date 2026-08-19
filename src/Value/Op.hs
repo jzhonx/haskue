@@ -10,7 +10,7 @@ module Value.Op where
 import Control.DeepSeq (NFData (..))
 import Data.Foldable (Foldable (toList))
 import qualified Data.Sequence as Seq
-import Feature (TermStep, mkOpArgTermStep)
+import EvalAddr (TermStep, mkOpArgTermStep)
 import GHC.Generics (Generic)
 import Syntax.Token as Token
 import Value.Comprehension

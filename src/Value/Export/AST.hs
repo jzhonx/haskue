@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Debug.Trace (trace)
 import Exception (throwErrSt)
-import Feature (removeTISuffix)
+import EvalAddr (removeTISuffix)
 import StringIndex (TextIndex, TextIndexer, textIndexToBS, textToTextIndex)
 import qualified Syntax.AST as AST
 import Syntax.Scanner (isByteStringIdentifier)

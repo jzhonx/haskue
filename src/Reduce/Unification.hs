@@ -18,7 +18,7 @@ import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Feature
+import EvalAddr
 import Reduce.Monad (
   RM,
   allocRMObjID,

@@ -17,7 +17,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Feature (
+import EvalAddr (
   EvalAddr,
   fileTopEvalAddr,
   mkDisjTermStep,

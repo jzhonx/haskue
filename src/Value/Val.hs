@@ -19,7 +19,7 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import Exception (throwErrSt)
-import Feature (
+import EvalAddr (
   AddrSegment,
   EvalAddr,
   Selector (..),

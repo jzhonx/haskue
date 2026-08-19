@@ -7,7 +7,7 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Vector as V
-import Feature
+import EvalAddr
 import Reduce.Monad (RM)
 import Reduce.TraceSpan (traceSpanNoPreRM)
 import StringIndex (strToTextIndex)

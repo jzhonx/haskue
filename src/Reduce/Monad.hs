@@ -21,7 +21,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import DepGraph
-import Feature
+import EvalAddr
 import GHC.Generics (Generic)
 import GHC.Stack (callStack, prettyCallStack)
 import GHC.Stack.Types (HasCallStack)

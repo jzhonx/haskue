@@ -16,7 +16,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
-import Feature
+import EvalAddr
 import {-# SOURCE #-} Reduce.Core (reduceConstraintsInCnstrs)
 import Reduce.Monad (
   RM,

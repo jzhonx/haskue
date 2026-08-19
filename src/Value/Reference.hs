@@ -6,7 +6,7 @@ module Value.Reference where
 
 import Control.DeepSeq (NFData)
 import qualified Data.Sequence as Seq
-import Feature (CanonicalAddr, EvalAddr, Feature)
+import EvalAddr (CanonicalAddr, EvalAddr, Feature)
 import GHC.Generics (Generic)
 import StringIndex (TextIndex)
 import {-# SOURCE #-} Value.Val

@@ -4,7 +4,7 @@ import Data.Aeson (KeyValue (..), object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
-import Feature
+import EvalAddr
 import Reduce.Monad
 import Reduce.TraceSpan (debugInstStr)
 import StringIndex (ShowWTIndexer (..), TextIndex)

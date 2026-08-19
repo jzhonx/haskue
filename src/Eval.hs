@@ -30,7 +30,7 @@ import Data.ByteString.Builder (
  )
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Yaml as Yaml
-import Feature (fileTopEvalAddr)
+import EvalAddr (fileTopEvalAddr)
 import Reduce (finalize, reduce)
 import Reduce.Core (storeBuiltinsAndPackages)
 import Reduce.Monad

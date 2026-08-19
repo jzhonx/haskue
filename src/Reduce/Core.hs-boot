@@ -2,7 +2,7 @@
 
 module Reduce.Core where
 
-import Feature (EvalAddr)
+import EvalAddr (EvalAddr)
 import Reduce.Monad
 import Value.Val (VNode, Val)
 

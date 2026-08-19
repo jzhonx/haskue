@@ -4,7 +4,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 
-module Feature where
+module EvalAddr where
 
 import Control.DeepSeq (NFData (..))
 import Control.Monad.State (MonadState)

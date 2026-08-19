@@ -12,7 +12,7 @@ import Data.Foldable (toList)
 import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
-import Feature
+import EvalAddr
 import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Monad (
   RM,

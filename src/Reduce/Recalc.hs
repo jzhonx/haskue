@@ -22,7 +22,7 @@ import Data.Maybe (fromJust, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import DepGraph
-import Feature
+import EvalAddr
 import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (

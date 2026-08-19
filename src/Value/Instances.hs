@@ -13,7 +13,7 @@ import Data.Maybe (fromJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import Feature
+import EvalAddr
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Syntax.AST (ASTNode (..))
 import Text.Printf (printf)

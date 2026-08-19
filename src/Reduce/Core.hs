@@ -15,7 +15,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
-import Feature (
+import EvalAddr (
   EvalAddr (..),
   addrIsCanonical,
   addrIsVertex,

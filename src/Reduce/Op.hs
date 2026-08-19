@@ -8,7 +8,7 @@ module Reduce.Op where
 
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Map.Strict as Map
-import Feature
+import EvalAddr
 import Reduce.Monad (
   RM,
   throwFatal,

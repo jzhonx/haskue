@@ -7,7 +7,7 @@ import Data.Foldable (Foldable (toList))
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
-import Feature
+import EvalAddr
 import {-# SOURCE #-} Reduce.Core (reduceVal)
 import Reduce.Monad (RM, throwFatal)
 import Reduce.Unification (unifyVals)

@@ -16,7 +16,7 @@ import Data.Aeson.Types (object)
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import DepGraph (GrpAddr, lookupGrpAddr)
-import Feature
+import EvalAddr
 import Reduce.Monad (
   RM,
   TraceConfig (..),

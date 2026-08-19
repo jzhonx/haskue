@@ -16,7 +16,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
-import Feature (
+import EvalAddr (
   EvalAddr (..),
   appendTermStep,
   fileBlockFeature,
