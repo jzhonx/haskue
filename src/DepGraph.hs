@@ -10,26 +10,19 @@ import Control.Monad (forM_, when)
 import Control.Monad.State.Strict (MonadState (..), State, evalState, execState, gets, modify')
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import qualified Data.Vector as V
-import Debug.Trace
 import EvalAddr
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 
+-- Dependency graph
+
 data DepGraph = DepGraph
-  { nodesByUseFunc :: Map.Map VertexAddr [EvalAddr]
-  {- ^ Groups lists of dependent vertex IDs by their function addresses.
-  If the function does not have an argument, it maps to itself.
-  For example, /a -> [/a/fa0, /a/fa1] if /a/fa0 and /a/fa1 are dependents.
-  Or /a -> [/a] if /a is a reference.
-  -}
-  , vgraph :: VGraph
+  { vgraph :: VGraph
   , cgraph :: CGraph
   -- ^ The component graph representing the strongly connected components (SCCs) of the propagation graph.
   , vidMapping :: VIDMapping
@@ -37,97 +30,194 @@ data DepGraph = DepGraph
   deriving (Eq, Generic, NFData)
 
 instance Show DepGraph where
-  show ng = printf "G(Deps: %s)" (show $ vEdges ng.vgraph)
+  show graph = printf "G(Deps: %s)" (show $ vUsesByDep graph.vgraph)
 
 instance ShowWTIndexer DepGraph where
-  tshow ng = do
+  tshow graph = do
     let
-      xs = map (\(k, v) -> (getAddrFromVIDMust (getRefVertex k) ng.vidMapping, v)) (HashMap.toList $ vEdges ng.vgraph)
-    deps <-
+      depEntries =
+        map
+          (\(depVertex, useVertices) -> (getVertexAddrFromVIDMust (getVertex depVertex) graph.vidMapping, useVertices))
+          (HashMap.toList $ vUsesByDep graph.vgraph)
+    depTexts <-
       mapM
-        ( \(k, v) -> do
-            kt <- tshow k
-            vt <- mapM (\x -> tshow $ getVertexAddrFromIVMust x ng.vidMapping) v
-            return $ T.pack $ printf "%s: %s" (T.unpack kt) (show vt)
+        ( \(depAddr, useVertices) -> do
+            depAddrText <- tshow depAddr
+            useAddrTexts <- mapM (\useVertex -> tshow $ getVertexAddrFromVtxMust useVertex graph.vidMapping) useVertices
+            return $ T.pack $ printf "%s: %s" (T.unpack depAddrText) (show useAddrTexts)
         )
-        xs
-    return $ T.pack $ printf "G(Deps: %s)" (show deps)
+        depEntries
+    return $ T.pack $ printf "G(Deps: %s)" (show depTexts)
 
 mapVGraph :: (VGraph -> VGraph) -> DepGraph -> DepGraph
-mapVGraph f ng = ng{vgraph = f (vgraph ng)}
+mapVGraph transform graph = graph{vgraph = transform graph.vgraph}
 
 mapCGraph :: (CGraph -> CGraph) -> DepGraph -> DepGraph
-mapCGraph f ng = ng{cgraph = f (cgraph ng)}
+mapCGraph transform graph = graph{cgraph = transform graph.cgraph}
 
+emptyDepGraph :: DepGraph
+emptyDepGraph =
+  DepGraph
+    { vgraph = emptyVGraph
+    , cgraph = emptyCGraph
+    , vidMapping = defaultVIDMapping
+    }
+
+-- Vertex identity
+
+-- | A propagation-graph vertex representing an irreducible address.
+newtype Vertex = Vertex {getVertex :: Int} deriving (Eq, Ord, Hashable, Generic, NFData)
+
+instance Show Vertex where
+  show (Vertex vertexID) = "v_" ++ show vertexID
+instance ShowWTIndexer Vertex
+
+-- | Bidirectional mapping between graph vertex IDs and value-store vertex addresses.
+data VIDMapping = VIDMapping
+  { vidToAddr :: HashMap.HashMap Int VertexAddr
+  , addrToVid :: HashMap.HashMap VertexAddr Int
+  , nextVid :: Int
+  }
+  deriving (Eq, Generic, NFData)
+
+getVID :: VertexAddr -> VIDMapping -> (Int, Maybe VIDMapping)
+getVID vertexAddr mapping =
+  case lookupVID vertexAddr mapping of
+    Just vertexID -> (vertexID, Nothing)
+    Nothing ->
+      let vertexID = nextVid mapping
+          newVidToAddr = HashMap.insert vertexID vertexAddr (vidToAddr mapping)
+          newAddrToVid = HashMap.insert vertexAddr vertexID (addrToVid mapping)
+       in ( vertexID
+          , Just $
+              VIDMapping
+                { vidToAddr = newVidToAddr
+                , addrToVid = newAddrToVid
+                , nextVid = vertexID + 1
+                }
+          )
+
+-- | Look up the ID already assigned to a vertex address.
+lookupVID :: VertexAddr -> VIDMapping -> Maybe Int
+lookupVID vertexAddr mapping = HashMap.lookup vertexAddr mapping.addrToVid
+
+getVertexAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> VertexAddr
+getVertexAddrFromVIDMust vertexID mapping = case HashMap.lookup vertexID (vidToAddr mapping) of
+  Just vertexAddr -> vertexAddr
+  Nothing -> error $ printf "VID %d not found in VIDMapping" vertexID
+
+getVertexAddrFromVtxMust :: (HasCallStack) => Vertex -> VIDMapping -> VertexAddr
+getVertexAddrFromVtxMust vertex = getVertexAddrFromVIDMust (getVertex vertex)
+
+defaultVIDMapping :: VIDMapping
+defaultVIDMapping =
+  VIDMapping
+    { vidToAddr = HashMap.fromList [(rootVID, fileTopVertexAddr)]
+    , addrToVid = HashMap.fromList [(fileTopVertexAddr, rootVID)]
+    , nextVid = rootVID + 1
+    }
+
+rootVID :: Int
+rootVID = 0
+
+liftGetVIDForG :: VertexAddr -> State DepGraph Int
+liftGetVIDForG vertexAddr = state $ \graph ->
+  let (vertexID, maybeMapping) = getVID vertexAddr graph.vidMapping
+   in case maybeMapping of
+        Just mapping -> (vertexID, graph{vidMapping = mapping})
+        Nothing -> (vertexID, graph)
+
+-- Vertex-level propagation graph
+
+{- | The vertex-level propagation graph.
+
+This is the uncollapsed graph from which 'CGraph' is derived.  An edge
+@dependency -> use@ records that a change to the dependency may require the use
+to be recalculated.  Only vertices corresponding to referable addresses may be
+keys in 'vUsesByDep'; dependent uses may be any irreducible expression address.
+
+The adjacency map alone does not describe the complete vertex universe, since
+a vertex need not have outgoing edges.  'vVertices' therefore records every
+edge endpoint separately for SCC discovery.  Removing edges does not remove
+vertices from this set.
+-}
 data VGraph = VGraph
-  { vEdges :: HashMap.HashMap RefVertex [ExprVertex]
-  {- ^ The propagation edges maps a dependency vertexes to a list of dependent vertexes, all of which are irreducible.
-  The irreducible edges are used to compute the strongly connected components (SCCs) in the propagation graph.
-  -}
-  , vVertexes :: Set.Set ExprVertex
+  { vUsesByDep :: HashMap.HashMap Vertex [Vertex]
+  -- ^ Maps each referable dependency vertex to its dependent vertices.
+  , vVertices :: Set.Set Vertex
+  -- ^ All vertices known to the graph, including vertices with no outgoing edges.
   }
   deriving (Eq, Generic, NFData)
 
 emptyVGraph :: VGraph
 emptyVGraph =
   VGraph
-    { vEdges = HashMap.empty
-    , vVertexes = Set.empty
+    { vUsesByDep = HashMap.empty
+    , vVertices = Set.empty
     }
 
-insertVGraphEdge :: RefVertex -> ExprVertex -> VGraph -> VGraph
-insertVGraphEdge depVtx useVtx g =
-  g
-    { vEdges = insertHMUnique depVtx useVtx (vEdges g)
-    , vVertexes = Set.union (Set.fromList [useVtx, ExprVertex (getRefVertex depVtx)]) g.vVertexes
-    }
+{- | Insert a propagation edge from a dependency to a dependent use.
 
-{- | Insert a selection edge.
-
-It does not add to the deptsMap because selection edges are not used for notification.
+The dependency vertex must correspond to a referable address.  Both endpoints
+are added to 'vVertices'.
 -}
-insertVGraphSelEdge :: RefVertex -> ExprVertex -> VGraph -> VGraph
-insertVGraphSelEdge depVtx useVtx g =
-  g
-    { vEdges = insertHMUnique depVtx useVtx (vEdges g)
-    , vVertexes = Set.union (Set.fromList [useVtx, ExprVertex (getRefVertex depVtx)]) g.vVertexes
-    }
-
--- | Delete all edges that have the given vertex as the dependency.
-delVGEdgeByDep :: RefVertex -> VGraph -> VGraph
-delVGEdgeByDep depVtx g =
-  g
-    { vEdges = HashMap.delete depVtx (vEdges g)
+insertVGraphEdge :: Vertex -> Vertex -> VGraph -> VGraph
+insertVGraphEdge depVertex useVertex vertexGraph =
+  vertexGraph
+    { vUsesByDep = insertHMUnique depVertex useVertex vertexGraph.vUsesByDep
+    , vVertices = Set.union (Set.fromList [depVertex, useVertex]) vertexGraph.vVertices
     }
 
 -- | Delete all edges that have the given vertex by matching the use vertex with the given predicate.
-delVGEdgeByUseMatch :: (ExprVertex -> Bool) -> VGraph -> VGraph
-delVGEdgeByUseMatch useMatch g =
-  g
-    { vEdges = HashMap.map (filter (not . useMatch)) (vEdges g)
+delVGEdgeByUseMatch :: (Vertex -> Bool) -> VGraph -> VGraph
+delVGEdgeByUseMatch useMatch vertexGraph =
+  vertexGraph
+    { vUsesByDep = HashMap.map (filter (not . useMatch)) vertexGraph.vUsesByDep
     }
 
-queryVGUsesByDepMatch :: (RefVertex -> Bool) -> VGraph -> [(RefVertex, ExprVertex)]
-queryVGUsesByDepMatch depMatch g =
-  let x = filter (depMatch . fst) (HashMap.toList $ vEdges g)
-   in concatMap (\(dep, uses) -> map (\use -> (dep, use)) uses) x
+queryVGUsesByDepMatch :: (Vertex -> Bool) -> VGraph -> [(Vertex, Vertex)]
+queryVGUsesByDepMatch depMatches vertexGraph =
+  let matchingEntries = filter (depMatches . fst) (HashMap.toList vertexGraph.vUsesByDep)
+   in concatMap
+        (\(depVertex, useVertices) -> map (\useVertex -> (depVertex, useVertex)) useVertices)
+        matchingEntries
 
+-- Component graph
+
+{- | The condensation graph of 'VGraph'.
+
+Each strongly connected component (SCC) of the propagation graph is collapsed
+to one representative 'Vertex'.  Edges between those representatives form
+a DAG and retain the propagation direction: an edge @dependency -> use@ means
+that a change in the dependency may require recalculating the use.  The choice
+of representative is an implementation detail and may change when the graph is
+rebuilt.
+
+The component membership is indexed in both directions to support the graph's
+main lookup patterns.  The maps must satisfy these invariants:
+
+* Every vertex in 'compToRep' occurs in exactly one component in 'repToComps'.
+* Every key in 'repToComps' is the representative stored for all members of
+  that component, including itself.
+* The cyclic flag is identical in both indexes and is 'True' exactly for a
+  cyclic SCC (a multi-vertex SCC or a singleton with a self-cycle).
+* Every key and value in 'cgUsesByDep' is an SCC representative, and
+  'cgUsesByDep' has no intra-component edges.
+-}
 data CGraph = CGraph
-  { cgDAG :: HashMap.HashMap ExprVertex [ExprVertex]
-  -- ^ Maps from an SCC rep address to a list of SCC rep addresses that represents the dependencies.
-  , repToComps :: HashMap.HashMap ExprVertex (Set.Set ExprVertex, Bool)
-  -- ^ Maps from a base address to a list of component addresses in the same strongly connected component.
-  , compToRep :: HashMap.HashMap ExprVertex (ExprVertex, Bool)
-  {- ^ Maps from an expression address to its SCC representative address.
-  The Bool indicates whether the SCC is cyclic.
-  -}
+  { cgUsesByDep :: HashMap.HashMap Vertex [Vertex]
+  -- ^ Propagation edges between SCC representatives, from a dependency to its dependent uses.
+  , repToComps :: HashMap.HashMap Vertex (Set.Set Vertex, Bool)
+  -- ^ Maps each SCC representative to its member vertices and cyclic flag.
+  , compToRep :: HashMap.HashMap Vertex (Vertex, Bool)
+  -- ^ Reverse index from each vertex to its SCC representative and cyclic flag.
   }
   deriving (Eq, Generic, NFData)
 
 emptyCGraph :: CGraph
 emptyCGraph =
   CGraph
-    { cgDAG = HashMap.empty
+    { cgUsesByDep = HashMap.empty
     , repToComps = HashMap.empty
     , compToRep = HashMap.empty
     }
@@ -137,189 +227,102 @@ emptyCGraph =
 If the vertex is not found in the compToRep map, it means it is not yet added to the graph, so we create a new entry for
 it.
 -}
-getOrCreateRepVtx :: ExprVertex -> CGraph -> (ExprVertex, CGraph)
-getOrCreateRepVtx v g = case HashMap.lookup v (compToRep g) of
-  Just (rep, _) -> (rep, g)
+getOrCreateRepVtx :: Vertex -> CGraph -> (Vertex, CGraph)
+getOrCreateRepVtx vertex componentGraph = case HashMap.lookup vertex componentGraph.compToRep of
+  Just (rep, _) -> (rep, componentGraph)
   Nothing ->
-    ( v
-    , g
-        { compToRep = HashMap.insert v (v, False) (compToRep g)
-        , repToComps = HashMap.insert v (Set.singleton v, False) (repToComps g)
+    ( vertex
+    , componentGraph
+        { compToRep = HashMap.insert vertex (vertex, False) componentGraph.compToRep
+        , repToComps = HashMap.insert vertex (Set.singleton vertex, False) componentGraph.repToComps
         }
     )
 
-{- | A group address representing a strongly connected component (SCC) in the propagation graph.
+{- | Check if there is a path from one vertex to another in the component graph.
 
-The Bool indicates whether the SCC is cyclic.
+If from and to are the same, return True.
 -}
-newtype GrpAddr = GrpAddr {getGrpAddr :: (VertexAddr, Bool)} deriving (Eq, Ord, Generic, NFData)
+hasPathInCG :: Vertex -> Vertex -> DepGraph -> Bool
+hasPathInCG fromVertex toVertex graph = dfs fromVertex Set.empty
+ where
+  dfs :: Vertex -> Set.Set Vertex -> Bool
+  dfs currentVertex visitedVertices
+    | currentVertex == toVertex = True
+    | Set.member currentVertex visitedVertices = False
+    | otherwise =
+        let neighbors = HashMap.findWithDefault [] currentVertex graph.cgraph.cgUsesByDep
+            updatedVisited = Set.insert currentVertex visitedVertices
+         in any (\neighbor -> dfs neighbor updatedVisited) neighbors
 
-instance Show GrpAddr where
-  show (GrpAddr (addr, isCyclic)) =
+-- Dependency groups
+
+{- | A compact description of a dependency group.
+
+Membership is resolved against the current 'DepGraph' rather than stored here,
+so the description remains lightweight for queues and map keys.
+-}
+data DepGroupDesc = DepGroupDesc
+  { depGroupRep :: !VertexAddr
+  -- ^ Representative vertex address used to identify the group.
+  , depGroupIsCyclic :: !Bool
+  -- ^ Whether the group must be recalculated as a reference cycle.
+  }
+  deriving (Eq, Ord, Generic, NFData)
+
+instance Show DepGroupDesc where
+  show DepGroupDesc{depGroupRep = repAddr, depGroupIsCyclic = isCyclic} =
     if isCyclic
-      then "Cyclic " ++ show addr
-      else show addr
+      then "Cyclic " ++ show repAddr
+      else show repAddr
 
-instance ShowWTIndexer GrpAddr where
-  tshow (GrpAddr (addr, isCyclic)) = do
-    addrText <- tshow addr
+instance ShowWTIndexer DepGroupDesc where
+  tshow DepGroupDesc{depGroupRep = repAddr, depGroupIsCyclic = isCyclic} = do
+    addrText <- tshow repAddr
     let cyclicText = if isCyclic then "Cyclic " else ""
     return $ cyclicText <> addrText
 
-pattern IsAcyclicGrpAddr :: VertexAddr -> GrpAddr
-pattern IsAcyclicGrpAddr addr <- GrpAddr (addr, False)
+pattern IsAcyclicDepGroup :: VertexAddr -> DepGroupDesc
+pattern IsAcyclicDepGroup vertexAddr <- DepGroupDesc vertexAddr False
 
-pattern IsCyclicGrpAddr :: VertexAddr -> GrpAddr
-pattern IsCyclicGrpAddr addr <- GrpAddr (addr, True)
+pattern IsCyclicDepGroup :: VertexAddr -> DepGroupDesc
+pattern IsCyclicDepGroup vertexAddr <- DepGroupDesc vertexAddr True
 
-emptyPropGraph :: DepGraph
-emptyPropGraph =
-  DepGraph
-    { nodesByUseFunc = Map.empty
-    , vgraph = emptyVGraph
-    , cgraph = emptyCGraph
-    , vidMapping = defaultVIDMapping
-    }
-
--- | Expression vertex representing an irreducible address.
-newtype ExprVertex = ExprVertex {getExprVertex :: Int} deriving (Eq, Ord, Hashable, Generic, NFData)
-
-instance Show ExprVertex where
-  show (ExprVertex i) = "ev_" ++ show i
-instance ShowWTIndexer ExprVertex
-
-newtype RefVertex = RefVertex {getRefVertex :: Int} deriving (Eq, Ord, Hashable, Generic, NFData)
-instance Show RefVertex where
-  show (RefVertex i) = "rv_" ++ show i
-instance ShowWTIndexer RefVertex
-
-data VIDMapping = VIDMapping
-  { vidToAddr :: HashMap.HashMap Int EvalAddr
-  , addrToVid :: HashMap.HashMap EvalAddr Int
-  , nextVid :: Int
-  }
-  deriving (Eq, Generic, NFData)
-
-getVID :: EvalAddr -> VIDMapping -> (Int, Maybe VIDMapping)
-getVID addr m =
-  case HashMap.lookup addr (addrToVid m) of
-    Just vid -> (vid, Nothing)
-    Nothing ->
-      let vid = nextVid m
-          newVidToAddr = HashMap.insert vid addr (vidToAddr m)
-          newAddrToVid = HashMap.insert addr vid (addrToVid m)
-       in ( vid
-          , Just $
-              VIDMapping
-                { vidToAddr = newVidToAddr
-                , addrToVid = newAddrToVid
-                , nextVid = vid + 1
-                }
-          )
-
-getAddrFromVID :: Int -> VIDMapping -> Maybe EvalAddr
-getAddrFromVID vid m = HashMap.lookup vid (vidToAddr m)
-
-getAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> EvalAddr
-getAddrFromVIDMust vid m = case HashMap.lookup vid (vidToAddr m) of
-  Just addr -> addr
-  Nothing -> error $ printf "VID %d not found in VIDMapping" vid
-
-getVertexAddrFromVIDMust :: (HasCallStack) => Int -> VIDMapping -> VertexAddr
-getVertexAddrFromVIDMust vid m =
-  let addr = getAddrFromVID vid m
-   in case addr >>= addrIsVertex of
-        Just a -> a
-        Nothing -> error $ printf "VID %s does not correspond to a vertex address: %s" (show vid) (show addr)
-
-getVertexAddrFromIVMust :: (HasCallStack) => ExprVertex -> VIDMapping -> VertexAddr
-getVertexAddrFromIVMust iv = getVertexAddrFromVIDMust (getExprVertex iv)
-
-defaultVIDMapping :: VIDMapping
-defaultVIDMapping =
-  VIDMapping
-    { vidToAddr = HashMap.fromList [(rootVID, fileTopEvalAddr)]
-    , addrToVid = HashMap.fromList [(fileTopEvalAddr, rootVID)]
-    , nextVid = rootVID + 1
-    }
-
-irredVToRefV :: ExprVertex -> VIDMapping -> (Maybe RefVertex, Maybe VIDMapping)
-irredVToRefV iv m = case irredVToRefAddr iv m of
-  Just rAddr -> do
-    let (rid, m1) = getVID (rfbAddrToAddr rAddr) m
-    (Just (RefVertex rid), m1)
-  Nothing -> (Nothing, Nothing)
-
-irredVToRefAddr :: ExprVertex -> VIDMapping -> Maybe ReferableAddr
-irredVToRefAddr iv m = do
-  addr <- getAddrFromVID (getExprVertex iv) m
-  addrIsRfbAddr addr
-
-{- | Convert a referable vertex to an expression vertex.
-
-There is no need to use the VIDMapping here because referable addresses are a subset of expression addresses.
--}
-refVToIrredV :: RefVertex -> ExprVertex
-refVToIrredV rv = ExprVertex (getRefVertex rv)
-
-rootVID :: Int
-rootVID = 0
-
--- | Get the component addresses of a given group address in the propagation graph.
-getElemAddrInGrp :: GrpAddr -> DepGraph -> [VertexAddr]
-getElemAddrInGrp gaddr ng = case ( do
-                                     (baseID, _) <- HashMap.lookup (ExprVertex gaddrID) (compToRep ng.cgraph)
-                                     HashMap.lookup baseID (repToComps ng.cgraph)
-                                 ) of
+-- | Get the current member addresses of a dependency group.
+getDepGroupMembers :: DepGroupDesc -> DepGraph -> [VertexAddr]
+getDepGroupMembers group graph = case groupMembers of
   Nothing -> []
-  Just (comps, _) -> map (`getVertexAddrFromIVMust` ng.vidMapping) (Set.toList comps)
+  Just (memberVertices, _) -> map (`getVertexAddrFromVtxMust` graph.vidMapping) (Set.toList memberVertices)
  where
-  addr = fst $ getGrpAddr gaddr
-  (gaddrID, _) = getVID (vertexToAddr addr) ng.vidMapping
+  groupMembers = do
+    repID <- lookupVID group.depGroupRep graph.vidMapping
+    HashMap.lookup (Vertex repID) graph.cgraph.repToComps
 
--- | Get all node addresses of a given group address in the propagation graph.
-getNodeAddrsInGrp :: GrpAddr -> DepGraph -> [EvalAddr]
-getNodeAddrsInGrp gaddr ng =
-  let irredAddrs = getElemAddrInGrp gaddr ng
-   in Set.toList $
-        foldr
-          ( \siAddr acc ->
-              let nodes = Map.findWithDefault [] siAddr ng.nodesByUseFunc
-               in Set.union (Set.fromList nodes) acc
-          )
-          Set.empty
-          irredAddrs
-
-getNodeAddrsByFunc :: VertexAddr -> DepGraph -> [EvalAddr]
-getNodeAddrsByFunc funcAddr ng = Map.findWithDefault [] funcAddr ng.nodesByUseFunc
-
--- | Get all use components of a given component address in the propagation graph.
-getUseGroups :: GrpAddr -> DepGraph -> [GrpAddr]
-getUseGroups gaddr ng = case HashMap.lookup (ExprVertex repAddrID) (cgDAG ng.cgraph) of
+-- | Get the dependency groups that use a given group.
+getDepGroupUses :: DepGroupDesc -> DepGraph -> [DepGroupDesc]
+getDepGroupUses group graph = case lookupVID group.depGroupRep graph.vidMapping of
   Nothing -> []
-  Just uses ->
-    map
-      ( \use ->
-          GrpAddr
-            ( getVertexAddrFromIVMust use ng.vidMapping
-            , snd $ fromJust $ HashMap.lookup use ng.cgraph.compToRep
-            )
-      )
-      uses
- where
-  repAddr = fst $ getGrpAddr gaddr
-  (repAddrID, _) = getVID (vertexToAddr repAddr) ng.vidMapping
+  Just repID -> case HashMap.lookup (Vertex repID) graph.cgraph.cgUsesByDep of
+    Nothing -> []
+    Just useReps ->
+      mapMaybe (`lookupDepGroupByVertex` graph) useReps
 
--- | Look up the SCC address of a given address (which should be irreducible) in the propagation graph.
-lookupGrpAddr :: VertexAddr -> DepGraph -> Maybe GrpAddr
-lookupGrpAddr rfbAddr ng = case HashMap.lookup (ExprVertex rfbAddrID) (compToRep ng.cgraph) of
-  Nothing -> Nothing
-  Just (baseID, isCyclic) ->
-    Just $
-      -- The baseID must have its corresponding irreducible address.
-      GrpAddr (getVertexAddrFromIVMust baseID ng.vidMapping, isCyclic)
- where
-  (rfbAddrID, _) = getVID (vertexToAddr rfbAddr) ng.vidMapping
+-- | Look up the dependency group containing a graph vertex.
+lookupDepGroupByVertex :: Vertex -> DepGraph -> Maybe DepGroupDesc
+lookupDepGroupByVertex vertex graph = do
+  (repVertex, isCyclic) <- HashMap.lookup vertex graph.cgraph.compToRep
+  return
+    DepGroupDesc
+      { depGroupRep = getVertexAddrFromVtxMust repVertex graph.vidMapping
+      , depGroupIsCyclic = isCyclic
+      }
+
+-- | Look up the dependency group containing a vertex address.
+lookupDepGroup :: VertexAddr -> DepGraph -> Maybe DepGroupDesc
+lookupDepGroup vertexAddr graph = do
+  vertexID <- lookupVID vertexAddr graph.vidMapping
+  lookupDepGroupByVertex (Vertex vertexID) graph
+
+-- Dependency operations
 
 {- | Add a new dependency to the propagation graph and update the component graph.
 
@@ -334,177 +337,137 @@ Some cases:
     From the x -> x.f.g we get /x -> /x/f/g. So we have a cycle, which contains /x, /x/f, /x/f/g.
 -}
 addNewDepToNG :: (HasCallStack) => EvalAddr -> ReferableAddr -> DepGraph -> DepGraph
-addNewDepToNG use dep =
+addNewDepToNG useAddr depAddr =
   execState
     ( do
         let
-          normDepAddr = rfbAddrToAddr dep
-          normUseAddr = vertexToAddr $ trimCanonicalToVertex $ collapseToCanonical use
-        irDepID <- liftGetVIDForG normDepAddr
-        irUseID <- liftGetVIDForG normUseAddr
-        let useVtx = ExprVertex irUseID
-            depVtx = ExprVertex irDepID
+          depVertexAddr = rfbAddrToVertex depAddr
+          useVertexAddr = trimCanonicalToVertex $ collapseToCanonical useAddr
+        depVertexID <- liftGetVIDForG depVertexAddr
+        useVertexID <- liftGetVIDForG useVertexAddr
+        let useVertex = Vertex useVertexID
+            depVertex = Vertex depVertexID
         modify' $
           mapVGraph $
-            insertVGraphEdge
-              (RefVertex irDepID)
-              useVtx
-        modify' $ \g -> g{nodesByUseFunc = insertMUnique (trimCanonicalToVertex $ collapseToCanonical use) use g.nodesByUseFunc}
-        depRep <- state (liftGetRepVtx depVtx)
-        useRep <- state (liftGetRepVtx useVtx)
+            insertVGraphEdge depVertex useVertex
+        depRep <- state (getOrCreateGraphRep depVertex)
+        useRep <- state (getOrCreateGraphRep useVertex)
 
-        ng <- get
+        graph <- get
         if
           -- If both addresses are in the same SCC, do nothing.
           | depRep == useRep -> return ()
           -- If there is no edge from useRep to depRep in the component graph, meaning there is no cycle formed, we
           -- can simply add the depRep -> useRep edge to the component graph.
-          | not (hasPathInCG useRep depRep ng) -> do
-              let newCDAG = insertHMUnique depRep useRep (cgDAG ng.cgraph)
-              modify' $ mapCGraph (\cg -> cg{cgDAG = newCDAG})
+          | not (hasPathInCG useRep depRep graph) -> do
+              let updatedUsesByDep = insertHMUnique depRep useRep graph.cgraph.cgUsesByDep
+              modify' $ mapCGraph (\componentGraph -> componentGraph{cgUsesByDep = updatedUsesByDep})
           -- The new edge forms a cycle in the component graph, we need to recompute the component graph.
           | otherwise -> modify' updateCGraph
     )
  where
-  liftGetRepVtx v g = let (rep, newCG) = getOrCreateRepVtx v g.cgraph in (rep, g{cgraph = newCG})
-
-{- | Check if there is a path from one vertex to another in the component graph.
-
-If from and to are the same, return True.
--}
-hasPathInCG :: ExprVertex -> ExprVertex -> DepGraph -> Bool
-hasPathInCG from to ng = dfs from Set.empty
- where
-  dfs :: ExprVertex -> Set.Set ExprVertex -> Bool
-  dfs current visited
-    | current == to = True
-    | Set.member current visited = False
-    | otherwise =
-        let neighbors = HashMap.findWithDefault [] current (cgDAG ng.cgraph)
-            newVisited = Set.insert current visited
-         in any (\neighbor -> dfs neighbor newVisited) neighbors
-
--- | Update the component graph based on the current propagation graph.
-updateCGraph2 :: (HasCallStack) => DepGraph -> DepGraph
-updateCGraph2 g = undefined
-
-liftGetVIDForG :: EvalAddr -> State DepGraph Int
-liftGetVIDForG addr = state $ \g ->
-  let (i, newM) = getVID addr g.vidMapping
-   in case newM of
-        Just new -> (i, g{vidMapping = new})
-        Nothing -> (i, g)
+  getOrCreateGraphRep vertex graph =
+    let (rep, updatedCGraph) = getOrCreateRepVtx vertex graph.cgraph
+     in (rep, graph{cgraph = updatedCGraph})
 
 -- | Remove all edges from the dependency graph that match the given predicate on the use vertex.
 delDGEdgesByUseMatch :: (HasCallStack) => (EvalAddr -> Bool) -> DepGraph -> DepGraph
 delDGEdgesByUseMatch useMatch =
   execState
     ( do
-        m <- gets vidMapping
-        modify' $ \g -> updateCGraph (mapVGraph (delVGEdgeByUseMatch (useMatchAdapt m)) g)
+        mapping <- gets vidMapping
+        modify' $ \graph -> updateCGraph (mapVGraph (delVGEdgeByUseMatch (useMatchAdapt mapping)) graph)
     )
  where
-  useMatchAdapt :: VIDMapping -> ExprVertex -> Bool
-  useMatchAdapt m x = useMatch (getAddrFromVIDMust (getExprVertex x) m)
+  useMatchAdapt :: VIDMapping -> Vertex -> Bool
+  useMatchAdapt mapping useVertex = useMatch (vertexToAddr $ getVertexAddrFromVtxMust useVertex mapping)
 
 {- | Query the dependents by matching the use vertex with the given predicate.
 
 It returns a list of (dependency, use) pairs that match the predicate.
 -}
 queryUsesByDepMatch :: (HasCallStack) => (EvalAddr -> Bool) -> DepGraph -> [(EvalAddr, EvalAddr)]
-queryUsesByDepMatch depMatch =
+queryUsesByDepMatch depMatches =
   evalState
     ( do
-        m <- gets vidMapping
-        g <- gets vgraph
-        let l = queryVGUsesByDepMatch (depMatchAdapt m) g
+        mapping <- gets vidMapping
+        vertexGraph <- gets vgraph
+        let matchingEdges = queryVGUsesByDepMatch (adaptDepMatch mapping) vertexGraph
         return $
           map
-            ( \(dep, use) ->
-                ( getAddrFromVIDMust (getRefVertex dep) m
-                , getAddrFromVIDMust (getExprVertex use) m
+            ( \(depVertex, useVertex) ->
+                ( vertexToAddr $ getVertexAddrFromVtxMust depVertex mapping
+                , vertexToAddr $ getVertexAddrFromVtxMust useVertex mapping
                 )
             )
-            l
+            matchingEdges
     )
  where
-  depMatchAdapt :: VIDMapping -> RefVertex -> Bool
-  depMatchAdapt m x = depMatch (getAddrFromVIDMust (getRefVertex x) m)
+  adaptDepMatch :: VIDMapping -> Vertex -> Bool
+  adaptDepMatch mapping depVertex =
+    depMatches (vertexToAddr $ getVertexAddrFromVtxMust depVertex mapping)
 
 queryUsesByDep :: (HasCallStack) => ReferableAddr -> DepGraph -> [EvalAddr]
-queryUsesByDep dep ng = map snd $ queryUsesByDepMatch (== rfbAddrToAddr dep) ng
+queryUsesByDep depAddr graph = map snd $ queryUsesByDepMatch (== rfbAddrToAddr depAddr) graph
+
+-- Component graph rebuilding
 
 -- | Update the component graph based on the current propagation graph.
 updateCGraph :: (HasCallStack) => DepGraph -> DepGraph
 updateCGraph graph =
-  let
-    x = graph
-    y =
-      -- trace
-      --   (printf "updateCGraph, g: %s" (show x))
-      x
-   in
-    y
-      { cgraph =
-          CGraph
-            { cgDAG = newSCCDAG
-            , repToComps = newBaseToComps
-            , compToRep = newVToSCCBase
-            }
-      , vidMapping = newMapping
-      }
+  graph
+    { cgraph =
+        CGraph
+          { cgUsesByDep = newUsesByDepRep
+          , repToComps = newMembersByRep
+          , compToRep = newRepByMember
+          }
+    }
  where
-  newTarjanState = scc (vEdges graph.vgraph) (vVertexes graph.vgraph) graph.vidMapping
-  newMapping = newTarjanState.tsVIDMapping
-  newBaseToComps =
+  tarjanState = scc graph.vgraph.vUsesByDep graph.vgraph.vVertices
+  newMembersByRep =
     foldr
-      ( \a acc -> case a of
-          AcyclicSCC x -> HashMap.insert x (Set.singleton x, False) acc
-          -- Use the first element of the SCC as the base address
-          CyclicSCC xs -> HashMap.insert (head xs) (Set.fromList xs, True) acc
+      ( \component membersByRep -> case component of
+          AcyclicSCC vertex -> HashMap.insert vertex (Set.singleton vertex, False) membersByRep
+          -- Use the first member vertex as the component representative.
+          CyclicSCC memberVertices -> HashMap.insert (head memberVertices) (Set.fromList memberVertices, True) membersByRep
       )
       HashMap.empty
-      -- (trace (printf "newGraphSCCs: %s" (show newGraphSCCs)) newGraphSCCs)
-      newTarjanState.tsSCCs
-  newVToSCCBase =
+      tarjanState.tsSCCs
+  newRepByMember =
     HashMap.foldrWithKey
-      ( \base (comps, isCyclic) acc ->
+      ( \rep (memberVertices, isCyclic) repByMember ->
           foldr
-            (\addr nacc -> HashMap.insert addr (base, isCyclic) nacc)
-            acc
-            (Set.toList comps)
+            (\memberVertex updatedRepByMember -> HashMap.insert memberVertex (rep, isCyclic) updatedRepByMember)
+            repByMember
+            (Set.toList memberVertices)
       )
       HashMap.empty
-      newBaseToComps
-  -- Convert the propagation graph edges to SCC graph edges.
-  -- For each edge from src to deps, find the SCC address of src and each dep.
-  -- If two keys map to the same SCC address, we merge the values of the two keys.
-  newSCCDAG =
+      newMembersByRep
+  -- Convert the vertex-level dependency-to-use edges to SCC-level edges.
+  -- Dependencies in the same SCC share a representative, so merge their uses
+  -- and discard edges whose dependency and use belong to the same SCC.
+  newUsesByDepRep =
     HashMap.map Set.toList $
       HashMap.foldrWithKey
-        ( \src deps acc ->
-            let (srcBase, _) = newVToSCCBase `lookupMust` refVToIrredV src
-                depBaseAddrs = Set.fromList $ map (\dep -> fst $ newVToSCCBase `lookupMust` dep) deps
-                -- Remove the source SCC address from the dependent SCC addresses.
-                -- This is because the source SCC address is not a dependency of itself.
-                depSccAddrsWoSrc :: Set.Set ExprVertex
-                depSccAddrsWoSrc = Set.delete srcBase depBaseAddrs
-             in HashMap.insertWith Set.union srcBase depSccAddrsWoSrc acc
+        ( \depVertex useVertices usesByDepRep ->
+            let (depRep, _) = newRepByMember `lookupMust` depVertex
+                useReps = Set.fromList $ map (\useVertex -> fst $ newRepByMember `lookupMust` useVertex) useVertices
+                externalUseReps = Set.delete depRep useReps
+             in HashMap.insertWith Set.union depRep externalUseReps usesByDepRep
         )
         HashMap.empty
-        (vEdges graph.vgraph)
+        graph.vgraph.vUsesByDep
 
-scc :: (HasCallStack) => HashMap.HashMap RefVertex [ExprVertex] -> Set.Set ExprVertex -> VIDMapping -> TarjanState
-scc edges vertexes m = execState go initState
- where
-  initState = emptyTarjanState edges (Set.toList vertexes) m
+-- Tarjan SCC decomposition
 
-  go :: (HasCallStack) => State TarjanState ()
-  go = do
-    forM_ vertexes $ \v -> do
-      vIndex <- gets $ \ts -> dnmIndex $ tsMetaMap ts `lookupMust` v
-      when (vIndex == 0) $
-        sccDFS v
+data NeighborType
+  = RegularNeighbor
+  | -- | RCNeighbor means the neighbor is added through a child-to-parent edge.
+    --     If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
+    --     back to the original node, this edge can be ignored.
+    RCNeighbor
+  deriving (Eq, Show)
 
 data TarjanNodeMeta = TarjanNodeMeta
   { dnmLowLink :: !Int
@@ -518,170 +481,128 @@ emptyTarjanNodeMeta :: TarjanNodeMeta
 emptyTarjanNodeMeta = TarjanNodeMeta 0 0 False RegularNeighbor
 
 data TarjanState = TarjanState
-  { tsEdges :: HashMap.HashMap RefVertex [ExprVertex]
+  { tsUsesByDep :: HashMap.HashMap Vertex [Vertex]
   , tsIndex :: !Int
-  , tsStack :: [ExprVertex]
-  , tsMetaMap :: HashMap.HashMap ExprVertex TarjanNodeMeta
+  , tsStack :: [Vertex]
+  , tsMetaMap :: HashMap.HashMap Vertex TarjanNodeMeta
   , tsSCCs :: [SCC]
-  , tsAncLinks :: HashMap.HashMap ExprVertex [RefVertex]
-  , tsVIDMapping :: VIDMapping
   }
 
-emptyTarjanState :: HashMap.HashMap RefVertex [ExprVertex] -> [ExprVertex] -> VIDMapping -> TarjanState
-emptyTarjanState edges vertexes m =
+emptyTarjanState :: HashMap.HashMap Vertex [Vertex] -> [Vertex] -> TarjanState
+emptyTarjanState usesByDep vertices =
   TarjanState
-    { tsEdges = edges
+    { tsUsesByDep = usesByDep
     , tsIndex = 0
     , tsStack = []
-    , tsMetaMap = HashMap.fromList $ map (\v -> (v, emptyTarjanNodeMeta)) vertexes
+    , tsMetaMap = HashMap.fromList $ map (\vertex -> (vertex, emptyTarjanNodeMeta)) vertices
     , tsSCCs = []
-    , tsAncLinks = HashMap.empty
-    , tsVIDMapping = m
     }
 
 data SCC
-  = AcyclicSCC ExprVertex
-  | CyclicSCC [ExprVertex]
+  = AcyclicSCC Vertex
+  | CyclicSCC [Vertex]
   deriving (Show)
 
+scc :: (HasCallStack) => HashMap.HashMap Vertex [Vertex] -> Set.Set Vertex -> TarjanState
+scc usesByDep vertices = execState go initialState
+ where
+  initialState = emptyTarjanState usesByDep (Set.toList vertices)
+
+  go :: (HasCallStack) => State TarjanState ()
+  go = do
+    forM_ vertices $ \vertex -> do
+      vertexIndex <- gets $ \tarjanState -> dnmIndex $ tarjanState.tsMetaMap `lookupMust` vertex
+      when (vertexIndex == 0) $
+        sccDFS vertex
+
 -- | Perform a depth-first search to find strongly connected components (SCCs) using Tarjan's algorithm.
-sccDFS :: (HasCallStack) => ExprVertex -> State TarjanState ()
-sccDFS v = do
-  modify' $ \ts ->
-    let index = tsIndex ts
-        newIndex = index + 1
-        newMeta =
+sccDFS :: (HasCallStack) => Vertex -> State TarjanState ()
+sccDFS vertex = do
+  modify' $ \tarjanState ->
+    let nextIndex = tarjanState.tsIndex + 1
+        vertexMeta =
           TarjanNodeMeta
-            { dnmLowLink = newIndex
-            , dnmIndex = newIndex
+            { dnmLowLink = nextIndex
+            , dnmIndex = nextIndex
             , dnmOnStack = True
             , dnmNType = RegularNeighbor
             }
-     in ts{tsIndex = newIndex, tsStack = v : tsStack ts, tsMetaMap = HashMap.insert v newMeta (tsMetaMap ts)}
-  neighbors <- getNeighbors v
-  forM_ neighbors $ \w -> do
+     in tarjanState
+          { tsIndex = nextIndex
+          , tsStack = vertex : tarjanState.tsStack
+          , tsMetaMap = HashMap.insert vertex vertexMeta tarjanState.tsMetaMap
+          }
+  neighbors <- getNeighbors vertex
+  forM_ neighbors $ \neighbor -> do
     -- If the current node finds itself as a neighbor, mark it as a RCNeighbor.
-    when (w `elem` neighbors) $ modify' $ \ts ->
-      let tm = tsMetaMap ts
-          elemW = tm `lookupMust` w
-          newMeta = elemW{dnmNType = RCNeighbor}
-       in ts{tsMetaMap = HashMap.insert w newMeta tm}
+    when (neighbor `elem` neighbors) $ modify' $ \tarjanState ->
+      let metaMap = tarjanState.tsMetaMap
+          neighborMeta = metaMap `lookupMust` neighbor
+          updatedNeighborMeta = neighborMeta{dnmNType = RCNeighbor}
+       in tarjanState{tsMetaMap = HashMap.insert neighbor updatedNeighborMeta metaMap}
 
-    isWVisited <- gets (\ts -> (\m -> dnmIndex m /= 0) $ tsMetaMap ts `lookupMust` w)
-    isWOnStack <- gets (\ts -> dnmOnStack $ tsMetaMap ts `lookupMust` w)
+    neighborVisited <-
+      gets (\tarjanState -> (\metadata -> dnmIndex metadata /= 0) $ tarjanState.tsMetaMap `lookupMust` neighbor)
+    neighborOnStack <- gets (\tarjanState -> dnmOnStack $ tarjanState.tsMetaMap `lookupMust` neighbor)
     if
-      | not isWVisited -> do
-          sccDFS w
-          modify' $ \ts ->
-            let tm = tsMetaMap ts
-                lowlinkV = dnmLowLink $ tm `lookupMust` v
-                lowlinkW = dnmLowLink $ tm `lookupMust` w
-             in ts{tsMetaMap = HashMap.adjust (\entry -> entry{dnmLowLink = min lowlinkV lowlinkW}) v tm}
-      | isWOnStack -> modify' $ \ts ->
-          let tm = tsMetaMap ts
-              lowlinkV = dnmLowLink $ tm `lookupMust` v
-              indexW = dnmIndex $ tm `lookupMust` w
-           in ts{tsMetaMap = HashMap.adjust (\entry -> entry{dnmLowLink = min lowlinkV indexW}) v tm}
+      | not neighborVisited -> do
+          sccDFS neighbor
+          modify' $ \tarjanState ->
+            let metaMap = tarjanState.tsMetaMap
+                vertexLowLink = dnmLowLink $ metaMap `lookupMust` vertex
+                neighborLowLink = dnmLowLink $ metaMap `lookupMust` neighbor
+             in tarjanState
+                  { tsMetaMap =
+                      HashMap.adjust (\metadata -> metadata{dnmLowLink = min vertexLowLink neighborLowLink}) vertex metaMap
+                  }
+      | neighborOnStack -> modify' $ \tarjanState ->
+          let metaMap = tarjanState.tsMetaMap
+              vertexLowLink = dnmLowLink $ metaMap `lookupMust` vertex
+              neighborIndex = dnmIndex $ metaMap `lookupMust` neighbor
+           in tarjanState
+                { tsMetaMap = HashMap.adjust (\metadata -> metadata{dnmLowLink = min vertexLowLink neighborIndex}) vertex metaMap
+                }
       | otherwise -> return ()
 
-  isRoot <- gets (\ts -> let m = tsMetaMap ts `lookupMust` v in dnmLowLink m == dnmIndex m)
-  -- m <- gets tsVIDMapping
-  -- let vAddr = getVertexAddrFromIVMust v m
-  -- trace
-  --   (printf "sccDFS: v=%s, %s, isRoot=%s, neighbors=%s" (show v) (show vAddr) (show isRoot) (show neighbors))
-  --   (return ())
-  when isRoot $ do
-    modify' $ \ts ->
-      let (sccRestNodes, restStack) = span (/= v) (tsStack ts)
-          newStack = tail restStack
-          curNodes = v : sccRestNodes
-          newSCC =
-            if dnmNType (tsMetaMap ts `lookupMust` v) == RCNeighbor
-              then CyclicSCC curNodes
-              else AcyclicSCC v
-          newMetaMap =
+  isComponentRoot <- gets $ \tarjanState ->
+    let vertexMeta = tarjanState.tsMetaMap `lookupMust` vertex
+     in dnmLowLink vertexMeta == dnmIndex vertexMeta
+  when isComponentRoot $ do
+    modify' $ \tarjanState ->
+      let (verticesBeforeRoot, stackFromRoot) = span (/= vertex) tarjanState.tsStack
+          remainingStack = tail stackFromRoot
+          componentVertices = vertex : verticesBeforeRoot
+          component =
+            if dnmNType (tarjanState.tsMetaMap `lookupMust` vertex) == RCNeighbor
+              then CyclicSCC componentVertices
+              else AcyclicSCC vertex
+          updatedMetaMap =
             foldr
-              ( \addr accMetaMap ->
+              ( \memberVertex metaMap ->
                   -- Mark all nodes in the SCC as not on stack.
-                  (HashMap.adjust (\m -> m{dnmOnStack = False}) addr accMetaMap)
+                  HashMap.adjust (\metadata -> metadata{dnmOnStack = False}) memberVertex metaMap
               )
-              (tsMetaMap ts)
-              curNodes
-       in -- trace
-          --   (printf "Found SCC: %s, curNodes: %s" (show newSCC) (show curNodesAddrs))
-          ts
-            { tsStack = newStack
-            , tsMetaMap = newMetaMap
-            , tsSCCs = newSCC : tsSCCs ts
+              tarjanState.tsMetaMap
+              componentVertices
+       in tarjanState
+            { tsStack = remainingStack
+            , tsMetaMap = updatedMetaMap
+            , tsSCCs = component : tarjanState.tsSCCs
             }
 
-getNeighbors :: ExprVertex -> State TarjanState [ExprVertex]
-getNeighbors v = do
-  edges <- gets tsEdges
-  vRefM <- getRefVFromV v
-  case vRefM of
-    Nothing -> return []
-    Just vRef -> return $ HashMap.findWithDefault [] vRef edges
+getNeighbors :: Vertex -> State TarjanState [Vertex]
+getNeighbors vertex = gets (HashMap.findWithDefault [] vertex . tsUsesByDep)
 
-data NeighborType
-  = RegularNeighbor
-  | {- | RCNeighbor means the neighbor is added through a child-to-parent edge.
-    If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
-    back to the original node, this edge can be ignored.
-    -}
-    RCNeighbor
-  deriving (Eq, Show)
-
-{- | Check if the first address is a parent of the second address.
-
-A parent address being a prefix of the child means that there must be at least one more referable segment in the
-child address after the parent address.
--}
-isSufIrredParent :: VertexAddr -> VertexAddr -> Bool
-isSufIrredParent parent child =
-  let
-    parentAddr = vertexToAddr parent
-    childAddr = vertexToAddr child
-    isParentPrefix = isPrefix parentAddr childAddr
-   in
-    isParentPrefix
-      && ( let diff = trimPrefixAddr parentAddr childAddr
-               rest = V.filter isSegmentReferable diff.evalAddrSegments
-            in not (V.null rest)
-         )
-
-liftGetVIDForTS :: EvalAddr -> State TarjanState Int
-liftGetVIDForTS addr = state $ \ts ->
-  let (i, newM) = getVID addr ts.tsVIDMapping
-   in case newM of
-        Just new -> (i, ts{tsVIDMapping = new})
-        Nothing -> (i, ts)
-
-getRefVFromV :: ExprVertex -> State TarjanState (Maybe RefVertex)
-getRefVFromV x = do
-  m <- gets tsVIDMapping
-  let xAddrM = getAddrFromVID (getExprVertex x) m
-  case xAddrM >>= addrIsRfbAddr of
-    Just xAddrRef -> do
-      i <- liftGetVIDForTS (rfbAddrToAddr xAddrRef)
-      return $ Just (RefVertex i)
-    Nothing -> return Nothing
+-- Collection helpers
 
 lookupMust :: (HasCallStack, Show k, Show a, Hashable k) => HashMap.HashMap k a -> k -> a
-lookupMust m k = case HashMap.lookup k m of
-  Just v -> v
-  Nothing -> error $ printf "key %s not found in map %s" (show k) (show m)
+lookupMust hashMap key = case HashMap.lookup key hashMap of
+  Just value -> value
+  Nothing -> error $ printf "key %s not found in map %s" (show key) (show hashMap)
 
 insertHMUnique :: (Eq k, Hashable k, Eq a) => k -> a -> HashMap.HashMap k [a] -> HashMap.HashMap k [a]
-insertHMUnique key val =
+insertHMUnique key value =
   HashMap.insertWith
-    (\_ old -> if val `elem` old then old else val : old)
+    (\_ oldValues -> if value `elem` oldValues then oldValues else value : oldValues)
     key
-    [val]
-
-insertMUnique :: (Eq a, Ord k) => k -> a -> Map.Map k [a] -> Map.Map k [a]
-insertMUnique key val =
-  Map.insertWith
-    (\_ old -> if val `elem` old then old else val : old)
-    key
-    [val]
+    [value]

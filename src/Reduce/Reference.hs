@@ -522,12 +522,12 @@ watch tarAddr refAddr = do
     -- Check if the refAddr's SuffixIrreducible form is in a cyclic scc.
     -- We have to trim the refAddr to its canonical form because the reference could be mutable argument.
     -- For example, {a: b + 1, b: a - 1}. We are interested in whether b forms a cycle, not /b/fa0.
-    refGrpAddrM = lookupGrpAddr (trimCanonicalToVertex $ collapseToCanonical refAddr) newG
+    refGroupM = lookupDepGroup (trimCanonicalToVertex $ collapseToCanonical refAddr) newG
   putRMContext $ ctx{depGraph = newG}
 
-  cd <- case refGrpAddrM of
+  cd <- case refGroupM of
     Nothing -> throwFatal $ printf "watch: refAddr %s is not in the notification graph" (show refAddr)
-    Just refGrpAddr -> return $ snd $ getGrpAddr refGrpAddr
+    Just refGroup -> return refGroup.depGroupIsCyclic
 
   debugInstStr
     "watch"

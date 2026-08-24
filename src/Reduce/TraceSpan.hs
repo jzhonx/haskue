@@ -15,7 +15,7 @@ import Data.Aeson (KeyValue (..), ToJSON, Value, toJSON)
 import Data.Aeson.Types (object)
 import qualified Data.Map as Map
 import qualified Data.Text as T
-import DepGraph (GrpAddr, lookupGrpAddr)
+import DepGraph (DepGroupDesc, lookupDepGroup)
 import EvalAddr
 import Reduce.Monad (
   RM,
@@ -187,19 +187,19 @@ markFlowEventStart addr vers = case addrIsVertex addr of
     let newFlowID = flowIDCounter + 1
     ng <- gets depGraph
     let
-      r = lookupGrpAddr vAddr ng
+      r = lookupDepGroup vAddr ng
     case r of
-      Just grpAddr -> do
-        modify' $ \ctx -> ctx{flowIDMap = Map.insert (grpAddr, vers) newFlowID flowIDMap, flowIDCounter = newFlowID}
+      Just group -> do
+        modify' $ \ctx -> ctx{flowIDMap = Map.insert (group, vers) newFlowID flowIDMap, flowIDCounter = newFlowID}
 
         whenTraceEnabled "reduce" addr (return ()) $ emitFlowEvent "s" (T.pack $ printf "0x%x" newFlowID)
       Nothing -> return ()
   Nothing -> return ()
 
-markFlowEventEnd :: GrpAddr -> Int -> RM ()
-markFlowEventEnd addr vers = do
+markFlowEventEnd :: DepGroupDesc -> Int -> RM ()
+markFlowEventEnd group vers = do
   flowIDMap <- gets flowIDMap
-  case Map.lookup (addr, vers) flowIDMap of
+  case Map.lookup (group, vers) flowIDMap of
     Just flowID ->
       whenTraceEnabled
         "reduce"
