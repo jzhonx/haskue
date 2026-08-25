@@ -154,5 +154,44 @@ fx: {
     seg: "x"
 }
 
+-- disj11 --
+// this tests default value can be propagated.
+a: b.x.y
+b: *{x: *{y: 1} | 2} | {}
+-- exp --
+a: 1
+b: {
+    x: {
+        y: 1
+    }
+}
 
+-- disj12 --
+// this tests disjunction can not be selected.
+a: b.x.y
+b: {x: *{y: 1} | 2} | {x: {y: 1}}
+-- exp --
+a: b.x.y
+b: {
+    x: {
+        y: 1
+    }
+} | {
+    x: {
+        y: 1
+    }
+}
+
+-- disj13 --
+a: {x: *{y: 1} | 2} | {x: {y: 1}}
+-- exp --
+a: {
+    x: {
+        y: 1
+    }
+} | {
+    x: {
+        y: 1
+    }
+}
 

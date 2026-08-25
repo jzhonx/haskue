@@ -366,7 +366,7 @@ removeChangedSubFields affected structAddr =
                     structAddr
                     (msprintfS "set sub affected addr to Unknown: %s" [packFmtA afSubDep])
                   setUnknownInStore afSubDep
-                  signalReduced afSubDep
+                  signalReduced afSubDep False
           )
           pairs
     )

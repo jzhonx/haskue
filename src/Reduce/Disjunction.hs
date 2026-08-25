@@ -29,7 +29,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
-import Value.Export.Debug (termsRepToJSONWithAddr, vnToStringTermsRep)
+import Value.Export.Debug (termsRepToJSONWithAddr, vnToFullStringTermsRep, vnToStringTermsRep)
 
 reduceDisj :: EvalAddr -> Disj -> RM Val
 reduceDisj addr d = traceSpanNoPreRM "reduceDisj" addr $ do
@@ -80,7 +80,7 @@ normalizeDisj addr d = traceSpanRM
       "normalizeDisj"
       addr
       ( do
-          flattenedRep <- vnToStringTermsRep (mkDisjVN flattened)
+          flattenedRep <- vnToFullStringTermsRep (mkDisjVN flattened)
           rep <- vnToStringTermsRep (mkDisjVN final)
           return $ printf "flattened: %s, final: %s" flattenedRep rep
       )
@@ -238,13 +238,15 @@ rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts})
           xRep <- vnToStringTermsRep x
           return $
             printf
-              "At %s, disjunct: %s, isDiscarded: %s isValEqDef: %s, keepDisjunct: %s, isDefIndex: %s, v: %s"
+              "At %s, disjunct: %s, isNewDisj: %s, isDiscarded: %s isValEqDef: %s, keepDisjunct: %s, isDefIndex: %s, in accXs: %s, v: %s"
               (show idx)
               xT
+              (show isNewDisj)
               (show isDiscarded)
               (show isValEqDef)
               (show keepDisjunct)
               (show isDefIndex)
+              (show $ x `elem` accXs)
               xRep
       )
     return -- Add the current disjunct index to the default indexes if condition is met.

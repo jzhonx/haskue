@@ -9,7 +9,6 @@ import Control.DeepSeq (NFData (..))
 import Data.Aeson (ToJSON (..))
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, isNothing)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -71,11 +70,6 @@ instance Eq Val where
   (==) (VList ts1) (VList ts2) = ts1 == ts2
   (==) (VDisj d1) (VDisj d2) = d1 == d2
   (==) (VAtom l1) (VAtom l2) = l1 == l2
-  (==) (VDisj dj1) n2@(VAtom _) =
-    if isNothing (rtrDisjDefVal dj1)
-      then False
-      else (fromJust $ rtrDisjDefVal dj1) == n2
-  (==) (VAtom a1) (VDisj dj2) = (==) (VDisj dj2) (VAtom a1)
   (==) (VBounds b1) (VBounds b2) = b1 == b2
   (==) (VBottom _) (VBottom _) = True
   (==) VTop VTop = True

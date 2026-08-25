@@ -199,8 +199,9 @@ getDstVal :: LocateParams -> EvalAddr -> RM DerefResult
 getDstVal lp addr = traceSpanNoPreRM "getDstVal" addr $ do
   dr <- locateRef lp addr
   case dr of
-    DerefResult{targetValue = Just tarV, targetAddr = Just tarAddr} -> do
-      v <- copyConcrete tarAddr addr tarV
+    DerefResult{targetValue = Just tarV, targetAddr = Just physicalTarAddr, resolvedIdentAddr = Just identAddr} -> do
+      let logicalTarAddr = appendEvalAddr identAddr (fieldPathToAddr lp.selectors)
+      v <- copyConcrete physicalTarAddr logicalTarAddr addr tarV
       return $ dr{targetValue = Just v}
     _ -> return dr
 
@@ -253,22 +254,23 @@ locateRefInTree identAddr sels refAddr = do
       case identVM of
         Nothing -> do
           -- The ident is not resolved yet
-          let potentialTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
-          watch potentialTarAddr refAddr
-          return (mkPartialFound identAddr potentialTarAddr)
+          let logicalTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
+          watch logicalTarAddr refAddr
+          return (mkPartialFound identAddr logicalTarAddr)
         Just identV -> locateIdentResolved identAddr identV sels refAddr
 
 -- | The ident is resolved; descend along the selectors against its value.
 locateIdentResolved :: EvalAddr -> VNode -> Selectors -> EvalAddr -> RM DerefResult
 locateIdentResolved identAddr identV sels refAddr = do
-  (targetAddr, matchedVM) <- descend identAddr identV sels
+  (physicalTarAddr, matchedVM) <- descend identAddr identV sels
   case matchedVM of
     Nothing -> do
       -- Some selectors cannot be matched, we can watch the target addr and return a partial result.
-      watch targetAddr refAddr
-      return (mkPartialFound identAddr targetAddr)
+      let logicalTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
+      watch logicalTarAddr refAddr
+      return (mkPartialFound identAddr physicalTarAddr)
     Just matchedV -> do
-      resolveRCRes <- resolveRCValue identAddr targetAddr matchedV refAddr
+      resolveRCRes <- resolveRCValue identAddr physicalTarAddr matchedV refAddr
       debugInstStr "locateRef" refAddr (debugResolve resolveRCRes)
       case resolveRCRes of
         -- No need to watch since the target is self or a sub field of self, or the target value is RC-resolvable
@@ -276,8 +278,9 @@ locateIdentResolved identAddr identV sels refAddr = do
         Just lr -> return lr
         -- The target value is not RC-resolvable, we can return it directly.
         _ -> do
-          watch targetAddr refAddr
-          return $ mkRegDR identAddr targetAddr matchedV
+          let logicalTarAddr = appendEvalAddr identAddr (fieldPathToAddr sels)
+          watch logicalTarAddr refAddr
+          return $ mkRegDR identAddr physicalTarAddr matchedV
 
 {- | If the ref references itself or a sub field of itself, treat it as a reference cycle.
 
@@ -386,7 +389,7 @@ already-reduced) result; if it has already been fully resolved, return Nothing s
 fetches the latest value.
 -}
 resolveRCValue :: EvalAddr -> EvalAddr -> VNode -> EvalAddr -> RM (Maybe DerefResult)
-resolveRCValue identAddr targetAddr matchedV refAddr = case addrIsVertex targetAddr of
+resolveRCValue identAddr physicalTarAddr matchedV refAddr = case addrIsVertex physicalTarAddr of
   Just dep -> do
     RCResolver{stack, doneRCAddrs, resolving} <- getRCResolver
     if not resolving
@@ -399,9 +402,9 @@ resolveRCValue identAddr targetAddr matchedV refAddr = case addrIsVertex targetA
         if
           -- OnStack must precede fetch since at the same time all cycle nodes are dirty, which would
           -- incorrectly raise error.
-          | depOnStack, Just _ <- rtrAtom (value matchedV) -> return $ Just $ mkRegDR identAddr targetAddr matchedV
+          | depOnStack, Just _ <- rtrAtom (value matchedV) -> return $ Just $ mkRegDR identAddr physicalTarAddr matchedV
           -- If the target is found on the RC stack, the target value is a top.
-          | depOnStack -> return $ Just $ mkRefCycleDR identAddr targetAddr (Just $ mkValVN VTop)
+          | depOnStack -> return $ Just $ mkRefCycleDR identAddr physicalTarAddr (Just $ mkValVN VTop)
           -- If the dep is done, we can return the value directly without watching since the value won't change anymore.
           -- DoneRCAddrs are still marked as dirty in the dirtSet, we have to return RsNormal to let
           -- locateRef fetch the latest value.
@@ -410,7 +413,7 @@ resolveRCValue identAddr targetAddr matchedV refAddr = case addrIsVertex targetA
               do
                 debugInstStr "locateRef" refAddr (return $ printf "dep %s is dirty" (show dep))
                 mapRCResolver (\rs -> rs{stack = dep : stack})
-                return $ Just $ mkPartialFound identAddr targetAddr
+                return $ Just $ mkPartialFound identAddr physicalTarAddr
   Nothing -> return Nothing
 
 -- | Trace message for the initial address assembly.
@@ -547,14 +550,17 @@ watch tarAddr refAddr = do
 
 The tree cursor is the target cursor without the copied raw value.
 -}
-copyConcrete :: EvalAddr -> EvalAddr -> VNode -> RM VNode
-copyConcrete tarAddr addr tarV = do
-  let vt = copyVTermNode tarAddr addr (VTVNode tarV)
+copyConcrete :: EvalAddr -> EvalAddr -> EvalAddr -> VNode -> RM VNode
+copyConcrete physicalTarAddr logicalTarAddr addr tarV = do
+  let vt = copyVTermNode physicalTarAddr addr (VTVNode tarV)
   let v = vtVNodeOr id tarV vt
-  -- We store the last dereferenced value for the reference with the canonical address.
+  -- Dependency edges use the logical address assembled from the resolved
+  -- identifier and selectors, so version bookkeeping must use the same key.
+  -- The physical target may contain internal disjunction steps that are not
+  -- present in that dependency address.
   storeLastDerefedVersion
     (trimCanonicalToVertex $ collapseToCanonical addr)
-    (trimCanonicalToRfb $ collapseToCanonical tarAddr)
+    (trimCanonicalToRfb $ collapseToCanonical logicalTarAddr)
     v
 
   -- We need to make the target immutable before returning it.
@@ -564,7 +570,7 @@ copyConcrete tarAddr addr tarV = do
   -- original references so that if they point to an inner scope, the values of them can be invalidated and further
   -- resolved to new fields. So there is no need to recursively make the block immutable.
   let immutTarget = removeConstraints v
-  r <- checkRefDef tarAddr immutTarget
+  r <- checkRefDef physicalTarAddr immutTarget
   debugInstStr
     "copyConcrete"
     addr

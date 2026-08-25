@@ -96,8 +96,9 @@ data Context = Context
   , depGraph :: DepGraph
   , lastDerefs :: LastDerefed
   , vStore :: Map.Map VertexAddr VNode
-  -- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
-  --   objects.
+  {- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
+  objects.
+  -}
   , comprehBindings :: Seq.Seq [(TextIndex, VNode)]
   -- ^ The comprehension bindings stack.
   , rcResolver :: !RCResolver
@@ -120,9 +121,10 @@ mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
 
 data LastDerefed = LastDerefed
   { ldUseToDep :: Map.Map VertexAddr (Map.Map ReferableAddr Int)
-  -- ^ It stores the last dereferenced value of the reference with the canonical address.
-  --   We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
-  --   time, so if any of them references to the same referable address, they will have the same value.
+  {- ^ It stores the last dereferenced value of the reference with the canonical address.
+  We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
+  time, so if any of them references to the same referable address, they will have the same value.
+  -}
   , ldDepToUse :: Map.Map ReferableAddr (Map.Map VertexAddr Int)
   }
   deriving (Show, Generic, NFData)
@@ -136,16 +138,22 @@ data ReducedSignal = ReducedSignal
   , depGroup :: DepGroupDesc
   , createdWithRCResolver :: Bool
   -- ^ If true, the signal is created with an active RC resolver.
+  , depMatchByPrefix :: !Bool
   }
   deriving (Show, Generic, NFData)
 
 instance ShowWTIndexer ReducedSignal where
-  tshow ReducedSignal{addr, depGroup, createdWithRCResolver} = do
+  tshow ReducedSignal{addr, depGroup, createdWithRCResolver, depMatchByPrefix} = do
     addrT <- tshow addr
     depGroupT <- tshow depGroup
     return $
       T.pack $
-        printf "ReducedSignal {addr:%s,depGroup:%s,createdWithRCResolver:%s}" addrT depGroupT (show createdWithRCResolver)
+        printf
+          "ReducedSignal {addr:%s,depGroup:%s,RCResolver:%s,depMatch:%s}"
+          addrT
+          depGroupT
+          (show createdWithRCResolver)
+          (show depMatchByPrefix)
 
 emptyContext :: (LB.ByteString -> IO ()) -> Context
 emptyContext tPut =

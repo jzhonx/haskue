@@ -142,8 +142,10 @@ Test-Suite haskue-unit-test
   hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
+    EvalAddrTest,
     ScannerTest,
     SpecTest,
+    ValueEqTest,
     VTermTest,
   build-depends:
         base,

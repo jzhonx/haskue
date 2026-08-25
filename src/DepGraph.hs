@@ -290,7 +290,7 @@ pattern IsCyclicDepGroup vertexAddr <- DepGroupDesc vertexAddr True
 -- | Get the current member addresses of a dependency group.
 getDepGroupMembers :: DepGroupDesc -> DepGraph -> [VertexAddr]
 getDepGroupMembers group graph = case groupMembers of
-  Nothing -> []
+  Nothing -> [group.depGroupRep]
   Just (memberVertices, _) -> map (`getVertexAddrFromVtxMust` graph.vidMapping) (Set.toList memberVertices)
  where
   groupMembers = do
@@ -305,6 +305,21 @@ getDepGroupUses group graph = case lookupVID group.depGroupRep graph.vidMapping 
     Nothing -> []
     Just useReps ->
       mapMaybe (`lookupDepGroupByVertex` graph) useReps
+
+{- | Get the direct use groups of every dependency group matching a predicate.
+
+Only dependency groups with outgoing edges are considered. Result order follows
+the component graph's internal hash map and is not stable.
+-}
+getDepGroupUsesBy :: (DepGroupDesc -> Bool) -> DepGraph -> [(DepGroupDesc, [DepGroupDesc])]
+getDepGroupUsesBy matches graph =
+  mapMaybe matchingUses (HashMap.toList graph.cgraph.cgUsesByDep)
+ where
+  matchingUses (depRep, useReps) = do
+    depGroup <- lookupDepGroupByVertex depRep graph
+    if matches depGroup
+      then return (depGroup, mapMaybe (`lookupDepGroupByVertex` graph) useReps)
+      else Nothing
 
 -- | Look up the dependency group containing a graph vertex.
 lookupDepGroupByVertex :: Vertex -> DepGraph -> Maybe DepGroupDesc
@@ -463,9 +478,10 @@ updateCGraph graph =
 
 data NeighborType
   = RegularNeighbor
-  | -- | RCNeighbor means the neighbor is added through a child-to-parent edge.
-    --     If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
-    --     back to the original node, this edge can be ignored.
+  | {- | RCNeighbor means the neighbor is added through a child-to-parent edge.
+    If later it turns out that there is no cycle formed through this edge, meaning there is no path from the neighbor
+    back to the original node, this edge can be ignored.
+    -}
     RCNeighbor
   deriving (Eq, Show)
 

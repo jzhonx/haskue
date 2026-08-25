@@ -56,6 +56,20 @@ TODO: rename selectorsToAddr
 fieldPathToAddr :: Selectors -> EvalAddr
 fieldPathToAddr sels = addrFromList $ selectorsToAddrSegments sels
 
+{- | Convert an address made only of concrete selector segments back to
+selectors. Returns 'Nothing' when the address contains a root, an internal
+term step, or a non-selector feature such as a let binding.
+-}
+addrToSelectors :: EvalAddr -> Maybe Selectors
+addrToSelectors addr = Selectors <$> mapM segmentToSelector (addrToList addr)
+ where
+  segmentToSelector segment = do
+    feature <- addrSegmentToFeature segment
+    case featureTag feature of
+      StringTag -> Just $ StringSel $ TextIndex $ featureIndex feature
+      ListIdxTag -> Just $ IntSel $ featureIndex feature
+      _ -> Nothing
+
 selectorsToAddrSegments :: Selectors -> [AddrSegment]
 selectorsToAddrSegments (Selectors sels) = map (featureToAddrSegment . selectorToFeature) sels
 

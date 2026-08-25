@@ -71,6 +71,7 @@ import Reduce.TraceSpan (
 import Reduce.Unification (unifyVals)
 import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..))
 import Syntax.Token (Location)
+import qualified Syntax.Token as Token
 import Text.Printf (printf)
 import Value
 import Value.Export.Debug (
@@ -113,7 +114,10 @@ reduce addr vn = traceSpanTermsRepTM "reduce" addr vn $ do
         ttoJSON store
     )
 
-  signalReduced addr
+  isDisj <- case value vn' of
+    VDisj _ -> return True
+    _ -> return False
+  signalReduced addr isDisj
   return vn'
 
 -- | Reduce the constraints of a value, and update the value's node and constraints with the reduced result.
@@ -410,6 +414,16 @@ reduceOp addr oc = case oc.ocOp of
         (iSelectors vs)
     let vs' = vs{base = v', iSelectors = xs'}
     reduceNoUnify addr (oc{ocOp = VSelect vs'})
+  RegOp rop -> do
+    let reduceArg = case rop.ropOpType of
+          BinOpType Token.Equal -> reduce
+          BinOpType Token.NotEqual -> reduce
+          _ -> reduceConstraintsInCnstrs
+    op' <- vtmapM (applyAddrFOnVN reduceArg) addr oc.ocOp
+    reduceNoUnify addr (oc{ocOp = op'})
+  DisjOp _ -> do
+    op' <- vtmapM (applyAddrFOnVN reduce) addr oc.ocOp
+    reduceNoUnify addr (oc{ocOp = op'})
   _ -> do
     op' <- vtmapM (applyAddrFOnVN reduceConstraintsInCnstrs) addr oc.ocOp
     reduceNoUnify addr (oc{ocOp = op'})
@@ -493,7 +507,7 @@ retrieveArgs op =
         Left _ -> error "retrieveArgs: unexpected non-VNode child in op"
         Right xs -> (xs, all (isJust . rtrValue . value) xs)
 
-signalReduced :: EvalAddr -> RM ()
+signalReduced :: EvalAddr -> Bool -> RM ()
 signalReduced = sendToRootRecalcQ
 
 storeBuiltinsAndPackages :: RM ()
@@ -542,10 +556,10 @@ reduceList l addr = traceSpanNoPreRM "reduceList" addr do
                   case prevM of
                     Just prev -> when (prev.value /= v) $ do
                       storeVal p (prev{value = v, version = prev.version + 1})
-                      signalReduced p
+                      signalReduced p False
                     Nothing -> do
                       storeVal p (mkValVN v){version = 1}
-                      signalReduced p
+                      signalReduced p False
                 _ -> return ()
             )
             (featureToAddrSegment . mkListIdxFeature)

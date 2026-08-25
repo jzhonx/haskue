@@ -8,6 +8,7 @@ module Reduce.Op where
 
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector as V
 import EvalAddr
 import Reduce.Monad (
   RM,
@@ -116,14 +117,7 @@ cmpOpsMap :: Map.Map TokenType ((BinOpDirect, VNode) -> (BinOpDirect, VNode) -> 
 cmpOpsMap =
   Map.fromList
     [ (Token.Equal, cmpEqu)
-    ,
-      ( Token.NotEqual
-      , \x y -> do
-          res <- cmpEqu x y
-          case res of
-            VAtom (Bool b) -> reta (Bool (not b))
-            _ -> return res
-      )
+    , (Token.NotEqual, cmpNotEqual)
     , (Token.Less, cmpLess Token.Less)
     , (Token.LessEqual, cmpLessEqual Token.LessEqual)
     ,
@@ -144,6 +138,13 @@ cmpOpsMap =
       )
     ]
 
+cmpNotEqual :: (BinOpDirect, VNode) -> (BinOpDirect, VNode) -> RM Val
+cmpNotEqual x y = do
+  result <- cmpEqu x y
+  case result of
+    VAtom (Bool isEqual) -> reta (Bool $ not isEqual)
+    _ -> return result
+
 cmpEqu :: (BinOpDirect, VNode) -> (BinOpDirect, VNode) -> RM Val
 cmpEqu (d1, vn1@VNode{value = v1}) (d2, vn2@VNode{value = v2}) =
   case (v1, v2) of
@@ -154,25 +155,53 @@ cmpEqu (d1, vn1@VNode{value = v1}) (d2, vn2@VNode{value = v2}) =
       | VBottom _ <- v2 -> reta (Bool True)
       | otherwise -> reta (Bool False)
     (_, VBottom _) -> cmpEqu (d2, vn2) (d1, vn1)
-    -- When both trees are not bottom.
-    _
-      | Just Null <- rtrAtom v1 -> cmpNull vn2
-      | Just Null <- rtrAtom v2 -> cmpNull vn1
-      -- When both trees are non-null atoms.
-      | Just a1 <- rtrAtom v1, Just a2 <- rtrAtom v2 -> reta (Bool $ a1 == a2)
-      -- When both trees are non union values.
-      | Just a1 <- rtrNonUnion v1, Just a2 <- rtrNonUnion v2 -> reta (Bool $ a1 == a2)
-    _ -> return VUnknown
+    _ -> case concreteEqual v1 v2 of
+      Just isEqual -> reta (Bool isEqual)
+      Nothing -> return VUnknown
+
+{- | Compare two concrete values recursively.
+
+A disjunction with a single default is read as that default at every level of
+the value.  'Nothing' means that at least one operand is not concrete, so the
+comparison must remain incomplete.
+-}
+concreteEqual :: Val -> Val -> Maybe Bool
+concreteEqual v1 v2 = do
+  concrete1 <- rtrNonUnion v1
+  concrete2 <- rtrNonUnion v2
+  ensureConcrete concrete1
+  ensureConcrete concrete2
+  case (concrete1, concrete2) of
+    (VAtom a1, VAtom a2) -> Just (a1 == a2)
+    (VStruct s1, VStruct s2)
+      | Map.keysSet s1.stcFields == Map.keysSet s2.stcFields ->
+          and
+            <$> mapM
+              ( \label ->
+                  concreteEqual
+                    (value $ ssfValue $ s1.stcFields Map.! label)
+                    (value $ ssfValue $ s2.stcFields Map.! label)
+              )
+              (Map.keys s1.stcFields)
+      | otherwise -> Just False
+    (VList l1, VList l2)
+      | V.length l1.final == V.length l2.final ->
+          and <$> sequence (V.toList $ V.zipWith concreteEqual l1.final l2.final)
+      | otherwise -> Just False
+    _ -> Just False
+
+ensureConcrete :: Val -> Maybe ()
+ensureConcrete v = do
+  concrete <- rtrNonUnion v
+  case concrete of
+    VAtom _ -> Just ()
+    VStruct s -> mapM_ (ensureConcrete . value . ssfValue) s.stcFields
+    VList l
+      | l.isFinalReady -> mapM_ ensureConcrete l.final
+    _ -> Nothing
 
 reta :: Atom -> RM Val
 reta = return . VAtom
-
-cmpNull :: VNode -> RM Val
-cmpNull vn =
-  if
-    | Just a <- rtrAtom vn.value -> return $ VAtom (Bool $ a == Null)
-    -- There is no way for a non-atom to be compared with a non-null atom.
-    | otherwise -> return $ VAtom (Bool False)
 
 cmpLess :: TokenType -> (BinOpDirect, VNode) -> (BinOpDirect, VNode) -> RM Val
 cmpLess tktyp (_, vn1@VNode{value = v1}) (_, vn2@VNode{value = v2})

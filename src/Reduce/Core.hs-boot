@@ -9,4 +9,4 @@ import Value.Val (VNode, Val)
 reduce :: EvalAddr -> VNode -> RM VNode
 reduceVal :: EvalAddr -> Val -> RM Val
 reduceConstraintsInCnstrs :: EvalAddr -> VNode -> RM VNode
-signalReduced :: EvalAddr -> RM ()
+signalReduced :: EvalAddr -> Bool -> RM ()
