@@ -2,7 +2,7 @@
 
 # Ensure at least one argument is provided
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 {build|build-show-trace|test|run|runp|show|release|conv|ce|cmp}"
+  echo "Usage: $0 {build|build-wasm|build-show-trace|test|run|runp|show|release|conv|ce|cmp}"
   exit 1
 fi
 
@@ -81,9 +81,43 @@ if [[ "$1" == "runp" ]]; then
 fi
 
 if [[ "$1" == "build" ]]; then
-  cabal build --project-file=cabal.project.debug
+  set -euo pipefail
 
-  echo ""
+  nativeCabalOptions=(--project-file=cabal.project.debug)
+  cabal build "${nativeCabalOptions[@]}" exe:haskue
+  nativePath="$(cabal list-bin "${nativeCabalOptions[@]}" exe:haskue)"
+  mkdir -p bin
+  ln -sfn "$nativePath" bin/haskue
+
+  echo "Built bin/haskue -> $nativePath"
+
+  exit 0
+fi
+
+if [[ "$1" == "build-wasm" ]]; then
+  set -euo pipefail
+
+  wasmEnv="$HOME/.ghc-wasm/env"
+  if [[ ! -f "$wasmEnv" ]]; then
+    echo "Missing ghc-wasm environment: $wasmEnv" >&2
+    exit 1
+  fi
+
+  source "$wasmEnv"
+  wasmCabalOptions=(
+    --project-file=cabal.project.debug
+    --with-compiler=wasm32-wasi-ghc
+    --with-hc-pkg=wasm32-wasi-ghc-pkg
+    --with-hsc2hs=wasm32-wasi-hsc2hs
+    --with-haddock=wasm32-wasi-haddock
+  )
+
+  cabal build "${wasmCabalOptions[@]}" exe:haskue
+  wasmPath="$(cabal list-bin "${wasmCabalOptions[@]}" exe:haskue)"
+  mkdir -p bin
+  ln -sfn "$wasmPath" bin/haskue.wasm
+
+  echo "Built bin/haskue.wasm -> $wasmPath"
 
   exit 0
 fi
@@ -97,6 +131,14 @@ if [[ "$1" == "test" ]]; then
 fi
 
 if [[ "$1" == "release" ]]; then
+  set -euo pipefail
+
+  wasmEnv="$HOME/.ghc-wasm/env"
+  if [[ ! -f "$wasmEnv" ]]; then
+    echo "Missing ghc-wasm environment: $wasmEnv" >&2
+    exit 1
+  fi
+
   # Remove unused code sections with the platform's linker.
   releaseGhcOptions=()
   case "$(uname -s)" in
@@ -116,7 +158,23 @@ if [[ "$1" == "release" ]]; then
     --installdir=release \
     --install-method=copy
 
-  echo ""
+  source "$wasmEnv"
+  wasmReleaseOptions=(
+    --project-file=cabal.project.release
+    --builddir=dist-release
+    --with-compiler=wasm32-wasi-ghc
+    --with-hc-pkg=wasm32-wasi-ghc-pkg
+    --with-hsc2hs=wasm32-wasi-hsc2hs
+    --with-haddock=wasm32-wasi-haddock
+  )
+
+  cabal build "${wasmReleaseOptions[@]}" exe:haskue
+  wasmReleasePath="$(cabal list-bin "${wasmReleaseOptions[@]}" exe:haskue)"
+  cp "$wasmReleasePath" release/.haskue.wasm.tmp
+  mv -f release/.haskue.wasm.tmp release/haskue.wasm
+
+  echo "Released release/haskue"
+  echo "Released release/haskue.wasm"
 
   exit 0
 fi

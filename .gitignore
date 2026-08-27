@@ -6,3 +6,4 @@ dist-release/*
 _debug/*
 release/*
 .vscode/*
+bin/*
