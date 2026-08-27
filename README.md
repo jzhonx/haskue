@@ -60,14 +60,17 @@ x: {a: z}
 z: {b: 1 + 2}
 ```
 
-Then running `haskue export example.cue --trace --trace-out=trace.json` will produce a `trace.json` file. We use the
-`show-trace` command to visualize the trace:
+Then running `haskue export example.cue --trace --trace-output=trace.json` will produce a `trace.json` file. The
+standalone `haskue-show-trace` tool under `tools/show-trace` can serve it to the Perfetto web UI:
 
 ```sh
-$ haskue show-trace trace.json
-Opening the trace (trace.log) in the browser
-Open URL in browser: https://ui.perfetto.dev/#!/?url=http://127.0.0.1:9001/trace.log&referrer=open_trace_in_ui
+$ cabal run --project-dir=tools/show-trace haskue-show-trace -- trace.json
+Serving trace: trace.json
+Open URL in browser: https://ui.perfetto.dev/#!/?url=http://127.0.0.1:9001/trace.json&referrer=open_trace_in_ui
 ```
+
+The main Haskue package does not include the trace viewer's native HTTP dependencies. Build the viewer separately with
+`./build.sh build-show-trace`, or run `_debug/trace.log` with `./build.sh show`.
 
 Clicking the link will open a browser window with the trace visualized in Perfetto.
 

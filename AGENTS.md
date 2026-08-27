@@ -72,7 +72,7 @@ For an evaluator trace:
 
 ```sh
 cabal run haskue --project-file=cabal.project.debug -- export path/to/input.cue --trace --trace-output=trace.json
-cabal run haskue --project-file=cabal.project.debug -- show-trace trace.json
+cabal run --project-dir=tools/show-trace haskue-show-trace -- trace.json
 ```
 
 `cabal.project.debug` enables unoptimized debug/profiling settings;

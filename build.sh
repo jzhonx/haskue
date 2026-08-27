@@ -2,7 +2,7 @@
 
 # Ensure at least one argument is provided
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <input-file> | show"
+  echo "Usage: $0 {build|build-show-trace|test|run|runp|show|release|conv|ce|cmp}"
   exit 1
 fi
 
@@ -31,9 +31,18 @@ if [[ "$1" == "cmp" ]]; then
   exit 0
 fi
 
-# If the first argument is "show", run the file server and exit
+# If the first argument is "show", run the standalone trace viewer and exit.
 if [[ "$1" == "show" ]]; then
-  cabal run --project-file=cabal.project.debug haskue -- show-trace _debug/trace.log
+  traceFile="${2:-_debug/trace.log}"
+  cabal run --project-dir=tools/show-trace haskue-show-trace -- "$traceFile"
+  exit 0
+fi
+
+if [[ "$1" == "build-show-trace" ]]; then
+  cabal build --project-dir=tools/show-trace all
+
+  echo ""
+
   exit 0
 fi
 

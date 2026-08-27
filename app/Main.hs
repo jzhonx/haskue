@@ -7,13 +7,11 @@ import Eval (Config (..), evalStr)
 import Options.Applicative
 import Reduce.Monad (TraceConfig (..))
 import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
-import Util.ShowTrace (runServer)
 
 -- New data types for subcommands
 data Command
   = Export ExportConfig
   | Eval EvalConfig
-  | ShowTrace FilePath String
 
 -- Common configuration type for shared options
 data CommonConfig = CommonConfig
@@ -135,21 +133,6 @@ evalParser =
       )
     <*> commonOptions
 
-showTraceParser :: Parser Command
-showTraceParser =
-  ShowTrace
-    <$> argument
-      str
-      ( metavar "FILEPATH"
-          <> help "Path to the trace file to serve"
-      )
-    <*> option
-      str
-      ( metavar "origin"
-          <> help "Origin URL for CORS, defaulting to https://ui.perfetto.dev"
-          <> value "https://ui.perfetto.dev"
-      )
-
 -- | Main command parser
 commandParser :: Parser Command
 commandParser =
@@ -165,12 +148,6 @@ commandParser =
         ( info
             (Eval <$> evalParser <**> helper)
             (progDesc "Evaluate CUE file")
-        )
-      <> command
-        "show-trace"
-        ( info
-            (showTraceParser <**> helper)
-            (progDesc "Serve a trace file over HTTP for viewing in a browser")
         )
 
 runEval :: Config -> IO ()
@@ -192,4 +169,3 @@ main = do
     Eval evalConfig -> do
       conf <- toEvalConfigEval evalConfig
       runEval conf
-    ShowTrace path originUrl -> runServer path originUrl
