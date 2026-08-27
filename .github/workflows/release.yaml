@@ -18,10 +18,15 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: linux-x86_64
+            kind: native
             linker_options: "-optl-Wl,--gc-sections"
           - runner: macos-14
             target: darwin-aarch64
+            kind: native
             linker_options: "-optl-Wl,-dead_strip"
+          - runner: ubuntu-latest
+            target: wasm32-wasi
+            kind: wasm
 
     runs-on: ${{ matrix.runner }}
 
@@ -29,22 +34,47 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: haskell-actions/setup@v2
+        if: matrix.kind == 'native'
         with:
           ghc-version: "9.10.3"
           cabal-version: "3.12.1.0"
 
-      - name: Cache Cabal
+      - name: Install GHC wasm toolchain
+        if: matrix.kind == 'wasm'
+        env:
+          FLAVOUR: "9.10"
+        run: |
+          curl --fail --location \
+            https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/raw/master/bootstrap.sh \
+            | sh
+          ~/.ghc-wasm/add_to_github_path.sh
+
+      - name: Cache native Cabal
+        if: matrix.kind == 'native'
         uses: actions/cache@v4
         with:
           path: |
             ~/.cabal
             dist-release
-          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/*.cabal', 'cabal.project.release') }}
+          key: ${{ runner.os }}-native-${{ matrix.target }}-release-${{ hashFiles('**/*.cabal', 'cabal.project.release') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-release-
-            ${{ runner.os }}-
+            ${{ runner.os }}-native-${{ matrix.target }}-release-
+            ${{ runner.os }}-native-
 
-      - name: Build release binary
+      - name: Cache wasm Cabal
+        if: matrix.kind == 'wasm'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghc-wasm/.cabal/packages
+            ~/.ghc-wasm/.cabal/store
+            dist-release
+          key: ${{ runner.os }}-wasm-${{ matrix.target }}-release-${{ hashFiles('**/*.cabal', 'cabal.project.release') }}
+          restore-keys: |
+            ${{ runner.os }}-wasm-${{ matrix.target }}-release-
+
+      - name: Build native release binary
+        if: matrix.kind == 'native'
         run: |
           cabal update
           cabal install exe:haskue \
@@ -54,12 +84,38 @@ jobs:
             --installdir=release \
             --install-method=copy
 
-      - name: Package
+      - name: Build wasm release binary
+        if: matrix.kind == 'wasm'
+        run: |
+          wasm32-wasi-cabal update
+          wasm32-wasi-cabal build exe:haskue \
+            --project-file=cabal.project.release \
+            --builddir=dist-release
+
+          wasm_path="$(wasm32-wasi-cabal list-bin exe:haskue \
+            --project-file=cabal.project.release \
+            --builddir=dist-release)"
+          mkdir -p release
+          cp "$wasm_path" release/haskue.wasm
+          wasmtime release/haskue.wasm --help
+
+      - name: Package native release
+        if: matrix.kind == 'native'
         run: |
           chmod +x release/haskue
 
           mkdir package
           cp release/haskue package/
+          cp LICENSE package/ || true
+          cp README.md package/ || true
+
+          tar czf haskue-${{ matrix.target }}.tar.gz -C package .
+
+      - name: Package wasm release
+        if: matrix.kind == 'wasm'
+        run: |
+          mkdir package
+          cp release/haskue.wasm package/
           cp LICENSE package/ || true
           cp README.md package/ || true
 
