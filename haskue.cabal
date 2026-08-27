@@ -64,7 +64,7 @@ library
 
     other-modules:
       Paths_haskue
-    ghc-options: -Wall -Wpartial-fields -threaded
+    ghc-options: -Wall -Wpartial-fields
     -- Modules included in this library but not exported.
     -- other-modules:
 
@@ -100,7 +100,6 @@ library
       unordered-containers,
       deepseq,
       hashable,
-      formatting,
       yaml,
       aeson-pretty,
       dlist,
@@ -126,7 +125,7 @@ executable haskue
 
     hs-source-dirs:   app
     default-language: Haskell2010
-    ghc-options: -Wall -Wpartial-fields -rtsopts -threaded
+    ghc-options: -Wall -Wpartial-fields -rtsopts
 
 Test-Suite haskue-unit-test
   type: exitcode-stdio-1.0
