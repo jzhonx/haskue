@@ -2,8 +2,21 @@
 
 # Ensure at least one argument is provided
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 {build|build-wasm|build-show-trace|test|run|runp|show|release|conv|ce|cmp}"
+  echo "Usage: $0 {build|build-wasm|build-show-trace|test|run|runp|explain|show|release|conv|ce|cmp}"
   exit 1
+fi
+
+if [[ "$1" == "explain" ]]; then
+  shift
+  explainArgs=("$@")
+
+  # Default to the development input and query when no arguments are given.
+  if [[ ${#explainArgs[@]} -eq 0 ]]; then
+    explainArgs=(_debug/_t.cue x.a)
+  fi
+
+  cabal run --project-file=cabal.project.debug haskue -- explain "${explainArgs[@]}"
+  exit 0
 fi
 
 if [[ "$1" == "conv" ]]; then
@@ -71,11 +84,27 @@ fi
 if [[ "$1" == "runp" ]]; then
   # if the input is empty, use the path, _debug/_t.cue
   input="${2:-_debug/_t.cue}"
-  profileFlags="$3"
+  read -r -a profileFlags <<< "${3:--pj}"
 
-  cabal run --project-file=cabal.project.debug --enable-profiling haskue -- $input +RTS $profileFlags
+  cabal run \
+    --project-file=cabal.project.profile \
+    --builddir=dist-profile \
+    haskue -- eval "$input" +RTS "${profileFlags[@]}" -RTS
 
   echo ""
+
+  exit 0
+fi
+
+if [[ "$1" == "eval" ]]; then
+  # if the input is empty, use the path, _debug/_t.cue
+  input="${2:-_debug/_t.cue}"
+  cabal run --project-file=cabal.project.debug haskue -- eval $input
+
+  echo ""
+
+  # show the size of the log file
+  ls -lh _debug/t.log
 
   exit 0
 fi

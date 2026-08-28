@@ -6,10 +6,9 @@ import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import EvalAddr
 import Reduce.Monad
-import Reduce.TraceSpan (debugInstStr)
+import Reduce.TraceSpan (debugInst, debugInstStr)
 import StringIndex (ShowWTIndexer (..), TextIndex)
 import Text.Printf (printf)
-import Util.Trace (debugInstant)
 import Value
 import Value.Instances (posttravsVT, setSubVN)
 
@@ -21,7 +20,7 @@ fetchValMust hdr addr = do
     Nothing -> do
       addrT <- tshow addr
       let msg = printf "%s value not found for addr: %s" hdr addrT
-      debugInstant "fetchValMust" (object ["addr" .= addrT, "msg" .= hdr])
+      debugInst "fetchValMust" addr (return $ object ["addr" .= addrT, "msg" .= hdr])
       throwFatal msg
 
 fetchValFromStore :: String -> EvalAddr -> RM (Maybe VNode)
@@ -87,7 +86,10 @@ propValUp addr vn
                 parentVT
                 subFT
                 parentAddrT
-          debugInstant "propValUp" (object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
+          debugInst
+            "propValUp"
+            parentAddr
+            (return $ object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
           throwFatal msg
 
 queryLastDerefedVersion :: VertexAddr -> ReferableAddr -> RM (Maybe Int)
@@ -141,13 +143,13 @@ copyVTermNode srcAddr dstAddr =
             -- copied value.
             -- For example, {a: {x: 1, y: x}, b: a}. When we copy a to b, the reference in a should be
             -- redirected to the copied value of a, not the original a.
-            | ResolvedIdentFromTop resIdentAddr <- ref.resolvedIdentAddr
+            | AbsoluteIdentAddr resIdentAddr <- ref.identLocator
             , srcAddr `isPrefix` resIdentAddr && resIdentAddr /= srcAddr ->
                 let rest = trimPrefixAddr srcAddr resIdentAddr
                     -- The destination address should be normalized to get rid of any constraint arguments.
                     normDstAddr = collapseToCanonicalForm dstAddr
                     newIdentAddr = appendEvalAddr normDstAddr rest
-                    newRef = ref{resolvedIdentAddr = ResolvedIdentFromTop newIdentAddr}
+                    newRef = ref{identLocator = AbsoluteIdentAddr newIdentAddr}
                  in VTOp (Ref newRef)
           _ -> x
     )

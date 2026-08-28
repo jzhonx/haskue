@@ -74,6 +74,27 @@ transExprToVal e addr = do
   r <- transExpr e addr
   return $ trDataEToVNode r
 
+{- | Translate a query expression whose root identifier is a field under the
+file-top value.
+-}
+transQueryExprToVal :: Token -> Expression -> EvalAddr -> TM VNode
+transQueryExprToVal rootIdent e addr = do
+  universalEnv <- mkUniversalEnv
+  rootIdx <- identTokenToTextIndex rootIdent
+  let rootFeat = mkStringFeature rootIdx
+      fileTopEnv =
+        Environment
+          { envid = 1
+          , envType = EnvTypeStruct
+          , envAddr = fileTopEvalAddr
+          , names = Map.singleton rootIdx (ITField, False)
+          , nameFeatMap = Map.singleton rootIdx rootFeat
+          , clausesDepth = 0
+          }
+  modify' $ mapEnvs (const $ Environments [fileTopEnv, universalEnv])
+  r <- transExpr e addr
+  return $ trDataEToVNode r
+
 data TrDataE = TrDataE
   { trData :: TrData
   , trLoc :: Location
@@ -487,7 +508,7 @@ transPrimExpr e addr = case e of
     OpLiteral lit -> transLiteral lit addr
     OpName (OperandName ident) -> do
       idIdx <- identTokenToTextIndex ident
-      IdentLookupResult{identType, identFeat, clausesDepth, resolvedIdentAddr} <-
+      IdentLookupResult{identType, identFeat, clausesDepth, identLocator} <-
         lookupIdentInScopes idIdx ident.tkLoc
       case identType of
         ITIterBinding ->
@@ -496,7 +517,7 @@ transPrimExpr e addr = case e of
               (getNodeLoc e)
             $ TrOp
             $ Ref
-            $ comprehensionIdentRef idIdx identFeat (clausesDepth - 1) resolvedIdentAddr
+            $ comprehensionIdentRef idIdx identFeat (clausesDepth - 1) identLocator
         _ ->
           return
             $ exprTrDataE
@@ -507,7 +528,7 @@ transPrimExpr e addr = case e of
               (getTextIndexFromFeature identFeat)
               identFeat
               identType
-              resolvedIdentAddr
+              identLocator
     OpExpression _ expr _ -> transExpr expr addr
   (PrimExprSelector primExpr _ sel) -> transSelector primExpr sel addr
   (PrimExprIndex primExpr _ idx _) -> transIndex primExpr idx addr
@@ -760,10 +781,12 @@ data IdentLookupResult = IdentLookupResult
   , identType :: RefIdentType
   , identFeat :: Feature
   , identAddr :: EvalAddr
-  , resolvedIdentAddr :: ResolvedIdentAddr
-  {- ^ The address difference to the top environment.
-  When using, we must get the canonical address of the current address and subtract the resolvedIdentAddr to get the
-  target address.
+  , identLocator :: IdentLocator
+  {- ^ A locator for the resolved identifier. It is normally an absolute
+  address. For an identifier defined under a comprehension clause it instead
+  stores the canonical path from the defining environment to the current,
+  innermost environment. The evaluator combines that path with the reference's
+  eventual location after the comprehension has materialized.
   -}
   }
 
@@ -791,10 +814,16 @@ lookupIdentInEnv name topEnv env = do
       , identType = t
       , identFeat = identFeat
       , identAddr = env.envAddr `appendFeature` identFeat
-      , resolvedIdentAddr =
+      , identLocator =
           if env.clausesDepth > 0
-            then ToTargetScopeDiff $ collapseToCanonical $ trimPrefixAddr env.envAddr topEnv.envAddr
-            else ResolvedIdentFromTop $ collapseToCanonicalForm $ env.envAddr `appendFeature` identFeat
+            -- An environment below a comprehension clause may be copied to a
+            -- location whose field name or list index is known only after the
+            -- comprehension is evaluated. Record the lexical relation between
+            -- the defining environment (`env`) and the current innermost
+            -- environment (`topEnv`) instead of embedding the transient
+            -- translation-time prefix in the reference.
+            then LexicalIdent $ ScopeDiff $ collapseToCanonicalForm $ trimPrefixAddr env.envAddr topEnv.envAddr
+            else AbsoluteIdentAddr $ collapseToCanonicalForm $ env.envAddr `appendFeature` identFeat
       }
 
 -- | Lookup the identifier in the environments.

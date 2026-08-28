@@ -559,7 +559,18 @@ canonicalToAddr (CanonicalAddr v) = v
 initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
 initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initEvalAddr v)
 
-assembleIdentCanonical :: CanonicalAddr -> Feature -> EvalAddr -> EvalAddr
+{- | Resolve a deferred identifier locator against a reference's actual address.
+
+The difference is the canonical path from the identifier's defining scope down
+to the lexical scope containing the reference. Canonicalizing the reference
+address and removing its final segment gives that actual containing scope.
+Removing the stored suffix then recovers the defining scope; appending the
+identifier feature produces the absolute identifier address.
+
+For a generated reference at @/x/nested/b@ with difference @nested@ and feature
+@a@, this computes @/x/nested - nested + a = /x/a@.
+-}
+assembleIdentCanonical :: EvalAddr -> Feature -> EvalAddr -> EvalAddr
 assembleIdentCanonical diff feat addr =
   let
     -- If the last seg is dj
@@ -567,7 +578,7 @@ assembleIdentCanonical diff feat addr =
     canAddr = collapseToCanonical addr
     canParAddrM = initCanonical canAddr
     identScopeAddr = case canParAddrM of
-      Just canParAddr -> trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr canParAddr)
+      Just canParAddr -> trimSuffixAddr diff (getCanonicalAddr canParAddr)
       Nothing -> fileTopEvalAddr
     identAddr = appendFeature identScopeAddr feat
    in

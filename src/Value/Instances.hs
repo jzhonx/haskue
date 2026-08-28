@@ -107,13 +107,13 @@ deriving instance Show Op
 deriving instance Show RegularOp
 deriving instance Show FuncCall
 
-instance ShowWTIndexer ResolvedIdentAddr where
-  tshow (ResolvedIdentFromTop addr) = do
+instance ShowWTIndexer IdentLocator where
+  tshow (AbsoluteIdentAddr addr) = do
     t <- tshow addr
-    return $ "ResolvedIdentFromTop: " <> t
-  tshow (ToTargetScopeDiff diff) = do
+    return $ "AbsoluteIdentAddr: " <> t
+  tshow (LexicalIdent (ScopeDiff diff)) = do
     t <- tshow diff
-    return $ "ToTargetScopeDiff: " <> t
+    return $ "LexicalIdent: " <> t
 
 deriving instance Show Struct
 deriving instance Show Field
@@ -287,8 +287,8 @@ instance VTerm VNode where
   getChildVT segment node = case addrSegmentTag segment of
     ConstraintTag -> getChildVT segment node.constraints
     DynCnstrTag -> getChildVT segment node.constraints
-    OpArgTag -> getSoleOpChild segment node
-    ObjectTag -> getSoleOpChild segment node
+    OpArgTag -> getSoleStaticOpChild segment node
+    ObjectTag -> getSoleStaticOpChild segment node
     _ -> getChildVT segment node.value
   setChildVT segment child node = case addrSegmentTag segment of
     ConstraintTag -> do
@@ -297,20 +297,20 @@ instance VTerm VNode where
     DynCnstrTag -> do
       constraints' <- setChildVT segment child node.constraints
       return node{constraints = constraints'}
-    OpArgTag -> setSoleOpChild segment child node
-    ObjectTag -> setSoleOpChild segment child node
+    OpArgTag -> setSoleStaticOpChild segment child node
+    ObjectTag -> setSoleStaticOpChild segment child node
     _ -> do
       value' <- setChildVT segment child node.value
       return node{value = value'}
 
-getSoleOpChild :: AddrSegment -> VNode -> Maybe VTermNode
-getSoleOpChild segment node = do
-  opConstraint <- soleOpConstraintVT node
+getSoleStaticOpChild :: AddrSegment -> VNode -> Maybe VTermNode
+getSoleStaticOpChild segment node = do
+  opConstraint <- soleStaticOpConstraintVT node
   getChildVT segment opConstraint.ocOp
 
-setSoleOpChild :: AddrSegment -> VTermNode -> VNode -> Maybe VNode
-setSoleOpChild segment child node = do
-  opConstraint <- soleOpConstraintVT node
+setSoleStaticOpChild :: AddrSegment -> VTermNode -> VNode -> Maybe VNode
+setSoleStaticOpChild segment child node = do
+  opConstraint <- soleStaticOpConstraintVT node
   op' <- setChildVT segment child opConstraint.ocOp
   return
     node
@@ -320,8 +320,8 @@ setSoleOpChild segment child node = do
             }
       }
 
-soleOpConstraintVT :: VNode -> Maybe OpConstraint
-soleOpConstraintVT node = case node.constraints.static of
+soleStaticOpConstraintVT :: VNode -> Maybe OpConstraint
+soleStaticOpConstraintVT node = case node.constraints.static of
   OpCnstr opConstraint Seq.:<| Seq.Empty -> Just opConstraint
   _ -> Nothing
 

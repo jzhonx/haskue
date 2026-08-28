@@ -36,7 +36,7 @@ import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..))
 import Syntax.Token (Location (..))
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (termsRepToJSONWithAddr, toTermsRepWithAddr, vnToFullStringTermsRep)
+import Value.Export.Debug (toTermTreeForAddr, toTermTreeJSONForAddr, vnToRecursiveTermTreeString)
 import Value.Instances (getSubVN, getSubVNByAddr, pretravsVT)
 
 {- | VSelect the tree with the segments.
@@ -55,7 +55,7 @@ deref addr ref = traceSpanRM
   "deref"
   addr
   ( do
-      beforeVal <- termsRepToJSONWithAddr addr (Ref ref)
+      beforeVal <- toTermTreeJSONForAddr addr (Ref ref)
       identT <- tshow ref.ident
       return $ (mkTracePreDataWithOnlyVal beforeVal){tpvArgs = Just $ T.unpack identT}
   )
@@ -68,13 +68,10 @@ deref addr ref = traceSpanRM
           then do
             vn <- fetchComprehBindingVal (fromJust ref.resolvedComprehClauseIdx) ref.ident
             (_, tarM) <- descend fileTopEvalAddr vn sels
-            tar <- case tarM of
-              Nothing -> throwFatal "deref: cannot find iter binding"
-              Just v -> return v
-            return $ mkIterVarDR tar
+            return $ mkIterVarDR tarM
           else do
             let
-              lparams = LocateParams{identFeat = ref.identFeat, resolvedIdentAddr = ref.resolvedIdentAddr, selectors = sels}
+              lparams = LocateParams{identFeat = ref.identFeat, identLocator = ref.identLocator, selectors = sels}
             getDstVal lparams addr
 
 -- | TODO: the value indexed should not be another reference. It should always be resolved.
@@ -168,10 +165,10 @@ mkRefCycleDR identAddr addr v =
     , isRefCycle = True
     }
 
-mkIterVarDR :: VNode -> DerefResult
+mkIterVarDR :: Maybe VNode -> DerefResult
 mkIterVarDR v =
   DerefResult
-    { targetValue = Just v
+    { targetValue = v
     , targetAddr = Nothing
     , resolvedIdentAddr = Nothing
     , isIdentIterVal = True
@@ -208,7 +205,7 @@ getDstVal lp addr = traceSpanNoPreRM "getDstVal" addr $ do
 data LocateParams
   = LocateParams
   { identFeat :: Feature
-  , resolvedIdentAddr :: ResolvedIdentAddr
+  , identLocator :: IdentLocator
   , selectors :: Selectors
   }
   deriving (Show)
@@ -218,11 +215,14 @@ data LocateParams
 The path must start with a locatable ident.
 -}
 locateRef :: LocateParams -> EvalAddr -> RM DerefResult
-locateRef (LocateParams identFeat resolvedIdentAddr sels) refAddr = do
-  let identAddr = case resolvedIdentAddr of
-        ResolvedIdentFromTop addr -> addr
-        ToTargetScopeDiff diff -> assembleIdentCanonical diff identFeat refAddr
-  debugInstStr "locateRef" refAddr (debugAssemble identAddr resolvedIdentAddr sels)
+locateRef (LocateParams identFeat identLocator sels) refAddr = do
+  let identAddr = case identLocator of
+        AbsoluteIdentAddr addr -> addr
+        -- Comprehension-generated scopes do not have stable absolute
+        -- addresses during translation. Resolve their lexical relocation now
+        -- that the reference has an actual evaluator address.
+        LexicalIdent (ScopeDiff diff) -> assembleIdentCanonical diff identFeat refAddr
+  debugInstStr "locateRef" refAddr (debugAssemble identAddr identLocator sels)
   case headSeg identAddr of
     Just seg | seg == rootToAddrSegment packageRoot -> locatePkgFunc identAddr sels
     _ -> locateRefInTree identAddr sels refAddr
@@ -417,23 +417,23 @@ resolveRCValue identAddr physicalTarAddr matchedV refAddr = case addrIsVertex ph
   Nothing -> return Nothing
 
 -- | Trace message for the initial address assembly.
-debugAssemble :: EvalAddr -> ResolvedIdentAddr -> Selectors -> RM String
-debugAssemble identAddr resolvedIdentAddr sels = do
+debugAssemble :: EvalAddr -> IdentLocator -> Selectors -> RM String
+debugAssemble identAddr identLocator sels = do
   identAddrT <- tshow identAddr
-  diffT <- tshow resolvedIdentAddr
+  locatorT <- tshow identLocator
   selsT <- mapM tshow (getSelectors sels)
   return $
     printf
-      "locating ref. Assembled identAddr: %s, resolvedIdentAddr: %s, selectors: %s"
+      "locating ref. Assembled identAddr: %s, identLocator: %s, selectors: %s"
       (show identAddrT)
-      (show diffT)
+      (show locatorT)
       (show selsT)
 
 -- | Trace message after descending the selectors.
 debugDescend :: EvalAddr -> EvalAddr -> VNode -> Selectors -> [Selector] -> RM String
 debugDescend startAddr matchedAddr startV sels unmatchedSels = do
   matchedAddrT <- tshow matchedAddr
-  startVT <- show <$> toTermsRepWithAddr startAddr startV
+  startVT <- show <$> toTermTreeForAddr startAddr startV
   selsT <- mapM tshow (getSelectors sels)
   unmatchedSelsT <- mapM tshow unmatchedSels
   return $
@@ -454,8 +454,7 @@ debugResolve resolveRCRes = do
 descend :: EvalAddr -> VNode -> Selectors -> RM (EvalAddr, Maybe VNode)
 descend startAddr start selectors = do
   let (matchedAddr, matchedV, unmatchedSels) = go startAddr start (getSelectors selectors)
-  msg <- debugDescend startAddr matchedAddr start selectors unmatchedSels
-  debugInstStr "descend" startAddr (return msg)
+  debugInstStr "descend" startAddr (debugDescend startAddr matchedAddr start selectors unmatchedSels)
   if null unmatchedSels
     then return (matchedAddr, Just matchedV)
     else return (appendEvalAddr matchedAddr (fieldPathToAddr (Selectors unmatchedSels)), Nothing)
@@ -575,7 +574,7 @@ copyConcrete physicalTarAddr logicalTarAddr addr tarV = do
     "copyConcrete"
     addr
     ( do
-        rep <- vnToFullStringTermsRep r
+        rep <- vnToRecursiveTermTreeString r
         return $ printf "target concrete is %s" rep
     )
   return r

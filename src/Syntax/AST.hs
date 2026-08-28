@@ -16,15 +16,12 @@ import Data.ByteString.Builder (
   string7,
   toLazyByteString,
   word8,
-  word8Hex,
   word8HexFixed,
-  wordHex,
  )
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Word (Word8)
-import Debug.Trace (trace)
 import GHC.Generics (Generic)
 import Syntax.Token
 import Prelude hiding (GT, LT)
@@ -533,7 +530,7 @@ renderBS lineHeader =
     mempty
 
 renderBSBytes :: Builder -> Bool -> BS.ByteString -> Builder
-renderBSBytes lineHeader isMultiline b = go b mempty
+renderBSBytes lineHeader _isMultiline b = go b mempty
  where
   go :: BS.ByteString -> Builder -> Builder
   go input acc = do
@@ -615,9 +612,7 @@ declBld e = case e of
       b <- exprBld e'
       return $ string7 "..." <> char7 ' ' <> b
   Embedding eb -> embeddingBld eb
-  DeclLet (LetClause _ ident binde) -> do
-    b <- exprBld binde
-    return $ string7 "let " <> byteString ident.tkLiteral <> string7 " = " <> b
+  DeclLet letClause -> letClauseBld letClause
 
 fieldDeclBld :: (M m) => FieldDecl -> m Builder
 fieldDeclBld e = case e of
@@ -635,8 +630,44 @@ fieldDeclBld e = case e of
 
 embeddingBld :: (M m) => Embedding -> m Builder
 embeddingBld e = case e of
-  EmbedComprehension _ -> return $ string7 "<comprehension>"
+  EmbedComprehension c -> comprehensionBld c
   EmbeddingAlias ex -> aliasExprBld ex
+
+comprehensionBld :: (M m) => Comprehension -> m Builder
+comprehensionBld (Comprehension (Clauses start rest) lit) = do
+  startB <- startClauseBld start
+  restB <- mapM clauseBld rest
+  litB <- structLitBld lit
+  oneLiner <- getOneLiner
+  indent <- getIndent
+  let clauseSep =
+        if oneLiner
+          then char7 ' '
+          else char7 '\n' <> indentBld indent
+      clausesB = foldl (\acc b -> acc <> clauseSep <> b) startB restB
+  return $ clausesB <> char7 ' ' <> litB
+
+clauseBld :: (M m) => Clause -> m Builder
+clauseBld c = case c of
+  ClauseStart start -> startClauseBld start
+  ClauseLet letClause -> letClauseBld letClause
+
+startClauseBld :: (M m) => StartClause -> m Builder
+startClauseBld c = case c of
+  GuardClause _ condition -> do
+    conditionB <- exprBld condition
+    return $ string7 "if " <> conditionB
+  ForClause _ ident secIdentM source -> do
+    sourceB <- exprBld source
+    let identsB = case secIdentM of
+          Nothing -> tokenBuilder ident
+          Just secIdent -> tokenBuilder ident <> string7 ", " <> tokenBuilder secIdent
+    return $ string7 "for " <> identsB <> string7 " in " <> sourceB
+
+letClauseBld :: (M m) => LetClause -> m Builder
+letClauseBld (LetClause _ ident binde) = do
+  b <- exprBld binde
+  return $ string7 "let " <> byteString ident.tkLiteral <> string7 " = " <> b
 
 aliasExprBld :: (M m) => AliasExpr -> m Builder
 aliasExprBld (AliasExpr _ ex) = exprBld ex

@@ -18,7 +18,7 @@ import Control.Monad (foldM, unless, void, when)
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isJust, isNothing, maybeToList)
+import Data.Maybe (fromJust, fromMaybe, isNothing, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import DepGraph
@@ -50,7 +50,7 @@ import Reduce.TraceSpan (
   tpvArgs,
   traceSpanNoPreRM,
   traceSpanRM,
-  traceSpanTermsRepTM,
+  traceSpanTermTreeTM,
   traceSpanWithRM,
  )
 import StringIndex (ShowWTIndexer (tshow))
@@ -61,11 +61,11 @@ import Value
 -- | Start re-calculation by draining the root recalc queue via BFS.
 recalc :: RM ()
 recalc = do
-  rootQueue <- rootRecalcQ <$> getRMContext
   debugInstStr
     "recalc"
     fileTopEvalAddr
     ( do
+        rootQueue <- rootRecalcQ <$> getRMContext
         rootQueueText <- tshow (toList rootQueue)
         return $ printf "starting queue: %s" rootQueueText
     )
@@ -150,11 +150,13 @@ drainQ = do
       Just signal -> do
         nextState <- mkBFSState signal
         unless (Seq.null nextState.bfsQ) $ do
-          queuedGroupTexts <- mapM (tshow . biGroup) (toList nextState.bfsQ)
           debugInstStr
             "drainQ"
             fileTopEvalAddr
-            (msprintfS "new popped item: %s, bfsQ: %s" [packFmtA signal, packFmtA queuedGroupTexts])
+            ( do
+                queuedGroupTexts <- mapM (tshow . biGroup) (toList nextState.bfsQ)
+                msprintfS "new popped item: %s, bfsQ: %s" [packFmtA signal, packFmtA queuedGroupTexts]
+            )
           runBFS nextState
         return False
 
@@ -194,8 +196,9 @@ mkBFSState signal = traceSpanWithRM
 -}
 data BFSState = BFSState
   { bfsQ :: Seq.Seq BFSQItem
-  -- ^ FIFO queue of groups to process.
-  --   Each item records the source group and version that triggered the recalculation.
+  {- ^ FIFO queue of groups to process.
+  Each item records the source group and version that triggered the recalculation.
+  -}
   }
 
 data BFSQItem = BFSQItem
@@ -373,7 +376,7 @@ checkIfDirty dependencyBaseAddrM dependencyAddr useAddr = do
   dependencyNodeM <- fetchDependencyNode dependencyBaseAddr dependencyAddr
   lastDereferencedVersion <- queryLastDerefedVersion useAddr dependencyAddr
   graph <- depGraph <$> getRMContext
-  let actualUseAddrs = Set.fromList (map (trimCanonicalToVertex . collapseToCanonical) $ queryUsesByDep dependencyAddr graph)
+  let isActualUse = queryDepUseEdge dependencyAddr useAddr graph
   debugInstStr
     "checkIfDirty"
     fileTopEvalAddr
@@ -382,19 +385,18 @@ checkIfDirty dependencyBaseAddrM dependencyAddr useAddr = do
         dependencyBaseAddrText <- tshow dependencyBaseAddr
         dependencyAddrText <- tshow dependencyAddr
         dependencyNodeMText <- tshow dependencyNodeM
-        actualUseAddrTexts <- mapM tshow (Set.toList actualUseAddrs)
         return $
           printf
-            "dependencyBaseAddr: %s, dependencyAddr: %s, useAddr: %s, dependency version: %s, dependency node: %s, lastDereferencedVersion: %s, actualUseAddrs: %s"
+            "dependencyBaseAddr: %s, dependencyAddr: %s, useAddr: %s, dependency version: %s, dependency node: %s, lastDereferencedVersion: %s, isActualUse: %s"
             dependencyBaseAddrText
             dependencyAddrText
             useAddrText
             (show $ version <$> dependencyNodeM)
             dependencyNodeMText
             (show lastDereferencedVersion)
-            (show actualUseAddrTexts)
+            (show isActualUse)
     )
-  if useAddr `Set.member` actualUseAddrs
+  if isActualUse
     && (isNothing lastDereferencedVersion || (version <$> dependencyNodeM) /= lastDereferencedVersion)
     then return (version <$> dependencyNodeM)
     else return Nothing
@@ -534,7 +536,7 @@ recalcNode sourceGroup sourceVersion nodeVertexAddr = do
   maybeValueNode <- fetchValFromStore "recalcNode" nodeAddr
   case maybeValueNode of
     Nothing -> return ()
-    Just valueNode -> void $ traceSpanTermsRepTM "recalcNode" nodeAddr valueNode $ do
+    Just valueNode -> void $ traceSpanTermTreeTM "recalcNode" nodeAddr valueNode $ do
       markFlowEventEnd sourceGroup sourceVersion
       reducedNode <- reduce nodeAddr valueNode
       storeValUpToRootRecalc nodeAddr reducedNode -- propagate to root

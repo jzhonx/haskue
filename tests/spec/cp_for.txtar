@@ -59,6 +59,7 @@ x: {
 }
 a: _
 b: _
+
 -- cp_for5 --
 // This tests if referencing fields of iter val is correct.
 data: {a: {b: 1}}
@@ -74,4 +75,15 @@ data: {
     }
 }
 a: true
+
+-- cp_for6 --
+// this tests referencing non-existed fields in iter value works
+x: {
+	for _, v in {l1: {}}
+	if v.p != _|_ {
+		exist: true
+	}
+}
+-- exp --
+x: {}
 

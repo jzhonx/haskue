@@ -99,9 +99,9 @@ emptyTracePreDataRM = return emptyTracePreData
 traceSpanRM :: (ToJSONWTIndexer a) => String -> EvalAddr -> RM TracePreData -> RM a -> RM a
 traceSpanRM name addr preData = traceSpanWithRM name addr preData ttoJSON
 
-traceSpanTermsRepTM ::
-  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b, TermsRepShow b) => String -> EvalAddr -> a -> RM b -> RM b
-traceSpanTermsRepTM name addr a =
+traceSpanTermTreeTM ::
+  (ToJSONWTIndexer a, ToTermTree a, ToJSONWTIndexer b, ToTermTree b) => String -> EvalAddr -> a -> RM b -> RM b
+traceSpanTermTreeTM name addr a =
   traceSpanWithRM
     name
     addr
@@ -109,8 +109,8 @@ traceSpanTermsRepTM name addr a =
         debugMode <- asks debugMode
         if debugMode
           then do
-            rep <- termsRepToJSONWithAddr addr a
-            return $ mkTracePreDataWithOnlyVal rep
+            treeJSON <- toTermTreeJSONForAddr addr a
+            return $ mkTracePreDataWithOnlyVal treeJSON
           else do
             v <- ttoJSON a
             return $ mkTracePreDataWithOnlyVal v
@@ -118,13 +118,13 @@ traceSpanTermsRepTM name addr a =
     ( \b -> do
         debugMode <- asks debugMode
         if debugMode
-          then termsRepToJSONWithAddr addr b
+          then toTermTreeJSONForAddr addr b
           else ttoJSON b
     )
 
-traceSpanTermsRepAnyTM ::
-  (ToJSONWTIndexer a, TermsRepShow a, ToJSONWTIndexer b) => String -> EvalAddr -> a -> RM b -> RM b
-traceSpanTermsRepAnyTM name addr a =
+traceSpanTermTreeAnyTM ::
+  (ToJSONWTIndexer a, ToTermTree a, ToJSONWTIndexer b) => String -> EvalAddr -> a -> RM b -> RM b
+traceSpanTermTreeAnyTM name addr a =
   traceSpanWithRM
     name
     addr
@@ -132,8 +132,8 @@ traceSpanTermsRepAnyTM name addr a =
         debugMode <- asks debugMode
         if debugMode
           then do
-            rep <- termsRepToJSONWithAddr addr a
-            return $ mkTracePreDataWithOnlyVal rep
+            treeJSON <- toTermTreeJSONForAddr addr a
+            return $ mkTracePreDataWithOnlyVal treeJSON
           else do
             v <- ttoJSON a
             return $ mkTracePreDataWithOnlyVal v
@@ -165,6 +165,10 @@ traceSpanWithRM name addr preDataM jsonfyb f = whenTraceEnabled name addr f do
   traceSpanExec header (toJSON $ RMEndTraceArgs{cetaResult = cetaResult})
   return res
 
+{- | Run the traced action only when tracing is enabled for the named operation;
+otherwise run the fallback action. Keep trace-only work inside the @traced@
+action so it is not performed when tracing is disabled.
+-}
 whenTraceEnabled :: String -> EvalAddr -> RM a -> RM a -> RM a
 whenTraceEnabled name _addr f traced = do
   TraceConfig{stTraceEnable = traceEnable} <- asks traceConfig
@@ -174,6 +178,9 @@ whenTraceEnabled name _addr f traced = do
     then traced
     else f
 
+{- | Generate a value only when trace value rendering is enabled. The supplied
+action may be expensive and is deliberately not run when values are hidden.
+-}
 optValRM :: RM Value -> RM Value
 optValRM f = do
   disableShowVal <- asks (stTraceDisableShowValue . traceConfig)
@@ -210,9 +217,26 @@ markFlowEventEnd group vers = do
 
 -- === Debug instant traces ===
 
+{- | Emit a string-valued debug instant.
+
+The @RM String@ argument is deliberately a message-generating action. It is
+run only when the debug instant is enabled (and trace values are not hidden).
+Callers should therefore pass message generation directly to this function,
+instead of binding the generated 'String' before calling it. For example:
+
+@
+debugInstStr "descend" startAddr $
+  debugDescend startAddr matchedAddr start selectors unmatchedSels
+@
+-}
 debugInstStr :: String -> EvalAddr -> RM String -> RM ()
 debugInstStr name addr f = debugInst name addr (toJSON <$> f)
 
+{- | Emit a value-producing debug instant. As with 'debugInstStr', @argsGen@ is
+conditional: it is run only in debug mode when tracing is enabled for @name@
+and trace values are not hidden. Keep any debug-only payload construction in
+this action so normal evaluation does not pay its cost or observe its effects.
+-}
 debugInst :: String -> EvalAddr -> RM Value -> RM ()
 debugInst name addr argsGen = do
   debugMode <- asks debugMode

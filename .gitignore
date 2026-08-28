@@ -1,6 +1,8 @@
 .DS_Store
 haskue
+*.prof
 dist-newstyle/*
+dist-profile/*
 tools/*/dist-newstyle/*
 dist-release/*
 _debug/*

@@ -29,7 +29,7 @@ import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
-import Value.Export.Debug (termsRepToJSONWithAddr, vnToFullStringTermsRep, vnToStringTermsRep)
+import Value.Export.Debug (toTermTreeJSONForAddr, vnToRecursiveTermTreeString, vnToTermTreeString)
 
 reduceDisj :: EvalAddr -> Disj -> RM Val
 reduceDisj addr d = traceSpanNoPreRM "reduceDisj" addr $ do
@@ -50,7 +50,7 @@ resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
     "resolveDisjOp"
     addr
     ( do
-        disjunctTs <- mapM vnToStringTermsRep disjuncts
+        disjunctTs <- mapM vnToTermTreeString disjuncts
         msprintfS "disjuncts: %s" [packFmtA disjunctTs]
     )
   if null disjuncts
@@ -72,7 +72,7 @@ normalizeDisj :: EvalAddr -> Disj -> RM Val
 normalizeDisj addr d = traceSpanRM
   "normalizeDisj"
   addr
-  (mkTracePreDataWithOnlyVal <$> termsRepToJSONWithAddr addr (mkDisjVN d))
+  (mkTracePreDataWithOnlyVal <$> toTermTreeJSONForAddr addr (mkDisjVN d))
   $ do
     flattened <- flattenDisjunction d
     final <- rewriteDisjuncts flattened addr
@@ -80,8 +80,8 @@ normalizeDisj addr d = traceSpanRM
       "normalizeDisj"
       addr
       ( do
-          flattenedRep <- vnToFullStringTermsRep (mkDisjVN flattened)
-          rep <- vnToStringTermsRep (mkDisjVN final)
+          flattenedRep <- vnToRecursiveTermTreeString (mkDisjVN flattened)
+          rep <- vnToTermTreeString (mkDisjVN final)
           return $ printf "flattened: %s, final: %s" flattenedRep rep
       )
     if
@@ -125,7 +125,7 @@ flattenDisjunction (Disj{dsjDefIndexes = idxes, dsjDisjuncts = disjuncts}) = do
     "flattenDisjunction"
     emptyEvalAddr
     ( do
-        reps <- mapM vnToStringTermsRep (toList disjuncts)
+        reps <- mapM vnToTermTreeString (toList disjuncts)
         return $ printf "before disjuncts: %s, defIdxes: %s" (show reps) (show idxes)
     )
 
@@ -189,8 +189,8 @@ rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts})
   traceSpanWithRM
     "rewriteDisjuncts"
     addr
-    (mkTracePreDataWithOnlyVal <$> termsRepToJSONWithAddr addr (mkDisjVN idisj))
-    (termsRepToJSONWithAddr addr . mkDisjVN)
+    (mkTracePreDataWithOnlyVal <$> toTermTreeJSONForAddr addr (mkDisjVN idisj))
+    (toTermTreeJSONForAddr addr . mkDisjVN)
     $ do
       (newIndexes, newDisjs) <- foldM go ([], []) (zip [0 ..] (toList disjuncts))
       return $ emptyDisj{dsjDefIndexes = newIndexes, dsjDisjuncts = Seq.fromList newDisjs}
@@ -235,7 +235,7 @@ rewriteDisjuncts idisj@(Disj{dsjDefIndexes = dfIdxes, dsjDisjuncts = disjuncts})
       addr
       ( do
           xT <- tshow x
-          xRep <- vnToStringTermsRep x
+          xRep <- vnToTermTreeString x
           return $
             printf
               "At %s, disjunct: %s, isNewDisj: %s, isDiscarded: %s isValEqDef: %s, keepDisjunct: %s, isDefIndex: %s, in accXs: %s, v: %s"

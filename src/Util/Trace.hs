@@ -6,9 +6,11 @@
 module Util.Trace where
 
 import Control.DeepSeq (NFData)
+import Control.Monad.Except (MonadError, catchError, throwError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.State (MonadState, gets, modify')
-import Data.Aeson (ToJSON, Value, encode, object, toJSON, (.=))
+import Data.Aeson (ToJSON, Value (..), encode, object, toJSON, (.=))
+import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Text as T
 import Data.Time.Calendar (fromGregorian)
@@ -24,6 +26,8 @@ class HasTrace a where
 data Trace = Trace
   { traceID :: Int
   , traceTime :: UTCTime
+  , traceScopes :: [T.Text]
+  -- ^ The current trace scope stack, with the innermost scope first.
   , tPut :: LB.ByteString -> IO ()
   }
   deriving (Generic, NFData)
@@ -37,6 +41,39 @@ instance HasTrace Trace where
   setTrace s t = t{traceID = traceID s}
 
 type TraceM s m = (MonadState s m, HasTrace s, MonadIO m)
+
+modifyTrace :: (MonadState s m, HasTrace s) => (Trace -> Trace) -> m ()
+modifyTrace f = modify' $ \s -> setTrace s (f $ getTrace s)
+
+getTraceScopes :: (MonadState s m, HasTrace s) => m [T.Text]
+getTraceScopes = reverse . traceScopes <$> gets getTrace
+
+setTraceScopes :: (MonadState s m, HasTrace s) => [T.Text] -> m ()
+setTraceScopes scopes = modifyTrace $ \trace -> trace{traceScopes = reverse scopes}
+
+{- | Run an action inside a trace scope.
+
+The previous scope stack is restored when the action returns or raises a
+'MonadError' error. Trace scopes are presentation-only and never affect
+evaluation addresses.
+-}
+withTraceScope :: (MonadState s m, HasTrace s, MonadError e m) => T.Text -> m a -> m a
+withTraceScope scope action = do
+  oldScopes <- getTraceScopes
+  setTraceScopes (oldScopes ++ [scope])
+  let restore = setTraceScopes oldScopes
+  result <- action `catchError` \err -> restore >> throwError err
+  restore
+  return result
+
+attachTraceScopes :: Trace -> Value -> Value
+attachTraceScopes trace args
+  | null trace.traceScopes = args
+  | otherwise =
+      let scopes = toJSON $ reverse trace.traceScopes
+       in case args of
+            Object fields -> Object $ KeyMap.insert "scope" scopes fields
+            other -> object ["scope" .= scopes, "value" .= other]
 
 data ChromeStartTrace = ChromeStartTrace
   { cstrName :: !T.Text
@@ -117,8 +154,7 @@ traceSpanStart name args = do
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
     st =
       encode
-        ( ChromeStartTrace{cstrName = name, cstrTime = timeInMicros, cstrArgs = args}
-        )
+        (ChromeStartTrace{cstrName = name, cstrTime = timeInMicros, cstrArgs = attachTraceScopes tr args})
 
   dumpTrace tr.tPut st
 
@@ -131,10 +167,12 @@ traceSpanExec name args = do
   tr <- newTrace
   let
     timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
+  -- Chrome trace viewers merge the arguments of matching begin and end
+  -- events. The begin event already contains the scope; repeating it here
+  -- would make the viewer display every scope twice.
   dumpTrace tr.tPut $
     encode
-      ( ChromeEndTrace{cetrName = name, cetrTime = timeInMicros, cetrArgs = args}
-      )
+      (ChromeEndTrace{cetrName = name, cetrTime = timeInMicros, cetrArgs = args})
 
 debugInstant :: (TraceM s m) => T.Text -> Value -> m ()
 debugInstant name args = do
@@ -142,8 +180,7 @@ debugInstant name args = do
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace tr.tPut $
     encode
-      ( ChromeInstantTrace{ctiName = name, ctiStart = timeInMicros, ctiArgs = args}
-      )
+      (ChromeInstantTrace{ctiName = name, ctiStart = timeInMicros, ctiArgs = attachTraceScopes tr args})
 
 emitFlowEvent :: (TraceM s m) => T.Text -> T.Text -> m ()
 emitFlowEvent phase flowID = do
@@ -151,8 +188,7 @@ emitFlowEvent phase flowID = do
   let timeInMicros = round (utcTimeToPOSIXSeconds (traceTime tr) * 1000000) :: Int
   dumpTrace tr.tPut $
     encode
-      ( ChromeFlowEvent{cfeTime = timeInMicros, cfePhase = phase, cfeID = flowID}
-      )
+      (ChromeFlowEvent{cfeTime = timeInMicros, cfePhase = phase, cfeID = flowID})
 
 dumpTrace :: (MonadIO m) => (LB.ByteString -> IO ()) -> LB.ByteString -> m ()
 dumpTrace f msg = liftIO $ do
@@ -175,5 +211,6 @@ emptyTrace f =
   Trace
     { traceID = 0
     , traceTime = UTCTime{utctDayTime = secondsToDiffTime 0, utctDay = fromGregorian 1970 1 1}
+    , traceScopes = []
     , tPut = f
     }

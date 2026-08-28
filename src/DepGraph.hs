@@ -422,8 +422,24 @@ queryUsesByDepMatch depMatches =
   adaptDepMatch mapping depVertex =
     depMatches (vertexToAddr $ getVertexAddrFromVtxMust depVertex mapping)
 
-queryUsesByDep :: (HasCallStack) => ReferableAddr -> DepGraph -> [EvalAddr]
-queryUsesByDep depAddr graph = map snd $ queryUsesByDepMatch (== rfbAddrToAddr depAddr) graph
+{- | Test whether the vertex-level propagation graph contains the exact edge
+@dependency -> use@.
+
+Both endpoints are resolved through 'VIDMapping' without allocating vertex
+IDs. The use address must already be normalized to the 'VertexAddr' form stored
+by 'addNewDepToNG'. The result is 'False' if either endpoint is unknown.
+
+This performs two average-case constant-time hash lookups followed by a linear
+search through the dependency's direct-use list.
+-}
+queryDepUseEdge :: ReferableAddr -> VertexAddr -> DepGraph -> Bool
+queryDepUseEdge depAddr useAddr graph = case do
+  depVID <- lookupVID (rfbAddrToVertex depAddr) graph.vidMapping
+  useVID <- lookupVID useAddr graph.vidMapping
+  return (depVID, useVID) of
+  Nothing -> False
+  Just (depVID, useVID) ->
+    Vertex useVID `elem` HashMap.findWithDefault [] (Vertex depVID) graph.vgraph.vUsesByDep
 
 -- Component graph rebuilding
 

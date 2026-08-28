@@ -19,6 +19,7 @@ library
         Eval,
         Exception,
         EvalAddr,
+        Query,
         Reduce,
         Reduce.Builtin,
         Reduce.Comprehension,
@@ -132,9 +133,13 @@ Test-Suite haskue-unit-test
   hs-source-dirs: tests
   main-is: Main.hs
   other-modules:
+    ASTTest,
+    DepGraphTest,
     EvalAddrTest,
+    ExplainTest,
     ScannerTest,
     SpecTest,
+    TraceTest,
     ValueEqTest,
     VTermTest,
   build-depends:

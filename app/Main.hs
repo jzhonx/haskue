@@ -3,7 +3,8 @@ module Main where
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString as B
 import Data.ByteString.Builder (hPutBuilder)
-import Eval (Config (..), evalStr)
+import qualified Data.ByteString.Char8 as BC
+import Eval (Config (..), evalStr, explainExpr, explainStr)
 import Options.Applicative
 import Reduce.Monad (TraceConfig (..))
 import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
@@ -12,6 +13,7 @@ import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
 data Command
   = Export ExportConfig
   | Eval EvalConfig
+  | Explain ExplainConfig
 
 -- Common configuration type for shared options
 data CommonConfig = CommonConfig
@@ -31,6 +33,16 @@ data ExportConfig = ExportConfig
 data EvalConfig = EvalConfig
   { evalFilePath :: String
   , evalCommon :: CommonConfig
+  }
+
+data ExplainInput
+  = ExplainFile FilePath
+  | ExplainExpr String
+
+data ExplainConfig = ExplainConfig
+  { explainInput :: ExplainInput
+  , explainQuery :: String
+  , explainCommon :: CommonConfig
   }
 
 -- Common options parser
@@ -133,6 +145,35 @@ evalParser =
       )
     <*> commonOptions
 
+explainInputParser :: Parser ExplainInput
+explainInputParser =
+  ( ExplainExpr
+      <$> strOption
+        ( short 'e'
+            <> long "expression"
+            <> metavar "EXPR"
+            <> help "Inline CUE expression to evaluate"
+        )
+  )
+    <|> ( ExplainFile
+            <$> argument
+              str
+              ( metavar "FILE"
+                  <> help "CUE file to parse"
+              )
+        )
+
+explainParser :: Parser ExplainConfig
+explainParser =
+  ExplainConfig
+    <$> explainInputParser
+    <*> argument
+      str
+      ( metavar "QUERY"
+          <> help "Value path to explain"
+      )
+    <*> commonOptions
+
 -- | Main command parser
 commandParser :: Parser Command
 commandParser =
@@ -149,6 +190,12 @@ commandParser =
             (Eval <$> evalParser <**> helper)
             (progDesc "Evaluate CUE file")
         )
+      <> command
+        "explain"
+        ( info
+            (Explain <$> explainParser <**> helper)
+            (progDesc "Explain how a CUE value is calculated")
+        )
 
 runEval :: Config -> IO ()
 runEval conf = do
@@ -157,6 +204,41 @@ runEval conf = do
   case x of
     Left err -> putStrLn $ "Internal bug: " ++ err
     Right b -> hPutBuilder stdout b
+  hClose (ecTraceHandle conf)
+
+toExplainEvalConfig :: ExplainConfig -> IO Config
+toExplainEvalConfig explainConfig = do
+  let cconf = explainCommon explainConfig
+      filePath = case explainInput explainConfig of
+        ExplainFile path -> path
+        ExplainExpr _ -> ""
+  tHandle <- mkTraceHandle (ccTraceOutput cconf)
+  return $
+    Config
+      { outputFormat = "cue"
+      , ecDebugMode = ccDebug cconf
+      , ecTraceConfig =
+          TraceConfig
+            { stTraceEnable = ccTrace cconf
+            , stTraceDisableShowValue = ccTraceDisableShowValue cconf
+            }
+      , ecTraceHandle = tHandle
+      , ecMaxTreeDepth = ccMaxTreeDepth cconf
+      , ecFilePath = filePath
+      }
+
+runExplain :: ExplainConfig -> IO ()
+runExplain explainConfig = do
+  conf <- toExplainEvalConfig explainConfig
+  let query = BC.pack (explainQuery explainConfig)
+  result <- case explainInput explainConfig of
+    ExplainFile path -> do
+      source <- B.readFile path
+      runExceptT $ explainStr source query conf
+    ExplainExpr source -> runExceptT $ explainExpr (BC.pack source) query conf
+  case result of
+    Left err -> putStrLn $ "error: " ++ err
+    Right builder -> hPutBuilder stdout builder
   hClose (ecTraceHandle conf)
 
 main :: IO ()
@@ -169,3 +251,4 @@ main = do
     Eval evalConfig -> do
       conf <- toEvalConfigEval evalConfig
       runEval conf
+    Explain explainConfig -> runExplain explainConfig

@@ -12,7 +12,7 @@ import EvalAddr
 import Reduce.Core (reduce)
 import Reduce.Disjunction (normalizeDisj)
 import Reduce.Monad (RM)
-import Reduce.TraceSpan (traceSpanTermsRepTM)
+import Reduce.TraceSpan (traceSpanTermTreeTM)
 import StringIndex (ShowWTIndexer (..))
 import Text.Printf (printf)
 import Value
@@ -26,11 +26,11 @@ After the value is reduced to the fixpoint, we need to do some finalization work
 2. Pop up bottoms.
 -}
 finalize :: EvalAddr -> VNode -> RM VNode
-finalize addr root = traceSpanTermsRepTM "finalize" addr root $ finalizeInner addr root
+finalize addr root = traceSpanTermTreeTM "finalize" addr root $ finalizeInner addr root
 
 -- | Finalize the value by traversing the val tree in a post-order way.
 finalizeInner :: EvalAddr -> VNode -> RM VNode
-finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
+finalizeInner addr topV = traceSpanTermTreeTM "finalizeInner" addr topV $ do
   -- First traverse the sub values.
   -- We do not traverse the constraints.
   v' <- case topV of
@@ -58,7 +58,7 @@ finalizeInner addr topV = traceSpanTermsRepTM "finalizeInner" addr topV $ do
     _ -> return topV
   simplify addr v'
  where
-  simplify p x = traceSpanTermsRepTM "simplify" p x $ do
+  simplify p x = traceSpanTermTreeTM "simplify" p x $ do
     case x of
       IsAtom _ | not x.constraints.allResolved -> validateCnstr p x
       -- Keep the constraints if the value is no val.
@@ -90,7 +90,7 @@ It creates a validate function, and then evaluates the function. Notice that the
 constraint in the propValUp.
 -}
 validateCnstr :: EvalAddr -> VNode -> RM VNode
-validateCnstr addr v = traceSpanTermsRepTM "validateCnstr" addr v $ do
+validateCnstr addr v = traceSpanTermTreeTM "validateCnstr" addr v $ do
   -- Run the validator in a forced reduce args mode.
   -- If any reference in the validator is a RC reference, it will either get the latest value of the RC node, or
   -- get an incomplete value if the RC node did not yield a concrete value.

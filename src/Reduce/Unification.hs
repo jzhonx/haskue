@@ -40,10 +40,10 @@ import Text.Printf (printf)
 import Text.Regex.TDFA ((=~))
 import Value
 import Value.Export.Debug (
-  TermsRepShow (..),
-  recurShowTermsRepOption,
-  termsRepToFullJSON,
-  valToStringTermsRep,
+  ToTermTree (..),
+  recursiveTermTreeOptions,
+  toRecursiveTermTreeJSON,
+  valToTermTreeString,
  )
 
 data EmbedType
@@ -237,8 +237,8 @@ mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
     "mergeBinUTrees"
     addr
     ( do
-        t1Str <- valToStringTermsRep t1
-        t2Str <- valToStringTermsRep t2
+        t1Str <- valToTermTreeString t1
+        t2Str <- valToTermTreeString t2
         return $
           emptyTracePreData
             { tpvArgs =
@@ -273,7 +273,7 @@ mergeBinUTrees co1@(ConjOpd{coVal = t1}) co2@(ConjOpd{coVal = t2}) addr = do
     "mergeBinUTrees"
     addr
     ( do
-        rStr <- valToStringTermsRep r
+        rStr <- valToTermTreeString r
         return $ printf "result: %s" rStr
     )
   return r
@@ -610,11 +610,11 @@ mergeStructs (s1, co1@ConjOpd{dir = L}) (s2, co2) addr = traceSpanWithRM
   "mergeStructs"
   addr
   ( do
-      ut1Str <- show <$> toTermsRep (VStruct s1) recurShowTermsRepOption
-      ut2Str <- show <$> toTermsRep (VStruct s2) recurShowTermsRepOption
+      ut1Str <- show <$> toTermTree (VStruct s1) recursiveTermTreeOptions
+      ut2Str <- show <$> toTermTree (VStruct s2) recursiveTermTreeOptions
       return $ emptyTracePreData{tpvArgs = Just $ printf "co1: %s\nco2: %s" ut1Str ut2Str}
   )
-  termsRepToFullJSON
+  toRecursiveTermTreeJSON
   $ do
     let neitherEmbedded = not (co1 `isEmbeddedIn` co2 || co2 `isEmbeddedIn` co1)
     -- Consider: {a: _, s1|s2} -> {a: _} & s1
@@ -631,7 +631,7 @@ mergeStructs (s1, co1@ConjOpd{dir = L}) (s2, co2) addr = traceSpanWithRM
       "mergeStructs"
       addr
       ( do
-          sStr <- show <$> toTermsRep (VStruct s) recurShowTermsRepOption
+          sStr <- show <$> toTermTree (VStruct s) recursiveTermTreeOptions
           return $ printf "merged struct: %s" sStr
       )
 

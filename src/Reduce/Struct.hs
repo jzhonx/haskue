@@ -32,7 +32,7 @@ import Reduce.TraceSpan (
   tpvArgs,
   traceSpanNoPreRM,
   traceSpanRM,
-  traceSpanTermsRepTM,
+  traceSpanTermTreeTM,
   traceSpanWithRM,
  )
 import Reduce.Unification (patMatchLabel)
@@ -48,9 +48,9 @@ import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
 import Value
 import Value.Export.Debug (
-  cnstrsToFullTermsRep,
-  termsRepToFullJSON,
-  valToStringTermsRep,
+  cnstrsToRecursiveTermTree,
+  toRecursiveTermTreeJSON,
+  valToTermTreeString,
  )
 import Value.Instances (posttravsVT, setSubVN)
 
@@ -123,7 +123,7 @@ whenStruct f v = do
     _ -> return v
 
 validateStructPerm :: EvalAddr -> Struct -> RM Val
-validateStructPerm addr struct = traceSpanTermsRepTM "validateStructPerm" addr (VStruct struct) $
+validateStructPerm addr struct = traceSpanTermTreeTM "validateStructPerm" addr (VStruct struct) $
   do
     r <-
       foldM
@@ -139,7 +139,7 @@ validateStructPerm addr struct = traceSpanTermsRepTM "validateStructPerm" addr (
           "validateStructPerm"
           addr
           ( do
-              rep <- valToStringTermsRep (VBottom err)
+              rep <- valToTermTreeString (VBottom err)
               msprintfS "permission error: %s" [packFmtA rep]
           )
         return (VStruct $ struct{stcPermErr = Just err})
@@ -236,7 +236,7 @@ handleSObjChange subEvalAddr parentV@(VStruct struct) = case lastSeg subEvalAddr
  where
   go seg = do
     let structAddr = fromJust $ initEvalAddr subEvalAddr
-    traceSpanTermsRepTM (printf "handleSObjChange, seg: %s" (show seg)) structAddr parentV $ do
+    traceSpanTermTreeTM (printf "handleSObjChange, seg: %s" (show seg)) structAddr parentV $ do
       (parentV', affectedPairs) <- handleSObjChangeInner seg struct structAddr parentV
       foldM
         ( \acc (afAddr, afv) -> do
@@ -453,7 +453,7 @@ bindFieldWithCnstr name field cnstr structAddr = do
       debugInstStr
         "bindFieldWithCnstr"
         structAddr
-        (show <$> cnstrsToFullTermsRep cnstrVal)
+        (show <$> cnstrsToRecursiveTermTree cnstrVal)
       let
         fval = ssfValue field
         op = fval{constraints = insertDynCnstr (scsID cnstr) cnstrVal (constraints fval)}
@@ -468,8 +468,8 @@ forkCnstrVal fieldName cnstr structAddr = do
   traceSpanWithRM
     "forkCnstrVal"
     structAddr
-    (mkTracePreDataWithOnlyVal . toJSON <$> cnstrsToFullTermsRep (scsValue cnstr))
-    termsRepToFullJSON
+    (mkTracePreDataWithOnlyVal . toJSON <$> cnstrsToRecursiveTermTree (scsValue cnstr))
+    toRecursiveTermTreeJSON
     $ case scsPatAlias cnstr of
       Nothing -> return $ vtmapT (\_ vt -> copyVTermNode cnstrEvalAddr fieldAddr vt) cnstrEvalAddr (scsValue cnstr)
       Just aliasIdx -> do
@@ -498,7 +498,7 @@ replaceAlias aliasAddr fieldNameT topAddr sq =
         posttravsVT
           ( \_ x ->
               case x of
-                IsRef _ ref@Reference{resolvedIdentAddr = ResolvedIdentFromTop resIdentAddr}
+                IsRef _ ref@Reference{identLocator = AbsoluteIdentAddr resIdentAddr}
                   | resIdentAddr == aliasAddr ->
                       if null ref.selectors
                         then VTVal alias
@@ -543,7 +543,7 @@ removeAppliedObject objID struct addr =
     addr
     emptyTracePreDataRM
     ( \(s, fds, rmLabels) -> do
-        sT <- T.pack <$> valToStringTermsRep (VStruct s)
+        sT <- T.pack <$> valToTermTreeString (VStruct s)
         fdsT <-
           mapM
             ( \(name, v) -> do

@@ -195,8 +195,11 @@ pattern IsUnknown <- VNVal VUnknown
 pattern StaticConstraints :: Seq.Seq Constraint -> VNode
 pattern StaticConstraints cs <- VNode{constraints = ConstraintsSet{static = cs}}
 
-pattern IsValSoleOp :: Op -> VNode
-pattern IsValSoleOp ocOp <- StaticConstraints (OpCnstr (OpConstraint{ocOp}) Seq.:<| Seq.Empty)
+{- | Match a node whose static constraints consist of a single operation.
+Dynamic constraints may still be present.
+-}
+pattern IsValSoleStaticOp :: Op -> VNode
+pattern IsValSoleStaticOp ocOp <- StaticConstraints (OpCnstr (OpConstraint{ocOp}) Seq.:<| Seq.Empty)
 
 -- = Val getters and setters =
 

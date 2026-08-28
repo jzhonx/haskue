@@ -9,6 +9,11 @@ b: _
 c: _
 d: _
 
+-- cycles_ref1_1 --
+x: x & x
+-- exp --
+x: _
+
 -- cycles_ref2 --
 a: b + 100
 b: a - 100
@@ -40,6 +45,17 @@ x: {
 y: {
     a: 200
     b: 100
+}
+
+-- cycles_ref4_2 --
+x: {
+	a: b + 100
+	b: a - 100
+} & {}
+-- exp --
+x: {
+    a: b + 100
+    b: a - 100
 }
 
 -- cycles_ref5 --
@@ -158,3 +174,12 @@ z2: {
     b: 2
 }
 
+-- cycles_ref7_1 --
+a: b
+b: a
+// referencing a cycle
+c: b
+-- exp --
+a: _
+b: _
+c: _

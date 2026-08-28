@@ -123,8 +123,8 @@ mkItpSOp segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fr
 mkItpSOpBytes :: [IplSeg] -> [VNode] -> Op
 mkItpSOpBytes segs exprs = Itp $ emptyInterpolation{itpSegs = segs, itpExprs = Seq.fromList exprs, itpIsBytes = True}
 
-showOpType :: Op -> String
-showOpType op = case op of
+showOpKind :: Op -> String
+showOpKind op = case op of
   RegOp _ -> "op"
   Ref _ -> "ref"
   VSelect _ -> "index"

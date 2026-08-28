@@ -41,11 +41,21 @@ Some test cases and standard-library code were drafted or implemented with the a
 
 ## CLI Usage
 
-Currently, haskue supports `eval` and `export` commands that behave similarly to the CUE CLI.
+Currently, haskue supports `eval`, `export`, and `explain` commands.
 
 ```
 haskue eval   <file>
 haskue export <file> [--out cue|json|yaml] [--trace]
+haskue explain <file> <query>
+haskue explain -e <expression> <query>
+```
+
+The `explain` command shows the constraints that contribute to a selected value. It accepts either a CUE file or an
+inline CUE expression:
+
+```sh
+haskue explain example.cue x.a
+haskue explain -e '{x: {a: int} & {a: 1}}' x.a
 ```
 
 We also provide a `--trace` option to print the evaluation trace of the value graph.

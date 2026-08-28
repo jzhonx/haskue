@@ -9,13 +9,15 @@ module Eval (
   Config (..),
   evalStr,
   evalFile,
+  explainExpr,
+  explainStr,
   emptyConfig,
   strToCUEVal,
 )
 where
 
 import Control.Monad (void, when)
-import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept)
+import Control.Monad.Except (ExceptT, liftEither, mapExceptT, runExcept, runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (runRWST)
 import Control.Monad.Reader (MonadReader (..))
@@ -27,10 +29,12 @@ import Data.ByteString.Builder (
   byteString,
   lazyByteString,
   string7,
+  stringUtf8,
  )
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Yaml as Yaml
 import EvalAddr (fileTopEvalAddr)
+import Query (queryValue, renderExplanation)
 import Reduce (finalize, reduce)
 import Reduce.Core (storeBuiltinsAndPackages)
 import Reduce.Monad
@@ -44,7 +48,7 @@ import Syntax.Scanner (scanTokens, scanTokensFromFile)
 import System.IO (Handle, hPutStr, stderr, stdout)
 import Text.Printf (printf)
 import Value
-import Value.Export.Debug (vnToFullStringTermsRep)
+import Value.Export.Debug (vnToRecursiveTermTreeString)
 import Value.Export.JSON (buildJSON)
 
 data Config = Config
@@ -91,6 +95,28 @@ evalStr eStr conf
         Right (Unary (Primary (PrimExprOperand (OpLiteral (LitStruct (StructLit _ decls _)))))) ->
           return (declsToBuilder decls)
         Right e -> return $ exprToBuilder False e
+
+explainStr :: B.ByteString -> B.ByteString -> Config -> ExceptT String IO Builder
+explainStr source query conf = do
+  tokens <-
+    liftEither
+      ( case scanTokensFromFile (ecFilePath conf) source of
+          Left errTk -> Left (show errTk)
+          Right ts -> Right ts
+      )
+  sourceFile <- liftEither $ parseSourceFile tokens
+  explainVal (transSourceFile sourceFile fileTopEvalAddr) query conf
+
+explainExpr :: B.ByteString -> B.ByteString -> Config -> ExceptT String IO Builder
+explainExpr source query conf = do
+  tokens <-
+    liftEither
+      ( case scanTokens source of
+          Left errTk -> Left (show errTk)
+          Right ts -> Right ts
+      )
+  expr <- liftEither $ parseExpr tokens
+  explainVal (transExprToVal expr fileTopEvalAddr) query conf
 
 evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String Expression)
 evalStrToAST s conf = do
@@ -162,45 +188,67 @@ evalVal f conf = do
 
 evalValInner :: Config -> TextIndexer -> VNode -> ExceptT String IO (VNode, TextIndexer)
 evalValInner conf textIndexer raw = do
-  (reducedRoot, finalized, _) <-
+  runReduceAction conf textIndexer $ do
+    debugTranslated conf raw
+    topVal <- reduceRoot raw
+    reducedTopVal <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
+    debugFinal conf reducedTopVal
+    return reducedTopVal
+
+explainVal :: TM VNode -> B.ByteString -> Config -> ExceptT String IO Builder
+explainVal translate query conf = do
+  translated <-
+    liftIO $
+      runExceptT $
+        runRWST translate () (mkTransState emptyTextIndexer)
+  (raw, textIndexer) <- case translated of
+    Left (SemantErr msg) -> throwError msg
+    Left (FatalErr msg) -> throwError msg
+    Right (vnode, transState, _) -> return (vnode, transState.tIndexer)
+  fst <$> runReduceAction conf textIndexer do
+    debugTranslated conf raw
+    topVal <- reduceRoot raw
+    target <- queryValue query
+    finalized <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
+    debugFinal conf finalized
+    currentTextIndexer <- Reduce.Monad.tIndexer <$> getRMContext
+    return $ stringUtf8 $ renderExplanation currentTextIndexer query target
+
+reduceRoot :: VNode -> RM VNode
+reduceRoot raw = do
+  storeBuiltinsAndPackages
+  local
+    (mapParams (\p -> p{createCnstr = True}))
+    do
+      void $ reduce fileTopEvalAddr raw
+      recalc
+      fetchValMust "reduceRoot" fileTopEvalAddr
+
+runReduceAction :: Config -> TextIndexer -> RM a -> ExceptT String IO (a, TextIndexer)
+runReduceAction conf textIndexer action = do
+  (result, finalContext, _) <-
     runRWST
-      ( do
-          when (ecDebugMode conf) $ do
-            rawRep <- vnToFullStringTermsRep raw
-            liftIO $ hPutStr stderr $ "Translated result: " ++ rawRep ++ "\n"
-
-          storeBuiltinsAndPackages
-
-          topVal <-
-            local
-              (mapParams (\p -> p{createCnstr = True}))
-              ( do
-                  void $ reduce fileTopEvalAddr raw
-                  recalc
-                  fetchValMust "eval" fileTopEvalAddr
-              )
-          reducedTopVal <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
-
-          when (ecDebugMode conf) $ do
-            rep <- vnToFullStringTermsRep reducedTopVal
-            liftIO $
-              hPutStr stderr $
-                "Final eval result: " ++ rep ++ "\n"
-
-          return reducedTopVal
-      )
+      action
       ( ReduceConfig
           { traceConfig = ecTraceConfig conf
           , maxTreeDepth = ecMaxTreeDepth conf
           , debugMode = ecDebugMode conf
-          , params = (emptyReduceParams{createCnstr = True})
+          , params = emptyReduceParams{createCnstr = True}
           }
       )
       (emptyContext (LB.hPut conf.ecTraceHandle))
         { Reduce.Monad.tIndexer = textIndexer
         }
+  return (result, finalContext.tIndexer)
 
-  return
-    ( reducedRoot
-    , finalized.tIndexer
-    )
+debugTranslated :: Config -> VNode -> RM ()
+debugTranslated conf raw =
+  when (ecDebugMode conf) $ do
+    rawRep <- vnToRecursiveTermTreeString raw
+    liftIO $ hPutStr stderr $ "Translated result: " ++ rawRep ++ "\n"
+
+debugFinal :: Config -> VNode -> RM ()
+debugFinal conf finalized =
+  when (ecDebugMode conf) $ do
+    rep <- vnToRecursiveTermTreeString finalized
+    liftIO $ hPutStr stderr $ "Final eval result: " ++ rep ++ "\n"

@@ -42,84 +42,84 @@ import Value.Reference
 import Value.Struct
 import Value.Val
 
-class TermsRepShow a where
-  toTermsRep :: (TextIndexerMonad s m) => a -> TermsRepOption -> m TermsRep
+class ToTermTree a where
+  toTermTree :: (TextIndexerMonad s m) => a -> TermTreeOptions -> m TermTree
 
-instance TermsRepShow VNode where
-  toTermsRep = vnToTermsRep
+instance ToTermTree VNode where
+  toTermTree = vnToTermTree
 
-instance TermsRepShow Val where
-  toTermsRep = valToTermsRep
+instance ToTermTree Val where
+  toTermTree = valToTermTree
 
-instance TermsRepShow Op where
-  toTermsRep = opToTermsRep
+instance ToTermTree Op where
+  toTermTree = opToTermTree
 
-instance TermsRepShow () where
-  toTermsRep _ _ = return emptyTermsRep
+instance ToTermTree () where
+  toTermTree _ _ = return emptyTermTree
 
-instance TermsRepShow Constraint where
-  toTermsRep = cnstrToTermsRep
+instance ToTermTree Constraint where
+  toTermTree = cnstrToTermTree
 
-instance TermsRepShow ConstraintSeq where
-  toTermsRep cs = cnstrsToTermsRep (toList cs)
+instance ToTermTree ConstraintSeq where
+  toTermTree cs = cnstrsToTermTree (toList cs)
 
-newtype TermsRepOption = TermsRepOption
-  { troptRecur :: Bool
+newtype TermTreeOptions = TermTreeOptions
+  { recurseIntoChildren :: Bool
   }
 
-defaultTermsRepOption :: TermsRepOption
-defaultTermsRepOption = TermsRepOption{troptRecur = False}
+defaultTermTreeOptions :: TermTreeOptions
+defaultTermTreeOptions = TermTreeOptions{recurseIntoChildren = False}
 
-recurShowTermsRepOption :: TermsRepOption
-recurShowTermsRepOption = TermsRepOption{troptRecur = True}
+recursiveTermTreeOptions :: TermTreeOptions
+recursiveTermTreeOptions = TermTreeOptions{recurseIntoChildren = True}
 
-toTermsRepWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => EvalAddr -> a -> m TermsRep
-toTermsRepWithAddr addr a = do
+toTermTreeForAddr :: (TextIndexerMonad s m, ToTermTree a) => EvalAddr -> a -> m TermTree
+toTermTreeForAddr addr a = do
   let isRoot = addr == fileTopEvalAddr
-  toTermsRep a (defaultTermsRepOption{troptRecur = isRoot})
+  toTermTree a (defaultTermTreeOptions{recurseIntoChildren = isRoot})
 
-termsRepToJSONWithAddr :: (TextIndexerMonad s m, TermsRepShow a) => EvalAddr -> a -> m Value
-termsRepToJSONWithAddr addr a = do
-  rep <- toTermsRepWithAddr addr a
-  return $ toJSON rep
+toTermTreeJSONForAddr :: (TextIndexerMonad s m, ToTermTree a) => EvalAddr -> a -> m Value
+toTermTreeJSONForAddr addr a = do
+  tree <- toTermTreeForAddr addr a
+  return $ toJSON tree
 
-termsRepToFullJSON :: (TextIndexerMonad s m, TermsRepShow a) => a -> m Value
-termsRepToFullJSON a = do
-  rep <- toTermsRep a recurShowTermsRepOption
-  return $ toJSON rep
+toRecursiveTermTreeJSON :: (TextIndexerMonad s m, ToTermTree a) => a -> m Value
+toRecursiveTermTreeJSON a = do
+  tree <- toTermTree a recursiveTermTreeOptions
+  return $ toJSON tree
 
 {- | A representation of a VNode for debugging and visualization purposes.
 
 TextIndexes have been resolved to their string labels.
 -}
-data TermsRep = TermsRep
-  { trInfo :: [String]
+data TermTree = TermTree
+  { ttInfo :: [String]
   -- ^ General info about the tree node.
-  , trExtraMetas :: [(String, String)]
+  , ttExtraMetas :: [(String, String)]
   -- ^ Extra metadata about the tree node.
-  , trTerms :: [TermRep]
-  -- ^ Fields of the tree node.
+  , ttEntries :: [TermEntry]
+  -- ^ Entries of the tree node.
   }
 
-instance ToJSON TermsRep where
-  toJSON (TermsRep info [] []) = toJSON $ mergeInfo info
-  toJSON (TermsRep info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
-  toJSON (TermsRep info em fields) =
+instance ToJSON TermTree where
+  toJSON (TermTree info [] []) = toJSON $ mergeInfo info
+  toJSON (TermTree info em []) = object ["__t" .= mergeInfo info, "__tmetas" .= mergeExtraMetas em]
+  toJSON (TermTree info em fields) =
     object
       ( ["__t" .= mergeInfo info]
           ++ ["__tmetas" .= mergeExtraMetas em | not (null em)]
-          ++ [ Key.fromString (trfLabel f <> trfAttr f) .= case trfContent f of
-                 TermRepContentScalar s -> toJSON s
-                 TermRepContentRegular r -> toJSON r
+          ++ [ Key.fromString (teLabel f <> teAttr f) .= case teContent f of
+                TermContentScalar s -> toJSON s
+                TermContentTree r -> toJSON r
              | f <- fields
              ]
       )
 
-instance Show TermsRep where
-  show = termsRepToStringWIdent 0
+instance Show TermTree where
+  show = renderTermTreeWithIndent 0
 
-emptyTermsRep :: TermsRep
-emptyTermsRep = TermsRep{trInfo = [], trExtraMetas = [], trTerms = []}
+emptyTermTree :: TermTree
+emptyTermTree = TermTree{ttInfo = [], ttExtraMetas = [], ttEntries = []}
 
 mergeInfo :: [String] -> String
 mergeInfo info = intercalate "," (filter (not . null) info)
@@ -127,148 +127,147 @@ mergeInfo info = intercalate "," (filter (not . null) info)
 mergeExtraMetas :: [(String, String)] -> String
 mergeExtraMetas metas = intercalate ", " [k <> ":" <> v | (k, v) <- metas]
 
-vnToStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
-vnToStringTermsRep t = do
-  v <- vnToTermsRep t defaultTermsRepOption
+vnToTermTreeString :: (TextIndexerMonad s m) => VNode -> m String
+vnToTermTreeString t = do
+  v <- vnToTermTree t defaultTermTreeOptions
   return $ show v
 
-valToStringTermsRep :: (TextIndexerMonad s m) => Val -> m String
-valToStringTermsRep t = do
-  v <- valToTermsRep t defaultTermsRepOption
+valToTermTreeString :: (TextIndexerMonad s m) => Val -> m String
+valToTermTreeString t = do
+  v <- valToTermTree t defaultTermTreeOptions
   return $ show v
 
-vnToFullStringTermsRep :: (TextIndexerMonad s m) => VNode -> m String
-vnToFullStringTermsRep t = do
-  v <- vnToTermsRep t (defaultTermsRepOption{troptRecur = True})
+vnToRecursiveTermTreeString :: (TextIndexerMonad s m) => VNode -> m String
+vnToRecursiveTermTreeString t = do
+  v <- vnToTermTree t recursiveTermTreeOptions
   return $ show v
 
-termsRepToStringWIdent :: Int -> TermsRep -> String
-termsRepToStringWIdent toff (TermsRep info extraMetas fields) =
+renderTermTreeWithIndent :: Int -> TermTree -> String
+renderTermTreeWithIndent toff (TermTree info extraMetas fields) =
   "("
     <> mergeInfo info
     <> ( if null fields
-           then mempty
-           else
-             -- we need to add a newline for the fields block.
-             "\n"
-               <> foldl
-                 ( \acc (TermRep label a sub) ->
-                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
-                      in acc
-                           <> pre
-                           <> ( case sub of
-                                  TermRepContentScalar s -> s
-                                  TermRepContentRegular r ->
-                                    termsRepToStringWIdent
-                                      (length pre)
-                                      r
-                              )
-                           <> ")"
-                           <> "\n"
-                 )
-                 mempty
-                 fields
-               -- reserve spaces for the closing parenthesis.
-               <> replicate toff ' '
+          then mempty
+          else
+            -- we need to add a newline for the fields block.
+            "\n"
+              <> foldl
+                ( \acc (TermEntry label a sub) ->
+                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> a <> " "
+                     in acc
+                          <> pre
+                          <> ( case sub of
+                                TermContentScalar s -> s
+                                TermContentTree r ->
+                                  renderTermTreeWithIndent
+                                    (length pre)
+                                    r
+                             )
+                          <> ")"
+                          <> "\n"
+                )
+                mempty
+                fields
+              -- reserve spaces for the closing parenthesis.
+              <> replicate toff ' '
        )
     <> ( if null extraMetas
-           then mempty
-           else
-             "\n"
-               <> foldl
-                 ( \acc (label, lmeta) ->
-                     let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
-                      in acc
-                           <> pre
-                           <> lmeta
-                           <> ")"
-                           <> "\n"
-                 )
-                 mempty
-                 extraMetas
-               <> replicate toff ' '
+          then mempty
+          else
+            "\n"
+              <> foldl
+                ( \acc (label, lmeta) ->
+                    let pre = replicate (toff + 1) ' ' <> "(" <> label <> " "
+                     in acc
+                          <> pre
+                          <> lmeta
+                          <> ")"
+                          <> "\n"
+                )
+                mempty
+                extraMetas
+              <> replicate toff ' '
        )
     <> ")"
 
-data TermRep = TermRep
-  { trfLabel :: String
-  , trfAttr :: String
-  , trfContent :: TermRepContent
+data TermEntry = TermEntry
+  { teLabel :: String
+  , teAttr :: String
+  , teContent :: TermContent
   }
 
-data TermRepContent = TermRepContentRegular TermsRep | TermRepContentScalar String
+data TermContent = TermContentTree TermTree | TermContentScalar String
 
-vnToTermsRep :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermsRep
-vnToTermsRep v@VNode{constraints} opt = do
-  commonInfo <- buildCommonInfo v
-  cnstrs <- cnstrsToTermsRep (toList constraints.static) opt
-  vntr <- valToTermsRep (value v) opt
+vnToTermTree :: (TextIndexerMonad s m) => VNode -> TermTreeOptions -> m TermTree
+vnToTermTree v@VNode{constraints} opt = do
+  commonInfo <- buildVNodeInfo v
+  cnstrs <- cnstrsToTermTree (toList constraints.static) opt
+  vntr <- valToTermTree (value v) opt
   return $
     vntr
-      { trInfo = commonInfo ++ trInfo vntr
-      , trExtraMetas = trExtraMetas vntr
-      , trTerms = cnstrs.trTerms ++ trTerms vntr
+      { ttInfo = commonInfo ++ ttInfo vntr
+      , ttExtraMetas = ttExtraMetas vntr
+      , ttEntries = cnstrs.ttEntries ++ ttEntries vntr
       }
 
-buildCommonInfo :: (TextIndexerMonad s m) => VNode -> m [String]
-buildCommonInfo t = do
-  tStr <- showSimpleVal t
+buildVNodeInfo :: (TextIndexerMonad s m) => VNode -> m [String]
+buildVNodeInfo t =
   return
-    [ tStr
+    [ showValType (value t)
     , "vers=" ++ show (version t)
     , if t.constraints.allResolved then "" else "U"
     ]
 
-valToTermsRep :: (TextIndexerMonad s m) => Val -> TermsRepOption -> m TermsRep
-valToTermsRep vn opt = case vn of
-  VAtom a -> return $ consRep ([show a], [], [])
-  VBounds b -> return $ consRep ([show b], [], [])
-  VStruct struct -> buildRepValStruct struct opt
+valToTermTree :: (TextIndexerMonad s m) => Val -> TermTreeOptions -> m TermTree
+valToTermTree vn opt = case vn of
+  VAtom a -> return $ mkTermTree ([show a], [], [])
+  VBounds b -> return $ mkTermTree ([show b], [], [])
+  VStruct struct -> structToTermTree struct opt
   VList vs ->
     let
       sfields = zipWith (\j v -> (show (mkListStoreIdxTermStep j), mempty, v)) [0 ..] (toList vs.store)
       ffields = zipWith (\j v -> (show (mkListIdxFeature j), mempty, mkValVN v)) [0 ..] (toList vs.final)
      in
       do
-        fields <- valPairsToTermRepList (sfields ++ ffields) opt
-        return $ consRep ([], [], fields)
+        fields <- valueFieldsToTermEntries (sfields ++ ffields) opt
+        return $ mkTermTree ([], [], fields)
   VDisj d ->
     let djFields = zipWith (\j x -> (show $ mkDisjTermStep j, mempty, x)) [0 ..] (toList $ dsjDisjuncts d)
      in do
-          fields <- valPairsToTermRepList djFields opt
-          return $ consRep ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
-  VBottom b -> return $ consRep ([show b], [], [])
-  _ -> return $ consRep ([], [], [])
+          fields <- valueFieldsToTermEntries djFields opt
+          return $ mkTermTree ([printf "dis:%s" (show $ dsjDefIndexes d)], [], fields)
+  VBottom b -> return $ mkTermTree ([show b], [], [])
+  _ -> return $ mkTermTree ([], [], [])
 
-cnstrToTermsRep :: (TextIndexerMonad s m) => Constraint -> TermsRepOption -> m TermsRep
-cnstrToTermsRep c opt = case c of
-  ValCnstr vc -> valToTermsRep vc.vcVal opt
-  OpCnstr oc -> opToTermsRep oc.ocOp opt
-  StructEmbedCnstr xs -> cnstrsToTermsRep (toList xs) opt
+cnstrToTermTree :: (TextIndexerMonad s m) => Constraint -> TermTreeOptions -> m TermTree
+cnstrToTermTree c opt = case c of
+  ValCnstr vc -> valToTermTree vc.vcVal opt
+  OpCnstr oc -> opToTermTree oc.ocOp opt
+  StructEmbedCnstr xs -> cnstrsToTermTree (toList xs) opt
 
-cnstrsToTermsRep :: (TextIndexerMonad s m) => [Constraint] -> TermsRepOption -> m TermsRep
-cnstrsToTermsRep constraints opt = do
+cnstrsToTermTree :: (TextIndexerMonad s m) => [Constraint] -> TermTreeOptions -> m TermTree
+cnstrsToTermTree constraints opt = do
   l <-
     mapM
       ( \(i, c) -> do
           fT <- T.unpack <$> tshow (mkRegCnstrTermStep i)
-          cont <- cnstrToTermsRep c opt
+          cont <- cnstrToTermTree c opt
           case c of
             ValCnstr{} ->
-              return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
+              return $ TermEntry{teLabel = fT, teAttr = "", teContent = TermContentTree cont}
             OpCnstr{} ->
-              return $ TermRep{trfLabel = fT, trfAttr = "", trfContent = TermRepContentRegular cont}
+              return $ TermEntry{teLabel = fT, teAttr = "", teContent = TermContentTree cont}
             StructEmbedCnstr _ ->
-              return $ TermRep{trfLabel = fT, trfAttr = ",stremb", trfContent = TermRepContentRegular cont}
+              return $ TermEntry{teLabel = fT, teAttr = ",stremb", teContent = TermContentTree cont}
       )
       (zip [0 ..] constraints)
-  return $ TermsRep{trInfo = [], trExtraMetas = [], trTerms = l}
+  return $ TermTree{ttInfo = [], ttExtraMetas = [], ttEntries = l}
 
-cnstrsToFullTermsRep :: (TextIndexerMonad s m) => Seq.Seq Constraint -> m TermsRep
-cnstrsToFullTermsRep constraints = cnstrsToTermsRep (toList constraints) (defaultTermsRepOption{troptRecur = True})
+cnstrsToRecursiveTermTree :: (TextIndexerMonad s m) => Seq.Seq Constraint -> m TermTree
+cnstrsToRecursiveTermTree constraints = cnstrsToTermTree (toList constraints) recursiveTermTreeOptions
 
-opToTermsRep :: (TextIndexerMonad s m) => Op -> TermsRepOption -> m TermsRep
-opToTermsRep op opt = do
+opToTermTree :: (TextIndexerMonad s m) => Op -> TermTreeOptions -> m TermTree
+opToTermTree op opt = do
   args <-
     mapM
       ( \(i, (f, v)) -> do
@@ -290,22 +289,23 @@ opToTermsRep op opt = do
           return (T.unpack fT, meta, v)
       )
       (zip [0 ..] (toList $ getOpFArgs op))
-  let metas = [("func", showOpType op)]
+  let metas = [("kind", showOpKind op)]
   case op of
     RegOp rop -> do
-      fields <- valPairsToTermRepList args opt
-      return $ consTGenRep (("op", ropName rop) : metas, fields)
+      fields <- valueFieldsToTermEntries args opt
+      return $ mkTermTreeWithMetadata (("op", ropName rop) : metas, fields)
     Ref ref -> do
-      fields <- valPairsToTermRepList args opt
+      fields <- valueFieldsToTermEntries args opt
       ra <- do
         sStr <- tshow ref.ident
         return $ T.unpack sStr
-      diffStr <- T.unpack <$> tshow ref.resolvedIdentAddr
+      locatorStr <- T.unpack <$> tshow ref.identLocator
       return $
-        consTGenRep ([("ref", ra), ("diff", diffStr), ("comprehIdx", show ref.resolvedComprehClauseIdx)] ++ metas, fields)
+        mkTermTreeWithMetadata
+          ([("ref", ra), ("locator", locatorStr), ("comprehIdx", show ref.resolvedComprehClauseIdx)] ++ metas, fields)
     Compreh _ -> do
-      fields <- valPairsToTermRepList args opt
-      return $ consTGenRep (metas, fields)
+      fields <- valueFieldsToTermEntries args opt
+      return $ mkTermTreeWithMetadata (metas, fields)
     DisjOp d ->
       let
         terms =
@@ -317,42 +317,42 @@ opToTermsRep op opt = do
             (toList $ djoTerms d)
        in
         do
-          fields <- valPairsToTermRepList terms opt
-          return $ consTGenRep (metas, fields)
+          fields <- valueFieldsToTermEntries terms opt
+          return $ mkTermTreeWithMetadata (metas, fields)
     VSelect idx -> do
-      fields <- valPairsToTermRepList (("indexVal", "", idx.base) : args) opt
-      return $ consTGenRep (metas, fields)
+      fields <- valueFieldsToTermEntries (("indexVal", "", idx.base) : args) opt
+      return $ mkTermTreeWithMetadata (metas, fields)
     _ -> do
-      fields <- valPairsToTermRepList args opt
-      return $ consTGenRep (metas, fields)
+      fields <- valueFieldsToTermEntries args opt
+      return $ mkTermTreeWithMetadata (metas, fields)
 
-buildRepValStruct :: (TextIndexerMonad s m) => Struct -> TermsRepOption -> m TermsRep
-buildRepValStruct struct opt =
+structToTermTree :: (TextIndexerMonad s m) => Struct -> TermTreeOptions -> m TermTree
+structToTermTree struct opt =
   let
-    buildPHFields :: (TextIndexerMonad s m) => m [TermRep]
-    buildPHFields = do
+    buildStructEntries :: (TextIndexerMonad s m) => m [TermEntry]
+    buildStructEntries = do
       as <-
         foldM
           ( \acc (j, dsf) -> do
-              tfv <- buildValueTermRepNodeContent (dsfLabel dsf) opt
-              return $ TermRep{trfLabel = show (mkDynFieldTermStep j 0), trfAttr = "", trfContent = tfv} : acc
+              tfv <- vnodeToTermContent (dsfLabel dsf) opt
+              return $ TermEntry{teLabel = show (mkDynFieldTermStep j 0), teAttr = "", teContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
       as2 <-
         foldM
           ( \acc (j, dsf) -> do
-              tfv <- buildCnstrSeqTermRepNodeContent (dsfValue dsf) opt
-              return $ TermRep{trfLabel = show (mkDynFieldTermStep j 1), trfAttr = "", trfContent = tfv} : acc
+              tfv <- constraintsToTermContent (dsfValue dsf) opt
+              return $ TermEntry{teLabel = show (mkDynFieldTermStep j 1), teAttr = "", teContent = tfv} : acc
           )
           []
           (IntMap.toList $ stcDynFields struct)
       bs <-
         mapM
           ( \(j, k) -> do
-              tfv <- buildValueTermRepNodeContent (scsPattern k) opt
+              tfv <- vnodeToTermContent (scsPattern k) opt
               return $
-                TermRep
+                TermEntry
                   (show (mkPatternTermStep j 0))
                   ""
                   tfv
@@ -361,9 +361,9 @@ buildRepValStruct struct opt =
       bs2 <-
         mapM
           ( \(j, k) -> do
-              tfv <- buildCnstrSeqTermRepNodeContent (scsValue k) opt
+              tfv <- constraintsToTermContent (scsValue k) opt
               return $
-                TermRep
+                TermEntry
                   (show (mkPatternTermStep j 1))
                   ""
                   tfv
@@ -373,11 +373,11 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (l, ssf) -> do
               lstr <- tshow (mkStringFeature l)
-              tfv <- buildValueTermRepNodeContent (ssfValue ssf) opt
+              tfv <- vnodeToTermContent (ssfValue ssf) opt
               return $
-                TermRep
+                TermEntry
                   (T.unpack lstr)
-                  (staticlFieldAttr ssf)
+                  (staticFieldAttr ssf)
                   tfv
                   : acc
           )
@@ -387,9 +387,9 @@ buildRepValStruct struct opt =
         foldM
           ( \acc (l, v) -> do
               lstr <- tshow (mkLetFeature l)
-              tfv <- buildValueTermRepNodeContent v opt
+              tfv <- vnodeToTermContent v opt
               return $
-                TermRep
+                TermEntry
                   (T.unpack lstr)
                   mempty
                   tfv
@@ -399,8 +399,8 @@ buildRepValStruct struct opt =
           (Map.toList $ stcBindings struct)
       return $ as ++ as2 ++ bs ++ bs2 ++ ds ++ es
 
-    buildMetas :: (TextIndexerMonad s m) => Struct -> m [(String, String)]
-    buildMetas s =
+    buildMetadata :: (TextIndexerMonad s m) => Struct -> m [(String, String)]
+    buildMetadata s =
       mapM
         ( \(k, v) -> do
             vstr <- v
@@ -432,69 +432,58 @@ buildRepValStruct struct opt =
         ]
    in
     do
-      metas <- buildMetas struct
-      phFields <- buildPHFields
-      return $ consRep ([], metas, phFields)
+      metadata <- buildMetadata struct
+      entries <- buildStructEntries
+      return $ mkTermTree ([], metadata, entries)
 
-consRep :: ([String], [(String, String)], [TermRep]) -> TermsRep
-consRep (info, em, f) = TermsRep{trInfo = info, trExtraMetas = em, trTerms = f}
+mkTermTree :: ([String], [(String, String)], [TermEntry]) -> TermTree
+mkTermTree (info, em, f) = TermTree{ttInfo = info, ttExtraMetas = em, ttEntries = f}
 
-consTGenRep :: ([(String, String)], [TermRep]) -> TermsRep
-consTGenRep (em, f) = TermsRep{trInfo = [], trExtraMetas = em, trTerms = f}
+mkTermTreeWithMetadata :: ([(String, String)], [TermEntry]) -> TermTree
+mkTermTreeWithMetadata (em, f) = TermTree{ttInfo = [], ttExtraMetas = em, ttEntries = f}
 
-valPairsToTermRepList :: (TextIndexerMonad s m) => [(String, String, VNode)] -> TermsRepOption -> m [TermRep]
-valPairsToTermRepList xs opt =
+valueFieldsToTermEntries :: (TextIndexerMonad s m) => [(String, String, VNode)] -> TermTreeOptions -> m [TermEntry]
+valueFieldsToTermEntries xs opt =
   mapM
     ( \(l, a, v) -> do
-        tfv <- buildValueTermRepNodeContent v opt
-        return $ TermRep{trfLabel = l, trfAttr = a, trfContent = tfv}
+        tfv <- vnodeToTermContent v opt
+        return $ TermEntry{teLabel = l, teAttr = a, teContent = tfv}
     )
     xs
 
-attr :: LabelAttr -> String
-attr a = case lbAttrCnstr a of
+constraintAttr :: LabelAttr -> String
+constraintAttr a = case lbAttrCnstr a of
   SFCRegular -> mempty
   SFCRequired -> "!"
   SFCOptional -> "?"
 
-isVar :: LabelAttr -> String
-isVar a =
+variableAttr :: LabelAttr -> String
+variableAttr a =
   if lbAttrIsIdent a
     then ",v"
     else mempty
 
-staticlFieldAttr :: Field -> String
-staticlFieldAttr sf = attr (ssfAttr sf) <> isVar (ssfAttr sf)
+staticFieldAttr :: Field -> String
+staticFieldAttr sf = constraintAttr (ssfAttr sf) <> variableAttr (ssfAttr sf)
 
-staticFieldMeta :: Field -> String
-staticFieldMeta = staticlFieldAttr
-
-dlabelAttr :: DynamicField -> String
-dlabelAttr dsf = attr (dsfAttr dsf) <> isVar (dsfAttr dsf) <> ",dynf"
-
-buildValueTermRepNodeContent :: (TextIndexerMonad s m) => VNode -> TermsRepOption -> m TermRepContent
-buildValueTermRepNodeContent fv opt@TermsRepOption{troptRecur = recurOnSub} =
-  if recurOnSub
-    then TermRepContentRegular <$> vnToTermsRep fv opt
+vnodeToTermContent :: (TextIndexerMonad s m) => VNode -> TermTreeOptions -> m TermContent
+vnodeToTermContent fv opt@TermTreeOptions{recurseIntoChildren} =
+  if recurseIntoChildren
+    then TermContentTree <$> vnToTermTree fv opt
     else do
-      origVal <- showOrigVal fv
-      valT <- oneLinerStringOfVNode fv
-      return $ TermRepContentScalar (printf "orig:%s, v: %s" origVal valT)
+      valT <- tshow (value fv)
+      return . TermContentScalar $ case fv of
+        IsValSoleStaticOp op -> printf "op: %s, value: %s" (showOpSummary op) valT
+        _ -> printf "type: %s, value: %s" (showValType $ value fv) valT
 
-buildCnstrSeqTermRepNodeContent :: (TextIndexerMonad s m) => Seq.Seq Constraint -> TermsRepOption -> m TermRepContent
-buildCnstrSeqTermRepNodeContent sq opt@TermsRepOption{troptRecur = recurOnSub} =
-  if recurOnSub
-    then TermRepContentRegular <$> cnstrsToTermsRep (toList sq) opt
+constraintsToTermContent :: (TextIndexerMonad s m) => Seq.Seq Constraint -> TermTreeOptions -> m TermContent
+constraintsToTermContent sq opt@TermTreeOptions{recurseIntoChildren} =
+  if recurseIntoChildren
+    then TermContentTree <$> cnstrsToTermTree (toList sq) opt
     else do
-      return $ TermRepContentScalar ""
+      return $ TermContentScalar ""
 
-showSimpleVal :: (TextIndexerMonad s m) => VNode -> m String
-showSimpleVal t = return $ showValType (value t)
-
-showOrigVal :: (TextIndexerMonad s m) => VNode -> m String
-showOrigVal t = case t of
-  -- IsRef _ ref -> do
-  --   sStr <- tshow ref.ident
-  --   return $ T.unpack sStr
-  IsValSoleOp op -> return $ showOpType op
-  _ -> return $ showValType (value t)
+showOpSummary :: Op -> String
+showOpSummary op = case op of
+  RegOp rop -> ropName rop
+  _ -> showOpKind op

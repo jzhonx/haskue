@@ -17,7 +17,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 import EvalAddr
-import {-# SOURCE #-} Reduce.Core (reduceConstraintsInCnstrs)
+import {-# SOURCE #-} Reduce.Core (reduce)
 import Reduce.Monad (
   RM,
   allocRMObjID,
@@ -29,34 +29,37 @@ import Reduce.Store (lookupComprehBindingVal, withComprehBindings)
 import Reduce.TraceSpan (
   debugInstStr,
   emptyTracePreDataRM,
-  traceSpanTermsRepAnyTM,
+  traceSpanTermTreeAnyTM,
   traceSpanWithRM,
  )
 import Reduce.Unification (unifyVals)
-import StringIndex (ShowWTIndexer (..), ToJSONWTIndexer (..), textIndexToBS)
+import StringIndex (ShowWTIndexer (..), TextIndex, ToJSONWTIndexer (..), textIndexToBS)
 import Text.Printf (printf)
 import Util.Format (msprintfS, packFmtA)
+import Util.Trace (withTraceScope)
 import Value
-import Value.Export.Debug (vnToFullStringTermsRep)
+import Value.Export.Debug (vnToRecursiveTermTreeString)
 import Value.Instances (posttravsVT)
 
 reduceCompreh :: EvalAddr -> Comprehension -> RM (Val, Comprehension)
-reduceCompreh addr cph = traceSpanWithRM "reduceCompreh" addr emptyTracePreDataRM (const (return (object []))) $ do
-  r <- comprehend addr cph
-  let updatedCph = cph{args = r.cphargs}
-  case r.res of
-    Left t -> return (t, updatedCph)
-    Right revVs ->
-      let vs = reverse revVs
-       in if cph.isListCompreh
-            then do
-              return (VList $ mkList (map mkValVN vs), updatedCph)
-            else case vs of
-              [] -> return (VStruct emptyStruct, updatedCph)
-              [x] -> return (x, updatedCph)
-              _ -> do
-                res <- unifyVals (map (\x -> (addr, x)) vs) addr False
-                return (res, updatedCph)
+reduceCompreh addr cph =
+  withTraceScope (T.pack $ printf "comprehension#%d" cph.cid) $
+    traceSpanWithRM "reduceCompreh" addr emptyTracePreDataRM (const (return (object []))) $ do
+      r <- comprehend addr cph
+      let updatedCph = cph{args = r.cphargs}
+      case r.res of
+        Left t -> return (t, updatedCph)
+        Right revVs ->
+          let vs = reverse revVs
+           in if cph.isListCompreh
+                then do
+                  return (VList $ mkList (map mkValVN vs), updatedCph)
+                else case vs of
+                  [] -> return (VStruct emptyStruct, updatedCph)
+                  [x] -> return (x, updatedCph)
+                  _ -> do
+                    res <- unifyVals (map (\x -> (addr, x)) vs) addr False
+                    return (res, updatedCph)
 
 {- | Reduce the comprehension arguments and generate the resulted struct for each iteration.
 
@@ -103,101 +106,160 @@ comprehend comprehAddr cph = comprhArg 0 emptyIterCtx{cphargs = cph.args}
   comprhArg :: Int -> IterCtx -> RM IterCtx
   comprhArg i accIctx = do
     let
-      args = accIctx.cphargs
-      arg = fromJust $ args Seq.!? i
+      arg = fromJust $ accIctx.cphargs Seq.!? i
       clauseCnstrAddr = appendTermStep comprehAddr (mkRegCnstrTermStep i)
-      traceMsg :: String -> String
-      traceMsg title = printf "comoprhArg %s_clause_%d" title i
-    case arg of
-      ComprehArgTmpl v -> traceSpanTermsRepAnyTM "comprhArg template" clauseCnstrAddr v $ do
-        r <- do
-          forked <- forkTemplate v
-          resolved <- replaceIterValRefs clauseCnstrAddr forked
-          reduceConstraintsInCnstrs clauseCnstrAddr resolved
-        debugInstStr
-          "comprehend"
-          clauseCnstrAddr
-          ( do
-              rep <- vnToFullStringTermsRep r
-              msprintfS "comprehension tmpl arg: %s" [packFmtA rep]
-          )
-        return
-          accIctx
-            { res = do
-                vs <- accIctx.res
-                return (value r : vs)
-            , iterCnt = accIctx.iterCnt + 1
-            }
-      ComprehArgLet letName v -> traceSpanTermsRepAnyTM (traceMsg "let") clauseCnstrAddr v $ do
-        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
-        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgLet letName r) args}
-        case r of
-          IsUnknown -> earlyStop i updatedIctx
-          IsBottom _ -> return $ updatedIctx{res = Left $ value r}
-          _ -> withComprehBindings [(letName, r)] $ comprhArg (i + 1) updatedIctx
-      ComprehArgIf v -> traceSpanTermsRepAnyTM (traceMsg "if") clauseCnstrAddr v $ do
-        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
-        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgIf r) args}
-        case r of
-          IsUnknown -> earlyStop i updatedIctx
-          IsBottom _ -> return $ updatedIctx{res = Left $ value r}
-          _ -> case rtrAtom (value r) of
-            Just (Bool True) -> comprhArg (i + 1) updatedIctx
-            -- Do not go to next clause if the condition is false.
-            Just (Bool False) -> return updatedIctx
-            _ -> comprhArg (i + 1) updatedIctx{res = Left $ mkBottomVal $ printf "%s is not a boolean" (showValType $ value r)}
-      ComprehArgFor k vM v -> traceSpanTermsRepAnyTM (traceMsg "for") clauseCnstrAddr v $ do
-        r <- reduceConstraintsInCnstrs clauseCnstrAddr v
-        let updatedIctx = accIctx{cphargs = Seq.update i (ComprehArgFor k vM r) args}
-        if
-          | Just _ <- rtrIncomplete (value r) -> earlyStop i updatedIctx
-          | IsBottom _ <- r -> return updatedIctx{res = Left (value r)}
-          -- TODO: only iterate optional fields
-          | Just struct <- rtrStruct (value r) ->
-              foldM
-                ( \acc (labelIdx, field) ->
-                    if acc.incomplete
-                      then return acc
-                      else do
-                        label <- textIndexToBS labelIdx
-                        let pairs = case vM of
-                              Nothing -> [(k, ssfValue field)]
-                              Just x -> [(k, mkAtomVN (String label)), (x, ssfValue field)]
+    scope <- comprehArgScope i arg
+    withTraceScope scope $
+      reduceComprehArg comprehAddr comprhArg i clauseCnstrAddr arg accIctx
 
-                        traceSpanTermsRepAnyTM "comoprhArg for iter" clauseCnstrAddr (value $ ssfValue field) $
-                          withComprehBindings pairs $
-                            comprhArg (i + 1) acc
-                )
-                updatedIctx
-                (Map.toList $ stcFields struct)
-          | Just (List{store}) <- rtrList (value r) ->
-              foldM
-                ( \acc (idx, element) ->
-                    if acc.incomplete
-                      then return acc
-                      else do
-                        let pairs =
-                              case vM of
-                                Nothing -> [(k, mkAtomVN (Int idx))]
-                                Just x -> [(k, mkAtomVN (Int idx)), (x, element)]
-                        traceSpanTermsRepAnyTM "comoprhArg for iter" clauseCnstrAddr element $
-                          withComprehBindings pairs $
-                            comprhArg (i + 1) acc
-                )
-                updatedIctx
-                (zip [0 ..] (toList store))
-          | otherwise ->
-              return $
-                updatedIctx
-                  { res = Left $ mkBottomVal $ printf "%s is not iterable" (showValType $ value r)
-                  }
+type ComprehContinuation = Int -> IterCtx -> RM IterCtx
 
-  earlyStop i ictx = do
-    debugInstStr
-      "comprehend"
-      comprehAddr
-      (return $ printf "early stop at iteration %d because step %d has no value" ictx.iterCnt i)
-    return ictx{incomplete = True}
+reduceComprehArg :: EvalAddr -> ComprehContinuation -> Int -> EvalAddr -> ComprehArg -> IterCtx -> RM IterCtx
+reduceComprehArg comprehAddr continue i clauseAddr arg ictx = case arg of
+  ComprehArgTmpl vnode -> reduceTemplateArg clauseAddr vnode ictx
+  ComprehArgLet name vnode -> reduceLetArg comprehAddr continue i clauseAddr name vnode ictx
+  ComprehArgIf vnode -> reduceIfArg comprehAddr continue i clauseAddr vnode ictx
+  ComprehArgFor key valueM vnode -> reduceForArg comprehAddr continue i clauseAddr key valueM vnode ictx
+
+reduceTemplateArg :: EvalAddr -> VNode -> IterCtx -> RM IterCtx
+reduceTemplateArg clauseAddr vnode ictx =
+  traceSpanTermTreeAnyTM "comprhArg template" clauseAddr vnode $ do
+    forked <- forkTemplate vnode
+    resolved <- replaceIterValRefs clauseAddr forked
+    reduced <- reduce clauseAddr resolved
+    debugTemplate clauseAddr reduced
+    return $
+      ictx
+        { res = (value reduced :) <$> ictx.res
+        , iterCnt = ictx.iterCnt + 1
+        }
+
+reduceLetArg :: EvalAddr -> ComprehContinuation -> Int -> EvalAddr -> TextIndex -> VNode -> IterCtx -> RM IterCtx
+reduceLetArg comprehAddr continue i clauseAddr name vnode ictx =
+  traceSpanTermTreeAnyTM (clauseTraceMsg "let" i) clauseAddr vnode $ do
+    reduced <- reduce clauseAddr vnode
+    let updated = updateArg i (ComprehArgLet name reduced) ictx
+    case reduced of
+      IsUnknown -> earlyStop comprehAddr i updated
+      IsBottom _ -> return updated{res = Left $ value reduced}
+      _ -> withComprehBindings [(name, reduced)] $ continue (i + 1) updated
+
+reduceIfArg :: EvalAddr -> ComprehContinuation -> Int -> EvalAddr -> VNode -> IterCtx -> RM IterCtx
+reduceIfArg comprehAddr continue i clauseAddr vnode ictx =
+  traceSpanTermTreeAnyTM (clauseTraceMsg "if" i) clauseAddr vnode $ do
+    reduced <- reduce clauseAddr vnode
+    let updated = updateArg i (ComprehArgIf reduced) ictx
+    case reduced of
+      IsUnknown -> earlyStop comprehAddr i updated
+      IsBottom _ -> return updated{res = Left $ value reduced}
+      _ -> continueIf continue i updated reduced
+
+continueIf :: ComprehContinuation -> Int -> IterCtx -> VNode -> RM IterCtx
+continueIf continue i ictx vnode = case rtrAtom (value vnode) of
+  Just (Bool True) -> continue (i + 1) ictx
+  -- Do not go to the next clause if the condition is false.
+  Just (Bool False) -> return ictx
+  _ ->
+    continue
+      (i + 1)
+      ictx{res = Left $ mkBottomVal $ printf "%s is not a boolean" (showValType $ value vnode)}
+
+reduceForArg ::
+  EvalAddr -> ComprehContinuation -> Int -> EvalAddr -> TextIndex -> Maybe TextIndex -> VNode -> IterCtx -> RM IterCtx
+reduceForArg comprehAddr continue i clauseAddr key valueM vnode ictx =
+  traceSpanTermTreeAnyTM (clauseTraceMsg "for" i) clauseAddr vnode $ do
+    reduced <- reduce clauseAddr vnode
+    let updated = updateArg i (ComprehArgFor key valueM reduced) ictx
+    if
+      | Just _ <- rtrIncomplete (value reduced) -> earlyStop comprehAddr i updated
+      | IsBottom _ <- reduced -> return updated{res = Left $ value reduced}
+      -- TODO: only iterate optional fields
+      | Just struct <- rtrStruct (value reduced) -> iterateStruct continue i clauseAddr key valueM struct updated
+      | Just (List{store}) <- rtrList (value reduced) -> iterateList continue i clauseAddr key valueM (toList store) updated
+      | otherwise ->
+          return
+            updated
+              { res = Left $ mkBottomVal $ printf "%s is not iterable" (showValType $ value reduced)
+              }
+
+iterateStruct ::
+  ComprehContinuation -> Int -> EvalAddr -> TextIndex -> Maybe TextIndex -> Struct -> IterCtx -> RM IterCtx
+iterateStruct continue i clauseAddr key valueM struct ictx =
+  foldIterations
+    ( \acc (labelIdx, field) -> do
+        label <- textIndexToBS labelIdx
+        let bindings = case valueM of
+              Nothing -> [(key, ssfValue field)]
+              Just valueName -> [(key, mkAtomVN (String label)), (valueName, ssfValue field)]
+        labelT <- tshow labelIdx
+        withTraceScope ("iter[" <> labelT <> "]") $
+          traceSpanTermTreeAnyTM "comoprhArg for iter" clauseAddr (value $ ssfValue field) $
+            continueWithBindings continue i bindings acc
+    )
+    ictx
+    (Map.toList struct.stcFields)
+
+iterateList ::
+  ComprehContinuation -> Int -> EvalAddr -> TextIndex -> Maybe TextIndex -> [VNode] -> IterCtx -> RM IterCtx
+iterateList continue i clauseAddr key valueM elements ictx =
+  foldIterations
+    ( \acc (idx, element) -> do
+        let bindings = case valueM of
+              Nothing -> [(key, mkAtomVN (Int idx))]
+              Just valueName -> [(key, mkAtomVN (Int idx)), (valueName, element)]
+        withTraceScope (T.pack $ printf "iter[%d]" idx) $
+          traceSpanTermTreeAnyTM "comoprhArg for iter" clauseAddr element $
+            continueWithBindings continue i bindings acc
+    )
+    ictx
+    (zip [0 ..] elements)
+
+continueWithBindings :: ComprehContinuation -> Int -> [(TextIndex, VNode)] -> IterCtx -> RM IterCtx
+continueWithBindings continue i bindings =
+  withComprehBindings bindings . continue (i + 1)
+
+foldIterations :: (IterCtx -> a -> RM IterCtx) -> IterCtx -> [a] -> RM IterCtx
+foldIterations step = foldM $ \ictx item ->
+  if ictx.incomplete then return ictx else step ictx item
+
+updateArg :: Int -> ComprehArg -> IterCtx -> IterCtx
+updateArg i arg ictx =
+  ictx{cphargs = Seq.update i arg ictx.cphargs}
+
+clauseTraceMsg :: String -> Int -> String
+clauseTraceMsg title i = printf "comoprhArg %s_clause_%d" title i
+
+debugTemplate :: EvalAddr -> VNode -> RM ()
+debugTemplate clauseAddr vnode =
+  debugInstStr
+    "comprehend"
+    clauseAddr
+    ( do
+        rep <- vnToRecursiveTermTreeString vnode
+        msprintfS "comprehension tmpl arg: %s" [packFmtA rep]
+    )
+
+earlyStop :: EvalAddr -> Int -> IterCtx -> RM IterCtx
+earlyStop comprehAddr i ictx = do
+  debugInstStr
+    "comprehend"
+    comprehAddr
+    (return $ printf "early stop at iteration %d because step %d has no value" ictx.iterCnt i)
+  return ictx{incomplete = True}
+
+comprehArgScope :: Int -> ComprehArg -> RM T.Text
+comprehArgScope i arg = case arg of
+  ComprehArgFor key valueM _ -> do
+    keyT <- tshow key
+    valueT <- mapM tshow valueM
+    return $ case valueT of
+      Nothing -> T.pack $ printf "for_%d(%s)" i (T.unpack keyT)
+      Just value -> T.pack $ printf "for_%d(%s,%s)" i (T.unpack keyT) (T.unpack value)
+  ComprehArgIf _ -> return $ T.pack $ printf "if_%d" i
+  ComprehArgLet name _ -> do
+    nameT <- tshow name
+    return $ T.pack $ printf "let_%d(%s)" i (T.unpack nameT)
+  ComprehArgTmpl _ -> return $ T.pack $ printf "template_%d" i
 
 -- | Fork the struct template for the comprehension iteration.
 forkTemplate :: VNode -> RM VNode
@@ -247,7 +309,7 @@ replaceIterValRefs tmplAddr tmplV = do
     "replaceIterValRefs"
     tmplAddr
     ( do
-        rep <- vnToFullStringTermsRep tmplV
+        rep <- vnToRecursiveTermTreeString tmplV
         msprintfS "tmpl before replacing refs: %s" [packFmtA rep]
     )
 

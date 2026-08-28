@@ -18,7 +18,7 @@ tests =
     , testCase "VNode exposes dynamic and embedded constraint sequences" testConstraintSequences
     , testCase "struct exposes VNode, Val, and constraint-sequence children" testStructChildren
     , testCase "operations use their structural segment tags" testOpChildren
-    , testCase "VNode forwards direct operation children through its sole constraint" testDirectOpChildren
+    , testCase "VNode forwards operation children through its sole static constraint" testDirectOpChildren
     , testCase "disjunction exposes versioned VNode children" testDisjChildren
     , testCase "missing and mismatched children are rejected" testInvalidChildren
     ]
