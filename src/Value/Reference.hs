@@ -17,9 +17,8 @@ data Reference = Reference
   , identFeat :: Feature
   , selectors :: Seq.Seq VNode
   , selectorTypes :: Seq.Seq Bool
-  {- ^ selectorTypes stores the type of each selector, where True means index select (e.g. `a[0]`) and False means field
-  select (e.g. `a.b`).
-  -}
+  -- ^ selectorTypes stores the type of each selector, where True means index select (e.g. `a[0]`) and False means field
+  --   select (e.g. `a.b`).
   , resolvedIdentType :: RefIdentType
   , identLocator :: IdentLocator
   -- ^ The absolute or deferred locator of the identifier.
@@ -52,7 +51,7 @@ newtype ScopeDiff = ScopeDiff {getScopeDiff :: EvalAddr}
 'AbsoluteIdentAddr' records an address that is already absolute in an evaluator
 namespace. 'LexicalIdent' is a deferred lexical relocation used
 when an identifier is defined inside a comprehension-generated scope. Its
-payload is the canonical path from the identifier's defining scope down to the
+payload is the reduced path from the identifier's defining scope down to the
 scope containing the reference. At evaluation time that suffix is removed from
 the reference's actual containing scope, and 'identFeat' is appended to recover
 the identifier's absolute address.

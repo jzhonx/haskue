@@ -119,7 +119,7 @@ trDataEToVNode d =
         -- operation address (A/fa_i), but mkOpVN stores the operation as
         -- static constraint 0 and reduction later visits it at A/c_0/fa_i.
         -- Align semantic translation and constraint traversal so every
-        -- operation argument has one canonical EvalAddr.
+        -- operation argument projects to one ReducedAddr.
         TrOp op -> mkOpVN d.trLoc op
         TrCnstrs cs -> emptyVNode{constraints = emptyConstraintsSet{static = cs}}
         TrStructEmbed cs -> emptyVNode{constraints = emptyConstraintsSet{static = Seq.singleton (StructEmbedCnstr cs)}}
@@ -782,12 +782,11 @@ data IdentLookupResult = IdentLookupResult
   , identFeat :: Feature
   , identAddr :: EvalAddr
   , identLocator :: IdentLocator
-  {- ^ A locator for the resolved identifier. It is normally an absolute
-  address. For an identifier defined under a comprehension clause it instead
-  stores the canonical path from the defining environment to the current,
-  innermost environment. The evaluator combines that path with the reference's
-  eventual location after the comprehension has materialized.
-  -}
+  -- ^ A locator for the resolved identifier. It is normally an absolute
+  --   address. For an identifier defined under a comprehension clause it instead
+  --   stores the reduced path from the defining environment to the current,
+  --   innermost environment. The evaluator combines that path with the reference's
+  --   eventual location after the comprehension has materialized.
   }
 
 getTopEnvMust :: TM Environment
@@ -822,8 +821,8 @@ lookupIdentInEnv name topEnv env = do
             -- the defining environment (`env`) and the current innermost
             -- environment (`topEnv`) instead of embedding the transient
             -- translation-time prefix in the reference.
-            then LexicalIdent $ ScopeDiff $ collapseToCanonicalForm $ trimPrefixAddr env.envAddr topEnv.envAddr
-            else AbsoluteIdentAddr $ collapseToCanonicalForm $ env.envAddr `appendFeature` identFeat
+            then LexicalIdent $ ScopeDiff $ toReducedForm $ trimPrefixAddr env.envAddr topEnv.envAddr
+            else AbsoluteIdentAddr $ toReducedForm $ env.envAddr `appendFeature` identFeat
       }
 
 -- | Lookup the identifier in the environments.
@@ -1056,13 +1055,12 @@ data Environment = Environment
   , envType :: EnvType
   , envAddr :: EvalAddr
   , names :: Map.Map TextIndex (RefIdentType, Bool)
-  {- ^ names maps identifiers to
-  (1) their addresses,
-  (2) their types (field, let binding, or iter binding),
-  (3) a boolean indicating whether it is referenced.
-  Notice the identifiers should not have suffix for let bindings so that the references in the sub tree can refer to
-  them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
-  -}
+  -- ^ names maps identifiers to
+  --   (1) their addresses,
+  --   (2) their types (field, let binding, or iter binding),
+  --   (3) a boolean indicating whether it is referenced.
+  --   Notice the identifiers should not have suffix for let bindings so that the references in the sub tree can refer to
+  --   them. But the reference address should have suffix to make sure the let bindings are unique in the struct scope.
   , nameFeatMap :: Map.Map TextIndex Feature
   -- ^ nameFeatMap is used to store the mapping from identifier to its corresponding feature.
   , clausesDepth :: !Int

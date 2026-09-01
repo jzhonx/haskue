@@ -25,14 +25,12 @@ import Data.Maybe (isJust)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Debug.Trace (trace)
 import EvalAddr (removeTISuffix)
 import Exception (throwErrSt)
 import StringIndex (TextIndex, TextIndexer, textIndexToBS, textToTextIndex)
 import qualified Syntax.AST as AST
 import Syntax.Scanner (isByteStringIdentifier)
 import Syntax.Token as Token
-import Text.Printf (printf)
 import Value.Atom as Atom
 import Value.Bounds
 import Value.Comprehension
@@ -137,7 +135,31 @@ buildConstraintExpr :: Constraint -> EM AST.Expression
 buildConstraintExpr c = case c of
   ValCnstr vc -> buildValExprExt (vcVal vc)
   OpCnstr oc -> buildOpASTExpr (ocOp oc)
-  StructEmbedCnstr xs -> buildConstraintSeqExpr xs
+  StructEmbedCnstr xs -> buildStructEmbedASTExpr xs
+
+buildStructEmbedASTExpr :: ConstraintSeq -> EM AST.Expression
+buildStructEmbedASTExpr constraints =
+  case Seq.viewl constraints of
+    ValCnstr ValConstraint{vcVal = VStruct struct} Seq.:< embeddedConstraints -> do
+      baseExpr <- buildStructASTExpr struct
+      baseStruct <- case baseExpr of
+        AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct lit)))) -> return lit
+        _ -> throwErrSt "the base constraint of a struct embedding should build to a struct literal"
+      embeddings <- mapM buildConstraintEmbedding (toList embeddedConstraints)
+      let AST.StructLit left declarations right = baseStruct
+      return $
+        AST.litCons $
+          AST.LitStruct $
+            AST.StructLit left (declarations ++ map AST.Embedding embeddings) right
+    _ -> throwErrSt "a struct embedding should start with a struct value constraint"
+
+buildConstraintEmbedding :: Constraint -> EM AST.Embedding
+buildConstraintEmbedding constraint = case constraint of
+  OpCnstr OpConstraint{ocOp = Compreh comprehension} ->
+    AST.EmbedComprehension <$> buildComprehASTExpr comprehension
+  _ -> do
+    expression <- buildConstraintExpr constraint
+    return $ AST.EmbeddingAlias $ AST.AliasExpr Nothing expression
 
 buildBottom :: EM AST.Expression
 buildBottom = return $ AST.litCons (AST.LitBasic $ AST.BottomLit $ mkTypeToken Token.Bottom)
@@ -331,25 +353,27 @@ buildStructOrdLabels rtrBC struct = do
   return $ reverse . fst <$> r
 
 buildComprehASTExpr :: Comprehension -> EM AST.Comprehension
-buildComprehASTExpr cph = do
-  let argList = toList cph.args
-      clauses = init argList
-      structTmpl = last argList
-  start <- buildStartClause (head clauses)
-  rest <- mapM buildIterClause (tail clauses)
+buildComprehASTExpr cph =
+  case Seq.viewr cph.args of
+    Seq.EmptyR -> throwErrSt "a comprehension should contain a struct template"
+    clauses Seq.:> structTmpl -> case Seq.viewl clauses of
+      Seq.EmptyL -> throwErrSt "a comprehension should contain at least one clause"
+      startClause Seq.:< restClauses -> do
+        start <- buildStartClause startClause
+        rest <- mapM buildIterClause (toList restClauses)
 
-  e <- buildExprExt (getValFromIterClause structTmpl)
-  sl <- case e of
-    AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l)))) -> return l
-    AST.Binary
-      Token.Token{tkType = Unify}
-      (AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l1)))))
-      e2 -> return l1
-    _ ->
-      throwErrSt
-        "the struct template of a comprehension should be a struct literal or a unify expression with a struct literal on the left"
-  return $
-    AST.Comprehension (AST.Clauses start rest) sl
+        e <- buildExprExt (getValFromIterClause structTmpl)
+        sl <- case e of
+          AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l)))) -> return l
+          AST.Binary
+            Token.Token{tkType = Unify}
+            (AST.Unary (AST.Primary (AST.PrimExprOperand (AST.OpLiteral (AST.LitStruct l1)))))
+            _ -> return l1
+          _ ->
+            throwErrSt
+              "the struct template of a comprehension should be a struct literal or a unify expression with a struct literal on the left"
+        return $
+          AST.Comprehension (AST.Clauses start rest) sl
  where
   buildStartClause clause = case clause of
     ComprehArgIf val -> do

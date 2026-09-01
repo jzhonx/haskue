@@ -1,19 +1,18 @@
 module Main (main) where
 
-import Control.Monad.Except (MonadError, runExceptT, throwError)
+import Control.Monad.Except (runExceptT)
 import Criterion.Main
-import Data.ByteString.Builder (hPutBuilder)
 import qualified Data.ByteString.Char8 as BS
 import Eval
-import System.IO (readFile, stdout)
+import System.IO (readFile)
 
-work :: IO ()
-work = do
-  let conf = emptyConfig{ecFilePath = "tests/bench_spec/large1.cue"}
+work :: FilePath -> IO ()
+work filePath = do
+  let conf = emptyConfig{ecFilePath = filePath}
   content <- readFile (ecFilePath conf)
   x <- runExceptT $ evalStr (BS.pack content) conf
   case x of
-    Left err -> putStrLn err
+    Left err -> ioError (userError err)
     Right _ -> return ()
 
 main :: IO ()
@@ -23,7 +22,8 @@ main =
         "spec"
         [ bgroup
             "eval"
-            [ bench "large1" $ nfIO work
+            [ bench "large1" $ nfIO $ work "tests/bench_spec/large1.cue"
+            , bench "large2" $ nfIO $ work "tests/bench_spec/large2.cue"
             ]
         ]
     ]

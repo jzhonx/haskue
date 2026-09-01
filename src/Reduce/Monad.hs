@@ -95,10 +95,9 @@ data Context = Context
   -- ^ The recalculation root queue.
   , depGraph :: DepGraph
   , lastDerefs :: LastDerefed
-  , vStore :: Map.Map VertexAddr VNode
-  {- ^ The value store that stores the reduced values with their canonical addresses, including dynamic fields and
-  objects.
-  -}
+  , vStore :: Map.Map ReducedAddr VNode
+  -- ^ The value store contains values at their physical reduced addresses,
+  --   including disjuncts, dynamic fields, and objects.
   , comprehBindings :: Seq.Seq [(TextIndex, VNode)]
   -- ^ The comprehension bindings stack.
   , rcResolver :: !RCResolver
@@ -120,12 +119,11 @@ mapDepGraph :: (DepGraph -> DepGraph) -> Context -> Context
 mapDepGraph f ctx = ctx{depGraph = f (depGraph ctx)}
 
 data LastDerefed = LastDerefed
-  { ldUseToDep :: Map.Map VertexAddr (Map.Map ReferableAddr Int)
-  {- ^ It stores the last dereferenced value of the reference with the canonical address.
-  We use the canonical address because when reducing all the mutable arguments, they are reduced at the same
-  time, so if any of them references to the same referable address, they will have the same value.
-  -}
-  , ldDepToUse :: Map.Map ReferableAddr (Map.Map VertexAddr Int)
+  { ldUseToDep :: Map.Map VertexAddr (Map.Map DependencyAddr Int)
+  -- ^ It stores the last dereferenced value of the reference with the dependency address.
+  --   We use the reduced address because when reducing all the mutable arguments, they are reduced at the same
+  --   time, so if any of them references the same dependency address, they will have the same value.
+  , ldDepToUse :: Map.Map DependencyAddr (Map.Map VertexAddr Int)
   }
   deriving (Show, Generic, NFData)
 
@@ -134,7 +132,7 @@ emptyLastDerefed = LastDerefed{ldUseToDep = Map.empty, ldDepToUse = Map.empty}
 
 data ReducedSignal = ReducedSignal
   { addr :: EvalAddr
-  , rfbAddr :: ReferableAddr
+  , dependencyAddr :: DependencyAddr
   , depGroup :: DepGroupDesc
   , createdWithRCResolver :: Bool
   -- ^ If true, the signal is created with an active RC resolver.

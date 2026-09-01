@@ -15,7 +15,7 @@ import Data.Aeson (KeyValue (..), ToJSON, Value, toJSON)
 import Data.Aeson.Types (object)
 import qualified Data.Map as Map
 import qualified Data.Text as T
-import DepGraph (DepGroupDesc, lookupDepGroup)
+import DepGraph (DepGroupDesc, addrIsVertex, lookupDepGroup)
 import EvalAddr
 import Reduce.Monad (
   RM,

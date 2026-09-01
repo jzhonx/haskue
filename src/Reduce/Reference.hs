@@ -221,7 +221,7 @@ locateRef (LocateParams identFeat identLocator sels) refAddr = do
         -- Comprehension-generated scopes do not have stable absolute
         -- addresses during translation. Resolve their lexical relocation now
         -- that the reference has an actual evaluator address.
-        LexicalIdent (ScopeDiff diff) -> assembleIdentCanonical diff identFeat refAddr
+        LexicalIdent (ScopeDiff diff) -> assembleIdentReduced diff identFeat refAddr
   debugInstStr "locateRef" refAddr (debugAssemble identAddr identLocator sels)
   case headSeg identAddr of
     Just seg | seg == rootToAddrSegment packageRoot -> locatePkgFunc identAddr sels
@@ -289,8 +289,8 @@ corresponding suffix forms before doing the prefix check.
 -}
 isSelRefOrSub :: EvalAddr -> Selectors -> EvalAddr -> RM (Maybe DerefResult)
 isSelRefOrSub identAddr selectors refAddr = do
-  -- We should filter out constraint segments since cycle detection should be based on the referable segments only.
-  let refVertexAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
+  -- We should filter out constraint segments since cycle detection should be based on dependency segments only.
+  let refVertexAddr = trimReducedToVertex $ toReducedAddr refAddr
   (res, restSelsM) <- case descendSels identAddr refVertexAddr selectors of
     Just (targetAddr, selfRef, restSels) -> do
       debugInst
@@ -502,29 +502,29 @@ Also check if any of the dependent of the current ref forms a cycle with the tar
 -}
 watch :: EvalAddr -> EvalAddr -> RM ()
 watch tarAddr refAddr = do
-  when (isNothing $ addrIsRfbAddr tarAddr) $
+  when (isNothing $ addrIsDependency tarAddr) $
     throwFatal $
-      printf "watch: target addr %s is not suffix-referable" (show tarAddr)
+      printf "watch: target addr %s is not a dependency address" (show tarAddr)
   let
-    tarRfbAddr = trimCanonicalToRfb $ collapseToCanonical tarAddr
-    refVertexAddr = trimCanonicalToVertex $ collapseToCanonical refAddr
+    targetDependencyAddr = trimReducedToDependency $ toReducedAddr tarAddr
+    refVertexAddr = trimReducedToVertex $ toReducedAddr refAddr
 
-  when (isPrefix (vertexToAddr refVertexAddr) (rfbAddrToAddr tarRfbAddr)) $ do
+  when (isPrefix (vertexToAddr refVertexAddr) (dependencyToAddr targetDependencyAddr)) $ do
     refVertexAddrT <- tshow refVertexAddr
-    tarRfbAddrT <- tshow tarRfbAddr
+    targetDependencyAddrT <- tshow targetDependencyAddr
     throwFatal $
       printf
         "watch: target addr %s is a sub field of ref addr %s, should not watch to avoid a self-dependency"
-        tarRfbAddrT
+        targetDependencyAddrT
         refVertexAddrT
 
   ctx <- getRMContext
   let
-    newG = addNewDepToNG refAddr tarRfbAddr (depGraph ctx)
+    newG = addNewDepToNG refAddr targetDependencyAddr (depGraph ctx)
     -- Check if the refAddr's SuffixIrreducible form is in a cyclic scc.
-    -- We have to trim the refAddr to its canonical form because the reference could be mutable argument.
+    -- We have to convert refAddr to its reduced form because the reference could be a mutable argument.
     -- For example, {a: b + 1, b: a - 1}. We are interested in whether b forms a cycle, not /b/fa0.
-    refGroupM = lookupDepGroup (trimCanonicalToVertex $ collapseToCanonical refAddr) newG
+    refGroupM = lookupDepGroup (trimReducedToVertex $ toReducedAddr refAddr) newG
   putRMContext $ ctx{depGraph = newG}
 
   cd <- case refGroupM of
@@ -535,7 +535,7 @@ watch tarAddr refAddr = do
     "watch"
     refAddr
     ( do
-        tarAddrStr <- tshow tarRfbAddr
+        tarAddrStr <- tshow targetDependencyAddr
         refAddrStr <- tshow refAddr
         return $
           printf
@@ -558,8 +558,8 @@ copyConcrete physicalTarAddr logicalTarAddr addr tarV = do
   -- The physical target may contain internal disjunction steps that are not
   -- present in that dependency address.
   storeLastDerefedVersion
-    (trimCanonicalToVertex $ collapseToCanonical addr)
-    (trimCanonicalToRfb $ collapseToCanonical logicalTarAddr)
+    (trimReducedToVertex $ toReducedAddr addr)
+    (trimReducedToDependency $ toReducedAddr logicalTarAddr)
     v
 
   -- We need to make the target immutable before returning it.

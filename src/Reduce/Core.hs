@@ -17,14 +17,12 @@ import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 import EvalAddr (
   EvalAddr (..),
-  addrIsCanonical,
-  addrIsVertex,
+  addrIsReduced,
   appendFeature,
   appendTermStep,
-  canonicalToAddr,
-  collapseToCanonical,
   emptyEvalAddr,
   featureToAddrSegment,
+  getReducedAddr,
   mkListIdxFeature,
   mkListStoreIdxTermStep,
   mkObjectTermStep,
@@ -32,6 +30,7 @@ import EvalAddr (
   mkRegCnstrTermStep,
   mkStringFeature,
   termStepToAddrSegment,
+  toReducedAddr,
   universalEvalAddr,
  )
 import Reduce.Builtin (builtinFuncMap)
@@ -132,7 +131,7 @@ reduceConstraintPass addr vn@VNode{value = v, constraints} = do
 
   return vn'
 
--- | Reduce constraints, retrying changed canonical nodes that contain reference cycles.
+-- | Reduce constraints, retrying changed reduced-address nodes that contain reference cycles.
 reduceConstraintsWithCycleRetry :: EvalAddr -> VNode -> RM VNode
 reduceConstraintsWithCycleRetry = go 0
  where
@@ -161,7 +160,7 @@ reduceConstraintsWithCycleRetry = go 0
     -- Update the knowledge base with the temporary result.
     storeVal addr vn'
 
-    let toHandleRCInNext = not (null info.refCycles) && isJust (addrIsCanonical addr)
+    let toHandleRCInNext = not (null info.refCycles) && isJust (addrIsReduced addr)
     createCnstr <- asks (createCnstr . params)
     if
       | isEqual || not toHandleRCInNext -> return vn'
@@ -402,7 +401,7 @@ reduceOp addr oc = case oc.ocOp of
             )
       _ -> throwFatal "function call with empty frame"
   VSelect vs -> do
-    let baseAddr = canonicalToAddr $ collapseToCanonical $ appendTermStep addr (mkObjectTermStep vs.bvID)
+    let baseAddr = getReducedAddr $ toReducedAddr $ appendTermStep addr (mkObjectTermStep vs.bvID)
     -- The base of the vselect should be fully reduced so that we have full info about its sub fields.
     v' <- reduce baseAddr vs.base
     xs' <-
@@ -552,7 +551,7 @@ reduceList l addr = traceSpanNoPreRM "reduceList" addr do
         -- We have to manually signal reduced for all the addresses.
         sequence_ $
           foldrVecWAddr
-            ( \p v -> case addrIsVertex p of
+            ( \p v -> case addrIsReduced p of
                 Just _ -> do
                   prevM <- fetchValFromStore "reduceList" p
                   case prevM of

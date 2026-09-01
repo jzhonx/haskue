@@ -135,10 +135,11 @@ Test-Suite haskue-unit-test
   other-modules:
     ASTTest,
     DepGraphTest,
+    E2ETest,
     EvalAddrTest,
     ExplainTest,
+    RecalcTest,
     ScannerTest,
-    SpecTest,
     TraceTest,
     ValueEqTest,
     VTermTest,

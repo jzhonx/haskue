@@ -25,11 +25,9 @@ testUnifiedStruct = do
     @?= T.unlines
       [ "x.a = {p: 1,q: 2}"
       , ""
-      , "Unified constraints:"
+      , "Conjuncts:"
       , "├─ {p: 1}    -:1:9"
       , "└─ {q: 2}    -:1:23"
-      , ""
-      , "Result: {p: 1} & {q: 2} => {p: 1,q: 2}"
       ]
 
 testConflict :: Assertion
@@ -39,11 +37,9 @@ testConflict = do
     @?= T.unlines
       [ "x.a = _|_"
       , ""
-      , "Unified constraints:"
+      , "Conjuncts:"
       , "├─ int      -:1:9"
       , "└─ \"one\"    -:1:20"
-      , ""
-      , "Result: int & \"one\" => _|_"
       ]
 
 testInvalidQuery :: Assertion

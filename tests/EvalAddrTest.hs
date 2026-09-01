@@ -11,6 +11,7 @@ tests =
     "EvalAddr"
     [ testCase "converts an address to selectors" testAddrToSelectors
     , testCase "rejects an address containing an internal term step" testRejectTermStep
+    , testCase "converts an operation argument to its reduced address" testConvertOperationArgument
     ]
 
 testAddrToSelectors :: Assertion
@@ -23,3 +24,11 @@ testRejectTermStep = do
   let selectorAddr = fieldPathToAddr $ Selectors [StringSel (TextIndex 3)]
       internalAddr = appendTermStep selectorAddr (mkDisjTermStep 0)
   addrToSelectors internalAddr @?= Nothing
+
+testConvertOperationArgument :: Assertion
+testConvertOperationArgument = do
+  let fieldAddr = appendFeature fileTopEvalAddr (mkStringFeature (TextIndex 0))
+      operandAddr = appendTermStep fieldAddr (mkOpArgTermStep 0)
+  addrIsReduced fieldAddr @?= Just (ReducedAddr fieldAddr)
+  addrIsReduced operandAddr @?= Nothing
+  toReducedAddr operandAddr @?= ReducedAddr fieldAddr

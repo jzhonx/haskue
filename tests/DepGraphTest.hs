@@ -35,14 +35,14 @@ graph =
     addNewDepToNG useA depA $
       addNewDepToNG otherUse depB emptyDepGraph
 
-depA :: ReferableAddr
-depA = referableField 1
+depA :: DependencyAddr
+depA = dependencyField 1
 
-depB :: ReferableAddr
-depB = referableField 2
+depB :: DependencyAddr
+depB = dependencyField 2
 
-unknownDep :: ReferableAddr
-unknownDep = referableField 6
+unknownDep :: DependencyAddr
+unknownDep = dependencyField 6
 
 useA :: EvalAddr
 useA = fieldAddr 3
@@ -57,12 +57,12 @@ unknownUse :: EvalAddr
 unknownUse = fieldAddr 7
 
 vertexAddr :: EvalAddr -> VertexAddr
-vertexAddr = trimCanonicalToVertex . collapseToCanonical
+vertexAddr = trimReducedToVertex . toReducedAddr
 
-referableField :: Int -> ReferableAddr
-referableField index = case addrIsRfbAddr (fieldAddr index) of
+dependencyField :: Int -> DependencyAddr
+dependencyField index = case addrIsDependency (fieldAddr index) of
   Just addr -> addr
-  Nothing -> error "test field address is not referable"
+  Nothing -> error "test field address is not a dependency address"
 
 fieldAddr :: Int -> EvalAddr
 fieldAddr index = appendFeature fileTopEvalAddr (mkStringFeature (TextIndex index))

@@ -1,0 +1,53 @@
+-- explain1 __x__ --
+x: {
+	a: {p: 1}
+} & {
+	a: {q: 2}
+}
+x: {
+	a: {t: 3}
+}
+x: {
+	[string]: {limit: 10}
+}
+x: {
+	for _, v in ["a"] {
+		"\(v)": {hello: 20}
+	}
+}
+-- exp --
+x = {a: {p: 1,q: 2,t: 3,hello: 20,limit: 10}}
+
+Conjuncts:
+├─ {a: {p: 1}}                                    -:1:4
+├─ {a: {q: 2}}                                    -:3:5
+├─ {a: {t: 3}}                                    -:6:4
+├─ {}                                             -:9:4
+└─ {for _, v in ["a"] {("\(v)"): {hello: 20}}}    -:12:4
+
+-- explain2 __x.a__ --
+x: {
+	a: {p: 1}
+} & {
+	a: {q: 2}
+}
+x: {
+	a: {t: 3}
+}
+x: {
+	[string]: {limit: 10}
+}
+x: {
+	for _, v in ["a"] {
+		"\(v)": {hello: 20}
+	}
+}
+-- exp --
+x.a = {p: 1,q: 2,t: 3,hello: 20,limit: 10}
+
+Conjuncts:
+├─ {p: 1}         -:2:5
+├─ {q: 2}         -:4:5
+├─ {t: 3}         -:7:5
+├─ {hello: 20}    -:14:11
+└─ {limit: 10}    -:10:12

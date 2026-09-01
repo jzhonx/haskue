@@ -4,6 +4,7 @@ import Data.Aeson (KeyValue (..), object)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Sequence as Seq
+import DepGraph (VertexAddr, vertexToAddr)
 import EvalAddr
 import Reduce.Monad
 import Reduce.TraceSpan (debugInst, debugInstStr)
@@ -26,27 +27,18 @@ fetchValMust hdr addr = do
 fetchValFromStore :: String -> EvalAddr -> RM (Maybe VNode)
 fetchValFromStore hdr addr = do
   store <- vStore <$> getRMContext
-  case addrIsVertex addr of
-    Just saddr -> return $ Map.lookup saddr store
+  case addrIsReduced addr of
+    Just reducedAddr -> return $ Map.lookup reducedAddr store
     Nothing -> do
       addrT <- tshow addr
-      throwFatal $ printf "%s cannot fetch value for non-suffix-irreducible addr: %s" hdr addrT
-
-lookupIdentFromStore :: Feature -> CanonicalAddr -> CanonicalAddr -> RM (Maybe (VNode, EvalAddr))
-lookupIdentFromStore identf diff addr = do
-  let targetScopeAddr = trimSuffixAddr (getCanonicalAddr diff) (getCanonicalAddr addr)
-      targetAddr = appendFeature targetScopeAddr identf
-  vM <- fetchValFromStore "lookupIdentFromStore" targetAddr
-  case vM of
-    Just v -> return $ Just (v, targetAddr)
-    Nothing -> return Nothing
+      throwFatal $ printf "%s cannot fetch value for non-reduced addr: %s" hdr addrT
 
 storeVal :: EvalAddr -> VNode -> RM ()
 storeVal addr v = do
   store <- vStore <$> getRMContext
-  case addrIsVertex addr of
-    Just saddr -> do
-      let newStore = Map.insert saddr v store
+  case addrIsReduced addr of
+    Just reducedAddr -> do
+      let newStore = Map.insert reducedAddr v store
       modifyRMContext $ \ctx -> ctx{vStore = newStore}
     Nothing -> return ()
 
@@ -54,12 +46,12 @@ storeVal addr v = do
 setUnknownInStore :: EvalAddr -> RM ()
 setUnknownInStore addr = do
   store <- vStore <$> getRMContext
-  case addrIsVertex addr of
-    Just saddr -> do
+  case addrIsReduced addr of
+    Just reducedAddr -> do
       let newStore =
             Map.adjust
               (\v -> v{value = VUnknown, version = v.version + 1})
-              saddr
+              reducedAddr
               store
       modifyRMContext $ \ctx -> ctx{vStore = newStore}
     Nothing -> return ()
@@ -92,14 +84,14 @@ propValUp addr vn
             (return $ object ["parentAddr" .= parentAddrT, "subF" .= subFT, "parentV" .= parentVT, "msg" .= msg])
           throwFatal msg
 
-queryLastDerefedVersion :: VertexAddr -> ReferableAddr -> RM (Maybe Int)
+queryLastDerefedVersion :: VertexAddr -> DependencyAddr -> RM (Maybe Int)
 queryLastDerefedVersion useAddr depAddr = do
   m <- lastDerefs <$> getRMContext
   case Map.lookup useAddr m.ldUseToDep of
     Just depMap -> return $ Map.lookup depAddr depMap
     Nothing -> return Nothing
 
-storeLastDerefedVersion :: VertexAddr -> ReferableAddr -> VNode -> RM ()
+storeLastDerefedVersion :: VertexAddr -> DependencyAddr -> VNode -> RM ()
 storeLastDerefedVersion userAddr depAddr v = do
   m <- lastDerefs <$> getRMContext
   let depPairs = Map.findWithDefault Map.empty userAddr m.ldUseToDep
@@ -146,8 +138,8 @@ copyVTermNode srcAddr dstAddr =
             | AbsoluteIdentAddr resIdentAddr <- ref.identLocator
             , srcAddr `isPrefix` resIdentAddr && resIdentAddr /= srcAddr ->
                 let rest = trimPrefixAddr srcAddr resIdentAddr
-                    -- The destination address should be normalized to get rid of any constraint arguments.
-                    normDstAddr = collapseToCanonicalForm dstAddr
+                    -- Remove any reduction-local constraint arguments from the destination address.
+                    normDstAddr = toReducedForm dstAddr
                     newIdentAddr = appendEvalAddr normDstAddr rest
                     newRef = ref{identLocator = AbsoluteIdentAddr newIdentAddr}
                  in VTOp (Ref newRef)

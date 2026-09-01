@@ -18,7 +18,7 @@ import Control.Monad (foldM, unless, void, when)
 import Data.Aeson (ToJSON (..))
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromJust, fromMaybe, isNothing, maybeToList)
+import Data.Maybe (fromMaybe, isNothing, maybeToList)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import DepGraph
@@ -74,7 +74,7 @@ recalc = do
 
 {- | Create a 'ReducedSignal' for the given address and enqueue it.
 
-Does nothing if the address is not referable.
+Does nothing if the address cannot serve as a dependency target.
 -}
 sendToRootRecalcQ :: EvalAddr -> Bool -> RM ()
 sendToRootRecalcQ addr depMatchByPrefix = do
@@ -90,18 +90,18 @@ sendToRootRecalcQ addr depMatchByPrefix = do
     Nothing -> return ()
     Just signal -> modifyRMContext $ \context -> context{rootRecalcQ = rootRecalcQ context Seq.|> signal}
 
-{- | Create a 'ReducedSignal' for a value address, if it is referable.
+{- | Create a 'ReducedSignal' for a value address, if it can be a dependency.
 
-Returns 'Nothing' for non-referable addresses.
+Returns 'Nothing' for addresses that cannot serve as dependency targets.
 -}
 createReducedSignal :: EvalAddr -> Bool -> RM (Maybe ReducedSignal)
 createReducedSignal addr depMatchByPrefix = do
-  case addrIsRfbAddr addr of
+  case addrIsDependency addr of
     Nothing -> return Nothing
-    Just rfbAddr -> do
-      group <- vertexAddrToDepGroup (rfbAddrToVertex rfbAddr)
+    Just dependencyAddr -> do
+      group <- vertexAddrToDepGroup (dependencyToVertex dependencyAddr)
       RCResolver{resolving} <- getRCResolver
-      return $ Just ReducedSignal{addr, rfbAddr, depGroup = group, createdWithRCResolver = resolving, depMatchByPrefix}
+      return $ Just ReducedSignal{addr, dependencyAddr, depGroup = group, createdWithRCResolver = resolving, depMatchByPrefix}
 
 {- | Look up the group description for a vertex in the dependency graph.
 
@@ -170,7 +170,7 @@ with the signaled group itself, using that group as the source at version 0.
 -}
 mkBFSState :: ReducedSignal -> RM BFSState
 mkBFSState signal@ReducedSignal{depGroup, depMatchByPrefix}
-  | not depGroup.depGroupIsCyclic = findNeighbors signal.rfbAddr depMatchByPrefix depGroup Seq.empty
+  | not depGroup.depGroupIsCyclic = findNeighbors signal.dependencyAddr depMatchByPrefix depGroup Seq.empty
 mkBFSState signal = traceSpanWithRM
   "mkBFSState"
   signal.addr
@@ -178,7 +178,7 @@ mkBFSState signal = traceSpanWithRM
   (const (return (toJSON ())))
   $ do
     if signal.createdWithRCResolver
-      then findNeighbors signal.rfbAddr signal.depMatchByPrefix signal.depGroup Seq.empty
+      then findNeighbors signal.dependencyAddr signal.depMatchByPrefix signal.depGroup Seq.empty
       else
         return $
           appendGroupsToBFSQ
@@ -196,9 +196,8 @@ mkBFSState signal = traceSpanWithRM
 -}
 data BFSState = BFSState
   { bfsQ :: Seq.Seq BFSQItem
-  {- ^ FIFO queue of groups to process.
-  Each item records the source group and version that triggered the recalculation.
-  -}
+  -- ^ FIFO queue of groups to process.
+  --   Each item records the source group and version that triggered the recalculation.
   }
 
 data BFSQItem = BFSQItem
@@ -237,8 +236,37 @@ runBFS bfsState = case bfsState.bfsQ of
                 updatedGroupText
         )
       recalcGroup queueItem{biGroup = updatedGroup}
-    let dependencyBaseAddr = trimCanonicalToRfb $ getVertexAddr updatedGroup.depGroupRep
+    let dependencyBaseAddr = trimReducedToDependency $ getVertexAddr updatedGroup.depGroupRep
     findNeighbors dependencyBaseAddr False updatedGroup remainingQueue >>= runBFS
+
+{- | Find the vertex whose reduction owns an evaluator vertex.
+
+Disjunct and object segments enter subtrees that are reduced as part of their
+containing value rather than treated as independent top-level recalculation
+units. The owning reducer is therefore the prefix before the first disjunct or
+object segment. If neither segment occurs, the vertex owns its own reduction.
+
+For example, while reducing:
+
+@b: *{x: *{y: 1} | 2} | {}@
+
+the physical address of @y@ is @/b/dj0/x/dj0/y@. Its owning reducer is @/b@,
+because the first @dj0@ enters a disjunct owned by the reduction of @b@.
+-}
+owningReducerAddr :: VertexAddr -> VertexAddr
+owningReducerAddr (VertexAddr (ReducedAddr addr)) =
+  VertexAddr $ ReducedAddr $ trimFirstMatchToEnd isNestedReductionSegment addr
+ where
+  isNestedReductionSegment segment = case addrSegmentTag segment of
+    ObjectTag -> True
+    DisjTag -> True
+    _ -> False
+
+-- | Find the parent vertex of the vertex owning this reduction.
+parentOwningReducerAddr :: VertexAddr -> Maybe VertexAddr
+parentOwningReducerAddr vertexAddr = do
+  parentAddr <- initEvalAddr $ vertexToAddr $ owningReducerAddr vertexAddr
+  addrIsVertex parentAddr
 
 {- | Resolve the top-reducer dependency group.
 
@@ -249,7 +277,7 @@ getTopReducerGroup :: DepGroupDesc -> RM DepGroupDesc
 getTopReducerGroup group
   | group.depGroupIsCyclic = return group -- cyclic: self-reducing
   | otherwise = do
-      let nodeVertexAddr = VertexAddr $ getTopReducerAddr $ trimVertexToTopReducerAddr group.depGroupRep
+      let nodeVertexAddr = owningReducerAddr group.depGroupRep
       graph <- depGraph <$> getRMContext
       case lookupDepGroup nodeVertexAddr graph of
         Just resolvedGroup -> return resolvedGroup
@@ -259,10 +287,10 @@ getTopReducerGroup group
 
 Only groups whose values have actually changed (determined by 'mkAffectedUseItems') are included.
 -}
-findNeighbors :: ReferableAddr -> Bool -> DepGroupDesc -> Seq.Seq BFSQItem -> RM BFSState
+findNeighbors :: DependencyAddr -> Bool -> DepGroupDesc -> Seq.Seq BFSQItem -> RM BFSState
 findNeighbors dependencyBaseAddr depMatchByPrefix currentGroup remainingQueue = traceSpanWithRM
   "findNeighbors"
-  (rfbAddrToAddr dependencyBaseAddr)
+  (dependencyToAddr dependencyBaseAddr)
   emptyTracePreDataRM
   ( \bfsState -> do
       queuedGroupTexts <- mapM (tshow . biGroup) (toList bfsState.bfsQ)
@@ -275,16 +303,16 @@ findNeighbors dependencyBaseAddr depMatchByPrefix currentGroup remainingQueue = 
     graph <- depGraph <$> getRMContext
     parentGroups <- getAncestorGroups currentGroup
     let
-      directUseGroupPairs :: [DepGroupDesc] -> [(Maybe ReferableAddr, DepGroupDesc, [DepGroupDesc])]
+      directUseGroupPairs :: [DepGroupDesc] -> [(Maybe DependencyAddr, DepGroupDesc, [DepGroupDesc])]
       directUseGroupPairs groups = map (\group -> (Nothing, group, getDepGroupUses group graph)) groups
 
-      prefixUseGroupPairs :: [(Maybe ReferableAddr, DepGroupDesc, [DepGroupDesc])]
+      prefixUseGroupPairs :: [(Maybe DependencyAddr, DepGroupDesc, [DepGroupDesc])]
       prefixUseGroupPairs =
         map
           (\(group, uses) -> (Just dependencyBaseAddr, group, uses))
           (getDepGroupUsesBy (isDepGroupAtOrBelow dependencyBaseAddr graph) graph)
 
-      useGroupPairs :: [(Maybe ReferableAddr, DepGroupDesc, [DepGroupDesc])]
+      useGroupPairs :: [(Maybe DependencyAddr, DepGroupDesc, [DepGroupDesc])]
       useGroupPairs =
         if depMatchByPrefix
           then prefixUseGroupPairs ++ directUseGroupPairs parentGroups
@@ -319,10 +347,10 @@ findNeighbors dependencyBaseAddr depMatchByPrefix currentGroup remainingQueue = 
 {- | Whether any member of a dependency group is at or below the logical
 dependency base address.
 -}
-isDepGroupAtOrBelow :: ReferableAddr -> DepGraph -> DepGroupDesc -> Bool
+isDepGroupAtOrBelow :: DependencyAddr -> DepGraph -> DepGroupDesc -> Bool
 isDepGroupAtOrBelow dependencyBaseAddr graph group =
   any
-    (isPrefix (rfbAddrToAddr dependencyBaseAddr) . vertexToAddr)
+    (isPrefix (dependencyToAddr dependencyBaseAddr) . vertexToAddr)
     (getDepGroupMembers group graph)
 
 {- | Collect queue items for use groups affected by a change to the dependency.
@@ -330,7 +358,7 @@ isDepGroupAtOrBelow dependencyBaseAddr graph group =
 A group is affected if any of its member nodes are "dirty" — the dependency's version differs from the last version the
 group observed.
 -}
-mkAffectedUseItems :: Maybe ReferableAddr -> DepGroupDesc -> [DepGroupDesc] -> RM [BFSQItem]
+mkAffectedUseItems :: Maybe DependencyAddr -> DepGroupDesc -> [DepGroupDesc] -> RM [BFSQItem]
 mkAffectedUseItems dependencyBaseAddrM sourceGroup candidateUseGroups = do
   graph <- depGraph <$> getRMContext
   let sourceMembers = getDepGroupMembers sourceGroup graph
@@ -346,7 +374,7 @@ mkAffectedUseItems dependencyBaseAddrM sourceGroup candidateUseGroups = do
                     ( \innerfoundVersion sourceMemberAddr -> case innerfoundVersion of
                         Just _ -> return innerfoundVersion
                         Nothing -> do
-                          let dependencyAddr = trimCanonicalToRfb $ getVertexAddr sourceMemberAddr
+                          let dependencyAddr = trimReducedToDependency $ getVertexAddr sourceMemberAddr
                           checkIfDirty dependencyBaseAddrM dependencyAddr memberAddr
                     )
                     Nothing
@@ -370,7 +398,7 @@ True when the use-site is an actual dependent /and/ the version has changed.
 A 'Nothing' dependency base means that the logical dependency address is also
 the base address.
 -}
-checkIfDirty :: Maybe ReferableAddr -> ReferableAddr -> VertexAddr -> RM (Maybe Int)
+checkIfDirty :: Maybe DependencyAddr -> DependencyAddr -> VertexAddr -> RM (Maybe Int)
 checkIfDirty dependencyBaseAddrM dependencyAddr useAddr = do
   let dependencyBaseAddr = fromMaybe dependencyAddr dependencyBaseAddrM
   dependencyNodeM <- fetchDependencyNode dependencyBaseAddr dependencyAddr
@@ -406,7 +434,7 @@ checkIfDirty dependencyBaseAddrM dependencyAddr useAddr = do
 When a logical dependency is not materialized in the value store, descend from
 the materialized base value using the dependency's relative selectors.
 -}
-fetchDependencyNode :: ReferableAddr -> ReferableAddr -> RM (Maybe VNode)
+fetchDependencyNode :: DependencyAddr -> DependencyAddr -> RM (Maybe VNode)
 fetchDependencyNode dependencyBaseAddr dependencyAddr =
   if isPrefix baseAddr logicalAddr
     then case addrToSelectors (trimPrefixAddr baseAddr logicalAddr) of
@@ -423,8 +451,8 @@ fetchDependencyNode dependencyBaseAddr dependencyAddr =
           (show dependencyBaseAddr)
           (show dependencyAddr)
  where
-  baseAddr = rfbAddrToAddr dependencyBaseAddr
-  logicalAddr = rfbAddrToAddr dependencyAddr
+  baseAddr = dependencyToAddr dependencyBaseAddr
+  logicalAddr = dependencyToAddr dependencyAddr
   fetchDirect = fetchValFromStore "checkIfDirty" logicalAddr
 
 -- | Append groups to the BFS queue, skipping duplicates.
@@ -585,16 +613,6 @@ Returns 'Nothing' at the root.
 The parent is always acyclic since structural containment is a tree relationship.
 -}
 getAncestorGroupFromAddr :: VertexAddr -> Maybe DepGroupDesc
-getAncestorGroupFromAddr vertexAddr
-  | fileTopEvalAddr == vertexToAddr vertexAddr = Nothing
-  | otherwise = do
-      let parentAddr =
-            topReducerToVertexAddr $
-              fromJust $
-                initTopReducer $
-                  trimVertexToTopReducerAddr vertexAddr
-      return DepGroupDesc{depGroupRep = parentAddr, depGroupIsCyclic = False}
-
--- | Unwrap a 'TopReducerAddr' newtype to a 'VertexAddr'.
-topReducerToVertexAddr :: TopReducerAddr -> VertexAddr
-topReducerToVertexAddr (TopReducerAddr canonicalAddr) = VertexAddr canonicalAddr
+getAncestorGroupFromAddr vertexAddr = do
+  parentAddr <- parentOwningReducerAddr vertexAddr
+  return DepGroupDesc{depGroupRep = parentAddr, depGroupIsCyclic = False}

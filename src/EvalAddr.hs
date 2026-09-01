@@ -501,226 +501,131 @@ trimSuffixAddr suf@(EvalAddr sa) x@(EvalAddr xa)
   | not (isSuffix suf x) = x
   | otherwise = mkEvalAddr (V.take (V.length xa - V.length sa) xa)
 
-{- | An evaluator address containing no non-canonical segments.
+{- | An evaluator address containing no reduction-local segments.
 
-Canonicalization removes internal traversal steps that cannot remain in a fully
-reduced value, such as operation arguments, constraints, dynamic constraints,
-and list-store indices. Other internal steps, including disjuncts and object
-terms, remain canonical. A canonical address therefore describes the physical
-path retained after this traversal detail is erased; it is not necessarily a
-user-visible logical address, a referable address, or a stored value node.
+Converting to a reduced address removes internal traversal steps that cannot
+identify a node in the evaluator's reduced address structure, such as operation
+arguments, constraints, dynamic constraints, and list-store indices. Other
+internal steps, including disjuncts and object terms, remain. A reduced address
+therefore describes the location retained after this traversal detail is
+erased; it is not necessarily a user-visible logical address, a dependency
+address, or a stored value node. It also does not assert that evaluation of the
+addressed node has completed.
 
 For example, in:
 
 @x: ({a: 1, b: a}).b | 1@
 
-the evaluator address of @b@ is @/x/fa0/fa0/b@. The @fa0@ operation-argument
-segments are non-canonical, so collapsing the address produces the canonical
-address @/x/b@.
+the evaluator address of @b@ is @/x/fa0/fa0/b@. Removing the @fa0@
+operation-argument segments produces the reduced address @/x/b@.
 
-'addrIsCanonical' checks this invariant without changing the address, whereas
-'collapseToCanonical' establishes it by removing every non-canonical segment.
+'addrIsReduced' checks this invariant without changing the address, whereas
+'toReducedAddr' establishes it by removing every reduction-local
+segment.
 -}
-newtype CanonicalAddr = CanonicalAddr {getCanonicalAddr :: EvalAddr}
+newtype ReducedAddr = ReducedAddr {getReducedAddr :: EvalAddr}
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (NFData, ToJSON, ToJSONWTIndexer, ToJSONKey)
 
-instance ShowWTIndexer CanonicalAddr where
-  tshow (CanonicalAddr c) = tshow c
+instance ShowWTIndexer ReducedAddr where
+  tshow (ReducedAddr addr) = tshow addr
 
--- | A segment is canonical if it can be present in a fully reduced value.
-isSegmentNonCanonical :: AddrSegment -> Bool
-isSegmentNonCanonical seg = case addrSegmentTag seg of
+-- | Whether a segment is local to reduction and absent from a reduced address.
+isSegmentNonReduced :: AddrSegment -> Bool
+isSegmentNonReduced seg = case addrSegmentTag seg of
   OpArgTag -> True
   ConstraintTag -> True
   DynCnstrTag -> True
   ListStoreIdxTag -> True
   _ -> False
 
-isSegmentCanonical :: AddrSegment -> Bool
-isSegmentCanonical = not . isSegmentNonCanonical
+isSegmentReduced :: AddrSegment -> Bool
+isSegmentReduced = not . isSegmentNonReduced
 
-addrIsCanonical :: EvalAddr -> Maybe CanonicalAddr
-addrIsCanonical (EvalAddr xs) =
-  let hasReducible = V.any isSegmentNonCanonical xs
-   in if hasReducible
+addrIsReduced :: EvalAddr -> Maybe ReducedAddr
+addrIsReduced (EvalAddr xs) =
+  let hasReductionLocalSegment = V.any isSegmentNonReduced xs
+   in if hasReductionLocalSegment
         then Nothing
-        else Just $ CanonicalAddr $ EvalAddr xs
+        else Just $ ReducedAddr $ EvalAddr xs
 
-collapseToCanonical :: EvalAddr -> CanonicalAddr
-collapseToCanonical (EvalAddr xs) = CanonicalAddr $ EvalAddr (V.filter (not . isSegmentNonCanonical) xs)
+toReducedAddr :: EvalAddr -> ReducedAddr
+toReducedAddr (EvalAddr xs) = ReducedAddr $ EvalAddr (V.filter (not . isSegmentNonReduced) xs)
 
-collapseToCanonicalForm :: EvalAddr -> EvalAddr
-collapseToCanonicalForm addr = canonicalToAddr $ collapseToCanonical addr
+toReducedForm :: EvalAddr -> EvalAddr
+toReducedForm = getReducedAddr . toReducedAddr
 
-canonicalToAddr :: CanonicalAddr -> EvalAddr
-canonicalToAddr (CanonicalAddr v) = v
-
-initCanonical :: CanonicalAddr -> Maybe CanonicalAddr
-initCanonical (CanonicalAddr v) = fmap CanonicalAddr (initEvalAddr v)
+initReduced :: ReducedAddr -> Maybe ReducedAddr
+initReduced (ReducedAddr addr) = fmap ReducedAddr (initEvalAddr addr)
 
 {- | Resolve a deferred identifier locator against a reference's actual address.
 
-The difference is the canonical path from the identifier's defining scope down
-to the lexical scope containing the reference. Canonicalizing the reference
-address and removing its final segment gives that actual containing scope.
+The difference is the reduced path from the identifier's defining scope down
+to the lexical scope containing the reference. Converting the reference address
+and removing its final segment gives that actual containing scope.
 Removing the stored suffix then recovers the defining scope; appending the
 identifier feature produces the absolute identifier address.
 
 For a generated reference at @/x/nested/b@ with difference @nested@ and feature
 @a@, this computes @/x/nested - nested + a = /x/a@.
 -}
-assembleIdentCanonical :: EvalAddr -> Feature -> EvalAddr -> EvalAddr
-assembleIdentCanonical diff feat addr =
+assembleIdentReduced :: EvalAddr -> Feature -> EvalAddr -> EvalAddr
+assembleIdentReduced diff feat addr =
   let
     -- If the last seg is dj
     --  - the value is a struct, it is impossible.
-    canAddr = collapseToCanonical addr
-    canParAddrM = initCanonical canAddr
-    identScopeAddr = case canParAddrM of
-      Just canParAddr -> trimSuffixAddr diff (getCanonicalAddr canParAddr)
+    reducedAddr = toReducedAddr addr
+    reducedParentAddrM = initReduced reducedAddr
+    identScopeAddr = case reducedParentAddrM of
+      Just reducedParentAddr -> trimSuffixAddr diff (getReducedAddr reducedParentAddr)
       Nothing -> fileTopEvalAddr
     identAddr = appendFeature identScopeAddr feat
    in
     identAddr
 
-{- | A canonical address whose final segment identifies a referable value.
+{- | A reduced address that may serve as a dependency target.
 
-String fields, let bindings, list elements, and the file root are referable.
-Only the final segment must be referable; preceding canonical segments may be
-internal evaluator steps. This allows references to values nested in
+Dependency addresses end at string fields, let bindings, list elements, or the
+file root. Only the final segment must identify a dependency target; preceding
+reduced segments may be internal evaluator steps. This allows dependencies on
+values nested in
 expressions such as @x: ({a: 1, b: a})[b] + 1@ or
 @x: {a: 1, b: a} | 1@. In the second expression, the physical address of @a@
-is @/x/dj0/a@, which is referable because its final segment is @a@ even though
-@dj0@ is not itself referable.
+is @/x/dj0/a@, which is a dependency address because its final segment is @a@
+even though @dj0@ is an internal evaluator step.
 
-Referable addresses are used as dependency targets. 'addrIsRfbAddr' checks that
-an evaluator address is both canonical and referable, while
-'trimCanonicalToRfb' projects a canonical address to its nearest referable
-prefix.
+'addrIsDependency' checks whether an evaluator address is already a dependency
+address, while 'trimReducedToDependency' trims a reduced address to its nearest
+prefix that can serve as a dependency target.
 -}
-newtype ReferableAddr = ReferableAddr {getReferableAddr :: CanonicalAddr}
+newtype DependencyAddr = DependencyAddr {getDependencyAddr :: ReducedAddr}
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (NFData, ToJSON, ToJSONWTIndexer)
 
-instance ShowWTIndexer ReferableAddr where
-  tshow (ReferableAddr c) = tshow c
+instance ShowWTIndexer DependencyAddr where
+  tshow (DependencyAddr addr) = tshow addr
 
-isSegmentReferable :: AddrSegment -> Bool
-isSegmentReferable seg = case addrSegmentTag seg of
+isDependencyTerminal :: AddrSegment -> Bool
+isDependencyTerminal seg = case addrSegmentTag seg of
   StringTag -> True
   LetTag -> True
   ListIdxTag -> True
   FileTopTag -> True
   _ -> False
 
-rfbAddrToAddr :: ReferableAddr -> EvalAddr
-rfbAddrToAddr (ReferableAddr c) = canonicalToAddr c
+dependencyToAddr :: DependencyAddr -> EvalAddr
+dependencyToAddr (DependencyAddr reducedAddr) = getReducedAddr reducedAddr
 
--- | Every referable address is also a vertex address.
-rfbAddrToVertex :: ReferableAddr -> VertexAddr
-rfbAddrToVertex (ReferableAddr c) = VertexAddr c
-
-addrIsRfbAddr :: EvalAddr -> Maybe ReferableAddr
-addrIsRfbAddr addr = do
-  c <- addrIsCanonical addr
-  lseg <- lastSeg (canonicalToAddr c)
-  if isSegmentReferable lseg
-    then return $ ReferableAddr c
+addrIsDependency :: EvalAddr -> Maybe DependencyAddr
+addrIsDependency addr = do
+  reducedAddr <- addrIsReduced addr
+  lseg <- lastSeg (getReducedAddr reducedAddr)
+  if isDependencyTerminal lseg
+    then return $ DependencyAddr reducedAddr
     else Nothing
 
-trimCanonicalToRfb :: CanonicalAddr -> ReferableAddr
-trimCanonicalToRfb (CanonicalAddr (EvalAddr xs)) =
+trimReducedToDependency :: ReducedAddr -> DependencyAddr
+trimReducedToDependency (ReducedAddr (EvalAddr xs)) =
   let revxs = V.reverse xs
-      rest = V.dropWhile (not . isSegmentReferable) revxs
-   in ReferableAddr (CanonicalAddr (EvalAddr $ V.reverse rest))
-
-{- | A non-empty canonical address identifying a value node in the evaluator.
-
-A vertex address may contain disjunct segments, but it cannot end with one. A
-terminal disjunct segment selects a value contained by its parent disjunction
-rather than an independently stored node. For example, @/b/dj0@ is not a vertex
-address, while @/b/dj0/x@ is one because it ends at the field @x@.
-
-Vertex addresses are used as keys in the value store and as nodes in the
-dependency graph. Every 'ReferableAddr' is a vertex address, but a vertex may
-end with an internal canonical segment that is not referable.
-
-'addrIsVertex' checks the invariant without changing the address, while
-'trimCanonicalToVertex' removes trailing non-vertex segments to select the
-nearest containing vertex.
--}
-newtype VertexAddr = VertexAddr {getVertexAddr :: CanonicalAddr}
-  deriving stock (Show, Eq, Ord, Generic)
-  deriving anyclass (NFData, ToJSON, ToJSONWTIndexer, ToJSONKey)
-
-instance ShowWTIndexer VertexAddr where
-  tshow (VertexAddr c) = tshow c
-
-instance Hashable VertexAddr where
-  hashWithSalt salt (VertexAddr (CanonicalAddr addr)) = hashWithSalt salt addr
-
--- | The file root represented as a value-store and dependency-graph vertex.
-fileTopVertexAddr :: VertexAddr
-fileTopVertexAddr = VertexAddr (CanonicalAddr fileTopEvalAddr)
-
-isSegmentVertex :: AddrSegment -> Bool
-isSegmentVertex seg = case addrSegmentTag seg of
-  DisjTag -> False
-  _ -> isSegmentCanonical seg
-
--- | TODO: trimRight?
-trimCanonicalToVertex :: CanonicalAddr -> VertexAddr
-trimCanonicalToVertex (CanonicalAddr (EvalAddr xs)) =
-  let revxs = V.reverse xs
-      rest = V.dropWhile (not . isSegmentVertex) revxs
-   in VertexAddr (CanonicalAddr (EvalAddr $ V.reverse rest))
-
-vertexToAddr :: VertexAddr -> EvalAddr
-vertexToAddr (VertexAddr c) = canonicalToAddr c
-
-addrIsVertex :: EvalAddr -> Maybe VertexAddr
-addrIsVertex addr = do
-  c <- addrIsCanonical addr
-  lseg <- lastSeg (canonicalToAddr c)
-  if isSegmentVertex lseg
-    then return $ VertexAddr c
-    else Nothing
-
-trimVertexToTopReducerAddr :: VertexAddr -> TopReducerAddr
-trimVertexToTopReducerAddr (VertexAddr c) = trimCanonicalToTopReducer c
-
-{- | The canonical address of the reduction unit that owns an evaluator path.
-
-Disjunct and object segments enter subtrees that are reduced as part of their
-containing value rather than treated as independent top-level recalculation
-units. A top-reducer address therefore contains neither kind of segment;
-canonical segments following the first disjunct or object are excluded as well.
-
-For example, while reducing:
-
-@b: *{x: *{y: 1} | 2} | {}@
-
-the physical address of @y@ is @/b/dj0/x/dj0/y@. Its top-reducer address is
-@/b@, because the first @dj0@ enters a disjunct owned by the reduction of @b@.
-
-'trimCanonicalToTopReducer' establishes this invariant by retaining the prefix
-before the first disjunct or object segment. Recalculation uses that prefix to
-find the reduction unit responsible for a changed physical node.
--}
-newtype TopReducerAddr = TopReducerAddr {getTopReducerAddr :: CanonicalAddr}
-  deriving stock (Show, Eq, Ord, Generic)
-  deriving anyclass (NFData, ShowWTIndexer, ToJSON, ToJSONWTIndexer)
-
-isSegmentTopReducer :: AddrSegment -> Bool
-isSegmentTopReducer seg = case addrSegmentTag seg of
-  ObjectTag -> False
-  DisjTag -> False
-  _ -> isSegmentCanonical seg
-
-trimCanonicalToTopReducer :: CanonicalAddr -> TopReducerAddr
-trimCanonicalToTopReducer (CanonicalAddr xs) =
-  TopReducerAddr $ CanonicalAddr $ trimFirstMatchToEnd (not . isSegmentTopReducer) xs
-
-initTopReducer :: TopReducerAddr -> Maybe TopReducerAddr
-initTopReducer (TopReducerAddr c) = fmap TopReducerAddr (initCanonical c)
+      rest = V.dropWhile (not . isDependencyTerminal) revxs
+   in DependencyAddr (ReducedAddr (EvalAddr $ V.reverse rest))

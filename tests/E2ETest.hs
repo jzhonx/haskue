@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 
-module SpecTest where
+module E2ETest (e2eTests) where
 
 import Control.Monad (foldM, when)
 import Control.Monad.Except (MonadError, runExceptT)
@@ -9,7 +9,8 @@ import Data.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.ByteString.Char8 as BC (ByteString, lines, pack, readFile, toStrict, unpack)
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, sort)
-import Eval (ecMaxTreeDepth, emptyConfig, evalStr)
+import qualified Data.Text as T
+import Eval (ecMaxTreeDepth, emptyConfig, evalStr, explainStr)
 import Exception (throwErrSt)
 import System.Directory (listDirectory)
 import Test.Tasty
@@ -77,11 +78,25 @@ cmpStrings want act = do
       _act = BC.lines act
   if length _exp /= length _act
     then assertFailure $ printf "Expected %d lines, got %d. got:\n%s" (length _exp) (length _act) (show _act)
-    else mapM_ (\(i, e, a) -> assertEqual ("line " ++ show i) e a) (zip3 [0 ..] _exp _act)
+    else mapM_ (\(i, e, a) -> assertEqual ("line " ++ show i) e a) (zip3 [0 :: Int ..] _exp _act)
 
-runCase :: TestCase -> IO ()
-runCase c = do
+runEvalCase :: TestCase -> IO ()
+runEvalCase c = do
   rE <- runExceptT $ evalStr c.input emptyConfig{ecMaxTreeDepth = 20}
+  checkResult c rE
+
+runExplainCase :: BC.ByteString -> TestCase -> IO ()
+runExplainCase query c = do
+  rE <-
+    runExceptT $
+      explainStr
+        c.input
+        query
+        emptyConfig{ecMaxTreeDepth = 20}
+  checkResult c rE
+
+checkResult :: TestCase -> Either String Builder -> IO ()
+checkResult c rE =
   case rE of
     Left err -> assertFailure (show err)
     Right b -> do
@@ -90,31 +105,62 @@ runCase c = do
           strippedExpOut = BC.pack $ dropWhileEnd isSpace (BC.unpack c.expectedOutput)
       liftIO $ cmpStrings strippedExpOut act
 
-createTestsInTxtar :: String -> String -> IO TestTree
-createTestsInTxtar path name = do
+parseExplainTitle :: String -> Either String (String, BC.ByteString)
+parseExplainTitle title = do
+  withoutClosingDelimiter <-
+    maybe
+      (Left $ "Explain case title must end with __query__: " ++ title)
+      Right
+      (T.stripSuffix "__" $ T.pack title)
+  let (nameWithDelimiter, query) = T.breakOnEnd "__" withoutClosingDelimiter
+      testName = T.strip $ T.dropEnd 2 nameWithDelimiter
+  if T.null nameWithDelimiter || T.null testName || T.null query
+    then Left $ "Explain case title must have the form name __query__: " ++ title
+    else Right (T.unpack testName, BC.pack $ T.unpack query)
+
+evalTestCase :: TestCase -> TestTree
+evalTestCase c = testCase c.name (runEvalCase c)
+
+explainTestCase :: TestCase -> TestTree
+explainTestCase c =
+  case parseExplainTitle c.name of
+    Left err -> testCase c.name (assertFailure err)
+    Right (testName, query) -> testCase testName (runExplainCase query c)
+
+createTestsInTxtar :: (TestCase -> TestTree) -> String -> String -> IO TestTree
+createTestsInTxtar makeTest path name = do
   file <- BC.readFile path
   casesE <- runExceptT $ parseTxtar file
   case casesE of
     Left err -> assertFailure ("Failed to parse txtar file: " ++ err)
     Right cases -> do
-      let ts = map (\c -> testCase c.name (runCase c)) cases
+      let ts = map makeTest cases
       return $ testGroup name ts
 
-specTests :: IO TestTree
-specTests = do
-  let dir = "tests/spec"
+createTestsInDir :: (TestCase -> TestTree) -> String -> IO [TestTree]
+createTestsInDir makeTest dir = do
   -- sort the files so that the tests are run in order
   files <- sort <$> listDirectory dir
   -- only run the .txtar files
-  cases <-
-    foldM
+  reverse
+    <$> foldM
       ( \acc file ->
           if reverse (take 6 (reverse file)) == ".txtar"
             then do
-              g <- createTestsInTxtar (dir ++ "/" ++ file) file
-              return $ g : acc
+              group <- createTestsInTxtar makeTest (dir ++ "/" ++ file) file
+              return $ group : acc
             else return acc
       )
       []
       files
-  return $ testGroup "spec_tests" (reverse cases)
+
+e2eTests :: IO TestTree
+e2eTests = do
+  evalTests <- createTestsInDir evalTestCase "tests/e2e/eval"
+  explainTests <- createTestsInDir explainTestCase "tests/e2e/explain"
+  return $
+    testGroup
+      "e2e"
+      [ testGroup "eval" evalTests
+      , testGroup "explain" explainTests
+      ]

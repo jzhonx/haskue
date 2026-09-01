@@ -13,7 +13,6 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (intercalate)
 import qualified Data.Sequence as Seq
 import EvalAddr (fileTopEvalAddr)
 import Reduce.Core (reduceConstraintPass)
@@ -109,7 +108,6 @@ renderConstraints textIndexer vnode =
         toList vnode.constraints.static
           ++ concatMap toList (IntMap.elems vnode.constraints.dynamic)
       renderedCnstrs = map (renderConstraint textIndexer) cnstrs
-      renderedResult = renderVNode textIndexer (removeConstraints vnode)
       maxConstraintWidth = maximum (0 : map length renderedCnstrs)
       renderLine i cnstr rendered =
         let branch = if i == length cnstrs - 1 then "└─" else "├─"
@@ -118,13 +116,9 @@ renderConstraints textIndexer vnode =
       renderedLines = case zip3 [0 ..] cnstrs renderedCnstrs of
         [] -> ["└─ (none)"]
         xs -> map (\(i, cnstr, rendered) -> renderLine i cnstr rendered) xs
-      operands = case renderedCnstrs of
-        [] -> renderedResult
-        _ -> intercalate " & " renderedCnstrs
    in unlines $
-        ["Unified constraints:"]
+        ["Conjuncts:"]
           ++ renderedLines
-          ++ ["", "Result: " ++ operands ++ " => " ++ renderedResult]
 
 renderConstraint :: TextIndexer -> Constraint -> String
 renderConstraint textIndexer cnstr =

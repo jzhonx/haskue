@@ -2,7 +2,7 @@
 
 # Ensure at least one argument is provided
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 {build|build-wasm|build-show-trace|test|run|runp|explain|show|release|conv|ce|cmp}"
+  echo "Usage: $0 {build|build-wasm|build-show-trace|test|bench-check|bench-update|run|runp|explain|show|release|conv|ce|cmp}"
   exit 1
 fi
 
@@ -155,6 +155,65 @@ if [[ "$1" == "test" ]]; then
   cabal test --project-file=cabal.project.debug
 
   echo ""
+
+  exit 0
+fi
+
+if [[ "$1" == "bench-update" ]]; then
+  set -euo pipefail
+
+  projectRoot="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  baseline="$projectRoot/tests/bench_spec/spec-baseline.json"
+  result="$(mktemp "${TMPDIR:-/tmp}/haskue-spec-benchmark.XXXXXX")"
+  formattedResult="$(mktemp "${TMPDIR:-/tmp}/haskue-spec-benchmark-formatted.XXXXXX")"
+  trap 'rm -f "$result" "$formattedResult"' EXIT
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "bench-update requires python3" >&2
+    exit 1
+  fi
+
+  cabal bench spec \
+    --project-file=cabal.project.release \
+    --benchmark-options="--json $result"
+
+  python3 -m json.tool "$result" "$formattedResult"
+  mv -f "$formattedResult" "$baseline"
+  trap - EXIT
+  echo "Updated $baseline"
+
+  exit 0
+fi
+
+if [[ "$1" == "bench-check" ]]; then
+  set -euo pipefail
+
+  tolerancePercent="${2:-20}"
+  projectRoot="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  baseline="$projectRoot/tests/bench_spec/spec-baseline.json"
+  reportProcessor="$projectRoot/tests/bench_spec/process_report.py"
+  result="$(mktemp "${TMPDIR:-/tmp}/haskue-spec-benchmark.XXXXXX")"
+  trap 'rm -f "$result"' EXIT
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "bench-check requires python3" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$baseline" ]]; then
+    echo "Missing benchmark baseline: $baseline" >&2
+    echo "Run ./build.sh bench-update to create it." >&2
+    exit 1
+  fi
+
+  cabal bench spec \
+    --project-file=cabal.project.release \
+    --benchmark-options="--json $result"
+
+  python3 "$reportProcessor" \
+    "$baseline" \
+    "$result" \
+    --tolerance-percent "$tolerancePercent"
 
   exit 0
 fi

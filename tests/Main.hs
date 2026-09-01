@@ -2,10 +2,11 @@ module Main where
 
 import qualified ASTTest
 import qualified DepGraphTest
+import E2ETest (e2eTests)
 import qualified EvalAddrTest
 import qualified ExplainTest
+import qualified RecalcTest
 import qualified ScannerTest
-import SpecTest (specTests)
 import Test.Tasty
 import qualified TraceTest
 import qualified VTermTest
@@ -13,7 +14,7 @@ import qualified ValueEqTest
 
 main :: IO ()
 main = do
-  stests <- specTests
+  endToEndTests <- e2eTests
   defaultMain $
     testGroup
       "All Tests"
@@ -21,9 +22,10 @@ main = do
       , DepGraphTest.tests
       , EvalAddrTest.tests
       , ExplainTest.tests
+      , RecalcTest.tests
       , ScannerTest.tests
       , TraceTest.tests
       , ValueEqTest.tests
       , VTermTest.tests
-      , stests
+      , endToEndTests
       ]

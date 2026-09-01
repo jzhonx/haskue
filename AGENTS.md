@@ -34,7 +34,9 @@ Important supporting areas:
 - `src/DepGraph.hs` manages evaluation dependencies and reference cycles.
 - `src/Reduce/TraceSpan.hs` and `src/Util/Trace.hs` support evaluator tracing.
 - `tests/ScannerTest.hs` contains direct scanner unit tests.
-- `tests/spec/*.txtar` contains end-to-end language behavior tests.
+- `tests/e2e/eval/*.txtar` contains end-to-end language behavior tests.
+- `tests/e2e/explain/*.txtar` contains end-to-end explain-command tests; its
+  case headers use the form `case-name __query__`.
 
 ## Evaluator invariants
 
@@ -95,7 +97,7 @@ warning-free.
 
 - Add scanner-only behavior to `tests/ScannerTest.hs`.
 - Add language and evaluator regressions to the appropriate
-  `tests/spec/*.txtar` file, or create a focused new one.
+  `tests/e2e/eval/*.txtar` file, or create a focused new one.
 - A txtar case consists of an input header and body followed by an expected
   output header and body. Multiple cases may be placed in one file:
 
@@ -106,7 +108,7 @@ warning-free.
   a: 3
   ```
 
-- `tests/SpecTest.hs` discovers every `.txtar` file under `tests/spec`
+- `tests/E2ETest.hs` discovers every `.txtar` file under `tests/e2e/eval`
   automatically.
 - Keep expected output deterministic. The harness ignores trailing whitespace
   at the end of expected output but otherwise compares output line by line.
