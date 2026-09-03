@@ -1,9 +1,17 @@
-# Haskue ![WIP](https://img.shields.io/badge/status-WIP-yellow)
+# Haskue ![Experimental](https://img.shields.io/badge/status-experimental-orange)
 
-A Haskell implementation of the [CUE](https://cuelang.org/) configuration language. Work in progress—it parses,
-evaluates, and exports a useful subset of CUE, with broader language support still under development.
+An experimental Haskell implementation of a useful subset of the [CUE](https://cuelang.org/) configuration language.
+It parses, evaluates, and exports CUE, with broader language support still under development.
 
-## Purpose of the Project
+## Try it online
+
+Run Haskue directly in your browser using the WebAssembly build:
+
+**[Open Haskue online](https://jzhonx.github.io/haskue/)**
+
+No installation is required.
+
+## Why Haskue?
 
 CUE is a configuration language built on top of ideas such as graph unification, constraint solving, and value lattice.
 Writing configuration in CUE is more elegant and less error-prone than writing configuration in YAML or
@@ -17,12 +25,6 @@ and lazy evaluation.
 This project is an attempt to implement CUE in Haskell, to explore the similarities between the two
 languages, and to make CUE's evaluation process easier to understand.
 
-## AI tool use
-
-Haskue’s architecture and core evaluator were designed and implemented by the project author.
-
-Coding agents have been used for scoped tasks, including renaming functions and variables, drafting comments and tests, and implementing some standard-library code. All AI-assisted changes are reviewed, tested, and maintained by the project author.
-
 ## Limitations
 
 - Package/module system (basic import parsing exists, but loading and resolution are not)
@@ -31,6 +33,36 @@ Coding agents have been used for scoped tasks, including renaming functions and 
 - Default values in ellipsis (`...<value>`)
 - Definitions (`#foo`) and hidden fields (`_foo`) as first-class features
 - Structural cycles are not allowed
+
+## Installing
+
+### Prebuilt binaries
+
+Download the archive for your platform from the [latest GitHub release](https://github.com/jzhonx/haskue/releases/latest):
+
+- `haskue-linux-x86_64.tar.gz` for 64-bit Linux
+- `haskue-darwin-aarch64.tar.gz` for Apple silicon macOS
+
+Extract the archive and place the `haskue` executable in a directory on your `PATH`. Then verify the installation:
+
+```sh
+haskue --version
+```
+
+A `haskue-wasm32-wasi.tar.gz` archive is also available for WASI runtimes such as Wasmtime.
+
+### Build from source
+
+Install GHC and Cabal (the project is tested with GHC 9.10.3 and Cabal 3.12.1.0), then run:
+
+```sh
+git clone https://github.com/jzhonx/haskue.git
+cd haskue
+cabal update
+cabal install exe:haskue --project-file=cabal.project.release
+```
+
+Cabal normally installs the executable into `$HOME/.local/bin`; make sure that directory is on your `PATH`.
 
 ## CLI Usage
 
@@ -102,6 +134,16 @@ Evaluation of CUE values is order-independent. This is different from common imp
 
 > As a consequence, order of evaluation is irrelevant, a property that is key to many of the constructs in the CUE language as well as the tooling layered on top of it.
 
+Haskue's evaluator was influenced by the models of Excel and [Shake](https://shakebuild.com/) described in
+[*Build Systems à la Carte*](https://doi.org/10.1145/3236774). Like Excel, it discovers dependencies during evaluation
+and retries computations after dependencies become ready. Like Shake, it records observed dependency state and stops
+propagating changes when values remain unchanged.
+
+Haskue adapts these ideas to CUE's value graph and unification semantics rather than directly implementing either
+algorithm. Both Excel and Haskue can revisit certain cycles, but Excel does so through optional bounded iterative
+calculation. Haskue groups reference cycles into strongly connected components, while structural cycles remain
+unsupported.
+
 Here is a brief overview of how evaluation is implemented in haskue.
 
 After scanning and parsing, the CUE source is represented as an AST. The AST is then converted into a graph of nodes.
@@ -160,3 +202,11 @@ a: {
     z: 1
 }
 ```
+
+## AI tool use
+
+Haskue’s architecture and core evaluator were designed and implemented by the project author.
+
+Coding agents have been used for scoped tasks, including renaming functions and variables, drafting comments and tests,
+and implementing some standard-library code. All AI-assisted changes are reviewed, tested, and maintained by the
+project author.
