@@ -55,11 +55,10 @@ class VTerm a where
   getChildVT :: AddrSegment -> a -> Maybe VTermNode
   getChildVT _ _ = Nothing
 
-  {- | Replace an existing immediate child selected by one address segment.
-
-  This operation only reconstructs the containing term.  It does not update
-  'VNode' versions.
-  -}
+  -- | Replace an existing immediate child selected by one address segment.
+  --
+  --   This operation only reconstructs the containing term.  It does not update
+  --   'VNode' versions.
   setChildVT :: AddrSegment -> VTermNode -> a -> Maybe a
   setChildVT _ _ _ = Nothing
 
@@ -400,15 +399,21 @@ oneLinerStringOfVNode t = do
 
 showValType :: Val -> String
 showValType t = case t of
-  VAtom _ -> "atom"
-  VBounds _ -> "bds"
+  VAtom a -> case a of
+    String _ -> "string"
+    Bytes _ -> "bytes"
+    Int _ -> "int"
+    Float _ -> "float"
+    Bool _ -> "bool"
+    Null -> "null"
+  VBounds _ -> "bounds"
   VStruct{} -> "struct"
   VList{} -> "list"
-  VDisj{} -> "disj"
+  VDisj{} -> "disjunction"
   VBottom _ -> "_|_"
   VTop -> "_"
   VUnknown -> "unknown"
-  VFuncAddr _ -> "fnAddr"
+  VFuncAddr _ -> "function"
 
 showValueType :: (MonadError String m, HasCallStack) => Val -> m String
 showValueType t = case t of
@@ -424,7 +429,7 @@ showValueType t = case t of
   VStruct _ -> return "struct"
   VList _ -> return "list"
   VTop -> return "_"
-  _ -> throwErrSt $ "not a value type: " ++ showValType t
+  _ -> throwErrSt $ "expected a concrete value type; received " ++ showValType t
 
 builtinValues :: (TextIndexerMonad s m) => m [(TextIndex, Val)]
 builtinValues = do

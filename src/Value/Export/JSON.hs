@@ -1,14 +1,14 @@
 module Value.Export.JSON where
 
 import Control.Monad (foldM)
-import Control.Monad.Except (Except)
+import Control.Monad.Except (Except, throwError)
 import Control.Monad.RWS.Strict (RWST, runRWST)
 import Data.Aeson (ToJSON (..), Value)
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
-import Exception (throwErrSt)
 import StringIndex (ShowWTIndexer (..), TextIndexer)
 import Text.Printf (printf)
+import Value.Bottom (Bottom (..))
 import Value.List
 import Value.Struct
 import Value.Val
@@ -25,7 +25,7 @@ buildJSON t tier = do
 buildJSONExt :: VNode -> JM Value
 buildJSONExt v = case value v of
   VAtom atom -> return $ toJSON atom
-  VBottom _ -> throwErrSt "bottom should be eliminated before JSON export"
+  VBottom (Bottom msg) -> throwError msg
   VBounds _ -> incompleteErr v
   VTop -> incompleteErr v
   VStruct stc -> buildJSONStruct stc
@@ -36,7 +36,7 @@ buildJSONExt v = case value v of
   VDisj dj | Just df <- rtrDisjDefVal dj -> buildJSONExt (mkValVN df)
   _ -> do
     vType <- Value.Val.showValueType (value v)
-    throwErrSt $ printf "unsupported value for JSON export %s" vType
+    throwError $ printf "cannot export value of type %s to JSON" vType
 
 buildJSONStruct :: Struct -> JM Value
 -- Handle embedded values first.
@@ -54,4 +54,4 @@ buildJSONStruct stc = do
 incompleteErr :: VNode -> JM a
 incompleteErr v = do
   t <- oneLinerStringOfVNode v
-  throwErrSt $ printf "incomplete value %s" t
+  throwError $ printf "cannot export incomplete value to JSON: %s" t

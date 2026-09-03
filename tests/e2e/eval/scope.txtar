@@ -6,5 +6,5 @@
 	y: x
 }
 -- exp --
-error: reference "x" is not found:
+error: reference "x" not found:
 	-:5:5

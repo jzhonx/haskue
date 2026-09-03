@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               haskue
-version:            0.1.0.0
+version:            0.1.5
 synopsis:           A Haskell implementation of the CUE configuration language.
 description:        Please see the README on GitHub.
 
@@ -63,6 +63,8 @@ library
         Value.Export.JSON,
         Value.Val,
 
+    autogen-modules:
+      Paths_haskue
     other-modules:
       Paths_haskue
     ghc-options: -Wall -Wpartial-fields
@@ -111,9 +113,10 @@ library
 
 executable haskue
     main-is:          Main.hs
+    autogen-modules:  Paths_haskue
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:    Paths_haskue
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

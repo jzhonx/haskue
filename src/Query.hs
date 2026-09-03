@@ -6,20 +6,22 @@ module Query (
 )
 where
 
-import Control.Monad.Except (runExcept, runExceptT, throwError)
+import Control.Monad.Except (ExceptT, runExcept, runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.RWS.Strict (runRWST)
+import Control.Monad.Trans.Class (lift)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
+import Data.Maybe (mapMaybe)
 import qualified Data.Sequence as Seq
 import EvalAddr (fileTopEvalAddr)
 import Reduce.Core (reduceConstraintPass)
 import Reduce.Monad (RM, getRMContext, modifyRMContext)
 import qualified Reduce.Monad as Reduce
 import Reduce.Reference (concreteRefSels, descend)
-import Reduce.Store (fetchValMust)
+import Reduce.Store (fetchValFromStore)
 import qualified Semant.Semant as Semant
 import StringIndex (TextIndexer)
 import Syntax.AST (
@@ -36,34 +38,38 @@ import Syntax.Scanner (scanTokens)
 import Syntax.Token (Location (..), Token)
 import Value
 
-queryValue :: B.ByteString -> RM VNode
+queryValue :: B.ByteString -> ExceptT String RM VNode
 queryValue source = do
   tokens <- either (throwError . show) return (scanTokens source)
   expr <- either throwError return (parseExpr tokens)
   rootIdent <-
     maybe
-      (throwError "query must be a reference rooted at a file-level identifier")
+      (throwError "query must be a reference that starts with a file-level identifier")
       return
       (queryRootIdent expr)
   queryVNode <- translateQuery rootIdent expr
   ref <- case queryVNode of
     IsValSoleStaticOp (Ref r) -> return r
-    _ -> throwError "query expression did not translate to a reference"
+    _ -> throwError "query expression did not produce a reference"
 
   identAddr <- case ref.identLocator of
     AbsoluteIdentAddr addr -> return addr
-    LexicalIdent _ -> throwError "query identifier did not resolve to an absolute address"
-  identValue <- fetchValMust "queryValue" identAddr
+    LexicalIdent _ -> throwError "query root did not resolve to an absolute address"
+  identValueM <- lift $ fetchValFromStore "queryValue" identAddr
+  identValue <- maybe (throwError "query path not found") return identValueM
 
-  reducedSelectors <- traverse (reduceConstraintPass fileTopEvalAddr) ref.selectors
-  selectorsM <- concreteRefSels ref{selectors = reducedSelectors}
-  selectors <- maybe (throwError "query selectors are not concrete") return selectorsM
-  (_, targetM) <- descend identAddr identValue selectors
-  maybe (throwError "query value not found") return targetM
+  reducedSelectors <- lift $ traverse (reduceConstraintPass fileTopEvalAddr) ref.selectors
+  case mapMaybe (rtrBottom . value) (toList reducedSelectors) of
+    err : _ -> throwError (show err)
+    [] -> return ()
+  selectorsM <- lift $ concreteRefSels ref{selectors = reducedSelectors}
+  selectors <- maybe (throwError "query selectors must be concrete") return selectorsM
+  (_, targetM) <- lift $ descend identAddr identValue selectors
+  maybe (throwError "query path not found") return targetM
 
-translateQuery :: Token -> Expression -> RM VNode
+translateQuery :: Token -> Expression -> ExceptT String RM VNode
 translateQuery rootIdent expr = do
-  context <- getRMContext
+  context <- lift getRMContext
   let initialState = Semant.mkTransState (Reduce.tIndexer context)
   translated <-
     liftIO $
@@ -74,9 +80,9 @@ translateQuery rootIdent expr = do
           initialState
   case translated of
     Left (Semant.SemantErr msg) -> throwError msg
-    Left (Semant.FatalErr msg) -> throwError msg
+    Left (Semant.FatalErr msg) -> lift $ Reduce.throwFatal msg
     Right (vnode, transState, _) -> do
-      modifyRMContext $ \ctx -> ctx{Reduce.tIndexer = Semant.tIndexer transState}
+      lift $ modifyRMContext $ \ctx -> ctx{Reduce.tIndexer = Semant.tIndexer transState}
       return vnode
 
 queryRootIdent :: Expression -> Maybe Token

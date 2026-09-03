@@ -4,9 +4,12 @@ import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString as B
 import Data.ByteString.Builder (hPutBuilder)
 import qualified Data.ByteString.Char8 as BC
-import Eval (Config (..), evalStr, explainExpr, explainStr)
+import Data.Version (showVersion)
+import Eval (Config (..), evalSelectedStr, evalStr, explainExpr, explainStr)
 import Options.Applicative
+import qualified Paths_haskue
 import Reduce.Monad (TraceConfig (..))
+import System.Exit (die)
 import System.IO (Handle, IOMode (..), hClose, openFile, stdout)
 
 -- New data types for subcommands
@@ -32,6 +35,8 @@ data ExportConfig = ExportConfig
 
 data EvalConfig = EvalConfig
   { evalFilePath :: String
+  , evalExpression :: Maybe String
+  , evalExplain :: Bool
   , evalCommon :: CommonConfig
   }
 
@@ -124,7 +129,7 @@ exportParser =
     <$> argument
       str
       ( metavar "FILE"
-          <> help "CUE file to parse"
+          <> help "CUE file to parse, or - for stdin"
       )
     <*> option
       str
@@ -141,7 +146,19 @@ evalParser =
     <$> argument
       str
       ( metavar "FILE"
-          <> help "CUE file to parse"
+          <> help "CUE file to parse, or - for stdin"
+      )
+    <*> optional
+      ( strOption
+          ( short 'e'
+              <> long "expression"
+              <> metavar "EXPR"
+              <> help "Evaluate this reference expression only"
+          )
+      )
+    <*> switch
+      ( long "explain"
+          <> help "Show the selected expression's value and conjuncts (requires -e)"
       )
     <*> commonOptions
 
@@ -159,7 +176,7 @@ explainInputParser =
             <$> argument
               str
               ( metavar "FILE"
-                  <> help "CUE file to parse"
+                  <> help "CUE file to parse, or - for stdin"
               )
         )
 
@@ -194,17 +211,46 @@ commandParser =
         "explain"
         ( info
             (Explain <$> explainParser <**> helper)
-            (progDesc "Explain how a CUE value is calculated")
+            (progDesc "Deprecated: use eval FILE -e EXPR --explain")
         )
 
 runEval :: Config -> IO ()
 runEval conf = do
-  content <- B.readFile (ecFilePath conf)
-  x <- runExceptT $ evalStr content conf
+  (content, sourcePath) <- readSource (ecFilePath conf)
+  x <- runExceptT $ evalStr content conf{ecFilePath = sourcePath}
   case x of
     Left err -> putStrLn $ "Internal bug: " ++ err
     Right b -> hPutBuilder stdout b
   hClose (ecTraceHandle conf)
+
+runEvalCommand :: EvalConfig -> Config -> IO ()
+runEvalCommand evalConfig conf =
+  case evalExpression evalConfig of
+    Nothing -> runEval conf
+    Just expression -> do
+      (content, sourcePath) <- readSource (ecFilePath conf)
+      let sourceConf = conf{ecFilePath = sourcePath}
+          query = BC.pack expression
+      result <-
+        runExceptT $
+          if evalExplain evalConfig
+            then explainStr content query sourceConf
+            else evalSelectedStr content query sourceConf
+      case result of
+        Left err -> die $ "error: " ++ err
+        Right builder -> hPutBuilder stdout builder
+      hClose (ecTraceHandle conf)
+
+{- | Read a source file, treating @-@ as standard input. The empty source path
+makes scanner diagnostics use the conventional @-:line:column@ form.
+-}
+readSource :: FilePath -> IO (B.ByteString, FilePath)
+readSource "-" = do
+  content <- B.getContents
+  return (content, "")
+readSource path = do
+  content <- B.readFile path
+  return (content, path)
 
 toExplainEvalConfig :: ExplainConfig -> IO Config
 toExplainEvalConfig explainConfig = do
@@ -233,8 +279,8 @@ runExplain explainConfig = do
   let query = BC.pack (explainQuery explainConfig)
   result <- case explainInput explainConfig of
     ExplainFile path -> do
-      source <- B.readFile path
-      runExceptT $ explainStr source query conf
+      (source, sourcePath) <- readSource path
+      runExceptT $ explainStr source query conf{ecFilePath = sourcePath}
     ExplainExpr source -> runExceptT $ explainExpr (BC.pack source) query conf
   case result of
     Left err -> putStrLn $ "error: " ++ err
@@ -243,12 +289,20 @@ runExplain explainConfig = do
 
 main :: IO ()
 main = do
-  cmd <- execParser (info (commandParser <**> helper) fullDesc)
+  cmd <- execParser (info (commandParser <**> helper <**> versionOption) fullDesc)
   case cmd of
     Export exportConfig -> do
       conf <- toEvalConfig exportConfig
       runEval conf
     Eval evalConfig -> do
-      conf <- toEvalConfigEval evalConfig
-      runEval conf
+      case (evalExplain evalConfig, evalExpression evalConfig) of
+        (True, Nothing) -> die "error: --explain requires --expression"
+        _ -> do
+          conf <- toEvalConfigEval evalConfig
+          runEvalCommand evalConfig conf
     Explain explainConfig -> runExplain explainConfig
+ where
+  versionOption =
+    infoOption
+      ("haskue " ++ showVersion Paths_haskue.version)
+      (long "version" <> help "Show the Haskue version")

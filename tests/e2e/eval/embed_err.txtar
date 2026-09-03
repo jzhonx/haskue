@@ -5,5 +5,5 @@ a: b
 	b: 1
 }
 -- exp --
-error: reference "b" is not found:
+error: reference "b" not found:
 	-:2:4

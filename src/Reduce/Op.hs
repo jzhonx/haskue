@@ -57,7 +57,7 @@ resolveUnaryOp op vn = do
       _ -> returnErr vn.value
     _ -> return VUnknown
  where
-  returnErr v = return $ mkBottomVal $ printf "%s cannot be used for %s" (show v) (show op)
+  returnErr v = return $ mkBottomVal $ printf "operator %s cannot be applied to %s" (show op) (show v)
 
   ia a f = return (VAtom (Int $ f a))
 
@@ -244,7 +244,7 @@ invalidCmpOperandsErr tktyp vn1@VNode{value = v1} vn2@VNode{value = v2} = do
   return $
     mkBottomVal $
       printf
-        "invalid operands %s and %s to '%s' (type %s and %s):\n\t%s\n\t%s"
+        "invalid operands %s and %s for operator '%s' (types %s and %s):\n\t%s\n\t%s"
         v1T
         v2T
         (BC.unpack $ toByteString tktyp)
@@ -277,4 +277,4 @@ calc op (L, a1) (_, a2) =
 calc op x@(R, _) y = calc op y x
 
 mismatch :: (Show a, Show b) => TokenType -> a -> b -> Val
-mismatch op x y = mkBottomVal $ printf "%s can not be used for %s and %s" (show op) (show x) (show y)
+mismatch op x y = mkBottomVal $ printf "operator %s cannot be applied to %s and %s" (show op) (show x) (show y)

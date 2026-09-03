@@ -17,6 +17,7 @@ data Token = Token
   deriving (Eq, Generic, NFData)
 
 instance Show Token where
+  show (Token Illegal loc literal) = printf "%s: %s" (show loc) (BC.unpack literal)
   show (Token t _ l) = show t ++ " \"" ++ BC.unpack l ++ "\""
 
 detailedShowToken :: Token -> String

@@ -91,7 +91,7 @@ let a = {
 }
 x: a.ib
 -- exp_let7 --
-error: unreferenced let clause let "ib"
+error: let clause "ib" is not referenced
 
 -- let8 --
 // checks if a chain of let statements is correctly resolved.

@@ -37,7 +37,7 @@ builtinFuncMap =
 -- | Closes a struct when the tree has struct.
 close :: [Val] -> EvalAddr -> RM Val
 close [arg] _ = return $ closeConcrete arg
-close args _ = return $ mkBottomVal $ printf "close function expects exactly 1 argument, got %d" (length args)
+close args _ = return $ mkBottomVal $ printf "close expects exactly one argument; received %d" (length args)
 
 -- | Close a concrete value.
 closeConcrete :: Val -> Val
@@ -50,7 +50,7 @@ closeConcrete a =
     VDisj dj -> case defDisjunctsFromDisj dj of
       [x] -> x.value
       _ -> VUnknown
-    _ -> mkBottomVal $ printf "cannot use %s as struct in argument 1 to close" (show a)
+    _ -> mkBottomVal $ printf "argument 1 to close must be a struct; received %s" (showValType a)
 
 or :: [Val] -> EvalAddr -> RM Val
 or [arg] addr = case rtrList arg of
@@ -59,7 +59,7 @@ or [arg] addr = case rtrList arg of
         dj = emptyDisj{dsjDisjuncts = Seq.fromList $ map mkValVN vals}
     reduceVal addr (VDisj dj)
   _ -> return arg
-or args _ = return $ mkBottomVal $ printf "or function expects exactly 1 argument, got %d" (length args)
+or args _ = return $ mkBottomVal $ printf "or expects exactly one argument; received %d" (length args)
 
 and :: [Val] -> EvalAddr -> RM Val
 and [arg] addr = case rtrList arg of
@@ -72,67 +72,67 @@ and [arg] addr = case rtrList arg of
         v' <- unifyVals vals addr False
         reduceVal addr v'
   _ -> return arg
-and args _ = return $ mkBottomVal $ printf "and function expects exactly 1 argument, got %d" (length args)
+and args _ = return $ mkBottomVal $ printf "and expects exactly one argument; received %d" (length args)
 
 len :: [Val] -> EvalAddr -> RM Val
 len [rtrList -> Just vs] _ = return $ VAtom $ Int $ fromIntegral $ V.length vs.final
 len [rtrString -> Just str] _ = return $ VAtom $ Int $ fromIntegral $ BC.length str
 len [rtrBytes -> Just bs] _ = return $ VAtom $ Int $ fromIntegral $ BC.length bs
-len [arg] _ = return $ mkBottomVal $ printf "cannot use %s as argument to len" (show arg)
-len args _ = return $ mkBottomVal $ printf "len function expects exactly 1 argument, got %d" (length args)
+len [arg] _ = return $ mkBottomVal $ printf "argument 1 to len has invalid type %s" (showValType arg)
+len args _ = return $ mkBottomVal $ printf "len expects exactly one argument; received %d" (length args)
 
 sliceWith :: String -> [Val] -> EvalAddr -> RM Val
-sliceWith _ [_] _ = return $ mkBottomVal "slice expects at least 1 argument"
+sliceWith _ [_] _ = return $ mkBottomVal "slice requires at least two arguments"
 sliceWith name (opd : rest) addr = case name of
   "slice" -> slice opd (Just $ head args) (Just $ args !! 1) addr
   "sliceLeft" -> slice opd (Just $ head args) Nothing addr
   "sliceRight" -> slice opd Nothing (Just $ head args) addr
-  _ -> throwFatal $ printf "unexpected error in sliceWith: unknown function name %s" name
+  _ -> throwFatal $ printf "sliceWith received an unknown function name: %s" name
  where
   args = toList rest
-sliceWith _ _ _ = throwFatal "unexpected error in sliceWith: should have been handled by semantics"
+sliceWith _ _ _ = throwFatal "sliceWith received an invalid argument list"
 
 slice :: Val -> Maybe Val -> Maybe Val -> EvalAddr -> RM Val
 slice opd (Just ls) (Just rs) _ =
   case ( do
-           l <- fetchSliceOprand opd
-           ls' <- fetchSliceIdx ls
-           rs' <- fetchSliceIdx rs
-           return (l, ls', rs')
+          l <- fetchSliceOprand opd
+          ls' <- fetchSliceIdx ls
+          rs' <- fetchSliceIdx rs
+          return (l, ls', rs')
        ) of
     Right (l, ls', rs') -> return $ VList $ sliceList ls' rs' l
     Left v -> return v
 slice opd (Just ls) Nothing _ =
   case ( do
-           l <- fetchSliceOprand opd
-           ls' <- fetchSliceIdx ls
-           return (l, ls')
+          l <- fetchSliceOprand opd
+          ls' <- fetchSliceIdx ls
+          return (l, ls')
        ) of
     Right (l, ls') -> return $ VList $ sliceList ls' maxBound l
     Left v -> return v
 slice opd Nothing (Just rs) _ =
   case ( do
-           l <- fetchSliceOprand opd
-           rs' <- fetchSliceIdx rs
-           return (l, rs')
+          l <- fetchSliceOprand opd
+          rs' <- fetchSliceIdx rs
+          return (l, rs')
        ) of
     Right (l, rs') -> return $ VList $ sliceList 0 rs' l
     Left v -> return v
-slice _ Nothing Nothing _ = throwFatal "should have been handled by semantics"
+slice _ Nothing Nothing _ = throwFatal "slice requires at least one index"
 
 fetchSliceOprand :: Val -> Either Val List
 fetchSliceOprand opd = case opd of
   VList l -> Right l
   VBottom _ -> Left opd
   VUnknown -> Left opd
-  _ -> Left $ mkBottomVal $ printf "cannot slice %s" (showValType opd)
+  _ -> Left $ mkBottomVal $ printf "cannot slice value of type %s" (showValType opd)
 
 fetchSliceIdx :: Val -> Either Val Int
 fetchSliceIdx idx = case idx of
   VAtom (Int i) -> Right (fromIntegral i)
   VBottom _ -> Left idx
   VUnknown -> Left idx
-  _ -> Left $ mkBottomVal $ printf "cannot use %s as slice index"
+  _ -> Left $ mkBottomVal $ printf "slice index must be an integer; received %s" (showValType idx)
 
 sliceList :: Int -> Int -> List -> List
 sliceList ls rs l =

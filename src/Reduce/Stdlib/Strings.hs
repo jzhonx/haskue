@@ -53,7 +53,7 @@ fetchStringArgs = mapM isString
     _ ->
       let
         msg :: String
-        msg = printf "expected a string argument, got %s" (showValType v)
+        msg = printf "expected a string argument; received %s" (showValType v)
        in
         Left $ mkBottomVal msg
 
@@ -64,7 +64,7 @@ join [VList l, VAtom (String sep)] _
       case fetchStringArgs (V.toList l.final) of
         Left v -> return v
         Right stringArgs -> return $ VAtom $ String $ joinBSs stringArgs sep
-join _ _ = return $ mkBottomVal "wrong type of arguments to Join"
+join _ _ = return $ mkBottomVal "strings.Join expects a list and a string"
 
 joinBSs :: [BC.ByteString] -> BC.ByteString -> BC.ByteString
 joinBSs bs sep = BC.intercalate sep bs
@@ -80,7 +80,7 @@ replace xs addr = traceSpanNoPreRM "strings.Replace" addr $ do
   let incompletes = map rtrIncomplete xs
   case listToMaybe $ catMaybes incompletes of
     Just _ -> return VUnknown
-    Nothing -> return $ mkBottomVal "wrong type of arguments to Replace"
+    Nothing -> return $ mkBottomVal "strings.Replace expects three strings and an integer"
 
 {- | Replace the first n occurrences of old with new in s.
 

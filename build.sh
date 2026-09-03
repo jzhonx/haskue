@@ -1,9 +1,93 @@
 #!/usr/bin/env bash
 
+projectRoot="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cabalFile="$projectRoot/haskue.cabal"
+
+readPackageVersion() {
+  awk '
+    $1 == "version:" {
+      print $2
+      found = 1
+      exit
+    }
+    END {
+      if (!found) exit 1
+    }
+  ' "$cabalFile"
+}
+
+validateVersion() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+}
+
 # Ensure at least one argument is provided
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 {build|build-wasm|build-show-trace|test|bench-check|bench-update|run|runp|explain|show|release|conv|ce|cmp}"
+  echo "Usage: $0 {version|bump-version|check-version|build|build-wasm|build-show-trace|test|bench-check|bench-update|run|runp|explain|show|release|conv|ce|cmp}"
   exit 1
+fi
+
+if [[ "$1" == "version" ]]; then
+  set -euo pipefail
+  readPackageVersion
+  exit 0
+fi
+
+if [[ "$1" == "bump-version" ]]; then
+  set -euo pipefail
+
+  if [[ $# -ne 2 ]] || ! validateVersion "$2"; then
+    echo "Usage: $0 bump-version <major.minor.patch[.revision]>" >&2
+    exit 1
+  fi
+
+  nextVersion="$2"
+  currentVersion="$(readPackageVersion)"
+  if [[ "$currentVersion" == "$nextVersion" ]]; then
+    echo "Haskue is already at version $nextVersion"
+    exit 0
+  fi
+
+  updatedCabal="$(mktemp "${TMPDIR:-/tmp}/haskue-cabal.XXXXXX")"
+  trap 'rm -f "$updatedCabal"' EXIT
+  awk -v version="$nextVersion" '
+    $1 == "version:" && !updated {
+      sub(/[^[:space:]]+$/, version)
+      updated = 1
+    }
+    { print }
+    END {
+      if (!updated) exit 1
+    }
+  ' "$cabalFile" > "$updatedCabal"
+  cp "$updatedCabal" "$cabalFile"
+
+  echo "Bumped Haskue from $currentVersion to $nextVersion"
+  echo "Commit the change, then create tag v$nextVersion on that commit."
+  exit 0
+fi
+
+if [[ "$1" == "check-version" ]]; then
+  set -euo pipefail
+
+  if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 check-version <tag>" >&2
+    exit 1
+  fi
+
+  releaseTag="${2#refs/tags/}"
+  packageVersion="$(readPackageVersion)"
+  if [[ "$releaseTag" != v* ]] || ! validateVersion "${releaseTag#v}"; then
+    echo "Invalid release tag '$2'; expected v<major.minor.patch[.revision]>" >&2
+    exit 1
+  fi
+  tagVersion="${releaseTag#v}"
+  if [[ "$tagVersion" != "$packageVersion" ]]; then
+    echo "Release tag $2 does not match Haskue package version $packageVersion" >&2
+    exit 1
+  fi
+
+  echo "Release tag $2 matches Haskue package version $packageVersion"
+  exit 0
 fi
 
 if [[ "$1" == "explain" ]]; then

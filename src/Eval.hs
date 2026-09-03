@@ -8,6 +8,7 @@
 module Eval (
   Config (..),
   evalStr,
+  evalSelectedStr,
   evalFile,
   explainExpr,
   explainStr,
@@ -107,6 +108,17 @@ explainStr source query conf = do
   sourceFile <- liftEither $ parseSourceFile tokens
   explainVal (transSourceFile sourceFile fileTopEvalAddr) query conf
 
+evalSelectedStr :: B.ByteString -> B.ByteString -> Config -> ExceptT String IO Builder
+evalSelectedStr source query conf = do
+  tokens <-
+    liftEither
+      ( case scanTokensFromFile (ecFilePath conf) source of
+          Left errTk -> Left (show errTk)
+          Right ts -> Right ts
+      )
+  sourceFile <- liftEither $ parseSourceFile tokens
+  evalSelectedVal (transSourceFile sourceFile fileTopEvalAddr) query conf
+
 explainExpr :: B.ByteString -> B.ByteString -> Config -> ExceptT String IO Builder
 explainExpr source query conf = do
   tokens <-
@@ -120,27 +132,31 @@ explainExpr source query conf = do
 
 evalStrToAST :: B.ByteString -> Config -> ExceptT String IO (Either String Expression)
 evalStrToAST s conf = do
-  (t, cs) <- evalStrToVal s conf
-  case value t of
-    -- print the error message to the console.
-    VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ ->
-      let e = runExcept $ buildExpr t cs
-       in case e of
-            Left err -> return $ Left err
-            Right (expr, _) -> return $ Right expr
+  parsed <- evalStrToVal s conf
+  case parsed of
+    Left err -> return $ Left $ printf "error: %s" err
+    Right (t, cs) -> case value t of
+      -- print the error message to the console.
+      VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+      _ ->
+        let e = runExcept $ buildExpr t cs
+         in case e of
+              Left err -> return $ Left err
+              Right (expr, _) -> return $ Right expr
 
 evalStrToJSON :: B.ByteString -> Config -> ExceptT String IO (Either String Value)
 evalStrToJSON s conf = do
-  (t, cs) <- evalStrToVal s conf
-  case value t of
-    -- print the error message to the console.
-    VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
-    _ ->
-      let e = runExcept $ buildJSON t cs
-       in case e of
-            Left err -> return $ Left err
-            Right (expr, _) -> return $ Right expr
+  parsed <- evalStrToVal s conf
+  case parsed of
+    Left err -> return $ Left $ printf "error: %s" err
+    Right (t, cs) -> case value t of
+      -- print the error message to the console.
+      VBottom (Bottom msg) -> return $ Left $ printf "error: %s" msg
+      _ ->
+        let e = runExcept $ buildJSON t cs
+         in case e of
+              Left err -> return $ Left err
+              Right (expr, _) -> return $ Right expr
 
 strToCUEVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
 strToCUEVal s conf = do
@@ -153,16 +169,13 @@ strToCUEVal s conf = do
   e <- liftEither $ parseExpr tokens
   evalVal (transExprToVal e fileTopEvalAddr) conf
 
-evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
-evalStrToVal s conf = do
-  tokens <-
-    liftEither
-      ( case scanTokensFromFile (ecFilePath conf) s of
-          Left errTk -> Left (show errTk)
-          Right ts -> Right ts
-      )
-  e <- liftEither (parseSourceFile tokens)
-  evalFile e conf
+evalStrToVal :: B.ByteString -> Config -> ExceptT String IO (Either String (VNode, TextIndexer))
+evalStrToVal s conf =
+  case scanTokensFromFile (ecFilePath conf) s of
+    Left errTk -> return $ Left (show errTk)
+    Right tokens -> case parseSourceFile tokens of
+      Left err -> return $ Left err
+      Right e -> Right <$> evalFile e conf
 
 evalFile :: SourceFile -> Config -> ExceptT String IO (VNode, TextIndexer)
 evalFile sf conf = evalVal (transSourceFile sf fileTopEvalAddr) conf
@@ -197,6 +210,17 @@ evalValInner conf textIndexer raw = do
 
 explainVal :: TM VNode -> B.ByteString -> Config -> ExceptT String IO Builder
 explainVal translate query conf = do
+  (target, textIndexer) <- queryVal translate query conf
+  return $ stringUtf8 $ renderExplanation textIndexer query target
+
+evalSelectedVal :: TM VNode -> B.ByteString -> Config -> ExceptT String IO Builder
+evalSelectedVal translate query conf = do
+  (target, textIndexer) <- queryVal translate query conf
+  (expr, _) <- liftEither $ runExcept $ buildExpr (removeConstraints target) textIndexer
+  return $ exprToBuilder False expr
+
+queryVal :: TM VNode -> B.ByteString -> Config -> ExceptT String IO (VNode, TextIndexer)
+queryVal translate query conf = do
   translated <-
     liftIO $
       runExceptT $
@@ -205,14 +229,19 @@ explainVal translate query conf = do
     Left (SemantErr msg) -> throwError msg
     Left (FatalErr msg) -> throwError msg
     Right (vnode, transState, _) -> return (vnode, transState.tIndexer)
-  fst <$> runReduceAction conf textIndexer do
-    debugTranslated conf raw
-    topVal <- reduceRoot raw
-    target <- queryValue query
-    finalized <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
-    debugFinal conf finalized
-    currentTextIndexer <- Reduce.Monad.tIndexer <$> getRMContext
-    return $ stringUtf8 $ renderExplanation currentTextIndexer query target
+  queryResult <-
+    fst <$> runReduceAction conf textIndexer do
+      debugTranslated conf raw
+      topVal <- reduceRoot raw
+      targetE <- runExceptT $ queryValue query
+      case targetE of
+        Left err -> return $ Left err
+        Right target -> do
+          finalized <- local (mapParams (\p -> p{createCnstr = False})) (finalize fileTopEvalAddr topVal)
+          debugFinal conf finalized
+          currentTextIndexer <- Reduce.Monad.tIndexer <$> getRMContext
+          return $ Right (target, currentTextIndexer)
+  liftEither queryResult
 
 reduceRoot :: VNode -> RM VNode
 reduceRoot raw = do

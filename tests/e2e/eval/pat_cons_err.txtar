@@ -11,4 +11,4 @@ y: {
 	("z"): =~"a"
 }
 -- exp --
-error: int can not be unified with struct
+error: cannot unify int with struct

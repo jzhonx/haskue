@@ -11,7 +11,6 @@
 module Reduce.Monad where
 
 import Control.DeepSeq (NFData)
-import Control.Monad (when)
 import Control.Monad.Except (ExceptT (..), throwError)
 import Control.Monad.RWS.Strict (RWST)
 import Control.Monad.Reader (asks)
@@ -205,12 +204,15 @@ setRMObjID newID = modify' $ \ctx -> ctx{ctxObjID = newID}
 
 -- VNode depth check
 
-treeDepthCheck :: EvalAddr -> RM ()
+treeDepthCheck :: EvalAddr -> RM (Maybe String)
 treeDepthCheck vc = do
   let depth = length $ addrToList vc
   maxDepth <- asks maxTreeDepth
   let maxDepthVal = if maxDepth <= 0 then 1000 else maxDepth
-  when (depth > maxDepthVal) $ throwFatal $ printf "tree depth exceeds max depth (%d)" maxDepthVal
+  return $
+    if depth > maxDepthVal
+      then Just $ printf "tree depth exceeds the maximum of %d" maxDepthVal
+      else Nothing
 
 getRCResolver :: RM RCResolver
 getRCResolver = rcResolver <$> getRMContext

@@ -397,7 +397,7 @@ dynFieldToStatic fields df addr
   -- Incomplete field label, no change is made. If the mutable was a reference with string value, then it would
   -- have been reduced to a string.
   | Nothing <- rtrNonUnion (value label) = return $ Right Nothing
-  | otherwise = return $ Left (mkBottomVN "label can only be a string")
+  | otherwise = return $ Left (mkBottomVN "dynamic field label must be a string")
  where
   label = dsfLabel df
 

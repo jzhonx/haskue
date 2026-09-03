@@ -64,23 +64,23 @@ importDecls = do
 
 importDecl :: Parser [ImportSpec]
 importDecl = do
-  _ <- accept Import <?> "failed to parse import keyword"
+  _ <- accept Import <?> "import"
   specs <-
     ( do
         _ <- lparen
         specs' <- manyEndByComma importSpec rparen ")"
         _ <- rparen
         return specs'
-      )
+    )
       <|> (: [])
-      <$> importSpec
+        <$> importSpec
   when (length specs > 0) $ void comma
   return specs
 
 importSpec :: Parser ImportSpec
 importSpec = do
   pkgNameM <- optionMaybe $ try identifier
-  path <- accept Token.String <?> "failed to parse import path string"
+  path <- accept Token.String <?> "import path string"
   return $ ImportSpec pkgNameM path
 
 expr :: Parser Expression
@@ -183,7 +183,7 @@ primaryExpr = chainPrimExpr primOperand (selector <|> indexOrSlice <|> arguments
     return $ \p -> PrimExprArguments p l.tkLoc args r.tkLoc
 
 identifier :: Parser Token
-identifier = accept Token.Identifier <?> "failed to parse identifier"
+identifier = accept Token.Identifier <?> "identifier"
 
 chainPrimExpr ::
   Parser PrimaryExpr ->
@@ -199,7 +199,7 @@ chainPrimExpr p op = do
         rest (g x)
     )
       <|> return x
-      <?> "failed to parse chainPrimExpr"
+      <?> "expression"
 
 operand :: Parser Operand
 operand =
@@ -211,7 +211,7 @@ operand =
             r <- rparen
             return $ OpExpression l.tkLoc e r.tkLoc
         )
-    <?> "failed to parse operand"
+    <?> "operand"
 
 literal :: Parser Literal
 literal =
@@ -252,7 +252,7 @@ list = do
     ( do
         r <- rsquare
         return (EmbeddingList [] Nothing, r)
-      )
+    )
       <|> ( do
               e <- ellipsisExpr
               _ <- optional comma
@@ -313,7 +313,7 @@ decl =
     <|> try (DeclLet <$> letClause)
     <|> (EllipsisExpr <$> ellipsisExpr)
     <|> (Embedding <$> embedding)
-    <?> "failed to parse declaration"
+    <?> "declaration"
 
 field :: Parser FieldDecl
 field = do
@@ -345,7 +345,7 @@ labelNameConstraint = do
     Just x -> case x.tkType of
       QuestionMark -> return $ LabelName lnlem (Just QuestionMark)
       Exclamation -> return $ LabelName lnlem (Just Exclamation)
-      _ -> unexpected $ printf "unexpected %s after label name" (show x.tkLiteral)
+      _ -> unexpected $ printf "%s after label name" (show x.tkLiteral)
     Nothing -> return $ LabelName lnlem Nothing
 
 ellipsisExpr :: Parser EllipsisExpr
@@ -359,7 +359,7 @@ embedding = do
   -- Use try to avoid consuming expr when comprehension is not matched. For example, an identifier "fo".
   try (EmbedComprehension <$> comprehension)
     <|> (EmbeddingAlias <$> aliasExpr)
-    <?> "failed to parse embedding"
+    <?> "embedding"
 
 aliasExpr :: Parser AliasExpr
 aliasExpr =
@@ -389,31 +389,31 @@ clause :: Parser Clause
 clause =
   (ClauseStart <$> startClause)
     <|> (ClauseLet <$> letClause)
-    <?> "failed to parse clause"
+    <?> "clause"
 
 startClause :: Parser StartClause
-startClause = guardClause <|> forClause <?> "failed to parse start clause"
+startClause = guardClause <|> forClause <?> "initial comprehension clause"
 
 guardClause :: Parser StartClause
 guardClause = do
-  st <- accept If <?> "failed to parse keyword if"
+  st <- accept If <?> "if"
   GuardClause st.tkLoc <$> expr
 
 forClause :: Parser StartClause
 forClause = do
-  st <- accept For <?> "failed to parse keyword for"
+  st <- accept For <?> "for"
   ident <- identifier
   secIdentM <- optionMaybe $ do
     _ <- comma
     identifier
-  _ <- accept In <?> "failed to parse keyword in"
+  _ <- accept In <?> "in"
   ForClause st.tkLoc ident secIdentM <$> expr
 
 letClause :: Parser LetClause
 letClause = do
-  st <- accept Let <?> "failed to parse keyword let"
+  st <- accept Let <?> "let"
   ident <- identifier
-  _ <- accept Assign <?> "failed to parse = in let clause"
+  _ <- accept Assign <?> "= in let clause"
   LetClause st.tkLoc ident <$> expr
 
 labelName :: Parser LabelName
@@ -432,7 +432,7 @@ labelNameExpr = do
 simpleStringLit :: Parser SimpleStringLit
 simpleStringLit =
   ( do
-      st <- accept Token.String <?> "failed to parse string literal"
+      st <- accept Token.String <?> "string literal"
       let segs = [AST.UnicodeChars (tkLiteral st)]
       return $ SimpleStringLit st.tkLoc segs
   )
@@ -444,7 +444,7 @@ simpleStringLit =
 multiLineStringLit :: Parser MultiLineStringLit
 multiLineStringLit =
   ( do
-      st <- accept Token.MultiLineString <?> "failed to parse string literal"
+      st <- accept Token.MultiLineString <?> "multiline string literal"
       let segs = [AST.UnicodeChars (tkLiteral st)]
       return $ MultiLineStringLit st.tkLoc segs
   )
@@ -456,7 +456,7 @@ multiLineStringLit =
 simpleBytesLit :: Parser SimpleBytesLit
 simpleBytesLit =
   ( do
-      st <- accept Token.Bytes <?> "failed to parse bytes literal"
+      st <- accept Token.Bytes <?> "bytes literal"
       let segs = [AST.UnicodeChars (tkLiteral st)]
       return $ SimpleBytesLit st.tkLoc segs
   )
@@ -468,7 +468,7 @@ simpleBytesLit =
 multiLineBytesLit :: Parser MultiLineBytesLit
 multiLineBytesLit =
   ( do
-      st <- accept Token.MultiLineBytes <?> "failed to parse bytes literal"
+      st <- accept Token.MultiLineBytes <?> "multiline bytes literal"
       let segs = [AST.UnicodeChars (tkLiteral st)]
       return $ MultiLineBytesLit st.tkLoc segs
   )
@@ -479,15 +479,15 @@ multiLineBytesLit =
 
 interpolation :: TokenType -> TokenType -> Parser (Token, [StringLitSeg])
 interpolation interpolationType interpolationEndType = do
-  startST <- accept interpolationType <?> "failed to parse interpolation"
+  startST <- accept interpolationType <?> "interpolation"
   startE <- expr
   let segs = [AST.UnicodeChars (tkLiteral startST), InterpolationExpr startST.tkLoc startE]
   rest <- many $ do
-    st <- accept interpolationType <?> "failed to parse interpolation after interpolation segment"
+    st <- accept interpolationType <?> "interpolation segment"
     e <- expr
     return [AST.UnicodeChars (tkLiteral st), InterpolationExpr st.tkLoc e]
   end <- do
-    endSt <- accept interpolationEndType <?> "failed to parse end of interpolation"
+    endSt <- accept interpolationEndType <?> "end of interpolation"
     return $ AST.UnicodeChars (tkLiteral endSt)
   return (startST, segs ++ concat rest ++ [end])
 
@@ -509,43 +509,43 @@ manyEndByComma p delimiter delimiterName =
     return x
 
 lparen :: Parser Token
-lparen = accept LParen <?> "failed to parse left parenthesis"
+lparen = accept LParen <?> "("
 
 rparen :: Parser Token
-rparen = accept RParen <?> "failed to parse right parenthesis"
+rparen = accept RParen <?> ")"
 
 lsquare :: Parser Token
-lsquare = accept LSquare <?> "failed to parse left square"
+lsquare = accept LSquare <?> "["
 
 rsquare :: Parser Token
-rsquare = accept RSquare <?> "failed to parse right square"
+rsquare = accept RSquare <?> "]"
 
 lbrace :: Parser Token
-lbrace = accept LBrace <?> "failed to parse left brace"
+lbrace = accept LBrace <?> "{"
 
 rbrace :: Parser Token
-rbrace = accept RBrace <?> "failed to parse right brace"
+rbrace = accept RBrace <?> "}"
 
 comma :: Parser Token
-comma = accept Comma <?> "failed to parse comma"
+comma = accept Comma <?> ","
 
 questionMark :: Parser Token
-questionMark = accept QuestionMark <?> "failed to parse ?"
+questionMark = accept QuestionMark <?> "?"
 
 exclamation :: Parser Token
-exclamation = accept Exclamation <?> "failed to parse !"
+exclamation = accept Exclamation <?> "!"
 
 ellipsis :: Parser Token
-ellipsis = accept Token.Ellipsis <?> "failed to parse ..."
+ellipsis = accept Token.Ellipsis <?> "..."
 
 dot :: Parser Token
-dot = accept Dot <?> "failed to parse ."
+dot = accept Dot <?> "."
 
 colon :: Parser Token
-colon = accept Colon <?> "failed to parse :"
+colon = accept Colon <?> ":"
 
 eof :: Parser ()
-eof = void (accept EOF <?> "failed to parse end of file")
+eof = void (accept EOF <?> "end of file")
 
 ptrace :: String -> Parser ()
 ptrace s = do

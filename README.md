@@ -41,22 +41,34 @@ Some test cases and standard-library code were drafted or implemented with the a
 
 ## CLI Usage
 
-Currently, haskue supports `eval`, `export`, and `explain` commands.
+Currently, haskue supports `eval` and `export`. The older `explain` subcommand remains as a deprecated compatibility
+alias.
 
 ```
-haskue eval   <file>
+haskue --version
+haskue eval   <file> [-e <expression>] [--explain]
 haskue export <file> [--out cue|json|yaml] [--trace]
-haskue explain <file> <query>
-haskue explain -e <expression> <query>
 ```
 
-The `explain` command shows the constraints that contribute to a selected value. It accepts either a CUE file or an
-inline CUE expression:
+Use `-` as the input file to read CUE from standard input:
 
 ```sh
-haskue explain example.cue x.a
-haskue explain -e '{x: {a: int} & {a: 1}}' x.a
+printf 'a: 1 + 2\n' | haskue eval -
+printf 'a: 1 + 2\n' | haskue export - --out json
+printf 'a: 1 + 2\n' | haskue eval - -e a --explain
 ```
+
+Use `-e` or `--expression` to evaluate a selected reference expression instead of the entire file. Add `--explain` to
+show the constraints that contribute to its value:
+
+```sh
+haskue eval example.cue -e x.a
+haskue eval example.cue -e x.a --explain
+```
+
+The current expression selector supports references that start with a file-level identifier, such as `x`, `x.a`, or
+`x[i]`. Support for arbitrary CUE expressions is not yet implemented. The deprecated equivalents are `haskue explain
+example.cue x.a` and `haskue explain -e '<source-expression>' x.a`.
 
 We also provide a `--trace` option to print the evaluation trace of the value graph.
 
@@ -89,7 +101,6 @@ Clicking the link will open a browser window with the trace visualized in Perfet
 Then we can use `wsad` to navigate the trace, and click on a node to see its details. In the example above, we can see
 that the after `x` getting evaluated, it triggers the re-evaluation of `y`, which is shown in the trace as a flow from
 `x` to `y`.
-
 
 ## How evaluation is implemented
 

@@ -107,13 +107,13 @@ x4: 1
 -- disj6 --
 _|_ | _|_
 -- exp --
-error: explicit error (_|_ literal) in source:
+error: explicit bottom (_|_) in source:
 	-:1:1
 
 -- disj7 --
 _|_ | *_|_
 -- exp --
-error: explicit error (_|_ literal) in source:
+error: explicit bottom (_|_) in source:
 	-:1:1
 
 -- disj8 --
@@ -194,4 +194,3 @@ a: {
         y: 1
     }
 }
-

@@ -4,4 +4,4 @@ if p {
 	x: 1
 }
 -- exp --
-error: struct is not a boolean
+error: if condition must be boolean; received struct

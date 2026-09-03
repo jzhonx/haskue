@@ -409,13 +409,13 @@ errorCaseTests =
     [ testCase "Unclosed string" $
         let actual = getTokens (BC.pack "\"unclosed")
             expected =
-              [ mkT Illegal "Unterminated string literal"
+              [ mkT Illegal "unterminated string literal"
               ]
          in assertTokensEqual "Unclosed string" actual expected
     , testCase "Unknown character" $
         let actual = getTokens (BC.pack "@#$")
             expected =
-              [ mkT Illegal "Illegal character: @"
+              [ mkT Illegal "illegal character: @"
               ]
          in assertTokensEqual "Unknown character" actual expected
     ]

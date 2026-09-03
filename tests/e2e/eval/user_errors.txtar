@@ -1,0 +1,50 @@
+-- default_constraint_is_user_error --
+...string
+-- exp --
+error: default constraints in ellipses are not supported
+
+-- interpolated_selector_is_user_error --
+x: {a: 1}
+s: "a"
+y: x."\(s)"
+-- exp --
+error: interpolation is not supported in selectors
+
+-- interpolation_type_error_is_bottom --
+x: {a: 1}
+y: "\(x)"
+-- exp --
+error: cannot interpolate value of type struct
+
+-- missing_package_member_is_bottom --
+import "bogus"
+x: bogus.Foo()
+-- exp --
+error: package value not found: "/pkg/bogus/Foo" (package "/pkg/bogus")
+
+-- structural_cycle_hits_nonfatal_depth_limit --
+a: {b: a}
+-- exp --
+error: tree depth exceeds the maximum of 20
+
+-- builtin_argument_type --
+len(1)
+-- exp --
+error: argument 1 to len has invalid type int
+
+-- close_argument_type --
+close(1)
+-- exp --
+error: argument 1 to close must be a struct; received int
+
+-- dynamic_label_type --
+label: 1
+(label): "value"
+-- exp --
+error: dynamic field label must be a string
+
+-- standard_library_argument_types --
+import "strings"
+strings.Join(1, 2)
+-- exp --
+error: strings.Join expects a list and a string

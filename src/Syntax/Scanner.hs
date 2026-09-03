@@ -295,7 +295,7 @@ scanToken = do
         case (c, second, third) of
           ('_', Just '|', Just '_') -> advance >> advance >> addToken Bottom
           _ -> scanIdentifierOrKeyword c
-    | otherwise = addInvalidToken ("Illegal character: " <>)
+    | otherwise = addInvalidToken ("illegal character: " <>)
 
 -- | Skip whitespace and comments
 skipWhitespaceAndComments :: Scanner ()
@@ -389,7 +389,7 @@ scanStringLit = do
         ch <- peek
         case ch of
           Just '\n' -> advance >> scanMultiline
-          _ -> addInvalidToken (const "Invalid multiline string")
+          _ -> addInvalidToken (const "invalid multiline string literal")
     _ -> scanString
 
 -- | Scan string content.
@@ -397,7 +397,7 @@ scanString :: Scanner ()
 scanString = scanByteSeq tryClose String mempty
  where
   tryClose closeType c b
-    | c == '\n' = addInvalidToken (const "Unterminated string literal") >> return True
+    | c == '\n' = addInvalidToken (const "unterminated string literal") >> return True
     | c == '"' = addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b) >> return True
     | otherwise = return False
 
@@ -429,7 +429,7 @@ scanBytesLit = do
         ch <- peek
         case ch of
           Just '\n' -> advance >> scanMLBytes
-          _ -> addInvalidToken (const "Invalid multiline bytes literal")
+          _ -> addInvalidToken (const "invalid multiline bytes literal")
     _ -> scanBytes
 
 -- | Scan simple bytes content.
@@ -437,7 +437,7 @@ scanBytes :: Scanner ()
 scanBytes = scanByteSeq tryClose Bytes mempty
  where
   tryClose closeType c b
-    | c == '\n' = addInvalidToken (const "Unterminated bytes literal") >> return True
+    | c == '\n' = addInvalidToken (const "unterminated bytes literal") >> return True
     | c == '\'' = addTokenTransLit (const closeType) (const $ toStrict $ toLazyByteString b) >> return True
     | otherwise = return False
 
@@ -470,7 +470,7 @@ stripMultilineIndent content =
         | BC.null l = Right l -- allow empty lines without the indent
         | otherwise =
             Left
-              "Indentation error in multiline literal: all lines must have the same indentation as the closing line"
+              "invalid indentation in multiline literal: all lines must have the same indentation as the closing line"
    in fmap (BC.intercalate "\n") (mapM stripLine contentLines)
 
 scanByteSeq :: (TokenType -> Char -> Builder -> Scanner Bool) -> TokenType -> Builder -> Scanner ()
@@ -478,12 +478,12 @@ scanByteSeq tryClose closeTkType b = do
   ch <- peek
   case ch of
     -- EOF, there might be some non-empty string characters to add.
-    Nothing -> addInvalidToken (const "Unterminated string literal")
+    Nothing -> addInvalidToken (const "unterminated string literal")
     Just c | c == '\\' -> do
       nextCh <- peekNext
       let isBytes = closeTkType `elem` [Bytes, MultiLineBytes, BytesInterpolationEnd]
       case nextCh of
-        Nothing -> addInvalidToken (const "Unterminated escape sequence")
+        Nothing -> addInvalidToken (const "unterminated escape sequence")
         Just nextC -> case nextC of
           'a' -> escapeNamed '\a'
           'b' -> escapeNamed '\b'
@@ -507,17 +507,17 @@ scanByteSeq tryClose closeTkType b = do
             void $ advance >> advance
             readHexDigits 4 >>= \case
               Just n -> scanByteSeq tryClose closeTkType (b <> (charUtf8 . chr) n)
-              Nothing -> addInvalidToken (const "Invalid unicode escape sequence")
+              Nothing -> addInvalidToken (const "invalid Unicode escape sequence")
           'U' -> do
             void $ advance >> advance
             readHexDigits 8 >>= \case
               Just n -> scanByteSeq tryClose closeTkType (b <> (charUtf8 . chr) n)
-              Nothing -> addInvalidToken (const "Invalid unicode escape sequence")
+              Nothing -> addInvalidToken (const "invalid Unicode escape sequence")
           'x' | isBytes -> do
             void $ advance >> advance
             readHexDigits 2 >>= \case
               Just n -> scanByteSeq tryClose closeTkType (b <> (word8 . fromIntegral) n)
-              Nothing -> addInvalidToken (const "Invalid hex escape sequence")
+              Nothing -> addInvalidToken (const "invalid hexadecimal escape sequence")
           _ | isBytes && isOctDigit nextC -> do
             void $ advance >> advance
             let d1 = digitToInt nextC
@@ -525,8 +525,8 @@ scanByteSeq tryClose closeTkType b = do
               Just (d2, d3) -> do
                 let byte = fromIntegral (d1 * 64 + d2 * 8 + d3)
                 scanByteSeq tryClose closeTkType (b <> word8 byte)
-              Nothing -> addInvalidToken (const "Invalid octal escape sequence")
-          _ -> addInvalidToken (const $ "Invalid escape character: \\" <> BC.singleton nextC)
+              Nothing -> addInvalidToken (const "invalid octal escape sequence")
+          _ -> addInvalidToken (const $ "invalid escape character: \\" <> BC.singleton nextC)
     Just c -> do
       void advance
       -- The char is not appended to the builder.
@@ -562,7 +562,7 @@ scanItplEnd :: Int -> Scanner ()
 scanItplEnd lparenDepth = do
   next <- peek
   case next of
-    Nothing -> addInvalidToken (const "Unterminated interpolation")
+    Nothing -> addInvalidToken (const "unterminated interpolation")
     Just _ -> do
       scanToken
       lastTk <- getLastScannedToken
@@ -606,7 +606,7 @@ scanIdentifierOrKeyword first = do
     '_' -> do
       secondChar <- peek
       case secondChar of
-        Just '_' -> addInvalidToken (const "Invalid identifier starting with __")
+        Just '_' -> addInvalidToken (const "identifier cannot start with __")
         Just '#' -> advance >> mustLetterChar
         _ -> return ()
     '#' -> mustLetterChar
@@ -619,7 +619,7 @@ scanIdentifierOrKeyword first = do
     ch <- advance
     case ch of
       Just c | isLetter c -> return ()
-      _ -> addInvalidToken (const "Identifier must have a letter, _, $, or # after initial _ or #")
+      _ -> addInvalidToken (const "identifier must contain a letter, _, $, or # after the initial _ or #")
   letterNums = do
     ch <- peek
     case ch of

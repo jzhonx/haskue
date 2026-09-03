@@ -186,7 +186,7 @@ transLiteral (LitBasic a) _ = case a of
     return $
       exprTrDataE
         (getNodeLoc a)
-        (TrValue $ VBottom $ Bottom $ printf "explicit error (_|_ literal) in source:\n\t%s" (show $ getNodeLoc a))
+        (TrValue $ VBottom $ Bottom $ printf "explicit bottom (_|_) in source:\n\t%s" (show $ getNodeLoc a))
 
 mkAtomTrDataE :: Location -> Atom -> TrDataE
 mkAtomTrDataE l a = exprTrDataE l (TrValue $ VAtom a)
@@ -264,7 +264,7 @@ transDecl decli hasEmbeds structAddr = case decli of
     EllipsisExpr (Ellipsis _ cM) ->
       maybe
         (return EmptyAdder) -- TODO: implement real ellipsis handling
-        (\_ -> throwFatal "default constraints are not implemented yet")
+        (\_ -> semanticError "default constraints in ellipses are not supported")
         cM
     FieldDecl (AST.Field ls e) ->
       let declAddr = if hasEmbeds then structAddr `appendTermStep` mkRegCnstrTermStep 0 else structAddr
@@ -348,7 +348,7 @@ transClause c clAddr = case c of
 transFDeclLabels :: [Label] -> AliasExpr -> EvalAddr -> TM StructElemAdder
 transFDeclLabels lbls ae@(AST.AliasExpr _ e) structAddr =
   case lbls of
-    [] -> throwFatal "empty labels"
+    [] -> throwFatal "field declaration has no labels"
     -- The adder is created before translating the expression because the label might have alias that can be
     -- referred to in the expression, and the alias needs to be in scope when translating the expression.
     [l1] -> mkAdderWithValGen l1 $ transExpr e
@@ -593,7 +593,7 @@ transSelector pe astSel addr = do
     StringSelector (SimpleStringLit _ segs) -> do
       rE <- strLitSegsToStr segs selAddr False
       case rE of
-        Left _ -> throwFatal "selector should not have interpolation"
+        Left _ -> semanticError "interpolation is not supported in selectors"
         Right str -> return $ f str
 
 getPrimaryExprEvalAddr :: PrimaryExpr -> EvalAddr -> TM (EvalAddr, Int)
@@ -668,7 +668,7 @@ transBinary Unify e1 e2 addr = do
           r <- transExpr e (addr `appendTermStep` mkRegCnstrTermStep i)
           case trDataEToCnstr r of
             Just cnstr -> return cnstr
-            Nothing -> throwFatal "unexpected constraints"
+            Nothing -> throwFatal "unification operand did not produce a constraint"
       )
       (zip [0 ..] exprs)
   return $ exprTrDataE (getNodeLoc e1) $ TrCnstrs $ Seq.fromList res
@@ -756,7 +756,7 @@ getEnvID :: TM Int
 getEnvID = do
   (Environments envs) <- gets envs
   case envs of
-    [] -> throwFatal "no environment"
+    [] -> throwFatal "environment stack is empty"
     (env : _) -> return env.envid
 
 -- | Lookup the identifier in the scopes. If not found, return an error value.
@@ -771,8 +771,8 @@ notFoundMsg :: TextIndex -> Maybe Location -> TM String
 notFoundMsg ident locM = do
   idStr <- tshow ident
   case locM of
-    Nothing -> semanticError $ printf "reference %s is not found" (show idStr)
-    Just loc -> semanticError $ printf "reference %s is not found:\n\t%s" (show idStr) (show loc)
+    Nothing -> semanticError $ printf "reference %s not found" (show idStr)
+    Just loc -> semanticError $ printf "reference %s not found:\n\t%s" (show idStr) (show loc)
 
 data IdentLookupResult = IdentLookupResult
   { isInTopEnv :: Bool
@@ -793,7 +793,7 @@ getTopEnvMust :: TM Environment
 getTopEnvMust = do
   (Environments envs) <- gets envs
   case envs of
-    [] -> throwFatal "no environment"
+    [] -> throwFatal "environment stack is empty"
     (env : _) -> return env
 
 lookupIdentCurEnv :: TextIndex -> TM (Maybe IdentLookupResult)
@@ -895,12 +895,12 @@ checkIdentInEnvs key identType = do
 aliasErr :: TextIndex -> TM ()
 aliasErr name = do
   nameStr <- tshow name
-  semanticError $ printf "can not have both alias and field with name %s in the same scope" (show nameStr)
+  semanticError $ printf "an alias and a field cannot have the same name in one scope: %s" (show nameStr)
 
 lbRedeclErr :: TextIndex -> TM ()
 lbRedeclErr name = do
   nameStr <- tshow name
-  semanticError $ printf "%s redeclared in same scope" (show nameStr)
+  semanticError $ printf "%s is redeclared in the same scope" (show nameStr)
 
 inStructScope :: [Declaration] -> EvalAddr -> TM a -> TM a
 inStructScope decls addr action = do
@@ -956,7 +956,7 @@ leaveStructScope = do
     else do
       let firstName = head unreferencedNames
       firstNameT <- tshow firstName
-      semanticError $ printf "unreferenced let clause let %s" (show firstNameT)
+      semanticError $ printf "let clause %s is not referenced" (show firstNameT)
 
 {- | Enter a constraint value scope for evaluating a constraint body.
 

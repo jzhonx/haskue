@@ -6,5 +6,5 @@ let z = 1
 	x: y
 }
 -- exp --
-error: reference "z" is not found:
+error: reference "z" not found:
 	-:2:9

@@ -74,7 +74,7 @@ buildExprExt t = do
           isDebug <- asks isDebug
           if isDebug
             then return $ AST.idCons "Unknown"
-            else throwErrSt "no constraints found for Unknown value, cannot build expression for it"
+            else throwErrSt "cannot build an expression for an unknown value without constraints"
     IsStruct s
       | isStructAllLabelsConcrete s -> buildStructASTExpr s
       | otherwise ->
@@ -116,18 +116,18 @@ buildValExprExt t = case t of
     isDebug <- asks isDebug
     if isDebug
       then return $ AST.idCons "Unknown"
-      else throwErrSt "cannot build expression for Unknown value without original expression"
+      else throwErrSt "cannot build an expression for an unknown value without its original expression"
   VFuncAddr _ -> do
     isDebug <- asks isDebug
     if isDebug
       then return $ AST.idCons "fnAddr"
-      else throwErrSt "cannot build expression for function address value without original expression"
+      else throwErrSt "cannot build an expression for a function address without its original expression"
 
 buildConstraintSeqExpr :: Seq.Seq Constraint -> EM AST.Expression
 buildConstraintSeqExpr cs = do
   es' <- mapM buildConstraintExpr (toList cs)
   case es' of
-    [] -> throwErrSt "no constraints found, cannot build expression for it"
+    [] -> throwErrSt "cannot build an expression without constraints"
     [e] -> return e
     _ -> return $ foldl1 (AST.Binary (mkTypeToken Token.Unify)) es'
 
@@ -386,7 +386,7 @@ buildComprehASTExpr cph =
         Nothing -> return Nothing
       ve <- buildExprExt val
       return (AST.ForClause emptyLoc (textIdentToken varName) (textIdentToken <$> secVarM) ve)
-    _ -> throwErrSt "start clause should not be let clause"
+    _ -> throwErrSt "the initial comprehension clause cannot be a let clause"
 
   buildIterClause clause = case clause of
     ComprehArgLet varNameIdx val -> do
@@ -553,7 +553,7 @@ buildRegOpASTExpr op = case ropOpType op of
     | x Seq.:<| _ <- ropArgs op -> buildUnaryExpr uop x
   BinOpType bop
     | x Seq.:<| y Seq.:<| _ <- ropArgs op -> buildBinaryExpr bop x y
-  _ -> throwErrSt $ "Unsupported operation type: " ++ show (ropOpType op)
+  _ -> throwErrSt $ "unsupported operation type: " ++ show (ropOpType op)
 
 buildUnaryExpr :: TokenType -> VNode -> EM AST.Expression
 buildUnaryExpr op t = do

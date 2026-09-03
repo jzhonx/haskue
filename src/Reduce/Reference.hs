@@ -8,7 +8,7 @@ module Reduce.Reference where
 import Control.Monad (when)
 import Data.Aeson (ToJSON, object, toJSON)
 import Data.Foldable (toList)
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (fromJust, fromMaybe, isNothing)
 import qualified Data.Text as T
 import DepGraph
 import EvalAddr
@@ -237,11 +237,13 @@ locatePkgFunc identAddr sels = do
     Nothing -> do
       pkgFuncAddrT <- tshow pkgFuncAddr
       identAddrT <- tshow identAddr
-      throwFatal $
-        printf
-          "locateRef: cannot find value for addr %s in package %s"
-          (show pkgFuncAddrT)
-          (show identAddrT)
+      return $
+        mkRegDR identAddr pkgFuncAddr $
+          mkBottomVN $
+            printf
+              "package value not found: %s (package %s)"
+              (show pkgFuncAddrT)
+              (show identAddrT)
 
 -- | Locate the ident and the remaining selectors in a non-package tree.
 locateRefInTree :: EvalAddr -> Selectors -> EvalAddr -> RM DerefResult
@@ -504,7 +506,7 @@ watch :: EvalAddr -> EvalAddr -> RM ()
 watch tarAddr refAddr = do
   when (isNothing $ addrIsDependency tarAddr) $
     throwFatal $
-      printf "watch: target addr %s is not a dependency address" (show tarAddr)
+      printf "watch: target address %s is not a dependency address" (show tarAddr)
   let
     targetDependencyAddr = trimReducedToDependency $ toReducedAddr tarAddr
     refVertexAddr = trimReducedToVertex $ toReducedAddr refAddr
@@ -514,7 +516,7 @@ watch tarAddr refAddr = do
     targetDependencyAddrT <- tshow targetDependencyAddr
     throwFatal $
       printf
-        "watch: target addr %s is a sub field of ref addr %s, should not watch to avoid a self-dependency"
+        "watch: target address %s is below reference address %s; watching it would create a self-dependency"
         targetDependencyAddrT
         refVertexAddrT
 
@@ -528,7 +530,7 @@ watch tarAddr refAddr = do
   putRMContext $ ctx{depGraph = newG}
 
   cd <- case refGroupM of
-    Nothing -> throwFatal $ printf "watch: refAddr %s is not in the notification graph" (show refAddr)
+    Nothing -> throwFatal $ printf "watch: reference address %s is not in the notification graph" (show refAddr)
     Just refGroup -> return refGroup.depGroupIsCyclic
 
   debugInstStr
@@ -604,5 +606,5 @@ notFoundMsg :: TextIndex -> Maybe Location -> RM String
 notFoundMsg ident locM = do
   idStr <- tshow ident
   case locM of
-    Nothing -> return $ printf "reference %s is not found" (show idStr)
-    Just loc -> do return $ printf "reference %s is not found:\n\t%s" (show idStr) (show loc)
+    Nothing -> return $ printf "reference %s not found" (show idStr)
+    Just loc -> do return $ printf "reference %s not found:\n\t%s" (show idStr) (show loc)

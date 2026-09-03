@@ -93,14 +93,16 @@ reduce addr vn = traceSpanTermTreeTM "reduce" addr vn $ do
         ttoJSON store
     )
 
-  vn' <- do
-    treeDepthCheck addr
-    if hasEmptyCnstrs (constraints vn)
-      then do
-        -- FIXME: Currently, the input vn is only used for reducing constraints. And it is actually not used.
-        v' <- reduceVal addr (value vn)
-        return vn{value = v', constraints = (constraints vn){allResolved = True}}
-      else reduceConstraintsWithCycleRetry addr vn
+  depthErrM <- treeDepthCheck addr
+  vn' <- case depthErrM of
+    Just err -> return $ mkBottomVN err
+    Nothing ->
+      if hasEmptyCnstrs (constraints vn)
+        then do
+          -- FIXME: Currently, the input vn is only used for reducing constraints. And it is actually not used.
+          v' <- reduceVal addr (value vn)
+          return vn{value = v', constraints = (constraints vn){allResolved = True}}
+        else reduceConstraintsWithCycleRetry addr vn
 
   markFlowEventStart addr vn'.version
   storeVal addr vn'
@@ -394,9 +396,10 @@ reduceOp addr oc = case oc.ocOp of
               funcAddrT <- tshow funcAddr
               throwFatal $ printf "unknown function: %s" funcAddrT
         VUnknown -> return (VUnknown, OpCnstr (oc{ocOp = FCall fc'}))
+        err@(VBottom _) -> return (err, OpCnstr (oc{ocOp = FCall fc'}))
         _ ->
           return
-            ( mkBottomVal $ printf "function call on non-function value: %s" (show $ value fnAddrVN)
+            ( mkBottomVal $ printf "cannot call non-function value %s" (show $ value fnAddrVN)
             , OpCnstr (oc{ocOp = FCall fc'})
             )
       _ -> throwFatal "function call with empty frame"
@@ -593,7 +596,7 @@ resolveInterpolation l args = do
               | Just _ <- rtrBottom r -> return $ Left r
               | VDisj _ <- r -> return $ Left r
               | VTop <- r -> return $ Left r
-              | otherwise -> throwFatal $ printf "unsupported interpolation expression: %s" (showValType r)
+              | otherwise -> return $ Left $ mkBottomVal $ printf "cannot interpolate value of type %s" (showValType r)
           IplSegStr s -> return $ (`BC.append` s) <$> accRes
       )
       (Right BC.empty)

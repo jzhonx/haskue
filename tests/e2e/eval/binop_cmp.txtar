@@ -493,13 +493,13 @@ a: false
 -- cmp_err_bool_ord --
 a: true < false
 -- exp --
-error: invalid operands true and false to '<' (type bool and bool):
+error: invalid operands true and false for operator '<' (types bool and bool):
 	-:1:4
 	-:1:11
 
 -- cmp_err_null_ord --
 a: null < 1
 -- exp --
-error: invalid operands null and 1 to '<' (type null and int):
+error: invalid operands null and 1 for operator '<' (types null and int):
 	-:1:4
 	-:1:11

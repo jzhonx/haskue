@@ -1,5 +1,5 @@
 -- ref_err1 --
 a: b
 -- exp --
-error: reference "b" is not found:
+error: reference "b" not found:
 	-:1:4

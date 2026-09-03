@@ -20,7 +20,7 @@ fetchValMust hdr addr = do
     Just v -> return v
     Nothing -> do
       addrT <- tshow addr
-      let msg = printf "%s value not found for addr: %s" hdr addrT
+      let msg = printf "%s: no value found at address %s" hdr addrT
       debugInst "fetchValMust" addr (return $ object ["addr" .= addrT, "msg" .= hdr])
       throwFatal msg
 
@@ -31,7 +31,7 @@ fetchValFromStore hdr addr = do
     Just reducedAddr -> return $ Map.lookup reducedAddr store
     Nothing -> do
       addrT <- tshow addr
-      throwFatal $ printf "%s cannot fetch value for non-reduced addr: %s" hdr addrT
+      throwFatal $ printf "%s: cannot fetch a value at non-reduced address %s" hdr addrT
 
 storeVal :: EvalAddr -> VNode -> RM ()
 storeVal addr v = do
@@ -184,7 +184,7 @@ fetchComprehBindingVal depth name = do
   bindings <- comprehBindings <$> getRMContext
   case lookupComprehBindingVal depth name bindings of
     Just vn -> return vn
-    _ -> throwFatal $ printf "fetchComprehBindingVal: no comprehension binding found"
+    _ -> throwFatal "fetchComprehBindingVal: comprehension binding not found"
 
 lookupComprehBindingVal :: Int -> TextIndex -> Seq.Seq [(TextIndex, VNode)] -> Maybe VNode
 lookupComprehBindingVal depth name bindings = do

@@ -43,7 +43,7 @@ resolveDisjOp disjOp addr = traceSpanNoPreRM "resolveDisjOp" addr $ do
   let terms = toList $ djoTerms disjOp
   when (length terms < 2) $
     throwFatal $
-      printf "disjunction operation requires at least 2 terms, got %d" (length terms)
+      printf "disjunction operation requires at least two terms; received %d" (length terms)
 
   disjuncts <- procMarkedTerms terms
   debugInstStr

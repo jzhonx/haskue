@@ -34,13 +34,13 @@ s1: "\\"
 -- string6 --
 x: "\(a)"
 -- exp --
-error: reference "a" is not found:
+error: reference "a" not found:
 	-:1:7
 
 -- string7 --
 x: "\(  (a))"
 -- exp --
-error: reference "a" is not found:
+error: reference "a" not found:
 	-:1:10
 
 -- string8 --
@@ -111,4 +111,3 @@ y: {}
 -- exp --
 x: "a\(y.z)b"
 y: {}
-

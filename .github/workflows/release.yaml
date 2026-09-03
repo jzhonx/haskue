@@ -33,6 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify release version
+        run: ./build.sh check-version "${GITHUB_REF_NAME}"
+
       - uses: haskell-actions/setup@v2
         if: matrix.kind == 'native'
         with:

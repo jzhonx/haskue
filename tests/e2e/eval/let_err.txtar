@@ -2,7 +2,7 @@
 // unreferenced variable x
 let x = 0
 -- exp_let_err1 --
-error: unreferenced let clause let "x"
+error: let clause "x" is not referenced
 
 -- let_err2 --
 // redeclared in the same block (y has been declared in the top block)
@@ -12,7 +12,7 @@ x: {
   z: y
 }
 -- exp_let_err2 --
-error: can not have both alias and field with name "y" in the same scope
+error: an alias and a field cannot have the same name in one scope: "y"
 
 -- let_err3 --
 let y = 2
@@ -22,14 +22,14 @@ x: {
   y: 2
 }
 -- exp_let_err3 --
-error: can not have both alias and field with name "y" in the same scope
+error: an alias and a field cannot have the same name in one scope: "y"
 
 -- let_err4 --
 let x = 1
 let x = 1
 y: x
 -- exp_let_err4 --
-error: "x" redeclared in same scope
+error: "x" is redeclared in the same scope
 
 -- let_err5 --
 // let binding x must be referenced as the first segment of a path.
@@ -38,5 +38,4 @@ t: {
 	y: t.x
 }
 -- exp_let_err5 --
-error: unreferenced let clause let "x"
-
+error: let clause "x" is not referenced

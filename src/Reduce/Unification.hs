@@ -118,7 +118,7 @@ unifyVals ps addr isEmbedUnify = traceSpanRM
   addr
   (return $ emptyTracePreData{tpvArgs = Just $ printf "isEmbedUnify: %s" (show isEmbedUnify)})
   $ do
-    when (length ps < 2) $ throwFatal $ printf "not enough arguments for unification, got %d" (length ps)
+    when (length ps < 2) $ throwFatal $ printf "unification requires at least two values; received %d" (length ps)
     debugInstStr
       "unifyVals"
       addr
@@ -175,7 +175,7 @@ mergeVals tcs addr isEmbedUnify = traceSpanRM
       return $ emptyTracePreData{tpvArgs = Just $ show tcsStr}
   )
   $ do
-    when (null tcs) $ throwFatal "not enough arguments"
+    when (null tcs) $ throwFatal "mergeVals requires at least one value"
     let
       headTC = head tcs
       accEmbedType = if isEmbedUnify then ETEnclosing else ETNone
@@ -315,7 +315,7 @@ mergeLeftAtom (v1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) 
   rtn = return
 
   amismatch :: (Show a) => a -> a -> Val
-  amismatch x y = VBottom . Bottom $ printf "values mismatch: %s != %s" (show x) (show y)
+  amismatch x y = VBottom . Bottom $ printf "conflicting values: %s and %s" (show x) (show y)
 
 mergeLeftBound :: (Bounds, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftBound (b1, co1@(ConjOpd{dir = d1})) co2@(ConjOpd{coVal = t2, dir = d2}) addr = do
@@ -564,7 +564,7 @@ returnNotUnifiable (ConjOpd{coVal = t1, dir = d1}) (ConjOpd{coVal = t2}) = do
   f x y = do
     tx <- showValueType x
     ty <- showValueType y
-    return $ mkBottomVal $ printf "%s can not be unified with %s" tx ty
+    return $ mkBottomVal $ printf "cannot unify %s with %s" tx ty
 
 mergeLeftStruct :: (Struct, ConjOpd) -> ConjOpd -> EvalAddr -> RM Val
 mergeLeftStruct (s1, co1) co2 addr

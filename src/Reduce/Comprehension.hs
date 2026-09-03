@@ -162,7 +162,7 @@ continueIf continue i ictx vnode = case rtrAtom (value vnode) of
   _ ->
     continue
       (i + 1)
-      ictx{res = Left $ mkBottomVal $ printf "%s is not a boolean" (showValType $ value vnode)}
+      ictx{res = Left $ mkBottomVal $ printf "if condition must be boolean; received %s" (showValType $ value vnode)}
 
 reduceForArg ::
   EvalAddr -> ComprehContinuation -> Int -> EvalAddr -> TextIndex -> Maybe TextIndex -> VNode -> IterCtx -> RM IterCtx
@@ -179,7 +179,7 @@ reduceForArg comprehAddr continue i clauseAddr key valueM vnode ictx =
       | otherwise ->
           return
             updated
-              { res = Left $ mkBottomVal $ printf "%s is not iterable" (showValType $ value reduced)
+              { res = Left $ mkBottomVal $ printf "for source is not iterable: %s" (showValType $ value reduced)
               }
 
 iterateStruct ::
@@ -276,7 +276,7 @@ forkTemplate v@VNode{constraints} = case v of
         mapConstraints
           (\c -> c{static = Seq.singleton $ StructEmbedCnstr (ValCnstr (vc{vcVal = VStruct newStruct}) Seq.:<| rest)})
           v
-  _ -> throwFatal $ "forkTemplate can only be used with a struct template, but got " ++ show constraints
+  _ -> throwFatal $ "forkTemplate requires a struct template; received " ++ show constraints
 
 {- | Resolve the references that point to the iteration variable and replace them with the reduced value.
 
